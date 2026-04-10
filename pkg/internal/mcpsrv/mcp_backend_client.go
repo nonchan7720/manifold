@@ -78,7 +78,7 @@ func (c *MCPBackendClient) connect(ctx context.Context) (*mcp.ClientSession, err
 	return client.Connect(ctx, transport, nil)
 }
 
-func (c *MCPBackendClient) buildTransport(_ context.Context) (mcp.Transport, error) {
+func (c *MCPBackendClient) buildTransport(ctx context.Context) (mcp.Transport, error) {
 	switch c.cfg.Transport {
 	case config.MCPTransportHTTP:
 		// AuthValue が設定されている場合は API キー等の静的認証。
@@ -88,7 +88,7 @@ func (c *MCPBackendClient) buildTransport(_ context.Context) (mcp.Transport, err
 		// OAuth2.0（gateway が exchange したトークン）も
 		// OAuth2.1（クライアントのトークンをそのまま）もこの経路を通る。
 		var oauthHandler auth.OAuthHandler
-		baseTransport := http.RoundTripper(http.DefaultTransport)
+		baseTransport := http.DefaultTransport
 		if c.cfg.AuthValue != nil {
 			baseTransport = &authValueRoundTripper{
 				authValue: c.cfg.AuthValue,
@@ -112,7 +112,7 @@ func (c *MCPBackendClient) buildTransport(_ context.Context) (mcp.Transport, err
 		if c.cfg.Command == "" {
 			return nil, fmt.Errorf("backend %s: command is required for stdio transport", c.name)
 		}
-		cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
+		cmd := exec.CommandContext(ctx, c.cfg.Command, c.cfg.Args...) //nolint: gosec
 		cmd.Env = os.Environ()
 		for k, v := range c.cfg.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
@@ -151,7 +151,7 @@ var _ auth.OAuthHandler = (*contextOAuthHandler)(nil)
 func (h *contextOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	token := contexts.FromRequestAuthHeader(ctx)
 	if token == "" {
-		return nil, nil
+		return nil, nil //nolint: nilnil
 	}
 	bearerToken := strings.TrimPrefix(token, "Bearer ")
 	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: bearerToken}), nil

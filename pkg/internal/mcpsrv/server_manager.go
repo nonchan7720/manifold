@@ -27,7 +27,7 @@ func NewMCPServer(servers config.Servers) *MCPServer {
 	}
 }
 
-func (s *MCPServer) Init() error {
+func (s *MCPServer) Init(ctx context.Context) error {
 	for name, server := range s.servers {
 		srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: "v1.0.0"}, &mcp.ServerOptions{})
 
@@ -39,29 +39,10 @@ func (s *MCPServer) Init() error {
 				srv:  srv,
 			}
 		} else {
-			// OpenAPI モード: 既存ロジック
-			register, err := RegisterOpenAPI(server.Spec, server.BaseURL)
+			// OpenAPI モード
+			err := registerAPI(ctx, server.Spec, server.BaseURL, srv)
 			if err != nil {
 				return err
-			}
-			tools := register.ListTools()
-			for _, tool := range tools {
-				srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-					var input map[string]any
-					if err := json.Unmarshal(ctr.Params.Arguments, &input); err != nil {
-						resp := &mcp.CallToolResult{}
-						resp.SetError(err)
-						return resp, nil
-					}
-					var result mcp.CallToolResult
-					resp, err := tool.handler(ctx, input)
-					if err != nil {
-						result.SetError(err)
-					} else {
-						result.Content = append(result.Content, &mcp.TextContent{Text: resp})
-					}
-					return &result, nil
-				})
 			}
 		}
 		s.appSrv[name] = srv
@@ -89,4 +70,32 @@ func (s *MCPServer) Close() {
 	for _, bc := range s.backendClients {
 		bc.Close()
 	}
+}
+
+func registerAPI(ctx context.Context, spec, baseURL string, srv *mcp.Server) error {
+	// OpenAPI モード: 既存ロジック
+	register, err := RegisterOpenAPI(ctx, spec, baseURL)
+	if err != nil {
+		return err
+	}
+	tools := register.ListTools()
+	for _, tool := range tools {
+		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var input map[string]any
+			if err := json.Unmarshal(ctr.Params.Arguments, &input); err != nil {
+				resp := &mcp.CallToolResult{}
+				resp.SetError(err)
+				return resp, nil
+			}
+			var result mcp.CallToolResult
+			resp, err := tool.handler(ctx, input)
+			if err != nil {
+				result.SetError(err)
+			} else {
+				result.Content = append(result.Content, &mcp.TextContent{Text: resp})
+			}
+			return &result, nil
+		})
+	}
+	return nil
 }

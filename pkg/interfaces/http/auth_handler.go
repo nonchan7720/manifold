@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -316,7 +317,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	}
 
 	tokenKey := "upstream_token:" + generateRandomString(32)
-	tokenJSON, _ := json.Marshal(upstreamToken)
+	tokenJSON, _ := json.Marshal(upstreamToken) //nolint: gosec
 	if err := h.redisClient.Set(r.Context(), tokenKey, tokenJSON, tokenTTL); err != nil {
 		slog.Error("failed to store upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -444,6 +445,11 @@ func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSes
 	return token, nil
 }
 
+var (
+	//go:embed initialize.json
+	initializeJSON string
+)
+
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
 // 結果は h.servers にキャッシュされる。
@@ -457,56 +463,26 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	h.mu.RUnlock()
 
 	// Step 1: バックエンドに probe リクエストを送り 401 を取得
-	probeReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL,
-		strings.NewReader(`{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}`))
+	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL)
 	if err != nil {
-		return nil, fmt.Errorf("probe request build failed: %w", err)
+		return nil, err
 	}
-	probeReq.Header.Set("Content-Type", "application/json")
-	probeReq.Header.Set("Accept", "application/json, text/event-stream")
-
-	probeResp, err := http.DefaultClient.Do(probeReq)
-	if err != nil {
-		return nil, fmt.Errorf("probe request failed: %w", err)
-	}
-	defer probeResp.Body.Close()
-
-	if probeResp.StatusCode != http.StatusUnauthorized {
-		return nil, fmt.Errorf("backend did not return 401 (got %d); cannot discover OAuth2", probeResp.StatusCode)
-	}
-
 	// Step 2: WWW-Authenticate を解析して resource_metadata URL を取得
-	challenges, err := oauthex.ParseWWWAuthenticate(probeResp.Header["Www-Authenticate"])
-	if err != nil || len(challenges) == 0 {
-		return nil, fmt.Errorf("could not parse WWW-Authenticate header from backend")
-	}
-	var resourceMetaURL string
-	for _, c := range challenges {
-		if u, ok := c.Params["resource_metadata"]; ok {
-			resourceMetaURL = u
-			break
-		}
-	}
-	if resourceMetaURL == "" {
-		return nil, fmt.Errorf("no resource_metadata found in WWW-Authenticate")
+	resourceMetaURL, err := getResourceMetadata(wwwAuthenticate)
+	if err != nil {
+		return nil, err
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, srv.URL, nil)
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, srv.URL)
 	if err != nil {
-		return nil, fmt.Errorf("get protected resource metadata: %w", err)
-	}
-	if len(prm.AuthorizationServers) == 0 {
-		return nil, fmt.Errorf("no authorization_servers in protected resource metadata")
+		return nil, err
 	}
 
 	// Step 4: 認可サーバーのメタデータを取得
-	authMeta, err := mcpauth.GetAuthServerMetadata(ctx, prm.AuthorizationServers[0], nil)
+	authMeta, err := getAuthMetadata(ctx, authorizationServers[0])
 	if err != nil {
-		return nil, fmt.Errorf("get auth server metadata: %w", err)
-	}
-	if authMeta == nil {
-		return nil, fmt.Errorf("no auth server metadata found at %s", prm.AuthorizationServers[0])
+		return nil, err
 	}
 
 	// Step 5: Dynamic Client Registration で ClientID を取得
@@ -570,4 +546,64 @@ func generateRandomString(n int) string {
 func generateS256Challenge(codeVerifier string) string {
 	hash := sha256.Sum256([]byte(codeVerifier))
 	return base64.RawURLEncoding.EncodeToString(hash[:])
+}
+
+func sendProbeRequest(ctx context.Context, url string) ([]string, error) {
+	probeReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(initializeJSON))
+	if err != nil {
+		return nil, fmt.Errorf("probe request build failed: %w", err)
+	}
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.Header.Set("Accept", "application/json, text/event-stream")
+
+	probeResp, err := http.DefaultClient.Do(probeReq)
+	if err != nil {
+		return nil, fmt.Errorf("probe request failed: %w", err)
+	}
+	defer probeResp.Body.Close()
+
+	if probeResp.StatusCode != http.StatusUnauthorized {
+		return nil, fmt.Errorf("backend did not return 401 (got %d); cannot discover OAuth2", probeResp.StatusCode)
+	}
+	return probeResp.Header["Www-Authenticate"], nil
+}
+
+func getResourceMetadata(wwwAuthenticate []string) (string, error) {
+	challenges, err := oauthex.ParseWWWAuthenticate(wwwAuthenticate)
+	if err != nil || len(challenges) == 0 {
+		return "", fmt.Errorf("could not parse WWW-Authenticate header from backend")
+	}
+	var resourceMetaURL string
+	for _, c := range challenges {
+		if u, ok := c.Params["resource_metadata"]; ok {
+			resourceMetaURL = u
+			break
+		}
+	}
+	if resourceMetaURL == "" {
+		return "", fmt.Errorf("no resource_metadata found in WWW-Authenticate")
+	}
+	return resourceMetaURL, nil
+}
+
+func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string) ([]string, error) {
+	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get protected resource metadata: %w", err)
+	}
+	if len(prm.AuthorizationServers) == 0 {
+		return nil, fmt.Errorf("no authorization_servers in protected resource metadata")
+	}
+	return prm.AuthorizationServers, nil
+}
+
+func getAuthMetadata(ctx context.Context, authorizationServer string) (*oauthex.AuthServerMeta, error) {
+	authMeta, err := mcpauth.GetAuthServerMetadata(ctx, authorizationServer, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get auth server metadata: %w", err)
+	}
+	if authMeta == nil {
+		return nil, fmt.Errorf("no auth server metadata found at %s", authorizationServer)
+	}
+	return authMeta, nil
 }

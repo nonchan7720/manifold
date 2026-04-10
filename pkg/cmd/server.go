@@ -36,7 +36,7 @@ func runGatewayServer(ctx context.Context) error {
 
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer)
-	if err := mcpSrv.Init(); err != nil {
+	if err := mcpSrv.Init(ctx); err != nil {
 		return err
 	}
 	defer mcpSrv.Close()
