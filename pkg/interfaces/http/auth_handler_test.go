@@ -57,7 +57,7 @@ func TestGenerateS256Challenge_Different(t *testing.T) {
 
 func TestGetBaseURL_HTTP(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/path", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/path", nil)
 	req.Host = "example.com"
 	got := h.getBaseURL(req)
 	assert.Equal(t, "http://example.com", got)
@@ -65,7 +65,7 @@ func TestGetBaseURL_HTTP(t *testing.T) {
 
 func TestGetBaseURL_XForwardedProto(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequest(http.MethodGet, "/path", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", nil)
 	req.Host = "example.com"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	got := h.getBaseURL(req)
@@ -81,7 +81,7 @@ func TestOauthProtectedResource(t *testing.T) {
 		OAuth2: &config.OAuth2{Scopes: []string{"read", "write"}},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
 	req.Host = "gateway.example.com"
 	ctx := contexts.ToServerContext(req.Context(), srv)
 	req = req.WithContext(ctx)
@@ -107,7 +107,7 @@ func TestOauthProtectedResource_NoOAuth2(t *testing.T) {
 		OAuth2: nil,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -130,7 +130,7 @@ func TestMetadataEndpoint(t *testing.T) {
 		OAuth2: &config.OAuth2{Scopes: []string{"openid"}},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -157,7 +157,7 @@ func TestMetadataEndpoint_NoOAuth2(t *testing.T) {
 		OAuth2: nil,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -183,7 +183,7 @@ func TestWrapMCPServer_WithServerContext(t *testing.T) {
 	}
 	handler := wrapMCPServer(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	ctx := contexts.ToServerContext(req.Context(), srv)
 	req = req.WithContext(ctx)
 	rw := httptest.NewRecorder()
@@ -202,7 +202,7 @@ func TestWrapMCPServer_NoServerContext(t *testing.T) {
 	}
 	handler := wrapMCPServer(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -221,7 +221,7 @@ func TestNewAuthHandler(t *testing.T) {
 
 func TestRegisterClientEndpoint_InvalidJSON(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequest(http.MethodPost, "/test/auth/clients", strings.NewReader("invalid json"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader("invalid json"))
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req)
@@ -236,7 +236,7 @@ func TestRegisterClientEndpoint_InvalidJSON(t *testing.T) {
 func TestRegisterClientEndpoint_NoRedirectURIs(t *testing.T) {
 	h := &AuthHandler{}
 	reqBody := `{"grant_types": ["authorization_code"]}`
-	req := httptest.NewRequest(http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req)
@@ -252,7 +252,7 @@ func TestRegisterClientEndpoint_NoRedirectURIs(t *testing.T) {
 
 func TestLoginEndpoint_NilServer(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequest(http.MethodGet, "/test/auth/login", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/auth/login", nil)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, nil)
@@ -267,7 +267,7 @@ func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
 		OAuth2: nil,
 		Spec:   "local/spec.json", // OpenAPI mode, not MCP backend
 	}
-	req := httptest.NewRequest(http.MethodGet, "/testserver/auth/login", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/login", nil)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -281,7 +281,7 @@ func TestLoginEndpoint_MissingPKCE(t *testing.T) {
 		Name:   "testserver",
 		OAuth2: &config.OAuth2{ClientID: "client1", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/testserver/auth/login?client_id=client1", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/login?client_id=client1", nil)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -294,7 +294,7 @@ func TestLoginEndpoint_MissingPKCE(t *testing.T) {
 func TestCallbackEndpoint_MissingParams(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{Name: "testserver"}
-	req := httptest.NewRequest(http.MethodGet, "/testserver/auth/callback", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/callback", nil)
 	rw := httptest.NewRecorder()
 
 	h.CallbackEndpoint(rw, req, srv)
@@ -307,7 +307,7 @@ func TestCallbackEndpoint_MissingParams(t *testing.T) {
 func TestTokenEndpoint_WrongGrantType(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{Name: "testserver"}
-	req := httptest.NewRequest(http.MethodPost, "/testserver/auth/token",
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/testserver/auth/token",
 		strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
@@ -320,7 +320,7 @@ func TestTokenEndpoint_WrongGrantType(t *testing.T) {
 func TestTokenEndpoint_MissingCodeOrVerifier(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{Name: "testserver"}
-	req := httptest.NewRequest(http.MethodPost, "/testserver/auth/token",
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/testserver/auth/token",
 		strings.NewReader("grant_type=authorization_code"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
@@ -413,7 +413,7 @@ func TestGetAuthorizationServers_Success(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":             "http://example.com/resource",
+			"resource":              "http://example.com/resource",
 			"authorization_servers": []string{"https://auth.example.com"},
 		})
 	}))
@@ -430,7 +430,7 @@ func TestGetAuthorizationServers_Empty(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":             "http://example.com/resource",
+			"resource":              "http://example.com/resource",
 			"authorization_servers": []string{},
 		})
 	}))
@@ -450,12 +450,12 @@ func TestGetAuthMetadata_Success(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		issuer := "http://" + r.Host
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"issuer":                            issuer,
-			"authorization_endpoint":            issuer + "/auth",
-			"token_endpoint":                    issuer + "/token",
-			"response_types_supported":          []string{"code"},
-			"grant_types_supported":             []string{"authorization_code"},
-			"code_challenge_methods_supported":  []string{"S256"},
+			"issuer":                           issuer,
+			"authorization_endpoint":           issuer + "/auth",
+			"token_endpoint":                   issuer + "/token",
+			"response_types_supported":         []string{"code"},
+			"grant_types_supported":            []string{"authorization_code"},
+			"code_challenge_methods_supported": []string{"S256"},
 		})
 	}))
 	defer srv.Close()

@@ -15,7 +15,7 @@ func TestCorsMiddleware_OPTIONS(t *testing.T) {
 	})
 	handler := CorsMiddleware(next)
 
-	req := httptest.NewRequest(http.MethodOptions, "/api/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/api/test", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -34,7 +34,7 @@ func TestCorsMiddleware_GET(t *testing.T) {
 	})
 	handler := CorsMiddleware(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/resource", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/resource", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -52,7 +52,7 @@ func TestCorsMiddleware_POST(t *testing.T) {
 	})
 	handler := CorsMiddleware(next)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/resource", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/resource", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 

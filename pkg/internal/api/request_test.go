@@ -184,7 +184,7 @@ func TestDoRequest_WithContextHeaders(t *testing.T) {
 }
 
 func TestDoRequest_InvalidURL(t *testing.T) {
-	_, err := DoRequest(
+	resp, err := DoRequest(
 		context.Background(),
 		&http.Client{},
 		"://invalid-url",
@@ -194,5 +194,8 @@ func TestDoRequest_InvalidURL(t *testing.T) {
 		"",
 		nil,
 	)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	assert.Error(t, err)
 }

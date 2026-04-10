@@ -24,7 +24,7 @@ func TestExtractBearerToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 			if tt.header != "" {
 				r.Header.Set("Authorization", tt.header)
 			}
@@ -46,7 +46,7 @@ func TestJWT_ServerNotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/unknown/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/unknown/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	assert.True(t, called)
@@ -65,7 +65,7 @@ func TestJWT_NoOAuth2_WithToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	req.Header.Set("Authorization", "Bearer my-token")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -85,7 +85,7 @@ func TestJWT_NoOAuth2_NoToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	assert.True(t, called)
@@ -102,7 +102,7 @@ func TestJWT_WithOAuth2_NoToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	assert.Equal(t, http.StatusUnauthorized, rw.Code)
@@ -121,7 +121,7 @@ func TestJWT_WithOAuth2_WithToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
@@ -139,7 +139,7 @@ func TestJWT_WithOAuth2_XForwardedProto(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/{server_name}/mcp", JWT(servers, "server_name")(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/test/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)

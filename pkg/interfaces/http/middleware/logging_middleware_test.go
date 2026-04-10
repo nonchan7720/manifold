@@ -16,7 +16,7 @@ func TestLogging_OK(t *testing.T) {
 	})
 	handler := Logging(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/test/path", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/path", nil)
 	req.Header.Set("X-Request-Id", "req-123")
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
@@ -31,7 +31,7 @@ func TestLogging_NotFound(t *testing.T) {
 	})
 	handler := Logging(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/missing", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
@@ -44,7 +44,7 @@ func TestLogging_WithUserAgent(t *testing.T) {
 	})
 	handler := Logging(next)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/resource", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/resource", nil)
 	req.Header.Set("User-Agent", "TestAgent/1.0\ninjection")
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)

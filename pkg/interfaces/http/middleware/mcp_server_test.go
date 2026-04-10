@@ -24,7 +24,7 @@ func TestMCPServerApp_ServerNotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{server_name}/mcp", m(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/unknown/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/unknown/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -46,7 +46,7 @@ func TestMCPServerApp_ServerFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{server_name}/mcp", m(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/myserver/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/myserver/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
@@ -70,7 +70,7 @@ func TestMCPServerApp_HeaderExtraction(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{server_name}/mcp", m(next))
 
-	req := httptest.NewRequest(http.MethodGet, "/svc/mcp", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/svc/mcp", nil)
 	// プレフィックス "x-svc-" を持つヘッダーを小文字キーで直接設定（HTTP/2スタイル）
 	req.Header["x-svc-tenant-id"] = []string{"tenant-abc"}
 	req.Header["x-svc-region"] = []string{"us-east-1"}
