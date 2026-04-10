@@ -1,6 +1,6 @@
 module github.com/nonchan7720/manifold
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/getkin/kin-openapi v0.135.0

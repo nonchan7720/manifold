@@ -1,0 +1,173 @@
+name: Release please
+
+on:
+  push:
+    branches:
+      - main
+      - release/v[0-9]* # Something like release/v1, release/v1.0 release/v1.0.0
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  packages: write
+
+env:
+  IMAGE_NAME: manifold
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.releases_created }}
+      all: ${{ toJSON(steps.release.outputs) }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Setup app token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        id: generate-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_PEM }}
+          owner: ${{ github.repository_owner }}
+      - name: Run release-please
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        id: release
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          config-file: release-please/config.json
+          manifest-file: release-please/manifest.json
+          target-branch: ${{ github.ref_name }}
+  set-tag-name:
+    needs: release-please
+    runs-on: ubuntu-slim
+    outputs:
+      tag: ${{ steps.output_tag.outputs.tag }}
+    env:
+      IS_RELEASED: ${{ needs.release-please.outputs.release_created }}
+    steps:
+      - name: tag name to release tag name
+        if: env.IS_RELEASED == 'true'
+        run: |
+          echo "VERSION=${{ needs.release-please.outputs.tag_name }}" >> "$GITHUB_ENV"
+      - name: tag name to release tag name
+        if: env.IS_RELEASED != 'true'
+        run: |
+          echo "VERSION=${{ github.sha }}" >> "$GITHUB_ENV"
+      - name: output release tag name
+        id: output_tag
+        run: |
+          echo "tag=${{ env.VERSION }}" >> "$GITHUB_OUTPUT"
+
+  docker-build:
+    needs:
+      - release-please
+      - set-tag-name
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    env:
+      IS_RELEASED: ${{ needs.release-please.outputs.release_created }}
+      VERSION: ${{ needs.set-tag-name.outputs.tag }}
+      PLATFORM: ${{ matrix.platform == 'linux/amd64' && 'amd64' || matrix.platform == 'linux/arm64' && 'arm64' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push to image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.PLATFORM }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ env.PLATFORM }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ env.PLATFORM }}
+  combine-multi-arch-image:
+    needs:
+      - docker-build
+      - set-tag-name
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.set-tag-name.outputs.tag }}
+    steps:
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: Enable buildx
+        shell: bash
+        run: docker buildx install
+      - name: Log in ghcr
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and push multi-arch manifest to GHCR
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
+          docker buildx imagetools create \
+            -t "$IMAGE" \
+            "$IMAGE-amd64" \
+            "$IMAGE-arm64"
+
+  goreleaser:
+    runs-on: ubuntu-latest
+    needs: release-please
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.tag_name || github.sha }}
+      - name: Create prerelease tag
+        if: ${{ needs.release-please.outputs.release_created != 'true' }}
+        run: |
+          BASE=$(jq -r '."."' release-please/manifest.json)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          git tag "v${BASE}-dev.${SHORT_SHA}"
+      - name: Setup app token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        id: generate-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_PEM }}
+          owner: ${{ github.repository_owner }}
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run GoReleaser (Stable)
+        if: ${{ needs.release-please.outputs.release_created == 'true' }}
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: "~> 2"
+          args: release --clean --config .goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+      - name: Run GoReleaser (Prerelease)
+        if: ${{ needs.release-please.outputs.release_created != 'true' }}
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: "~> 2"
+          args: release --clean --config .goreleaser.prerelease.yaml
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
