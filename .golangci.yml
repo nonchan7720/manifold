@@ -1,0 +1,124 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - decorder
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gocritic
+    - gocyclo
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
+    - gosec
+    - makezero
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - predeclared
+    - promlinter
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - tagalign
+    - testableexamples
+    - testpackage
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+    - copyloopvar
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    govet:
+      disable:
+        - fieldalignment
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 25
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+    # custom:
+    #   # Example custom config if needed
+    
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - funlen
+          - unparam
+          - exhaustruct
+          - testpackage
+      - path: pkg/infrastructure/ent/
+        linters:
+          - gocyclo
+          - govet
+          - revive
+          - wsl
+          - stylecheck
+          - errcheck
+          - funlen
+      - path: pkg/gen/
+        linters:
+          - gocyclo
+          - govet
+          - revive
+          - wsl
+          - stylecheck
+          - errcheck
+          - funlen
+      # CLIコマンド関連はerrcheckを緩和
+      - path: pkg/cmd/minto/cmd/
+        linters:
+          - errcheck
+      # Gosecの特定ルールを除外
+      - text: "G104"
+        linters:
+          - gosec
+      - text: "G110|G112|G305"
+        linters:
+          - gosec
+      - path: pkg/infrastructure/ent/migrate/main/main.go
+        text: "G101"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - goimports
+
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+  concurrency: 4

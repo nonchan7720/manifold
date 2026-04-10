@@ -18,8 +18,8 @@ import (
 )
 
 // LoadSwaggerSpec loads a Swagger 2.x spec from a file path or URL.
-func LoadSwaggerSpec(specPath string) (*openapi2.T, error) {
-	data, err := FetchSpecBytes(specPath)
+func LoadSwaggerSpec(ctx context.Context, specPath string) (*openapi2.T, error) {
+	data, err := FetchSpecBytes(ctx, specPath)
 	if err != nil {
 		return nil, err
 	}
@@ -140,38 +140,46 @@ func mergeSwaggerParams(operation *openapi2.Operation, pathItemParams []*openapi
 	return result
 }
 
-// extract_parameters_swagger extracts parameter names from a Swagger 2.x operation.
+// extractParametersSwagger extracts parameter names from a Swagger 2.x operation.
 // Path-level parameters are merged with operation-level (operation wins on conflict).
-func extract_parameters_swagger(operation *openapi2.Operation, pathItemParams []*openapi2.Parameter, spec *openapi2.T) (path_params, query_params, body_params, form_params []string, is_multipart bool) {
-	path_params = []string{}
-	query_params = []string{}
-	body_params = []string{}
-	form_params = []string{}
-	is_multipart = false
+func extractParametersSwagger(operation *openapi2.Operation, pathItemParams []*openapi2.Parameter, spec *openapi2.T) extractParameter {
+	var (
+		pathParams  = []string{}
+		queryParams = []string{}
+		bodyParams  = []string{}
+		formParams  = []string{}
+		isMultipart = false
+	)
 
 	merged := mergeSwaggerParams(operation, pathItemParams, spec)
 	for _, p := range merged {
 		switch p.In {
 		case "path":
-			path_params = append(path_params, p.Name)
+			pathParams = append(pathParams, p.Name)
 		case "query":
-			query_params = append(query_params, p.Name)
+			queryParams = append(queryParams, p.Name)
 		case "body":
-			body_params = append(body_params, p.Name)
+			bodyParams = append(bodyParams, p.Name)
 		case "formData":
-			form_params = append(form_params, p.Name)
+			formParams = append(formParams, p.Name)
 			// type: file requires multipart/form-data
 			if p.Type != nil && p.Type.Is("file") {
-				is_multipart = true
+				isMultipart = true
 			}
 		}
 	}
-	return
+	return extractParameter{
+		pathParams:  pathParams,
+		queryParams: queryParams,
+		bodyParams:  bodyParams,
+		formParams:  formParams,
+		isMultipart: isMultipart,
+	}
 }
 
-// describe_schema_fields_swagger recursively builds a human-readable field summary from a
+// describeSchemaFieldsSwagger recursively builds a human-readable field summary from a
 // Swagger 2.x schema. $refs are resolved via spec.Definitions.
-func describe_schema_fields_swagger(schema *openapi2.Schema, spec *openapi2.T) string {
+func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) string { //nolint: gocyclo
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
@@ -219,13 +227,13 @@ func describe_schema_fields_swagger(schema *openapi2.Schema, spec *openapi2.T) s
 		}
 
 		if typ == "object" {
-			if nested := describe_schema_fields_swagger(prop, spec); nested != "" {
+			if nested := describeSchemaFieldsSwagger(prop, spec); nested != "" {
 				parts = append(parts, fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested))
 				continue
 			}
 		}
 
-		if typ == "array" && prop.Items != nil {
+		if typ == "array" && prop.Items != nil { //nolint: nestif
 			itemSchema := resolveSwaggerSchemaRef(prop.Items, spec)
 			if itemSchema != nil {
 				itemType := schemaTypeStr(itemSchema.Type)
@@ -233,7 +241,7 @@ func describe_schema_fields_swagger(schema *openapi2.Schema, spec *openapi2.T) s
 					itemType = "object"
 				}
 				if itemType == "object" {
-					if nested := describe_schema_fields_swagger(itemSchema, spec); nested != "" {
+					if nested := describeSchemaFieldsSwagger(itemSchema, spec); nested != "" {
 						arrayMeta := "array of object"
 						if localRequired[name] {
 							arrayMeta += ", required"
@@ -255,12 +263,12 @@ func describe_schema_fields_swagger(schema *openapi2.Schema, spec *openapi2.T) s
 	return strings.Join(parts, "; ")
 }
 
-// build_body_description_swagger constructs a detailed description for a Swagger 2.x body parameter.
-func build_body_description_swagger(base_desc string, schema *openapi2.Schema, spec *openapi2.T) string {
+// buildBodyDescriptionSwagger constructs a detailed description for a Swagger 2.x body parameter.
+func buildBodyDescriptionSwagger(base_desc string, schema *openapi2.Schema, spec *openapi2.T) string {
 	if base_desc == "" {
 		base_desc = "Request body"
 	}
-	fields := describe_schema_fields_swagger(schema, spec)
+	fields := describeSchemaFieldsSwagger(schema, spec)
 	if fields == "" {
 		return base_desc + ". Pass a JSON object."
 	}
@@ -274,7 +282,7 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 
 	merged := mergeSwaggerParams(operation, pathItemParams, spec)
 	for _, p := range merged {
-		if in := p.In; in == "body" {
+		if in := p.In; in == "body" { //nolint: nestif
 			// Body parameter: "schema" holds the full object definition.
 			var bodySchema *openapi2.Schema
 			if p.Schema != nil {
@@ -299,7 +307,7 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 				}
 				properties[p.Name] = map[string]any{
 					"type":        "object",
-					"description": build_body_description_swagger(desc, bodySchema, spec),
+					"description": buildBodyDescriptionSwagger(desc, bodySchema, spec),
 					"properties":  bodyProps,
 				}
 			} else {
@@ -333,7 +341,7 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 }
 
 // CreateToolFunctionSwagger creates a tool function for a Swagger 2.x operation.
-func CreateToolFunctionSwagger(
+func CreateToolFunctionSwagger( //nolint: gocyclo
 	path string,
 	method string,
 	operation *openapi2.Operation,
@@ -346,7 +354,7 @@ func CreateToolFunctionSwagger(
 		headers = map[string]string{}
 	}
 
-	path_params, query_params, body_params, form_params, is_multipart := extract_parameters_swagger(operation, pathItemParams, spec)
+	extractParameter := extractParametersSwagger(operation, pathItemParams, spec)
 	original_method := strings.ToLower(method)
 
 	tool_function := func(ctx context.Context, input map[string]any) (string, error) {
@@ -359,7 +367,7 @@ func CreateToolFunctionSwagger(
 
 		_url := base_url + path
 
-		for _, param_name := range path_params {
+		for _, param_name := range extractParameter.pathParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
 				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
@@ -372,7 +380,7 @@ func CreateToolFunctionSwagger(
 		}
 
 		params := map[string]any{}
-		for _, param_name := range query_params {
+		for _, param_name := range extractParameter.queryParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
 				params[param_name] = param_value
@@ -395,23 +403,23 @@ func CreateToolFunctionSwagger(
 		var bodyBytes []byte
 		var bodyContentType string
 
-		if len(form_params) > 0 {
-			if is_multipart {
+		if len(extractParameter.formParams) > 0 { //nolint: nestif
+			if extractParameter.isMultipart {
 				var buf bytes.Buffer
 				writer := multipart.NewWriter(&buf)
-				for _, param_name := range form_params {
+				for _, param_name := range extractParameter.formParams {
 					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
 						if err := writer.WriteField(param_name, fmt.Sprintf("%v", v)); err != nil {
 							return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
 						}
 					}
 				}
-				writer.Close() // nolint: errcheck
+				writer.Close() //nolint: errcheck
 				bodyBytes = buf.Bytes()
 				bodyContentType = writer.FormDataContentType()
 			} else {
 				formValues := url.Values{}
-				for _, param_name := range form_params {
+				for _, param_name := range extractParameter.formParams {
 					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
 						formValues.Set(param_name, fmt.Sprintf("%v", v))
 					}
@@ -419,7 +427,7 @@ func CreateToolFunctionSwagger(
 				bodyBytes = []byte(formValues.Encode())
 				bodyContentType = "application/x-www-form-urlencoded"
 			}
-		} else if len(body_params) > 0 {
+		} else if len(extractParameter.bodyParams) > 0 {
 			isEmpty := func(v any) bool {
 				if v == nil {
 					return true
@@ -435,7 +443,7 @@ func CreateToolFunctionSwagger(
 
 			body_value := input["body"]
 			if isEmpty(body_value) {
-				for _, param_name := range body_params {
+				for _, param_name := range extractParameter.bodyParams {
 					bv := input[param_name]
 					if !isEmpty(bv) {
 						body_value = bv
@@ -485,7 +493,7 @@ func CreateToolFunctionSwagger(
 		if err != nil {
 			return "", fmt.Errorf("error making request: %w", err)
 		}
-		defer response.Body.Close() // nolint: errcheck
+		defer response.Body.Close() //nolint: errcheck
 
 		respBody, err := io.ReadAll(response.Body)
 		if err != nil {

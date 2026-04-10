@@ -15,7 +15,7 @@ func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod st
 	if withBody && len(bodyBytes) > 0 {
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
-	req, reqErr := http.NewRequest(strings.ToUpper(httpMethod), finalURL, bodyReader)
+	req, reqErr := http.NewRequestWithContext(ctx, strings.ToUpper(httpMethod), finalURL, bodyReader)
 	if reqErr != nil {
 		return nil, reqErr
 	}

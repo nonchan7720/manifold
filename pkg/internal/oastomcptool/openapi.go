@@ -57,14 +57,18 @@ func sanitize_path_parameter_value(param_value any, param_name string) (string, 
 }
 
 // FetchSpecBytes fetches spec bytes from a file path or URL.
-func FetchSpecBytes(specPath string) ([]byte, error) {
+func FetchSpecBytes(ctx context.Context, specPath string) ([]byte, error) {
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
 		client := getHttpClient()
-		r, err := client.Get(specPath)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, specPath, nil)
 		if err != nil {
 			return nil, err
 		}
-		defer r.Body.Close() // nolint: errcheck
+		r, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer r.Body.Close() //nolint: errcheck
 		if r.StatusCode >= 400 {
 			return nil, fmt.Errorf("HTTP error: %d %s", r.StatusCode, r.Status)
 		}
@@ -73,12 +77,12 @@ func FetchSpecBytes(specPath string) ([]byte, error) {
 	if _, err := os.Stat(specPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("OpenAPI spec not found at %s", specPath)
 	}
-	return os.ReadFile(specPath)
+	return os.ReadFile(specPath) //nolint: gosec
 }
 
 // LoadOpenapiSpec loads spec as raw map (Deprecated: use LoadOpenAPI3Spec or LoadSwaggerSpec).
-func LoadOpenapiSpec(filepath string) (map[string]any, error) {
-	data, err := FetchSpecBytes(filepath)
+func LoadOpenapiSpec(ctx context.Context, filepath string) (map[string]any, error) {
+	data, err := FetchSpecBytes(ctx, filepath)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +110,7 @@ func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 // GetBaseUrl extracts base URL from raw OpenAPI spec map.
 func GetBaseUrl(spec map[string]any, spec_path string) string {
 	// OpenAPI 3.x
-	if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 {
+	if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 { //nolint: nestif
 		if server, ok := servers[0].(map[string]any); ok {
 			if server_url, ok := server["url"].(string); ok {
 				if strings.HasPrefix(server_url, "/") && spec_path != "" {
@@ -146,7 +150,7 @@ func GetBaseUrl(spec map[string]any, spec_path string) string {
 
 // GetBaseUrlFromOpenAPI3 extracts base URL from an OpenAPI 3.x typed spec.
 func GetBaseUrlFromOpenAPI3(spec *openapi3.T, specPath string) string {
-	if len(spec.Servers) > 0 {
+	if len(spec.Servers) > 0 { //nolint: nestif
 		serverURL := spec.Servers[0].URL
 		if strings.HasPrefix(serverURL, "/") && specPath != "" {
 			if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
@@ -199,24 +203,33 @@ func schemaTypeStr(t *openapi3.Types) string {
 	return (*t)[0]
 }
 
-// extract_parameters extracts parameter names from an OpenAPI 3.x operation.
-// The Loader has already resolved all $refs, so paramRef.Value is always populated.
-func extract_parameters(operation *openapi3.Operation) (path_params, query_params, body_params, form_params []string, is_multipart bool) {
-	path_params = []string{}
-	query_params = []string{}
-	body_params = []string{}
-	form_params = []string{}
-	is_multipart = false
+type extractParameter struct {
+	pathParams  []string
+	queryParams []string
+	bodyParams  []string
+	formParams  []string
+	isMultipart bool
+}
+
+// extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
+func extractParameters(operation *openapi3.Operation) extractParameter { //nolint: gocyclo
+	var (
+		pathParams  = []string{}
+		queryParams = []string{}
+		bodyParams  = []string{}
+		formParams  = []string{}
+		isMultipart = false
+	)
 
 	for _, paramRef := range operation.Parameters {
 		p := paramRef.Value
 		switch p.In {
 		case "path":
-			path_params = append(path_params, p.Name)
+			pathParams = append(pathParams, p.Name)
 		case "query":
-			query_params = append(query_params, p.Name)
+			queryParams = append(queryParams, p.Name)
 		case "body":
-			body_params = append(body_params, p.Name)
+			bodyParams = append(bodyParams, p.Name)
 		}
 	}
 
@@ -224,31 +237,36 @@ func extract_parameters(operation *openapi3.Operation) (path_params, query_param
 		content := operation.RequestBody.Value.Content
 		switch {
 		case content["application/json"] != nil:
-			body_params = append(body_params, "body")
+			bodyParams = append(bodyParams, "body")
 		case content["application/x-www-form-urlencoded"] != nil:
 			mt := content["application/x-www-form-urlencoded"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
 				for name := range mt.Schema.Value.Properties {
-					form_params = append(form_params, name)
+					formParams = append(formParams, name)
 				}
 			}
 		case content["multipart/form-data"] != nil:
-			is_multipart = true
+			isMultipart = true
 			mt := content["multipart/form-data"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
 				for name := range mt.Schema.Value.Properties {
-					form_params = append(form_params, name)
+					formParams = append(formParams, name)
 				}
 			}
 		}
 	}
-
-	return
+	return extractParameter{
+		pathParams:  pathParams,
+		queryParams: queryParams,
+		bodyParams:  bodyParams,
+		formParams:  formParams,
+		isMultipart: isMultipart,
+	}
 }
 
 // describe_schema_fields_openapi recursively builds a human-readable field summary from an
 // OpenAPI 3.x schema. Since Loader auto-resolves $refs, propRef.Value is always populated.
-func describe_schema_fields_openapi(schema *openapi3.Schema) string {
+func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: gocyclo
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
@@ -302,7 +320,7 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string {
 			}
 		}
 
-		if typ == "array" && prop.Items != nil && prop.Items.Value != nil {
+		if typ == "array" && prop.Items != nil && prop.Items.Value != nil { //nolint: nestif
 			itemSchema := prop.Items.Value
 			itemType := schemaTypeStr(itemSchema.Type)
 			if itemType == "" {
@@ -343,7 +361,7 @@ func build_body_description_openapi(base_desc string, schema *openapi3.Schema) s
 }
 
 // BuildInputSchema builds MCP input schema from an OpenAPI 3.x operation.
-func BuildInputSchema(operation *openapi3.Operation) map[string]any {
+func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: gocyclo
 	properties := map[string]any{}
 	required := []string{}
 
@@ -364,7 +382,7 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any {
 		}
 	}
 
-	if operation.RequestBody != nil && operation.RequestBody.Value != nil {
+	if operation.RequestBody != nil && operation.RequestBody.Value != nil { //nolint: nestif
 		rb := operation.RequestBody.Value
 		baseDesc := rb.Description
 		if baseDesc == "" {
@@ -439,7 +457,7 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any {
 }
 
 // CreateToolFunction creates a tool function for an OpenAPI 3.x operation.
-func CreateToolFunction(
+func CreateToolFunction( //nolint: gocyclo
 	path string,
 	method string,
 	operation *openapi3.Operation,
@@ -450,7 +468,7 @@ func CreateToolFunction(
 		headers = map[string]string{}
 	}
 
-	path_params, query_params, body_params, form_params, is_multipart := extract_parameters(operation)
+	extractParameter := extractParameters(operation)
 	original_method := strings.ToLower(method)
 
 	tool_function := func(ctx context.Context, input map[string]any) (string, error) {
@@ -463,7 +481,7 @@ func CreateToolFunction(
 
 		_url := base_url + path
 
-		for _, param_name := range path_params {
+		for _, param_name := range extractParameter.pathParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
 				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
@@ -476,7 +494,7 @@ func CreateToolFunction(
 		}
 
 		params := map[string]any{}
-		for _, param_name := range query_params {
+		for _, param_name := range extractParameter.queryParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
 				params[param_name] = param_value
@@ -499,23 +517,23 @@ func CreateToolFunction(
 		var bodyBytes []byte
 		var bodyContentType string
 
-		if len(form_params) > 0 {
-			if is_multipart {
+		if len(extractParameter.formParams) > 0 { //nolint: nestif
+			if extractParameter.isMultipart {
 				var buf bytes.Buffer
 				writer := multipart.NewWriter(&buf)
-				for _, param_name := range form_params {
+				for _, param_name := range extractParameter.formParams {
 					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
 						if err := writer.WriteField(param_name, fmt.Sprintf("%v", v)); err != nil {
 							return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
 						}
 					}
 				}
-				writer.Close() // nolint: errcheck
+				writer.Close() //nolint: errcheck
 				bodyBytes = buf.Bytes()
 				bodyContentType = writer.FormDataContentType()
 			} else {
 				formValues := url.Values{}
-				for _, param_name := range form_params {
+				for _, param_name := range extractParameter.formParams {
 					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
 						formValues.Set(param_name, fmt.Sprintf("%v", v))
 					}
@@ -523,7 +541,7 @@ func CreateToolFunction(
 				bodyBytes = []byte(formValues.Encode())
 				bodyContentType = "application/x-www-form-urlencoded"
 			}
-		} else if len(body_params) > 0 {
+		} else if len(extractParameter.bodyParams) > 0 {
 			isEmpty := func(v any) bool {
 				if v == nil {
 					return true
@@ -539,7 +557,7 @@ func CreateToolFunction(
 
 			body_value := input["body"]
 			if isEmpty(body_value) {
-				for _, param_name := range body_params {
+				for _, param_name := range extractParameter.bodyParams {
 					bv := input[param_name]
 					if !isEmpty(bv) {
 						body_value = bv
@@ -589,7 +607,7 @@ func CreateToolFunction(
 		if err != nil {
 			return "", fmt.Errorf("error making request: %w", err)
 		}
-		defer response.Body.Close() // nolint: errcheck
+		defer response.Body.Close() //nolint: errcheck
 
 		respBody, err := io.ReadAll(response.Body)
 		if err != nil {
