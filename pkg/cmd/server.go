@@ -10,6 +10,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	httphandler "github.com/nonchan7720/manifold/pkg/interfaces/http"
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
@@ -27,12 +29,13 @@ func newGatewayCmd() *cobra.Command {
 }
 
 func runGatewayServer(ctx context.Context) error {
-	redisClient, err := redis.NewClient(ctx, globalConfig.Redis)
+	storeClient, err := newStoreClient(ctx)
 	if err != nil {
 		return err
 	}
+	defer storeClient.Close()
 
-	authHandler := httphandler.NewAuthHandler(redisClient, globalConfig.MCPServer)
+	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer)
 
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer)
@@ -80,6 +83,20 @@ func runGatewayServer(ctx context.Context) error {
 		Handler: middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux))),
 	}
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
+}
+
+// newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。
+// sqlite.path が設定されている場合はSQLiteを使用し、それ以外はRedisを使用する。
+func newStoreClient(ctx context.Context) (store.Client, error) {
+	if globalConfig.SQLite.Path != "" {
+		c, err := sqlite.NewClient(ctx, globalConfig.SQLite.Path)
+		if err != nil {
+			return nil, err
+		}
+		c.StartCleanup(ctx, 5*time.Minute)
+		return c, nil
+	}
+	return redis.NewClient(ctx, globalConfig.Redis)
 }
 
 // runServer starts an HTTP server and handles graceful shutdown.

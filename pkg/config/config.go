@@ -4,7 +4,8 @@ type Config struct {
 	Gateway   Gateway `mapstructure:"gateway"`
 	MCPServer Servers `mapstructure:"mcpServers"`
 
-	Redis RedisConfig `mapstructure:"redis"`
+	Redis  RedisConfig  `mapstructure:"redis"`
+	SQLite SQLiteConfig `mapstructure:"sqlite"`
 }
 
 type Gateway struct {
