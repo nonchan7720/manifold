@@ -1,0 +1,19 @@
+gateway:
+  port: 9999
+  # key: tls/key.pem
+  # cert: tls/cert.pem
+
+mcpServers:
+  minto:
+    transport: http
+    url: http://localhost:8080/mcp
+
+redis:
+  url: ${REDIS_URL}
+  addrs: [ "${REDIS_ADDRS:-localhost:6379}" ]
+  user: ${REDIS_USER}
+  password: ${REDIS_PASSWORD}
+  db: ${REDIS_DB:-0}
+  master_name: ${REDIS_MASTER_NAME}
+  tls: ${REDIS_TLS:-false}
+  cluster_mode: ${REDIS_CLUSTER_MODE:-false}
