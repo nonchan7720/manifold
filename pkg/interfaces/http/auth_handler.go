@@ -516,7 +516,7 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		regResp, err := oauthex.RegisterClient(ctx, authMeta.RegistrationEndpoint,
 			&oauthex.ClientRegistrationMetadata{
 				RedirectURIs: []string{callbackURL},
-				ClientName:   "MCP Gateway",
+				ClientName:   "manifold",
 				GrantTypes:   []string{"authorization_code"},
 			}, nil)
 		if err != nil {
