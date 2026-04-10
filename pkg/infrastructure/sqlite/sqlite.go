@@ -44,9 +44,10 @@ func NewClient(ctx context.Context, path string) (*Client, error) {
 }
 
 // Set はキーに値をTTL付きで保存する。
-func (c *Client) Set(_ context.Context, key string, value any, expiration time.Duration) error {
+func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
 	expiresAt := time.Now().Add(expiration).Unix()
-	_, err := c.db.Exec(
+	_, err := c.db.ExecContext(
+		ctx,
 		`INSERT INTO kv_store (key, value, expires_at) VALUES (?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
 		key, fmt.Sprintf("%v", value), expiresAt,
@@ -58,9 +59,10 @@ func (c *Client) Set(_ context.Context, key string, value any, expiration time.D
 }
 
 // Get はキーに対応する値を返す。キーが存在しないか期限切れの場合はエラーを返す。
-func (c *Client) Get(_ context.Context, key string) (string, error) {
+func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	var value string
-	err := c.db.QueryRow(
+	err := c.db.QueryRowContext(
+		ctx,
 		`SELECT value FROM kv_store WHERE key = ? AND expires_at > ?`,
 		key, time.Now().Unix(),
 	).Scan(&value)
@@ -74,8 +76,8 @@ func (c *Client) Get(_ context.Context, key string) (string, error) {
 }
 
 // Del はキーを削除する。
-func (c *Client) Del(_ context.Context, key string) error {
-	_, err := c.db.Exec(`DELETE FROM kv_store WHERE key = ?`, key)
+func (c *Client) Del(ctx context.Context, key string) error {
+	_, err := c.db.ExecContext(ctx, `DELETE FROM kv_store WHERE key = ?`, key)
 	if err != nil {
 		return fmt.Errorf("sqlite Del: %w", err)
 	}
@@ -83,8 +85,8 @@ func (c *Client) Del(_ context.Context, key string) error {
 }
 
 // DeleteExpired は期限切れのレコードをすべて削除する。
-func (c *Client) DeleteExpired(_ context.Context) error {
-	_, err := c.db.Exec(`DELETE FROM kv_store WHERE expires_at <= ?`, time.Now().Unix())
+func (c *Client) DeleteExpired(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `DELETE FROM kv_store WHERE expires_at <= ?`, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("sqlite DeleteExpired: %w", err)
 	}
