@@ -7,6 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/version"
 )
 
 type MCPServer struct {
@@ -20,7 +21,7 @@ type MCPServer struct {
 func NewMCPServer(servers config.Servers) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
-		srv:            mcp.NewServer(&mcp.Implementation{Name: "MCP Gateway", Version: "v1.0.0"}, &mcp.ServerOptions{}),
+		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: fmt.Sprintf("v%s", version.Version)}, &mcp.ServerOptions{}),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
 	}
