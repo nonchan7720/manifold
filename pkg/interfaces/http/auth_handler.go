@@ -18,7 +18,7 @@ import (
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/nonchan7720/manifold/pkg/config"
-	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/nonchan7720/manifold/pkg/util"
 	"golang.org/x/oauth2"
@@ -62,15 +62,15 @@ type ClientRegistration struct {
 
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
-	redisClient *redis.Client
-	servers     config.Servers
-	mu          sync.RWMutex // servers への OAuth2 発見結果の書き込みを保護
+	store   store.Client
+	servers config.Servers
+	mu      sync.RWMutex // servers への OAuth2 発見結果の書き込みを保護
 }
 
-func NewAuthHandler(redisClient *redis.Client, servers config.Servers) *AuthHandler {
+func NewAuthHandler(storeClient store.Client, servers config.Servers) *AuthHandler {
 	return &AuthHandler{
-		redisClient: redisClient,
-		servers:     servers,
+		store:   storeClient,
+		servers: servers,
 	}
 }
 
@@ -177,7 +177,7 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 		TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 	}
 	regJSON, _ := json.Marshal(reg)
-	if err := h.redisClient.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
 		slog.Error("failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
@@ -252,7 +252,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 
 	sessionJSON, _ := json.Marshal(session)
-	if err := h.redisClient.Set(r.Context(), "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
+	if err := h.store.Set(r.Context(), "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
 		slog.Error("failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -288,7 +288,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	sessionJSON, err := h.redisClient.Get(r.Context(), "auth_session:"+sessionID)
+	sessionJSON, err := h.store.Get(r.Context(), "auth_session:"+sessionID)
 	if err != nil {
 		slog.Warn("session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID))) //nolint: gosec
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
@@ -296,7 +296,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	}
 	var session AuthSession
 	_ = json.Unmarshal([]byte(sessionJSON), &session)
-	_ = h.redisClient.Del(r.Context(), "auth_session:"+sessionID)
+	_ = h.store.Del(r.Context(), "auth_session:"+sessionID)
 
 	baseURL := h.getBaseURL(r)
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
@@ -318,7 +318,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 
 	tokenKey := "upstream_token:" + generateRandomString(32)
 	tokenJSON, _ := json.Marshal(upstreamToken) //nolint: gosec
-	if err := h.redisClient.Set(r.Context(), tokenKey, tokenJSON, tokenTTL); err != nil {
+	if err := h.store.Set(r.Context(), tokenKey, tokenJSON, tokenTTL); err != nil {
 		slog.Error("failed to store upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -332,7 +332,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		UpstreamTokenKey:    tokenKey,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
-	if err := h.redisClient.Set(r.Context(), "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
+	if err := h.store.Set(r.Context(), "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
 		slog.Error("failed to store auth code", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -371,7 +371,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	authCodeJSON, err := h.redisClient.Get(r.Context(), "auth_code:"+code)
+	authCodeJSON, err := h.store.Get(r.Context(), "auth_code:"+code)
 	if err != nil {
 		slog.Warn("auth code not found in redis", slog.String("code", util.SanitizeLog(code))) //nolint: gosec
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
@@ -393,9 +393,9 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	_ = h.redisClient.Del(r.Context(), "auth_code:"+code)
+	_ = h.store.Del(r.Context(), "auth_code:"+code)
 
-	tokenJSON, err := h.redisClient.Get(r.Context(), authCodeData.UpstreamTokenKey)
+	tokenJSON, err := h.store.Get(r.Context(), authCodeData.UpstreamTokenKey)
 	if err != nil {
 		slog.Error("upstream token not found in redis", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
