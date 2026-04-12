@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,24 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestClient(t *testing.T) *sqlite.Client {
+func marshalJSON(v any) ([]byte, error)   { return json.Marshal(v) }
+func unmarshalJSON(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+func newTestClient(ctx context.Context, t *testing.T) *sqlite.Client {
 	t.Helper()
-	c, err := sqlite.NewClient(context.Background(), ":memory:")
+	c, err := sqlite.NewClient(ctx, ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close() })
 	return c
 }
 
 func TestNewClient_Memory(t *testing.T) {
-	c, err := sqlite.NewClient(context.Background(), ":memory:")
+	c, err := sqlite.NewClient(t.Context(), ":memory:")
 	require.NoError(t, err)
 	require.NotNil(t, c)
 	require.NoError(t, c.Close())
 }
 
 func TestSetAndGet(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	err := c.Set(ctx, "key1", "value1", time.Minute)
 	require.NoError(t, err)
@@ -38,16 +42,17 @@ func TestSetAndGet(t *testing.T) {
 }
 
 func TestGet_NotFound(t *testing.T) {
-	c := newTestClient(t)
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
-	_, err := c.Get(context.Background(), "nonexistent")
+	_, err := c.Get(ctx, "nonexistent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key not found")
 }
 
 func TestGet_Expired(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	// 過去に期限切れになるTTLで保存
 	err := c.Set(ctx, "expiredkey", "val", -time.Second)
@@ -59,8 +64,8 @@ func TestGet_Expired(t *testing.T) {
 }
 
 func TestSet_Overwrite(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	require.NoError(t, c.Set(ctx, "k", "first", time.Minute))
 	require.NoError(t, c.Set(ctx, "k", "second", time.Minute))
@@ -71,8 +76,8 @@ func TestSet_Overwrite(t *testing.T) {
 }
 
 func TestDel(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	require.NoError(t, c.Set(ctx, "delkey", "val", time.Minute))
 	require.NoError(t, c.Del(ctx, "delkey"))
@@ -82,15 +87,16 @@ func TestDel(t *testing.T) {
 }
 
 func TestDel_NotExisting(t *testing.T) {
-	c := newTestClient(t)
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 	// 存在しないキーの削除はエラーにならない
 	err := c.Del(context.Background(), "ghost")
 	require.NoError(t, err)
 }
 
 func TestDeleteExpired(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	require.NoError(t, c.Set(ctx, "live", "val", time.Minute))
 	require.NoError(t, c.Set(ctx, "dead", "val", -time.Second))
@@ -105,9 +111,8 @@ func TestDeleteExpired(t *testing.T) {
 }
 
 func TestStartCleanup(t *testing.T) {
-	c := newTestClient(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 
 	require.NoError(t, c.Set(ctx, "cleanup_key", "val", -time.Second))
 
@@ -118,9 +123,52 @@ func TestStartCleanup(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSet_ValueTypes(t *testing.T) {
+	t.Run("string", func(t *testing.T) {
+		ctx := t.Context()
+		c := newTestClient(ctx, t)
+		require.NoError(t, c.Set(ctx, "k", "hello", time.Minute))
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+		assert.Equal(t, "hello", got)
+	})
+
+	t.Run("[]byte JSON", func(t *testing.T) {
+		ctx := t.Context()
+		c := newTestClient(ctx, t)
+		// []byte を渡した場合、数値列([123 34...])ではなく文字列として保存される
+		raw := []byte(`{"token":"abc","expires":3600}`)
+		require.NoError(t, c.Set(ctx, "k", raw, time.Minute))
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+		assert.Equal(t, string(raw), got)
+	})
+
+	t.Run("[]byte roundtrip via json.Unmarshal", func(t *testing.T) {
+		ctx := t.Context()
+		c := newTestClient(ctx, t)
+		type payload struct {
+			Token   string `json:"token"`
+			Expires int    `json:"expires"`
+		}
+		in := payload{Token: "abc", Expires: 3600}
+		raw, err := marshalJSON(in)
+		require.NoError(t, err)
+
+		require.NoError(t, c.Set(ctx, "k", raw, time.Minute))
+
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+
+		var out payload
+		require.NoError(t, unmarshalJSON([]byte(got), &out))
+		assert.Equal(t, in, out)
+	})
+}
+
 func TestImplementsStoreClient(t *testing.T) {
-	// store.Client インターフェースを満たすことをコンパイル時に保証するための型アサーション
-	c := newTestClient(t)
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
 	var _ interface {
 		Set(ctx context.Context, key string, value any, expiration time.Duration) error
 		Get(ctx context.Context, key string) (string, error)

@@ -3,12 +3,15 @@ package httphandler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -464,6 +467,186 @@ func TestGetAuthMetadata_Success(t *testing.T) {
 	meta, err := getAuthMetadata(context.Background(), srv.URL)
 	require.NoError(t, err)
 	assert.NotNil(t, meta)
+}
+
+// --- mockStore ---
+
+// mockStore はテスト用のインメモリ store.Client 実装。
+// キーごとに返す値を事前に設定できる。
+type mockStore struct {
+	data map[string]string
+}
+
+func newMockStore(data map[string]string) *mockStore {
+	return &mockStore{data: data}
+}
+
+func (m *mockStore) Set(_ context.Context, key string, value any, _ time.Duration) error {
+	switch v := value.(type) {
+	case string:
+		m.data[key] = v
+	case []byte:
+		m.data[key] = string(v)
+	default:
+		m.data[key] = fmt.Sprintf("%v", v)
+	}
+	return nil
+}
+
+func (m *mockStore) Get(_ context.Context, key string) (string, error) {
+	v, ok := m.data[key]
+	if !ok {
+		return "", fmt.Errorf("key not found: %s", key)
+	}
+	return v, nil
+}
+
+func (m *mockStore) Del(_ context.Context, key string) error {
+	delete(m.data, key)
+	return nil
+}
+
+func (m *mockStore) Close() error { return nil }
+
+var _ store.Client = (*mockStore)(nil)
+
+// --- CallbackEndpoint: json.Unmarshal エラーハンドリング ---
+
+func TestCallbackEndpoint_InvalidSessionJSON(t *testing.T) {
+	st := newMockStore(map[string]string{
+		"auth_session:validstate": "THIS IS NOT JSON",
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/testserver/auth/callback?state=validstate&code=somecode", nil)
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusInternalServerError, rw.Code)
+}
+
+// --- TokenEndpoint: json.Unmarshal エラーハンドリング ---
+
+func TestTokenEndpoint_InvalidAuthCodeJSON(t *testing.T) {
+	st := newMockStore(map[string]string{
+		"auth_code:testcode": "THIS IS NOT JSON",
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{Name: "testserver"}
+
+	body := "grant_type=authorization_code&code=testcode&code_verifier=verifier"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusInternalServerError, rw.Code)
+}
+
+func TestTokenEndpoint_InvalidUpstreamTokenJSON(t *testing.T) {
+	// auth_code は正常（PKCE検証を通過できる値）
+	verifier := generateRandomString(43)
+	challenge := generateS256Challenge(verifier)
+	authCodeData := AuthCodeData{
+		CodeChallenge:    challenge,
+		UpstreamTokenKey: "upstream_token:abc",
+	}
+	authCodeJSON, _ := json.Marshal(authCodeData)
+
+	st := newMockStore(map[string]string{
+		"auth_code:testcode": string(authCodeJSON),
+		"upstream_token:abc": "THIS IS NOT JSON",
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{Name: "testserver"}
+
+	body := fmt.Sprintf(
+		"grant_type=authorization_code&code=testcode&code_verifier=%s", verifier,
+	)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusInternalServerError, rw.Code)
+}
+
+// --- discoverOAuth2: DCR の client_secret が保存される ---
+
+func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
+	// auth server: .well-known と DCR エンドポイントを提供
+	var authServerURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		issuer := authServerURL
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"issuer":                           issuer,
+				"authorization_endpoint":           issuer + "/auth",
+				"token_endpoint":                   issuer + "/token",
+				"registration_endpoint":            issuer + "/register",
+				"response_types_supported":         []string{"code"},
+				"grant_types_supported":            []string{"authorization_code"},
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"client_id":     "dcr-client-id",
+				"client_secret": "dcr-client-secret",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSrv.Close()
+	authServerURL = authSrv.URL
+
+	// Protected Resource Metadata エンドポイント
+	var metaServerURL string
+	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"resource":              metaServerURL,
+			"authorization_servers": []string{authServerURL},
+		})
+	}))
+	defer metaSrv.Close()
+	metaServerURL = metaSrv.URL
+
+	// MCP バックエンド: 401 + resource_metadata を返す
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate",
+			fmt.Sprintf(`Bearer resource_metadata="%s"`, metaServerURL))
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mcpSrv.Close()
+
+	h := &AuthHandler{
+		servers: config.Servers{
+			"testsrv": config.Server{Name: "testsrv"},
+		},
+	}
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       mcpSrv.URL,
+	}
+
+	result, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "dcr-client-id", result.ClientID)
+	assert.Equal(t, "dcr-client-secret", result.ClientSecret)
+	assert.Equal(t, authServerURL+"/token", result.TokenURL)
+	assert.Equal(t, authServerURL+"/auth", result.AuthURL)
 }
 
 // --- RegisterRoutes ---

@@ -35,3 +35,4 @@ go.work.sum
 .env
 swagger*.json
 config-test.yaml
+/tmp/manifold.db
