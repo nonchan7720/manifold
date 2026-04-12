@@ -559,8 +559,8 @@ func TestTokenEndpoint_InvalidUpstreamTokenJSON(t *testing.T) {
 	authCodeJSON, _ := json.Marshal(authCodeData)
 
 	st := newMockStore(map[string]string{
-		"auth_code:testcode":    string(authCodeJSON),
-		"upstream_token:abc":    "THIS IS NOT JSON",
+		"auth_code:testcode": string(authCodeJSON),
+		"upstream_token:abc": "THIS IS NOT JSON",
 	})
 	h := &AuthHandler{store: st, servers: config.Servers{}}
 	srv := &config.Server{Name: "testserver"}

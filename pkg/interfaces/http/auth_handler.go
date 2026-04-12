@@ -346,7 +346,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	http.Redirect(w, r, redirectURI, http.StatusFound)
 }
 
-func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
