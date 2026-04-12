@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/nonchan7720/manifold/compare/v1.1.0...v1.1.1) (2026-04-12)
+
+
+### Bug Fixes
+
+* auth server oauth2.1 proxy ([#9](https://github.com/nonchan7720/manifold/issues/9)) ([d98e972](https://github.com/nonchan7720/manifold/commit/d98e9725f29b4bc963076ba15376e3137b1d9834))
+
 ## [1.1.0](https://github.com/nonchan7720/manifold/compare/v1.0.0...v1.1.0) (2026-04-11)
 
 
