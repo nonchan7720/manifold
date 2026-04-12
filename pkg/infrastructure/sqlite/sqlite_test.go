@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func marshalJSON(v any) ([]byte, error)          { return json.Marshal(v) }
+func unmarshalJSON(b []byte, v any) error        { return json.Unmarshal(b, v) }
 
 func newTestClient(t *testing.T) *sqlite.Client {
 	t.Helper()
@@ -106,8 +110,7 @@ func TestDeleteExpired(t *testing.T) {
 
 func TestStartCleanup(t *testing.T) {
 	c := newTestClient(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	require.NoError(t, c.Set(ctx, "cleanup_key", "val", -time.Second))
 
@@ -116,6 +119,48 @@ func TestStartCleanup(t *testing.T) {
 
 	_, err := c.Get(ctx, "cleanup_key")
 	require.Error(t, err)
+}
+
+func TestSet_ValueTypes(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("string", func(t *testing.T) {
+		c := newTestClient(t)
+		require.NoError(t, c.Set(ctx, "k", "hello", time.Minute))
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+		assert.Equal(t, "hello", got)
+	})
+
+	t.Run("[]byte JSON", func(t *testing.T) {
+		c := newTestClient(t)
+		// []byte を渡した場合、数値列([123 34...])ではなく文字列として保存される
+		raw := []byte(`{"token":"abc","expires":3600}`)
+		require.NoError(t, c.Set(ctx, "k", raw, time.Minute))
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+		assert.Equal(t, string(raw), got)
+	})
+
+	t.Run("[]byte roundtrip via json.Unmarshal", func(t *testing.T) {
+		c := newTestClient(t)
+		type payload struct {
+			Token   string `json:"token"`
+			Expires int    `json:"expires"`
+		}
+		in := payload{Token: "abc", Expires: 3600}
+		raw, err := marshalJSON(in)
+		require.NoError(t, err)
+
+		require.NoError(t, c.Set(ctx, "k", raw, time.Minute))
+
+		got, err := c.Get(ctx, "k")
+		require.NoError(t, err)
+
+		var out payload
+		require.NoError(t, unmarshalJSON([]byte(got), &out))
+		assert.Equal(t, in, out)
+	})
 }
 
 func TestImplementsStoreClient(t *testing.T) {

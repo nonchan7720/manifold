@@ -46,11 +46,20 @@ func NewClient(ctx context.Context, path string) (*Client, error) {
 // Set はキーに値をTTL付きで保存する。
 func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
 	expiresAt := time.Now().Add(expiration).Unix()
+	var strValue string
+	switch v := value.(type) {
+	case string:
+		strValue = v
+	case []byte:
+		strValue = string(v)
+	default:
+		strValue = fmt.Sprintf("%v", v)
+	}
 	_, err := c.db.ExecContext(
 		ctx,
 		`INSERT INTO kv_store (key, value, expires_at) VALUES (?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
-		key, fmt.Sprintf("%v", value), expiresAt,
+		key, strValue, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite Set: %w", err)

@@ -295,7 +295,11 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	var session AuthSession
-	_ = json.Unmarshal([]byte(sessionJSON), &session)
+	if err := json.Unmarshal([]byte(sessionJSON), &session); err != nil {
+		slog.Error("failed to unmarshal auth session", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	_ = h.store.Del(r.Context(), "auth_session:"+sessionID)
 
 	baseURL := h.getBaseURL(r)
@@ -378,7 +382,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 	var authCodeData AuthCodeData
-	_ = json.Unmarshal([]byte(authCodeJSON), &authCodeData)
+	if err := json.Unmarshal([]byte(authCodeJSON), &authCodeData); err != nil {
+		slog.Error("failed to unmarshal auth code data", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	// Verify PKCE S256
 	expectedChallenge := generateS256Challenge(codeVerifier)
@@ -402,7 +410,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 	var upstreamToken oauth2.Token
-	_ = json.Unmarshal([]byte(tokenJSON), &upstreamToken)
+	if err := json.Unmarshal([]byte(tokenJSON), &upstreamToken); err != nil {
+		slog.Error("failed to unmarshal upstream token", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	var expiresIn int64
 	if !upstreamToken.Expiry.IsZero() {
@@ -468,13 +480,24 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		return nil, err
 	}
 	// Step 2: WWW-Authenticate を解析して resource_metadata URL を取得
+	// resource_metadata がない場合は RFC 9728 に従い well-known URL にフォールバック
 	resourceMetaURL, err := getResourceMetadata(wwwAuthenticate)
 	if err != nil {
-		return nil, err
+		u, parseErr := url.Parse(srv.URL)
+		if parseErr != nil {
+			return nil, err
+		}
+		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", u.Scheme, u.Host)
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, srv.URL)
+	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
+	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
+	resourceOrigin := srv.URL
+	if u, err := url.Parse(resourceMetaURL); err == nil {
+		resourceOrigin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+	}
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin)
 	if err != nil {
 		return nil, err
 	}
@@ -485,8 +508,9 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		return nil, err
 	}
 
-	// Step 5: Dynamic Client Registration で ClientID を取得
+	// Step 5: Dynamic Client Registration で ClientID/ClientSecret を取得
 	clientID := ""
+	clientSecret := ""
 	if authMeta.RegistrationEndpoint != "" {
 		callbackURL := fmt.Sprintf("%s/%s/auth/callback", gatewayBaseURL, srv.Name)
 		regResp, err := oauthex.RegisterClient(ctx, authMeta.RegistrationEndpoint,
@@ -499,13 +523,15 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 			return nil, fmt.Errorf("dynamic client registration: %w", err)
 		}
 		clientID = regResp.ClientID
+		clientSecret = regResp.ClientSecret
 	}
 
 	oauth2cfg := &config.OAuth2{
-		ClientID: clientID,
-		AuthURL:  authMeta.AuthorizationEndpoint,
-		TokenURL: authMeta.TokenEndpoint,
-		Scopes:   authMeta.ScopesSupported,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		AuthURL:      authMeta.AuthorizationEndpoint,
+		TokenURL:     authMeta.TokenEndpoint,
+		Scopes:       authMeta.ScopesSupported,
 	}
 
 	// キャッシュに保存
