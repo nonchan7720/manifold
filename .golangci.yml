@@ -80,37 +80,11 @@ linters:
           - unparam
           - exhaustruct
           - testpackage
-      - path: pkg/infrastructure/ent/
-        linters:
-          - gocyclo
-          - govet
-          - revive
-          - wsl
-          - stylecheck
-          - errcheck
-          - funlen
-      - path: pkg/gen/
-        linters:
-          - gocyclo
-          - govet
-          - revive
-          - wsl
-          - stylecheck
-          - errcheck
-          - funlen
-      # CLIコマンド関連はerrcheckを緩和
-      - path: pkg/cmd/minto/cmd/
-        linters:
-          - errcheck
       # Gosecの特定ルールを除外
       - text: "G104"
         linters:
           - gosec
       - text: "G110|G112|G305"
-        linters:
-          - gosec
-      - path: pkg/infrastructure/ent/migrate/main/main.go
-        text: "G101"
         linters:
           - gosec
 
