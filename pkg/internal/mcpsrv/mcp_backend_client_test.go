@@ -189,7 +189,7 @@ func TestAuthValueRoundTripper_NoPrefix(t *testing.T) {
 func TestBuildTransport_StdioEmptyCommand(t *testing.T) {
 	c := &MCPBackendClient{
 		name: "testbackend",
-		cfg: config.Server{
+		cfg: &config.Server{
 			Transport: config.MCPTransportStdio,
 			Command:   "", // 空のコマンド
 		},
@@ -203,7 +203,7 @@ func TestBuildTransport_StdioEmptyCommand(t *testing.T) {
 func TestBuildTransport_UnknownTransport(t *testing.T) {
 	c := &MCPBackendClient{
 		name: "testbackend",
-		cfg: config.Server{
+		cfg: &config.Server{
 			Transport: "unknown",
 		},
 	}
@@ -216,7 +216,7 @@ func TestBuildTransport_UnknownTransport(t *testing.T) {
 func TestBuildTransport_HTTP_NoAuthValue(t *testing.T) {
 	c := &MCPBackendClient{
 		name: "testbackend",
-		cfg: config.Server{
+		cfg: &config.Server{
 			Transport: config.MCPTransportHTTP,
 			URL:       "http://backend.example.com/mcp",
 		},
@@ -230,7 +230,7 @@ func TestBuildTransport_HTTP_NoAuthValue(t *testing.T) {
 func TestBuildTransport_HTTP_WithAuthValue(t *testing.T) {
 	c := &MCPBackendClient{
 		name: "testbackend",
-		cfg: config.Server{
+		cfg: &config.Server{
 			Transport: config.MCPTransportHTTP,
 			URL:       "http://backend.example.com/mcp",
 			AuthValue: &config.AuthValue{
@@ -249,7 +249,7 @@ func TestBuildTransport_HTTP_WithAuthValue(t *testing.T) {
 func TestBuildTransport_Stdio_WithCommand(t *testing.T) {
 	c := &MCPBackendClient{
 		name: "testbackend",
-		cfg: config.Server{
+		cfg: &config.Server{
 			Transport: config.MCPTransportStdio,
 			Command:   "/bin/echo",
 			Args:      []string{"hello"},
@@ -267,7 +267,7 @@ func TestBuildTransport_Stdio_WithCommand(t *testing.T) {
 func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 	c := &MCPBackendClient{
 		name:      "test",
-		cfg:       config.Server{},
+		cfg:       &config.Server{},
 		connected: false,
 		session:   nil,
 	}

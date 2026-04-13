@@ -11,7 +11,7 @@ import (
 
 func TestNewMCPServer(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{Spec: "fixtures/petstore_oas.json"},
+		"test": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
 	s := NewMCPServer(servers)
 	require.NotNil(t, s)
@@ -22,7 +22,7 @@ func TestNewMCPServer(t *testing.T) {
 
 func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
 	servers := config.Servers{
-		"petstore": config.Server{
+		"petstore": &config.Server{
 			Spec:    "fixtures/petstore_oas.json",
 			BaseURL: "https://petstore.example.com",
 		},
@@ -38,7 +38,7 @@ func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
 
 func TestMCPServer_Init_SwaggerMode(t *testing.T) {
 	servers := config.Servers{
-		"swagger": config.Server{
+		"swagger": &config.Server{
 			Spec:    "fixtures/petstore_swagger.json",
 			BaseURL: "https://petstore.example.com",
 		},
@@ -54,7 +54,7 @@ func TestMCPServer_Init_SwaggerMode(t *testing.T) {
 
 func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 	servers := config.Servers{
-		"backend": config.Server{
+		"backend": &config.Server{
 			Transport: config.MCPTransportHTTP,
 			URL:       "http://backend.example.com/mcp",
 		},
@@ -76,7 +76,7 @@ func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 
 func TestMCPServer_Init_InvalidSpec(t *testing.T) {
 	servers := config.Servers{
-		"invalid": config.Server{
+		"invalid": &config.Server{
 			Spec: "fixtures/nonexistent.json",
 		},
 	}
@@ -107,7 +107,7 @@ func TestMCPServer_BackendClient_NotFound(t *testing.T) {
 
 func TestMCPServer_Close_NoBackends(t *testing.T) {
 	servers := config.Servers{
-		"openapi": config.Server{Spec: "fixtures/petstore_oas.json"},
+		"openapi": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
 	s := NewMCPServer(servers)
 	err := s.Init(context.Background())
@@ -121,7 +121,7 @@ func TestMCPServer_Close_NoBackends(t *testing.T) {
 
 func TestMCPServer_Close_WithBackend(t *testing.T) {
 	servers := config.Servers{
-		"backend": config.Server{
+		"backend": &config.Server{
 			Transport: config.MCPTransportHTTP,
 			URL:       "http://backend.example.com/mcp",
 		},
@@ -138,15 +138,15 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 
 func TestMCPServer_Init_MultipleServers(t *testing.T) {
 	servers := config.Servers{
-		"oas": config.Server{
+		"oas": &config.Server{
 			Spec:    "fixtures/petstore_oas.json",
 			BaseURL: "https://petstore1.example.com",
 		},
-		"swagger": config.Server{
+		"swagger": &config.Server{
 			Spec:    "fixtures/petstore_swagger.json",
 			BaseURL: "https://petstore2.example.com",
 		},
-		"mcp": config.Server{
+		"mcp": &config.Server{
 			Transport: config.MCPTransportHTTP,
 			URL:       "http://mcp.example.com/mcp",
 		},

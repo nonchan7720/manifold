@@ -20,7 +20,7 @@ import (
 // 遅延接続方式を採用し、最初のリクエスト時（認証トークン入りコンテキスト）に接続する。
 type MCPBackendClient struct {
 	name string
-	cfg  config.Server
+	cfg  *config.Server
 	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
 
 	mu        sync.Mutex

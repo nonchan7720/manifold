@@ -9,9 +9,11 @@ mcpServers:
   minto:
     transport: http
     url: http://localhost:8080/mcp
+    description: テスト
   notion:
     transport: http
     url: https://mcp.notion.com/mcp
+    description: notion mcpサーバー
 
 sqlite:
   path: ./tmp/manifold.db

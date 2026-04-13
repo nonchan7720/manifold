@@ -216,7 +216,7 @@ func TestWrapMCPServer_NoServerContext(t *testing.T) {
 // --- NewAuthHandler ---
 
 func TestNewAuthHandler(t *testing.T) {
-	servers := config.Servers{"test": config.Server{}}
+	servers := config.Servers{"test": &config.Server{}}
 	h := NewAuthHandler(nil, servers)
 	require.NotNil(t, h)
 }
@@ -228,7 +228,9 @@ func TestRegisterClientEndpoint_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader("invalid json"))
 	rw := httptest.NewRecorder()
 
-	h.RegisterClientEndpoint(rw, req)
+	h.RegisterClientEndpoint(rw, req, &config.Server{
+		Name: "test",
+	})
 
 	assert.Equal(t, http.StatusBadRequest, rw.Code)
 	var body map[string]string
@@ -243,7 +245,9 @@ func TestRegisterClientEndpoint_NoRedirectURIs(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
 	rw := httptest.NewRecorder()
 
-	h.RegisterClientEndpoint(rw, req)
+	h.RegisterClientEndpoint(rw, req, &config.Server{
+		Name: "test",
+	})
 
 	assert.Equal(t, http.StatusBadRequest, rw.Code)
 	var body map[string]string
@@ -261,7 +265,7 @@ func TestLoginEndpoint_NilServer(t *testing.T) {
 
 	h.LoginEndpoint(rw, req, nil)
 
-	assert.Equal(t, http.StatusNotFound, rw.Code)
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
 }
 
 func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
@@ -276,7 +280,7 @@ func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
 
 	h.LoginEndpoint(rw, req, srv)
 
-	assert.Equal(t, http.StatusInternalServerError, rw.Code)
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
 }
 
 func TestLoginEndpoint_MissingPKCE(t *testing.T) {
@@ -396,7 +400,7 @@ func TestDiscoverOAuth2_CacheHit(t *testing.T) {
 		TokenURL: "https://auth.example.com/token",
 	}
 	servers := config.Servers{
-		"myserver": config.Server{
+		"myserver": &config.Server{
 			Name:   "myserver",
 			OAuth2: cachedOAuth2,
 		},
@@ -633,7 +637,7 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 
 	h := &AuthHandler{
 		servers: config.Servers{
-			"testsrv": config.Server{Name: "testsrv"},
+			"testsrv": &config.Server{Name: "testsrv"},
 		},
 	}
 	srv := &config.Server{
@@ -688,7 +692,9 @@ func TestRegisterClientEndpoint_InvalidRedirectURIScheme(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
 	rw := httptest.NewRecorder()
 
-	h.RegisterClientEndpoint(rw, req)
+	h.RegisterClientEndpoint(rw, req, &config.Server{
+		Name: "test",
+	})
 
 	assert.Equal(t, http.StatusBadRequest, rw.Code)
 	var body map[string]string
@@ -704,7 +710,9 @@ func TestRegisterClientEndpoint_LocalhostAllowed(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
 	rw := httptest.NewRecorder()
 
-	h.RegisterClientEndpoint(rw, req)
+	h.RegisterClientEndpoint(rw, req, &config.Server{
+		Name: "test",
+	})
 
 	assert.Equal(t, http.StatusCreated, rw.Code)
 }

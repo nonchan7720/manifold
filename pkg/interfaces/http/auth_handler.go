@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ type AuthSession struct {
 	OAuth2Scopes       []string `json:"oauth2_scopes,omitempty"`
 	// 上流認可サーバーへのリクエストで使用した PKCE code_verifier
 	UpstreamCodeVerifier string `json:"upstream_code_verifier,omitempty"`
+	MCPServerName        string `json:"mcp_server_name"`
 }
 
 // AuthCodeData 認証コードとトークンの交換に関するデータを保持。
@@ -53,6 +55,7 @@ type AuthCodeData struct {
 	CodeChallengeMethod string `json:"code_challenge_method"`
 	Resource            string `json:"resource,omitempty"`
 	UpstreamTokenKey    string `json:"upstream_token_key"` // アップストリーム・トークンのRedisキー
+	MCPServerName       string `json:"mcp_server_name"`
 }
 
 // ClientRegistration 動的に登録された OAuth 2.0 クライアント（RFC 7591）を保持。
@@ -64,6 +67,11 @@ type ClientRegistration struct {
 	ResponseTypes           []string `json:"response_types"`
 	ClientName              string   `json:"client_name,omitempty"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+}
+
+type StoreClientRegistration struct {
+	ClientRegistration
+	MCPServerName string `json:"mcp_server_name"`
 }
 
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
@@ -81,6 +89,14 @@ func WithEncryptKey(key []byte) AuthHandlerOption {
 	return func(h *AuthHandler) {
 		h.tokenEncKey = slices.Clone(key)
 	}
+}
+
+func WithEncryptKeyByBase64(key string) AuthHandlerOption {
+	v, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		panic(err)
+	}
+	return WithEncryptKey(v)
 }
 
 func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...AuthHandlerOption) *AuthHandler {
@@ -105,10 +121,14 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, 
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-protected-resource/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.OauthProtectedResource)))
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-authorization-server/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.MetadataEndpoint)))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/login", pathServerName), middleware(wrapMCPServer(h.LoginEndpoint)))
+	mux.HandleFunc("GET /authorize", wrapMCPServer(h.LoginEndpoint))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/callback", pathServerName), middleware(wrapMCPServer(h.CallbackEndpoint)))
+	mux.HandleFunc("GET /callback", wrapMCPServer(h.CallbackEndpoint))
 	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/token", pathServerName), middleware(wrapMCPServer(h.TokenEndpoint)))
-	// Dynamic Client Registration (RFC 7591)
-	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/clients", pathServerName), h.RegisterClientEndpoint)
+	mux.HandleFunc("POST /token", wrapMCPServer(h.TokenEndpoint))
+	// // Dynamic Client Registration (RFC 7591)
+	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/clients", pathServerName), middleware(wrapMCPServer(h.RegisterClientEndpoint)))
+	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
 }
 
 func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config.Server)) http.HandlerFunc {
@@ -160,7 +180,7 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 }
 
 // RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
-func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -212,7 +232,95 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 		ClientName:              req.ClientName,
 		TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 	}
-	regJSON, _ := json.Marshal(reg)
+	storeReg := StoreClientRegistration{
+		ClientRegistration: reg,
+		MCPServerName:      srv.Name,
+	}
+	regJSON, _ := json.Marshal(storeReg)
+	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+		slog.Error("failed to store client registration", slog.Any("error", err))
+		writeJSON(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(reg)
+}
+
+var (
+	claudeCodeClientName = regexp.MustCompile(`Claude Code \(([^)]+)\)`)
+)
+
+// RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
+func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, r *http.Request) {
+	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errCode})
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		RedirectURIs            []string `json:"redirect_uris"`
+		GrantTypes              []string `json:"grant_types"`
+		ResponseTypes           []string `json:"response_types"`
+		ClientName              string   `json:"client_name"`
+		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, "invalid_client_metadata")
+		return
+	}
+
+	match := claudeCodeClientName.FindStringSubmatch(req.ClientName)
+
+	var mcpName string
+	if len(match) > 1 {
+		mcpName = match[1]
+	}
+	if mcpName == "" {
+		writeJSON(w, http.StatusBadRequest, "invalid_client_name")
+		return
+	}
+	if len(req.RedirectURIs) == 0 {
+		writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
+		return
+	}
+
+	// redirect_uri スキームを検証（https または http://localhost のみ許可）
+	for _, uri := range req.RedirectURIs {
+		if err := validateRedirectURI(uri); err != nil {
+			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
+			return
+		}
+	}
+
+	if len(req.GrantTypes) == 0 {
+		req.GrantTypes = []string{"authorization_code"}
+	}
+	if len(req.ResponseTypes) == 0 {
+		req.ResponseTypes = []string{"code"}
+	}
+	if req.TokenEndpointAuthMethod == "" {
+		req.TokenEndpointAuthMethod = "none"
+	}
+
+	clientID := generateRandomString(32)
+	reg := ClientRegistration{
+		ClientID:                clientID,
+		ClientIDIssuedAt:        time.Now().Unix(),
+		RedirectURIs:            req.RedirectURIs,
+		GrantTypes:              req.GrantTypes,
+		ResponseTypes:           req.ResponseTypes,
+		ClientName:              req.ClientName,
+		TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
+	}
+	storeReg := StoreClientRegistration{
+		ClientRegistration: reg,
+		MCPServerName:      mcpName,
+	}
+	regJSON, _ := json.Marshal(storeReg)
 	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
 		slog.Error("failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
@@ -226,26 +334,6 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 
 func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	ctx := r.Context()
-	if srv == nil {
-		http.Error(w, "server not found", http.StatusNotFound)
-		return
-	}
-	// OAuth2 設定がない HTTP MCP バックエンドは OAuth2.1 Auto-Discovery を試みる
-	if srv.OAuth2 == nil {
-		if !srv.IsMCPBackend() || srv.Transport != config.MCPTransportHTTP {
-			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
-			return
-		}
-		discovered, err := h.discoverOAuth2(ctx, srv, h.getBaseURL(r))
-		if err != nil {
-			slog.ErrorContext(ctx, "oauth2 discovery failed",
-				slog.String("server", srv.Name), slog.String("error", err.Error()))
-			http.Error(w, "oauth2 discovery failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		srv.OAuth2 = discovered
-	}
-
 	q := r.URL.Query()
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
@@ -268,6 +356,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	// client_id が提供された場合、登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ
+	var clientReg StoreClientRegistration
 	if clientID != "" {
 		clientJSON, err := h.store.Get(r.Context(), "oauth_client:"+clientID)
 		if err != nil {
@@ -275,7 +364,6 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return
 		}
-		var clientReg ClientRegistration
 		if err := json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
 			slog.ErrorContext(ctx, "failed to unmarshal client registration", slog.Any("error", err))
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -292,6 +380,32 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.ErrorContext(ctx, "failed to client_id is empty")
 		http.Error(w, "invalid_client_id", http.StatusBadRequest)
 		return
+	}
+
+	if srv == nil {
+		if v, ok := h.servers[clientReg.MCPServerName]; ok {
+			srv = v
+		}
+	}
+	if srv == nil {
+		http.Error(w, "server not found", http.StatusNotFound)
+		return
+	}
+
+	// OAuth2 設定がない HTTP MCP バックエンドは OAuth2.1 Auto-Discovery を試みる
+	if srv.OAuth2 == nil {
+		if !srv.IsMCPBackend() || srv.Transport != config.MCPTransportHTTP {
+			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
+			return
+		}
+		discovered, err := h.discoverOAuth2(ctx, srv, h.getBaseURL(r))
+		if err != nil {
+			slog.ErrorContext(ctx, "oauth2 discovery failed",
+				slog.String("server", srv.Name), slog.String("error", err.Error()))
+			http.Error(w, "oauth2 discovery failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		srv.OAuth2 = discovered
 	}
 
 	sessionID := generateRandomString(32)
@@ -365,6 +479,15 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	_ = h.store.Del(r.Context(), "auth_session:"+sessionID)
+	if srv == nil {
+		if v, ok := h.servers[session.MCPServerName]; ok {
+			srv = v
+		}
+	}
+	if srv == nil {
+		http.Error(w, "server not found", http.StatusNotFound)
+		return
+	}
 
 	baseURL := h.getBaseURL(r)
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
@@ -646,7 +769,6 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	h.mu.Lock()
 	if s, ok := h.servers[srv.Name]; ok {
 		s.OAuth2 = oauth2cfg
-		h.servers[srv.Name] = s
 	}
 	h.mu.Unlock()
 

@@ -13,7 +13,7 @@ import (
 
 func TestMCPServerApp_ServerNotFound(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{BaseURL: "http://example.com"},
+		"test": &config.Server{BaseURL: "http://example.com"},
 	}
 	var called bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +34,7 @@ func TestMCPServerApp_ServerNotFound(t *testing.T) {
 
 func TestMCPServerApp_ServerFound(t *testing.T) {
 	servers := config.Servers{
-		"myserver": config.Server{BaseURL: "http://example.com"},
+		"myserver": &config.Server{Name: "myserver", BaseURL: "http://example.com"},
 	}
 	var gotServer *config.Server
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +58,7 @@ func TestMCPServerApp_ServerFound(t *testing.T) {
 
 func TestMCPServerApp_HeaderExtraction(t *testing.T) {
 	servers := config.Servers{
-		"svc": config.Server{BaseURL: "http://backend.example.com"},
+		"svc": &config.Server{Name: "svc", BaseURL: "http://backend.example.com"},
 	}
 	var gotHeaders map[string][]string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

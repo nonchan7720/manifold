@@ -14,34 +14,24 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			srvName := r.PathValue(pathValueName)
-			v, ok := servers[srvName]
+			_, ok := servers[srvName]
 			if !ok {
 				// どうせ後ろでエラーになるのでここでは何もしない
 				next.ServeHTTP(w, r)
 				return
 			}
 			tokenStr := extractBearerToken(r)
-			if v.OAuth2 == nil {
-				if tokenStr != "" {
-					// 何かしらの都合で上書きしたいケースを想定
-					ctx = contexts.ToRequestAuthHeader(ctx, tokenStr)
-					*r = *r.WithContext(ctx)
-				}
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			scheme := "http"
-			if r.TLS != nil {
-				scheme = "https"
-			}
-			// リバプロがいる場合
-			if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-				scheme = forwardedProto
-			}
-			baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-			metadataURL := baseURL + "/.well-known/oauth-protected-resource"
 			if tokenStr == "" {
+				scheme := "http"
+				if r.TLS != nil {
+					scheme = "https"
+				}
+				// リバプロがいる場合
+				if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+					scheme = forwardedProto
+				}
+				baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+				metadataURL := baseURL + "/.well-known/oauth-protected-resource"
 				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
 					`Bearer resource_metadata="%s"`,
 					metadataURL,

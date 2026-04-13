@@ -18,7 +18,6 @@ func MCPServerApp(servers config.Servers, pathValueName string) func(next http.H
 				http.NotFound(w, r)
 				return
 			}
-			v.Name = srvName
 			headerPrefix := fmt.Sprintf("x-%s-", v.Name)
 			header := map[string][]string{}
 			for key, value := range r.Header {
@@ -27,7 +26,7 @@ func MCPServerApp(servers config.Servers, pathValueName string) func(next http.H
 				}
 			}
 			ctx := r.Context()
-			ctx = contexts.ToServerContext(ctx, &v)
+			ctx = contexts.ToServerContext(ctx, v)
 			ctx = contexts.ToHeaderContext(ctx, header)
 			*r = *r.WithContext(ctx)
 			next(w, r)
