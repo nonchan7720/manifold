@@ -857,9 +857,10 @@ func TestValidateExternalURL_BlocksPrivateIP(t *testing.T) {
 
 func TestValidateExternalURL_AllowsPublicURL(t *testing.T) {
 	publicURLs := []string{
-		"https://auth.example.com/.well-known/oauth-authorization-server",
+		"https://192.0.2.1/.well-known/oauth-authorization-server", // TEST-NET-1
+		"https://198.51.100.1/token",                               // TEST-NET-2
+		"http://203.0.113.1/resource",                              // TEST-NET-3
 		"https://login.microsoftonline.com/token",
-		"http://auth.example.com/resource",
 	}
 	for _, u := range publicURLs {
 		err := validateExternalURL(u)
