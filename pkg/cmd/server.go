@@ -39,8 +39,8 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer storeClient.Close()
 
-	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKey([]byte(globalConfig.Gateway.EncryptKey)))
-
+	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
+	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer)
 	if err := mcpSrv.Init(ctx); err != nil {
@@ -76,6 +76,7 @@ func runGatewayServer(ctx context.Context) error {
 	mux := http.NewServeMux()
 	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
 	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
+	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 
 	gateway := globalConfig.Gateway
 	servePort := gateway.Port

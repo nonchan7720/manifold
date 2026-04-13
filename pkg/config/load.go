@@ -79,6 +79,11 @@ func loadInternal(ctx context.Context) (*Config, error) {
 	if err := v.Unmarshal(&conf); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
+
+	for name, srv := range conf.MCPServer {
+		srv.Name = name
+	}
+
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
 	}

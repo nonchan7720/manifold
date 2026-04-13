@@ -36,7 +36,7 @@ func TestExtractBearerToken(t *testing.T) {
 
 func TestJWT_ServerNotFound(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{},
+		"test": &config.Server{},
 	}
 	var called bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +55,7 @@ func TestJWT_ServerNotFound(t *testing.T) {
 
 func TestJWT_NoOAuth2_WithToken(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{OAuth2: nil},
+		"test": &config.Server{OAuth2: nil},
 	}
 	var capturedToken string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,7 @@ func TestJWT_NoOAuth2_WithToken(t *testing.T) {
 
 func TestJWT_NoOAuth2_NoToken(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{OAuth2: nil},
+		"test": &config.Server{OAuth2: nil},
 	}
 	var called bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,13 +88,13 @@ func TestJWT_NoOAuth2_NoToken(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.True(t, called)
-	assert.Equal(t, http.StatusOK, rw.Code)
+	assert.False(t, called)
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
 }
 
 func TestJWT_WithOAuth2_NoToken(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
+		"test": &config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
 	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -111,7 +111,7 @@ func TestJWT_WithOAuth2_NoToken(t *testing.T) {
 
 func TestJWT_WithOAuth2_WithToken(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
+		"test": &config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
 	}
 	var capturedToken string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +131,7 @@ func TestJWT_WithOAuth2_WithToken(t *testing.T) {
 
 func TestJWT_WithOAuth2_XForwardedProto(t *testing.T) {
 	servers := config.Servers{
-		"test": config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
+		"test": &config.Server{OAuth2: &config.OAuth2{ClientID: "client1"}},
 	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
