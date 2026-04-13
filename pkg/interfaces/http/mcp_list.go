@@ -38,6 +38,6 @@ func (h *MCPHandler) MCPList(w http.ResponseWriter, r *http.Request) {
 			Description: srv.Description,
 		}
 	}
-	w.Header().Add("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(&resp)
 }
