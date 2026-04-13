@@ -423,7 +423,7 @@ func TestGetAuthorizationServers_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	servers, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource")
+	servers, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
 	require.NoError(t, err)
 	assert.Contains(t, servers, "https://auth.example.com")
 }
@@ -440,7 +440,7 @@ func TestGetAuthorizationServers_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource")
+	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no authorization_servers")
 }
@@ -465,7 +465,7 @@ func TestGetAuthMetadata_Success(t *testing.T) {
 	defer srv.Close()
 
 	// mcpauth.GetAuthServerMetadata は .well-known/oauth-authorization-server を呼ぶ
-	meta, err := getAuthMetadata(context.Background(), srv.URL)
+	meta, err := getAuthMetadata(context.Background(), srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	assert.NotNil(t, meta)
 }

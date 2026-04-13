@@ -530,6 +530,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 }
 
 func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSession, code, callbackURL string) (*oauth2.Token, error) {
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
 	oauthCfg := &oauth2.Config{
 		ClientID:     session.OAuth2ClientID,
 		ClientSecret: session.OAuth2ClientSecret,
@@ -590,14 +591,28 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	if u, err := url.Parse(resourceMetaURL); err == nil {
 		resourceOrigin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
 	}
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin)
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin, h.httpClient)
 	if err != nil {
 		return nil, err
 	}
 
 	// Step 4: 認可サーバーのメタデータを取得
-	authMeta, err := getAuthMetadata(ctx, authorizationServers[0])
-	if err != nil {
+	var (
+		authMeta *oauthex.AuthServerMeta
+		lastErr  error
+	)
+	for _, server := range authorizationServers {
+		var err error
+		authMeta, err = getAuthMetadata(ctx, server, h.httpClient)
+		if err == nil {
+			break
+		} else {
+			lastErr = err
+			continue
+		}
+	}
+
+	if lastErr != nil {
 		return nil, err
 	}
 
@@ -705,8 +720,8 @@ func getResourceMetadata(wwwAuthenticate []string) (string, error) {
 	return resourceMetaURL, nil
 }
 
-func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string) ([]string, error) {
-	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, url, nil)
+func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) ([]string, error) {
+	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, url, c)
 	if err != nil {
 		return nil, fmt.Errorf("get protected resource metadata: %w", err)
 	}
@@ -716,8 +731,8 @@ func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string) (
 	return prm.AuthorizationServers, nil
 }
 
-func getAuthMetadata(ctx context.Context, authorizationServer string) (*oauthex.AuthServerMeta, error) {
-	authMeta, err := mcpauth.GetAuthServerMetadata(ctx, authorizationServer, nil)
+func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Client) (*oauthex.AuthServerMeta, error) {
+	authMeta, err := mcpauth.GetAuthServerMetadata(ctx, authorizationServer, c)
 	if err != nil {
 		return nil, fmt.Errorf("get auth server metadata: %w", err)
 	}
@@ -775,6 +790,9 @@ func validateRedirectURI(rawURI string) error {
 	if err != nil {
 		return fmt.Errorf("invalid redirect_uri: %w", err)
 	}
+	if u.Fragment != "" {
+		return fmt.Errorf("redirect_uri must not contain a fragment")
+	}
 	if u.Scheme == "https" {
 		return nil
 	}
@@ -789,13 +807,27 @@ func validateRedirectURI(rawURI string) error {
 
 func newSafeHTTPClient() *http.Client {
 	dialer := &net.Dialer{
-		Control: func(network, address string, _ syscall.RawConn) error {
+		ControlContext: func(ctx context.Context, network, address string, _ syscall.RawConn) error {
 			host, _, err := net.SplitHostPort(address)
 			if err != nil {
 				return fmt.Errorf("invalid address %q: %w", address, err)
 			}
-			if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
-				return fmt.Errorf("connection to private IP %s is not allowed", ip)
+			if ip := net.ParseIP(host); ip != nil {
+				// IP リテラル（通常はここに来る）
+				if isPrivateIP(ip) {
+					return fmt.Errorf("connection to private IP %s is not allowed", ip)
+				}
+			} else {
+				// ホスト名が渡された場合（エッジケース）のフォールバック
+				addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil {
+					return fmt.Errorf("DNS resolution failed for %q: %w", host, err)
+				}
+				for _, ipAddr := range addrs {
+					if isPrivateIP(ipAddr.IP) {
+						return fmt.Errorf("connection to private IP %s is not allowed", ipAddr.IP)
+					}
+				}
 			}
 			return nil
 		},
