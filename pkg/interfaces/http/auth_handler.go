@@ -208,6 +208,7 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
 		return
@@ -218,9 +219,9 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
 			return
 		}
-		discovered, err := h.discoverOAuth2(r.Context(), srv, h.getBaseURL(r))
+		discovered, err := h.discoverOAuth2(ctx, srv, h.getBaseURL(r))
 		if err != nil {
-			slog.ErrorContext(r.Context(), "oauth2 discovery failed",
+			slog.ErrorContext(ctx, "oauth2 discovery failed",
 				slog.String("server", srv.Name), slog.String("error", err.Error()))
 			http.Error(w, "oauth2 discovery failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -244,7 +245,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	)
 
 	if codeChallenge == "" || codeChallengeMethod != "S256" {
-		slog.Warn("invalid login request", slog.String("reason", "missing_pkce"))
+		slog.WarnContext(ctx, "invalid login request", slog.String("reason", "missing_pkce"))
 		http.Error(w, "invalid_request: code_challenge or code_challenge_method missing/invalid", http.StatusBadRequest)
 		return
 	}
@@ -253,23 +254,27 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	if clientID != "" {
 		clientJSON, err := h.store.Get(r.Context(), "oauth_client:"+clientID)
 		if err != nil {
-			slog.Warn("unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
+			slog.WarnContext(ctx, "unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return
 		}
 		var clientReg ClientRegistration
 		if err := json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
-			slog.Error("failed to unmarshal client registration", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to unmarshal client registration", slog.Any("error", err))
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if !containsString(clientReg.RedirectURIs, redirectURI) {
-			slog.Warn("redirect_uri not registered for client",
+			slog.WarnContext(ctx, "redirect_uri not registered for client",
 				slog.String("client_id", util.SanitizeLog(clientID)),
 				slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
 			http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
 			return
 		}
+	} else {
+		slog.ErrorContext(ctx, "failed to client_id is empty")
+		http.Error(w, "invalid_client_id", http.StatusBadRequest)
+		return
 	}
 
 	sessionID := generateRandomString(32)
@@ -363,7 +368,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	}
 
 	tokenKey := "upstream_token:" + generateRandomString(32)
-	tokenJSON, err := json.Marshal(upstreamToken)
+	tokenJSON, err := json.Marshal(upstreamToken) //nolint: gosec
 	if err != nil {
 		slog.Error("failed to marshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -446,7 +451,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	// client_id をコード発行時のクライアントと照合
 	if authCodeData.ClientID != "" && clientID != authCodeData.ClientID {
-		slog.Warn("client_id mismatch in token request",
+		slog.Warn("client_id mismatch in token request", //nolint: gosec
 			slog.String("expected", authCodeData.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -536,7 +541,7 @@ var (
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
 // 結果は h.servers にキャッシュされる。
-func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) {
+func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) { //nolint: gocyclo
 	// キャッシュを確認
 	h.mu.RLock()
 	if cached, ok := h.servers[srv.Name]; ok && cached.OAuth2 != nil {
@@ -790,10 +795,13 @@ func validateExternalURL(rawURL string) error {
 		return fmt.Errorf("URL scheme must be http or https, got %q", u.Scheme)
 	}
 	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("URL must not point to a private or reserved IP address")
-		}
+
+	addr, err := net.ResolveIPAddr("ip", host)
+	if err != nil {
+		return fmt.Errorf("resolve dns error: %w", err)
+	}
+	if isPrivateIP(addr.IP) {
+		return fmt.Errorf("URL must not point to a private or reserved IP address")
 	}
 	return nil
 }
@@ -815,15 +823,15 @@ var privateIPRanges []*net.IPNet
 func init() {
 	privateCIDRs := []string{
 		"127.0.0.0/8",    // IPv4 ループバック
-		"::1/128",         // IPv6 ループバック
+		"::1/128",        // IPv6 ループバック
 		"10.0.0.0/8",     // プライベート
 		"172.16.0.0/12",  // プライベート
 		"192.168.0.0/16", // プライベート
 		"169.254.0.0/16", // IPv4 リンクローカル
-		"fe80::/10",       // IPv6 リンクローカル
-		"fc00::/7",        // IPv6 ユニークローカル
+		"fe80::/10",      // IPv6 リンクローカル
+		"fc00::/7",       // IPv6 ユニークローカル
 		"100.64.0.0/10",  // 共有アドレス空間 (RFC 6598)
-		"0.0.0.0/8",       // 未指定
+		"0.0.0.0/8",      // 未指定
 	}
 	for _, cidr := range privateCIDRs {
 		_, network, err := net.ParseCIDR(cidr)
