@@ -236,7 +236,12 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 		ClientRegistration: reg,
 		MCPServerName:      srv.Name,
 	}
-	regJSON, _ := json.Marshal(storeReg)
+	regJSON, err := json.Marshal(storeReg)
+	if err != nil {
+		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		writeJSON(w, http.StatusInternalServerError, "server_error")
+		return
+	}
 	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
 		slog.Error("failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
@@ -320,7 +325,12 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 		ClientRegistration: reg,
 		MCPServerName:      mcpName,
 	}
-	regJSON, _ := json.Marshal(storeReg)
+	regJSON, err := json.Marshal(storeReg)
+	if err != nil {
+		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		writeJSON(w, http.StatusInternalServerError, "server_error")
+		return
+	}
 	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
 		slog.Error("failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
