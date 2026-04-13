@@ -23,7 +23,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.Gateway),
 		validation.Field(&c.MCPServer),
 		validation.Field(&c.Redis, validation.When(c.SQLite == nil, validation.Required)),
-		validation.Field(&c.SQLite, validation.When(c.SQLite == nil, validation.Required)),
+		validation.Field(&c.SQLite, validation.When(c.Redis == nil, validation.Required)),
 	)
 }
 
