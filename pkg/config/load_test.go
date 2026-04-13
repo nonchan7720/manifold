@@ -36,7 +36,7 @@ func TestFindProjectRoot_NotDot(t *testing.T) {
 
 func TestLoadInternal_Success(t *testing.T) {
 	// プロジェクトに config.yaml があるので loadInternal は成功するはず
-	cfg, err := loadInternal()
+	cfg, err := loadInternal(t.Context())
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	// config.yaml に gateway.port: 9999 がある

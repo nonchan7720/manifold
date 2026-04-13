@@ -14,7 +14,7 @@ var rootCmd = &cobra.Command{
 	Short: "manifold — mcp gateway service",
 	Long:  `manifold - mcp gateway service A component that combines multiple inputs into a single output`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load()
+		cfg, err := config.Load(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("failed resolving config: %w", err)
 		}

@@ -12,8 +12,19 @@ type Config struct {
 	Gateway   Gateway `mapstructure:"gateway"`
 	MCPServer Servers `mapstructure:"mcpServers"`
 
-	Redis  RedisConfig  `mapstructure:"redis"`
-	SQLite SQLiteConfig `mapstructure:"sqlite"`
+	Redis  *RedisConfig  `mapstructure:"redis"`
+	SQLite *SQLiteConfig `mapstructure:"sqlite"`
+}
+
+func (c *Config) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(
+		ctx,
+		c,
+		validation.Field(&c.Gateway),
+		validation.Field(&c.MCPServer),
+		validation.Field(&c.Redis, validation.When(c.SQLite == nil, validation.Required)),
+		validation.Field(&c.SQLite, validation.When(c.SQLite == nil, validation.Required)),
+	)
 }
 
 type Gateway struct {
@@ -25,14 +36,14 @@ type Gateway struct {
 	EncryptKey string `mapstructure:"encryptKey"`
 }
 
-func (c *Gateway) ValidateWithContext(ctx context.Context) error {
+func (c Gateway) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
-		c,
+		&c,
 		validation.Field(&c.EncryptKey,
 			validation.Required,
 			validation.When(c.EncryptKey != "",
-				validation.By(func(value interface{}) error {
+				validation.By(func(value any) error {
 					v, ok := value.(string)
 					if !ok {
 						return fmt.Errorf("must be string type")
