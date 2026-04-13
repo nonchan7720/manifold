@@ -2,6 +2,8 @@ package httphandler
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
@@ -9,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -43,6 +46,7 @@ type AuthSession struct {
 
 // AuthCodeData 認証コードとトークンの交換に関するデータを保持。
 type AuthCodeData struct {
+	ClientID            string `json:"client_id,omitempty"`
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
 	Resource            string `json:"resource,omitempty"`
@@ -62,16 +66,22 @@ type ClientRegistration struct {
 
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
-	store   store.Client
-	servers config.Servers
-	mu      sync.RWMutex // servers への OAuth2 発見結果の書き込みを保護
+	store            store.Client
+	servers          config.Servers
+	mu               sync.RWMutex // servers への OAuth2 発見結果の書き込みを保護
+	tokenEncKey      [32]byte     // AES-256-GCM によるアップストリームトークン暗号化キー
+	disableSSRFCheck bool         // テスト専用: true の場合 SSRF チェックをスキップ
 }
 
 func NewAuthHandler(storeClient store.Client, servers config.Servers) *AuthHandler {
-	return &AuthHandler{
+	h := &AuthHandler{
 		store:   storeClient,
 		servers: servers,
 	}
+	if _, err := rand.Read(h.tokenEncKey[:]); err != nil {
+		panic(fmt.Sprintf("failed to generate token encryption key: %v", err))
+	}
+	return h
 }
 
 func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, middleware func(h http.HandlerFunc) http.HandlerFunc) {
@@ -156,6 +166,15 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// redirect_uri スキームを検証（https または http://localhost のみ許可）
+	for _, uri := range req.RedirectURIs {
+		if err := validateRedirectURI(uri); err != nil {
+			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
+			return
+		}
+	}
+
 	if len(req.GrantTypes) == 0 {
 		req.GrantTypes = []string{"authorization_code"}
 	}
@@ -228,6 +247,29 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.Warn("invalid login request", slog.String("reason", "missing_pkce"))
 		http.Error(w, "invalid_request: code_challenge or code_challenge_method missing/invalid", http.StatusBadRequest)
 		return
+	}
+
+	// client_id が提供された場合、登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ
+	if clientID != "" {
+		clientJSON, err := h.store.Get(r.Context(), "oauth_client:"+clientID)
+		if err != nil {
+			slog.Warn("unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
+			http.Error(w, "invalid_client", http.StatusUnauthorized)
+			return
+		}
+		var clientReg ClientRegistration
+		if err := json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
+			slog.Error("failed to unmarshal client registration", slog.Any("error", err))
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !containsString(clientReg.RedirectURIs, redirectURI) {
+			slog.Warn("redirect_uri not registered for client",
+				slog.String("client_id", util.SanitizeLog(clientID)),
+				slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
+			http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
+			return
+		}
 	}
 
 	sessionID := generateRandomString(32)
@@ -321,8 +363,20 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	}
 
 	tokenKey := "upstream_token:" + generateRandomString(32)
-	tokenJSON, _ := json.Marshal(upstreamToken) //nolint: gosec
-	if err := h.store.Set(r.Context(), tokenKey, tokenJSON, tokenTTL); err != nil {
+	tokenJSON, err := json.Marshal(upstreamToken)
+	if err != nil {
+		slog.Error("failed to marshal upstream token", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// AES-256-GCM でトークンを暗号化して保存（平文保存を防ぐ）
+	encryptedToken, err := h.encryptToken(tokenJSON)
+	if err != nil {
+		slog.Error("failed to encrypt upstream token", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := h.store.Set(r.Context(), tokenKey, encryptedToken, tokenTTL); err != nil {
 		slog.Error("failed to store upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -330,6 +384,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 
 	mcpCode := generateRandomString(32)
 	authCodeData := AuthCodeData{
+		ClientID:            session.ClientID,
 		CodeChallenge:       session.CodeChallenge,
 		CodeChallengeMethod: session.CodeChallengeMethod,
 		Resource:            session.Resource,
@@ -355,6 +410,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	grantType := r.FormValue("grant_type")
 	code := r.FormValue("code")
 	codeVerifier := r.FormValue("code_verifier")
+	clientID := r.FormValue("client_id")
 	resource := r.FormValue("resource") // RFC 8707
 
 	slog.Info("TokenEndpoint called", //nolint: gosec
@@ -388,6 +444,15 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
+	// client_id をコード発行時のクライアントと照合
+	if authCodeData.ClientID != "" && clientID != authCodeData.ClientID {
+		slog.Warn("client_id mismatch in token request",
+			slog.String("expected", authCodeData.ClientID),
+			slog.String("got", util.SanitizeLog(clientID)))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+
 	// Verify PKCE S256
 	expectedChallenge := generateS256Challenge(codeVerifier)
 	if expectedChallenge != authCodeData.CodeChallenge {
@@ -403,14 +468,20 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	_ = h.store.Del(r.Context(), "auth_code:"+code)
 
-	tokenJSON, err := h.store.Get(r.Context(), authCodeData.UpstreamTokenKey)
+	encryptedToken, err := h.store.Get(r.Context(), authCodeData.UpstreamTokenKey)
 	if err != nil {
 		slog.Error("upstream token not found in redis", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	tokenJSON, err := h.decryptToken(encryptedToken)
+	if err != nil {
+		slog.Error("failed to decrypt upstream token", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	var upstreamToken oauth2.Token
-	if err := json.Unmarshal([]byte(tokenJSON), &upstreamToken); err != nil {
+	if err := json.Unmarshal(tokenJSON, &upstreamToken); err != nil {
 		slog.Error("failed to unmarshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -490,6 +561,13 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", u.Scheme, u.Host)
 	}
 
+	// SSRF 対策: WWW-Authenticate から得た resource_metadata URL がプライベートIPを指していないか検証
+	if !h.disableSSRFCheck {
+		if err := validateExternalURL(resourceMetaURL); err != nil {
+			return nil, fmt.Errorf("invalid resource_metadata URL: %w", err)
+		}
+	}
+
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
 	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
 	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
@@ -500,6 +578,13 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin)
 	if err != nil {
 		return nil, err
+	}
+
+	// SSRF 対策: Protected Resource Metadata から得た認可サーバー URL も検証
+	if !h.disableSSRFCheck {
+		if err := validateExternalURL(authorizationServers[0]); err != nil {
+			return nil, fmt.Errorf("invalid authorization_server URL: %w", err)
+		}
 	}
 
 	// Step 4: 認可サーバーのメタデータを取得
@@ -632,4 +717,128 @@ func getAuthMetadata(ctx context.Context, authorizationServer string) (*oauthex.
 		return nil, fmt.Errorf("no auth server metadata found at %s", authorizationServer)
 	}
 	return authMeta, nil
+}
+
+// encryptToken は平文バイト列を AES-256-GCM で暗号化し、base64 エンコードした文字列を返す。
+func (h *AuthHandler) encryptToken(plaintext []byte) (string, error) {
+	block, err := aes.NewCipher(h.tokenEncKey[:])
+	if err != nil {
+		return "", fmt.Errorf("create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("create GCM: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generate nonce: %w", err)
+	}
+	// nonce をプレフィックスとして暗号文に結合
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// decryptToken は encryptToken で暗号化された base64 文字列を復号する。
+func (h *AuthHandler) decryptToken(encoded string) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+	block, err := aes.NewCipher(h.tokenEncKey[:])
+	if err != nil {
+		return nil, fmt.Errorf("create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("create GCM: %w", err)
+	}
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// validateRedirectURI は redirect_uri が許可されたスキームを使用しているか検証する。
+// https:// と http://localhost (127.0.0.1, ::1) のみ許可。
+func validateRedirectURI(rawURI string) error {
+	u, err := url.Parse(rawURI)
+	if err != nil {
+		return fmt.Errorf("invalid redirect_uri: %w", err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+	}
+	return fmt.Errorf("redirect_uri must use https or http://localhost")
+}
+
+// validateExternalURL は discovery で得た URL がプライベート IP を指していないか検証する。
+// ホスト名が IP アドレスの場合のみチェックし、プライベートレンジをブロックする。
+func validateExternalURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("URL must not point to a private or reserved IP address")
+		}
+	}
+	return nil
+}
+
+// isPrivateIP は IP アドレスがプライベート・リンクローカル・ループバック等の
+// 予約済みレンジに属するか確認する。
+func isPrivateIP(ip net.IP) bool {
+	for _, cidr := range privateIPRanges {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// privateIPRanges はプライベート・予約済み IP レンジのリスト。
+var privateIPRanges []*net.IPNet
+
+func init() {
+	privateCIDRs := []string{
+		"127.0.0.0/8",    // IPv4 ループバック
+		"::1/128",         // IPv6 ループバック
+		"10.0.0.0/8",     // プライベート
+		"172.16.0.0/12",  // プライベート
+		"192.168.0.0/16", // プライベート
+		"169.254.0.0/16", // IPv4 リンクローカル
+		"fe80::/10",       // IPv6 リンクローカル
+		"fc00::/7",        // IPv6 ユニークローカル
+		"100.64.0.0/10",  // 共有アドレス空間 (RFC 6598)
+		"0.0.0.0/8",       // 未指定
+	}
+	for _, cidr := range privateCIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			privateIPRanges = append(privateIPRanges, network)
+		}
+	}
+}
+
+// containsString は slice の中に target が含まれるか確認する。
+func containsString(slice []string, target string) bool {
+	for _, s := range slice {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }
