@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -16,7 +17,7 @@ func main() {
 }
 
 func run() error {
-	_, err := config.Load()
+	_, err := config.Load(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}

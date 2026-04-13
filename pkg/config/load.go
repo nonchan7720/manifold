@@ -1,12 +1,15 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/compose-spec/compose-go/v2/template"
+	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/spf13/viper"
 )
 
@@ -35,14 +38,14 @@ func findProjectRoot() string {
 }
 
 // Load reads the configuration from the config.yaml file and environment variables.
-func Load() (*Config, error) {
+func Load(ctx context.Context) (*Config, error) {
 	once.Do(func() {
-		cachedConfig, errLoad = loadInternal()
+		cachedConfig, errLoad = loadInternal(ctx)
 	})
 	return cachedConfig, errLoad
 }
 
-func loadInternal() (*Config, error) {
+func loadInternal(ctx context.Context) (*Config, error) {
 	root := findProjectRoot()
 
 	v := viper.New()
@@ -64,14 +67,10 @@ func loadInternal() (*Config, error) {
 	for _, key := range v.AllKeys() {
 		val := v.GetString(key)
 		if strings.Contains(val, "$") {
-			expanded := os.Expand(val, func(envVar string) string {
-				parts := strings.SplitN(envVar, ":-", 2)
-				val := os.Getenv(parts[0])
-				if val == "" && len(parts) == 2 {
-					return parts[1]
-				}
-				return val
-			})
+			expanded, err := template.Substitute(val, os.LookupEnv)
+			if err != nil {
+				return nil, err
+			}
 			v.Set(key, expanded)
 		}
 	}
@@ -80,6 +79,8 @@ func loadInternal() (*Config, error) {
 	if err := v.Unmarshal(&conf); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
-
+	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
+		return nil, err
+	}
 	return &conf, nil
 }

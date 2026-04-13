@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -422,7 +423,7 @@ func TestGetAuthorizationServers_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	servers, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource")
+	servers, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
 	require.NoError(t, err)
 	assert.Contains(t, servers, "https://auth.example.com")
 }
@@ -439,7 +440,7 @@ func TestGetAuthorizationServers_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource")
+	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no authorization_servers")
 }
@@ -464,7 +465,7 @@ func TestGetAuthMetadata_Success(t *testing.T) {
 	defer srv.Close()
 
 	// mcpauth.GetAuthServerMetadata は .well-known/oauth-authorization-server を呼ぶ
-	meta, err := getAuthMetadata(context.Background(), srv.URL)
+	meta, err := getAuthMetadata(context.Background(), srv.URL, http.DefaultClient)
 	require.NoError(t, err)
 	assert.NotNil(t, meta)
 }
@@ -647,6 +648,209 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 	assert.Equal(t, "dcr-client-secret", result.ClientSecret)
 	assert.Equal(t, authServerURL+"/token", result.TokenURL)
 	assert.Equal(t, authServerURL+"/auth", result.AuthURL)
+}
+
+// --- validateRedirectURI ---
+
+func TestValidateRedirectURI(t *testing.T) {
+	tests := []struct {
+		uri     string
+		wantErr bool
+	}{
+		{"https://example.com/callback", false},
+		{"https://app.example.com/cb", false},
+		{"http://localhost/callback", false},
+		{"http://localhost:3000/callback", false},
+		{"http://127.0.0.1/callback", false},
+		{"http://127.0.0.1:8080/callback", false},
+		{"http://[::1]/callback", false},
+		{"http://evil.com/callback", true},
+		{"http://192.168.1.1/callback", true},
+		{"ftp://example.com/callback", true},
+		{"javascript:alert(1)", true},
+		{"://invalid", true},
+	}
+	for _, tt := range tests {
+		err := validateRedirectURI(tt.uri)
+		if tt.wantErr {
+			assert.Error(t, err, "expected error for %q", tt.uri)
+		} else {
+			assert.NoError(t, err, "unexpected error for %q", tt.uri)
+		}
+	}
+}
+
+// --- RegisterClientEndpoint: redirect_uri スキーム検証 ---
+
+func TestRegisterClientEndpoint_InvalidRedirectURIScheme(t *testing.T) {
+	h := &AuthHandler{}
+	reqBody := `{"redirect_uris": ["http://evil.com/callback"]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	rw := httptest.NewRecorder()
+
+	h.RegisterClientEndpoint(rw, req)
+
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
+	var body map[string]string
+	err := json.Unmarshal(rw.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_redirect_uri", body["error"])
+}
+
+func TestRegisterClientEndpoint_LocalhostAllowed(t *testing.T) {
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{})
+	reqBody := `{"redirect_uris": ["http://localhost:3000/callback"]}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	rw := httptest.NewRecorder()
+
+	h.RegisterClientEndpoint(rw, req)
+
+	assert.Equal(t, http.StatusCreated, rw.Code)
+}
+
+// --- LoginEndpoint: client_id / redirect_uri 検証 ---
+
+func TestLoginEndpoint_UnknownClientID(t *testing.T) {
+	st := newMockStore(map[string]string{}) // 登録済みクライアントなし
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{
+		Name:   "testserver",
+		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/testserver/auth/login?client_id=unknown&redirect_uri=https://example.com/cb&code_challenge=abc&code_challenge_method=S256", nil)
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+func TestLoginEndpoint_MismatchedRedirectURI(t *testing.T) {
+	clientReg := ClientRegistration{
+		ClientID:     "client1",
+		RedirectURIs: []string{"https://registered.example.com/callback"},
+	}
+	regJSON, _ := json.Marshal(clientReg)
+	st := newMockStore(map[string]string{
+		"oauth_client:client1": string(regJSON),
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{
+		Name:   "testserver",
+		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+	}
+	// 登録されていない redirect_uri を指定
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/testserver/auth/login?client_id=client1&redirect_uri=https://evil.example.com/cb&code_challenge=abc&code_challenge_method=S256", nil)
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
+func TestLoginEndpoint_ValidClientAndRedirectURI(t *testing.T) {
+	clientReg := ClientRegistration{
+		ClientID:     "client1",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+	}
+	regJSON, _ := json.Marshal(clientReg)
+	st := newMockStore(map[string]string{
+		"oauth_client:client1": string(regJSON),
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{
+		Name:   "testserver",
+		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/testserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, srv)
+
+	// 上流 OAuth2 サーバーへリダイレクトされる
+	assert.Equal(t, http.StatusFound, rw.Code)
+}
+
+// --- TokenEndpoint: client_id 不一致 ---
+
+func TestTokenEndpoint_ClientIDMismatch(t *testing.T) {
+	verifier := generateRandomString(43)
+	challenge := generateS256Challenge(verifier)
+	authCodeData := AuthCodeData{
+		ClientID:         "client1",
+		CodeChallenge:    challenge,
+		UpstreamTokenKey: "upstream_token:abc",
+	}
+	authCodeJSON, _ := json.Marshal(authCodeData)
+
+	st := newMockStore(map[string]string{
+		"auth_code:testcode": string(authCodeJSON),
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{Name: "testserver"}
+
+	body := fmt.Sprintf(
+		"grant_type=authorization_code&code=testcode&code_verifier=%s&client_id=wrong_client", verifier,
+	)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+// --- encryptToken / decryptToken ---
+
+func TestEncryptDecryptToken(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	plaintext := []byte(`{"access_token":"tok","token_type":"Bearer"}`)
+
+	encrypted, err := h.encryptToken(plaintext)
+	require.NoError(t, err)
+	assert.NotEmpty(t, encrypted)
+	assert.NotEqual(t, string(plaintext), encrypted)
+
+	decrypted, err := h.decryptToken(encrypted)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, decrypted)
+}
+
+func TestEncryptDecryptToken_TamperDetected(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	plaintext := []byte(`{"access_token":"tok"}`)
+
+	encrypted, err := h.encryptToken(plaintext)
+	require.NoError(t, err)
+
+	// 改ざん: 末尾1バイト変更
+	enc := []byte(encrypted)
+	enc[len(enc)-1] ^= 0xFF
+	_, err = h.decryptToken(string(enc))
+	assert.Error(t, err, "tampered ciphertext should fail decryption")
+}
+
+func TestIsPrivateIP(t *testing.T) {
+	privates := []string{"127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.0.1", "169.254.1.1", "::1"}
+	for _, s := range privates {
+		ip := net.ParseIP(s)
+		require.NotNil(t, ip)
+		assert.True(t, isPrivateIP(ip), "expected private: %s", s)
+	}
+
+	publics := []string{"8.8.8.8", "1.1.1.1", "203.0.113.1"}
+	for _, s := range publics {
+		ip := net.ParseIP(s)
+		require.NotNil(t, ip)
+		assert.False(t, isPrivateIP(ip), "expected public: %s", s)
+	}
 }
 
 // --- RegisterRoutes ---

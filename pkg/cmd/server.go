@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,13 +31,15 @@ func newGatewayCmd() *cobra.Command {
 }
 
 func runGatewayServer(ctx context.Context) error {
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
 	storeClient, err := newStoreClient(ctx)
 	if err != nil {
 		return err
 	}
 	defer storeClient.Close()
 
-	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer)
+	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKey([]byte(globalConfig.Gateway.EncryptKey)))
 
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer)

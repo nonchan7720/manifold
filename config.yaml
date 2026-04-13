@@ -1,5 +1,7 @@
 gateway:
   port: 9999
+  # openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY:-5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=}
   # key: tls/key.pem
   # cert: tls/cert.pem
 
@@ -13,7 +15,6 @@ mcpServers:
 
 sqlite:
   path: ./tmp/manifold.db
-
 # redis:
 #   url: ${REDIS_URL}
 #   addrs: [ "${REDIS_ADDRS:-localhost:6379}" ]

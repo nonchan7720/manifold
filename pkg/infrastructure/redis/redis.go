@@ -16,7 +16,7 @@ type Client struct {
 }
 
 // NewClient initializes a new Redis connection based on the provided configuration.
-func NewClient(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
+func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 	var tlsConfig *tls.Config
 	if cfg.TLS {
 		// Provide a basic TLS configuration
