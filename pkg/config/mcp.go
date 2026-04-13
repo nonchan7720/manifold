@@ -1,5 +1,11 @@
 package config
 
+import (
+	"context"
+
+	validation "github.com/go-ozzo/ozzo-validation/v4"
+)
+
 type MCPTransport string
 
 const (
@@ -7,10 +13,11 @@ const (
 	MCPTransportStdio MCPTransport = "stdio"
 )
 
-type Servers map[string]Server
+type Servers map[string]*Server
 
 type Server struct {
 	Name         string
+	Description  string            `mapstructure:"description"`
 	BaseURL      string            `mapstructure:"baseURL"`
 	Spec         string            `mapstructure:"spec"` // ファイル or http(s)（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
@@ -23,6 +30,18 @@ type Server struct {
 	Command   string            `mapstructure:"command"` // stdio 用
 	Args      []string          `mapstructure:"args"`
 	Env       map[string]string `mapstructure:"env"`
+}
+
+func (s Server) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(
+		ctx,
+		&s,
+		validation.Field(&s.Description, validation.Required),
+		validation.Field(&s.BaseURL, validation.When(s.Spec != "", validation.Required)),
+		validation.Field(&s.Transport, validation.When(s.Spec == "", validation.In(MCPTransportHTTP, MCPTransportStdio))),
+		validation.Field(&s.URL, validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP), validation.Required),
+		validation.Field(&s.Command, validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required)),
+	)
 }
 
 // IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す。
