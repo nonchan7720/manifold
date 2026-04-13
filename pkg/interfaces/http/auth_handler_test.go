@@ -635,7 +635,6 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 		servers: config.Servers{
 			"testsrv": config.Server{Name: "testsrv"},
 		},
-		disableSSRFCheck: true, // httptest サーバーは localhost を使うため
 	}
 	srv := &config.Server{
 		Name:      "testsrv",
@@ -836,41 +835,6 @@ func TestEncryptDecryptToken_TamperDetected(t *testing.T) {
 	enc[len(enc)-1] ^= 0xFF
 	_, err = h.decryptToken(string(enc))
 	assert.Error(t, err, "tampered ciphertext should fail decryption")
-}
-
-// --- validateExternalURL / isPrivateIP ---
-
-func TestValidateExternalURL_BlocksPrivateIP(t *testing.T) {
-	privateURLs := []string{
-		"http://127.0.0.1/.well-known/oauth-authorization-server",
-		"http://10.0.0.1/auth",
-		"http://192.168.1.1/auth",
-		"http://172.16.0.1/auth",
-		"http://169.254.169.254/latest/meta-data/",
-		"http://[::1]/auth",
-	}
-	for _, u := range privateURLs {
-		err := validateExternalURL(u)
-		assert.Error(t, err, "should block private URL: %s", u)
-	}
-}
-
-func TestValidateExternalURL_AllowsPublicURL(t *testing.T) {
-	publicURLs := []string{
-		"https://192.0.2.1/.well-known/oauth-authorization-server", // TEST-NET-1
-		"https://198.51.100.1/token",                               // TEST-NET-2
-		"http://203.0.113.1/resource",                              // TEST-NET-3
-		"https://login.microsoftonline.com/token",
-	}
-	for _, u := range publicURLs {
-		err := validateExternalURL(u)
-		assert.NoError(t, err, "should allow public URL: %s", u)
-	}
-}
-
-func TestValidateExternalURL_BlocksInvalidScheme(t *testing.T) {
-	err := validateExternalURL("ftp://example.com/auth")
-	assert.Error(t, err)
 }
 
 func TestIsPrivateIP(t *testing.T) {

@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -66,20 +68,35 @@ type ClientRegistration struct {
 
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
-	store            store.Client
-	servers          config.Servers
-	mu               sync.RWMutex // servers への OAuth2 発見結果の書き込みを保護
-	tokenEncKey      [32]byte     // AES-256-GCM によるアップストリームトークン暗号化キー
-	disableSSRFCheck bool         // テスト専用: true の場合 SSRF チェックをスキップ
+	store       store.Client
+	servers     config.Servers
+	mu          sync.RWMutex
+	tokenEncKey []byte
+	httpClient  *http.Client
 }
 
-func NewAuthHandler(storeClient store.Client, servers config.Servers) *AuthHandler {
-	h := &AuthHandler{
-		store:   storeClient,
-		servers: servers,
+type AuthHandlerOption func(h *AuthHandler)
+
+func WithEncryptKey(key []byte) AuthHandlerOption {
+	return func(h *AuthHandler) {
+		h.tokenEncKey = slices.Clone(key)
 	}
-	if _, err := rand.Read(h.tokenEncKey[:]); err != nil {
-		panic(fmt.Sprintf("failed to generate token encryption key: %v", err))
+}
+
+func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...AuthHandlerOption) *AuthHandler {
+	h := &AuthHandler{
+		store:      storeClient,
+		servers:    servers,
+		httpClient: newSafeHTTPClient(),
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	if len(h.tokenEncKey) == 0 {
+		h.tokenEncKey = make([]byte, 32)
+		if _, err := rand.Read(h.tokenEncKey); err != nil {
+			panic(fmt.Sprintf("failed to generate token encryption key: %v", err))
+		}
 	}
 	return h
 }
@@ -541,7 +558,7 @@ var (
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
 // 結果は h.servers にキャッシュされる。
-func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) { //nolint: gocyclo
+func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) {
 	// キャッシュを確認
 	h.mu.RLock()
 	if cached, ok := h.servers[srv.Name]; ok && cached.OAuth2 != nil {
@@ -566,13 +583,6 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", u.Scheme, u.Host)
 	}
 
-	// SSRF 対策: WWW-Authenticate から得た resource_metadata URL がプライベートIPを指していないか検証
-	if !h.disableSSRFCheck {
-		if err := validateExternalURL(resourceMetaURL); err != nil {
-			return nil, fmt.Errorf("invalid resource_metadata URL: %w", err)
-		}
-	}
-
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
 	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
 	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
@@ -583,13 +593,6 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin)
 	if err != nil {
 		return nil, err
-	}
-
-	// SSRF 対策: Protected Resource Metadata から得た認可サーバー URL も検証
-	if !h.disableSSRFCheck {
-		if err := validateExternalURL(authorizationServers[0]); err != nil {
-			return nil, fmt.Errorf("invalid authorization_server URL: %w", err)
-		}
 	}
 
 	// Step 4: 認可サーバーのメタデータを取得
@@ -726,7 +729,7 @@ func getAuthMetadata(ctx context.Context, authorizationServer string) (*oauthex.
 
 // encryptToken は平文バイト列を AES-256-GCM で暗号化し、base64 エンコードした文字列を返す。
 func (h *AuthHandler) encryptToken(plaintext []byte) (string, error) {
-	block, err := aes.NewCipher(h.tokenEncKey[:])
+	block, err := aes.NewCipher(h.tokenEncKey)
 	if err != nil {
 		return "", fmt.Errorf("create cipher: %w", err)
 	}
@@ -749,7 +752,7 @@ func (h *AuthHandler) decryptToken(encoded string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode: %w", err)
 	}
-	block, err := aes.NewCipher(h.tokenEncKey[:])
+	block, err := aes.NewCipher(h.tokenEncKey)
 	if err != nil {
 		return nil, fmt.Errorf("create cipher: %w", err)
 	}
@@ -784,26 +787,25 @@ func validateRedirectURI(rawURI string) error {
 	return fmt.Errorf("redirect_uri must use https or http://localhost")
 }
 
-// validateExternalURL は discovery で得た URL がプライベート IP を指していないか検証する。
-// ホスト名が IP アドレスの場合のみチェックし、プライベートレンジをブロックする。
-func validateExternalURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+func newSafeHTTPClient() *http.Client {
+	dialer := &net.Dialer{
+		Control: func(network, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return fmt.Errorf("invalid address %q: %w", address, err)
+			}
+			if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+				return fmt.Errorf("connection to private IP %s is not allowed", ip)
+			}
+			return nil
+		},
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("URL scheme must be http or https, got %q", u.Scheme)
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: dialer.DialContext,
+		},
+		Timeout: 30 * time.Second,
 	}
-	host := u.Hostname()
-
-	addr, err := net.ResolveIPAddr("ip", host)
-	if err != nil {
-		return fmt.Errorf("resolve dns error: %w", err)
-	}
-	if isPrivateIP(addr.IP) {
-		return fmt.Errorf("URL must not point to a private or reserved IP address")
-	}
-	return nil
 }
 
 // isPrivateIP は IP アドレスがプライベート・リンクローカル・ループバック等の
