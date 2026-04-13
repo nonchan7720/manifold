@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/nonchan7720/manifold/compare/v1.1.1...v1.2.0) (2026-04-13)
+
+
+### Features
+
+* mcp list and support for claude code DCR ([#13](https://github.com/nonchan7720/manifold/issues/13)) ([c317fdc](https://github.com/nonchan7720/manifold/commit/c317fdc62c182ee7007d4519a9c3cdc7a095665a))
+
+
+### Bug Fixes
+
+* **auth:** fix OAuth2 security vulnerabilities (Critical + High) ([#11](https://github.com/nonchan7720/manifold/issues/11)) ([edff658](https://github.com/nonchan7720/manifold/commit/edff6589169c1683a5b8aea8a3247b66c84a0513))
+
 ## [1.1.1](https://github.com/nonchan7720/manifold/compare/v1.1.0...v1.1.1) (2026-04-12)
 
 
