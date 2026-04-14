@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -74,13 +75,19 @@ type StoreClientRegistration struct {
 	MCPServerName string `json:"mcp_server_name"`
 }
 
+// RefreshData はリフレッシュトークンに紐付くサーバー情報を保持。
+type RefreshData struct {
+	MCPServerName string `json:"mcp_server_name"`
+}
+
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
-	store       store.Client
-	servers     config.Servers
-	mu          sync.RWMutex
-	tokenEncKey []byte
-	httpClient  *http.Client
+	store          store.Client
+	servers        config.Servers
+	mu             sync.RWMutex
+	tokenEncKey    []byte
+	httpClient     *http.Client
+	refreshTokenNS uuid.UUID
 }
 
 type AuthHandlerOption func(h *AuthHandler)
@@ -99,11 +106,19 @@ func WithEncryptKeyByBase64(key string) AuthHandlerOption {
 	return WithEncryptKey(v)
 }
 
+func WithRefreshTokenNS(ns string) AuthHandlerOption {
+	refreshTokenNS := uuid.MustParse(ns)
+	return func(h *AuthHandler) {
+		h.refreshTokenNS = refreshTokenNS
+	}
+}
+
 func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...AuthHandlerOption) *AuthHandler {
 	h := &AuthHandler{
-		store:      storeClient,
-		servers:    servers,
-		httpClient: newSafeHTTPClient(),
+		store:          storeClient,
+		servers:        servers,
+		httpClient:     newSafeHTTPClient(),
+		refreshTokenNS: uuid.MustParse("7c9e6679-7425-40de-944b-e07fc1f90ae7"),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -253,6 +268,10 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(reg)
 }
 
+func (h *AuthHandler) refreshDataRedisKey(refreshToken string) string {
+	return "refresh_data:" + uuid.NewSHA1(h.refreshTokenNS, []byte(refreshToken)).String()
+}
+
 var (
 	claudeCodeClientName = regexp.MustCompile(`Claude Code \(([^)]+)\)`)
 )
@@ -371,7 +390,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		clientJSON, err := h.store.Get(r.Context(), "oauth_client:"+clientID)
 		if err != nil {
 			slog.WarnContext(ctx, "unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
+			h.writeTokenError(w, r, http.StatusUnauthorized, "invalid_client", srv.Name)
 			return
 		}
 		if err := json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
@@ -574,9 +593,14 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.Bool("has_verifier", codeVerifier != ""),
 	)
 
-	if grantType != "authorization_code" {
+	if grantType != "authorization_code" && grantType != "refresh_token" {
 		slog.Warn("unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
+		return
+	}
+
+	if grantType == "refresh_token" {
+		h.handleRefreshTokenGrant(w, r, srv)
 		return
 	}
 
@@ -604,7 +628,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.Warn("client_id mismatch in token request", //nolint: gosec
 			slog.String("expected", authCodeData.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
-		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		srvName := ""
+		if srv != nil {
+			srvName = srv.Name
+		}
+		h.writeTokenError(w, r, http.StatusUnauthorized, "invalid_client", srvName)
 		return
 	}
 
@@ -656,10 +684,117 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 	if upstreamToken.RefreshToken != "" {
 		resp["refresh_token"] = upstreamToken.RefreshToken
+		// refresh_token grant 時にサーバー情報を解決できるようにマッピングを保存
+		// キーは UUID v5 でハッシュ化し、refresh_token 本体を Redis に露出させない
+		refreshDataJSON, _ := json.Marshal(RefreshData{MCPServerName: authCodeData.MCPServerName})
+		_ = h.store.Set(r.Context(), h.refreshDataRedisKey(upstreamToken.RefreshToken), refreshDataJSON, 90*24*time.Hour)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
+	refreshToken := r.FormValue("refresh_token") //nolint: gosec
+	if refreshToken == "" {
+		slog.Warn("missing refresh_token")
+		http.Error(w, "missing refresh_token", http.StatusBadRequest)
+		return
+	}
+
+	// srv が nil の場合（/token エンドポイント経由）は Redis のマッピングからサーバー情報を解決する
+	if srv == nil {
+		refreshDataJSON, err := h.store.Get(ctx, h.refreshDataRedisKey(refreshToken))
+		if err != nil {
+			slog.Warn("refresh_data not found", slog.Any("error", err))
+			// RFC 6749 Section 5.2: invalid_grant は 400。クライアントはリトライを止める。
+			h.writeTokenError(w, r, http.StatusBadRequest, "invalid_grant", "")
+			return
+		}
+		var rd RefreshData
+		if err := json.Unmarshal([]byte(refreshDataJSON), &rd); err != nil {
+			slog.Error("failed to unmarshal refresh_data", slog.Any("error", err))
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		srv = h.servers[rd.MCPServerName]
+		if srv == nil {
+			slog.Warn("server not found for refresh", slog.String("mcp_server_name", rd.MCPServerName))
+			http.Error(w, "server not found", http.StatusNotFound)
+			return
+		}
+	}
+
+	if srv.OAuth2 == nil {
+		if srv.IsMCPBackend() && srv.Transport == config.MCPTransportHTTP {
+			// リフレッシュ時は DCR を再実行してはいけない（新しい client_id が発行され
+			// 元の refresh_token と一致しなくなる）。ストアから保存済み credentials のみ使う。
+			oauth2cfg := h.loadStoredOAuth2(ctx, srv.Name)
+			if oauth2cfg == nil {
+				// ストアに credentials がない場合は再認証が必要。
+				// 401 + WWW-Authenticate でクライアントに再認証フローを促す。
+				slog.WarnContext(ctx, "no stored oauth2 credentials for refresh, need re-authenticate", slog.String("server", srv.Name))
+				h.writeTokenError(w, r, http.StatusUnauthorized, "invalid_grant", srv.Name)
+				return
+			}
+			srv.OAuth2 = oauth2cfg
+		} else {
+			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	newToken, err := h.refreshUpstreamToken(ctx, srv.OAuth2, refreshToken)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to refresh upstream token", slog.String("server", srv.Name), slog.Any("error", err))
+		// アップストリームが invalid_grant を返した場合はリフレッシュトークンが無効。
+		// 400 を返してクライアントのリトライループを止め、再認証を促す。
+		h.writeTokenError(w, r, http.StatusBadRequest, "invalid_grant", srv.Name)
+		return
+	}
+
+	// 古いマッピングを削除し、新しい refresh_token が発行された場合は新しいマッピングを保存
+	_ = h.store.Del(ctx, h.refreshDataRedisKey(refreshToken))
+	if newToken.RefreshToken != "" {
+		refreshDataJSON, _ := json.Marshal(RefreshData{MCPServerName: srv.Name})
+		_ = h.store.Set(ctx, h.refreshDataRedisKey(newToken.RefreshToken), refreshDataJSON, 90*24*time.Hour)
+	}
+
+	var expiresIn int64
+	if !newToken.Expiry.IsZero() {
+		if secs := int64(time.Until(newToken.Expiry).Seconds()); secs > 0 {
+			expiresIn = secs
+		}
+	}
+	resp := map[string]any{
+		"access_token": newToken.AccessToken,
+		"token_type":   newToken.TokenType,
+		"expires_in":   expiresIn,
+	}
+	if newToken.RefreshToken != "" {
+		resp["refresh_token"] = newToken.RefreshToken
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *AuthHandler) refreshUpstreamToken(ctx context.Context, cfg *config.OAuth2, refreshToken string) (*oauth2.Token, error) {
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
+	oauthCfg := &oauth2.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		Scopes:       cfg.Scopes,
+		Endpoint: oauth2.Endpoint{
+			TokenURL: cfg.TokenURL,
+		},
+	}
+	// Expiry を過去にセットして TokenSource に強制リフレッシュさせる
+	t := &oauth2.Token{
+		RefreshToken: refreshToken,
+		Expiry:       time.Unix(1, 0),
+	}
+	return oauthCfg.TokenSource(ctx, t).Token()
 }
 
 func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSession, code, callbackURL string) (*oauth2.Token, error) {
@@ -691,15 +826,31 @@ var (
 
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
-// 結果は h.servers にキャッシュされる。
+// 結果は h.servers およびストアにキャッシュされる。
 func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) {
-	// キャッシュを確認
+	// Step 0a: メモリキャッシュを確認
 	h.mu.RLock()
 	if cached, ok := h.servers[srv.Name]; ok && cached.OAuth2 != nil {
 		h.mu.RUnlock()
 		return cached.OAuth2, nil
 	}
 	h.mu.RUnlock()
+
+	// Step 0b: 永続ストアを確認（サーバー再起動後の再 DCR を防ぐ）
+	// DCR で発行された client_id は再起動後も同じものを使う必要がある。
+	if h.store != nil {
+		if storedJSON, err := h.store.Get(ctx, h.serverOAuth2StoreKey(srv.Name)); err == nil {
+			var oauth2cfg config.OAuth2
+			if json.Unmarshal([]byte(storedJSON), &oauth2cfg) == nil {
+				h.mu.Lock()
+				if s, ok := h.servers[srv.Name]; ok {
+					s.OAuth2 = &oauth2cfg
+				}
+				h.mu.Unlock()
+				return &oauth2cfg, nil
+			}
+		}
+	}
 
 	// Step 1: バックエンドに probe リクエストを送り 401 を取得
 	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL)
@@ -714,17 +865,14 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		if parseErr != nil {
 			return nil, err
 		}
-		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", u.Scheme, u.Host)
+		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource%s", u.Scheme, u.Host, u.Path)
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
-	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
-	resourceOrigin := srv.URL
-	if u, err := url.Parse(resourceMetaURL); err == nil {
-		resourceOrigin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
-	}
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin, h.httpClient)
+	// resource フィールドの検証は srv.URL を使う。
+	// RFC 9728 では resource フィールドは保護リソースの正規 URL であるため、
+	// srv.URL と一致することが期待される。
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, srv.URL, h.httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -746,7 +894,7 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	}
 
 	if lastErr != nil {
-		return nil, err
+		return nil, lastErr
 	}
 
 	// Step 5: Dynamic Client Registration で ClientID/ClientSecret を取得
@@ -775,12 +923,17 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		Scopes:       authMeta.ScopesSupported,
 	}
 
-	// キャッシュに保存
+	// メモリキャッシュとストアに保存
 	h.mu.Lock()
 	if s, ok := h.servers[srv.Name]; ok {
 		s.OAuth2 = oauth2cfg
 	}
 	h.mu.Unlock()
+	if h.store != nil {
+		if storedJSON, err := json.Marshal(oauth2cfg); err == nil {
+			_ = h.store.Set(ctx, h.serverOAuth2StoreKey(srv.Name), string(storedJSON), 365*24*time.Hour)
+		}
+	}
 
 	slog.InfoContext(ctx, "oauth2 discovered for mcp backend",
 		slog.String("server", srv.Name),
@@ -789,6 +942,39 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		slog.String("client_id", oauth2cfg.ClientID),
 	)
 	return oauth2cfg, nil
+}
+
+func (h *AuthHandler) serverOAuth2StoreKey(serverName string) string {
+	return "server_oauth2:" + serverName
+}
+
+// loadStoredOAuth2 はメモリキャッシュ→ストアの順で保存済み OAuth2 設定を返す。
+// 見つからない場合は nil を返す（DCR の再実行はしない）。
+func (h *AuthHandler) loadStoredOAuth2(ctx context.Context, serverName string) *config.OAuth2 {
+	h.mu.RLock()
+	if cached, ok := h.servers[serverName]; ok && cached.OAuth2 != nil {
+		h.mu.RUnlock()
+		return cached.OAuth2
+	}
+	h.mu.RUnlock()
+
+	if h.store == nil {
+		return nil
+	}
+	storedJSON, err := h.store.Get(ctx, h.serverOAuth2StoreKey(serverName))
+	if err != nil {
+		return nil
+	}
+	var oauth2cfg config.OAuth2
+	if json.Unmarshal([]byte(storedJSON), &oauth2cfg) != nil {
+		return nil
+	}
+	h.mu.Lock()
+	if s, ok := h.servers[serverName]; ok {
+		s.OAuth2 = &oauth2cfg
+	}
+	h.mu.Unlock()
+	return &oauth2cfg
 }
 
 func (h *AuthHandler) getBaseURL(r *http.Request) string {
@@ -801,6 +987,26 @@ func (h *AuthHandler) getBaseURL(r *http.Request) string {
 		scheme = forwardedProto
 	}
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
+}
+
+// setWWWAuthenticate は 401 レスポンスに RFC 6750 準拠の WWW-Authenticate ヘッダをセットする。
+// クライアントはこの resource_metadata URL から認可サーバー情報を発見できる。
+func (h *AuthHandler) setWWWAuthenticate(w http.ResponseWriter, r *http.Request, srvName string) {
+	metadataURL := fmt.Sprintf("%s/.well-known/oauth-protected-resource/mcp/%s", h.getBaseURL(r), srvName)
+	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s"`, metadataURL))
+}
+
+// writeTokenError は RFC 6749 Section 5.2 に準拠したトークンエンドポイントのエラーレスポンスを返す。
+// - invalid_grant / unsupported_grant_type 等のグラントエラー → 400
+// - invalid_client → 401 + WWW-Authenticate
+// クライアントは 400 invalid_grant を受けた場合リトライを止め、再認証フローに移行する。
+func (h *AuthHandler) writeTokenError(w http.ResponseWriter, r *http.Request, status int, errCode string, srvName string) {
+	if status == http.StatusUnauthorized && srvName != "" {
+		h.setWWWAuthenticate(w, r, srvName)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": errCode})
 }
 
 func generateRandomString(n int) string {

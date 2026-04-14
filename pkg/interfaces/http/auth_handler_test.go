@@ -615,12 +615,16 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 	defer authSrv.Close()
 	authServerURL = authSrv.URL
 
+	// MCP バックエンド URL を先に確定させるために変数で参照する
+	var mcpSrvURL string
+
 	// Protected Resource Metadata エンドポイント
+	// RFC 9728: resource フィールドは保護リソース（MCP サーバー）の正規 URL
 	var metaServerURL string
 	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":              metaServerURL,
+			"resource":              mcpSrvURL,
 			"authorization_servers": []string{authServerURL},
 		})
 	}))
@@ -634,6 +638,7 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer mcpSrv.Close()
+	mcpSrvURL = mcpSrv.URL
 
 	h := &AuthHandler{
 		servers: config.Servers{

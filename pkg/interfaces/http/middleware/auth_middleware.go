@@ -31,7 +31,7 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 					scheme = forwardedProto
 				}
 				baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-				metadataURL := baseURL + "/.well-known/oauth-protected-resource"
+				metadataURL := fmt.Sprintf("%s/.well-known/oauth-protected-resource/mcp/%s", baseURL, srvName)
 				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
 					`Bearer resource_metadata="%s"`,
 					metadataURL,
