@@ -121,14 +121,10 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, 
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-protected-resource/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.OauthProtectedResource)))
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-authorization-server/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.MetadataEndpoint)))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/login", pathServerName), middleware(wrapMCPServer(h.LoginEndpoint)))
-	mux.HandleFunc("GET /authorize", wrapMCPServer(h.LoginEndpoint))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/callback", pathServerName), middleware(wrapMCPServer(h.CallbackEndpoint)))
-	mux.HandleFunc("GET /callback", wrapMCPServer(h.CallbackEndpoint))
 	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/token", pathServerName), middleware(wrapMCPServer(h.TokenEndpoint)))
-	mux.HandleFunc("POST /token", wrapMCPServer(h.TokenEndpoint))
 	// // Dynamic Client Registration (RFC 7591)
 	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/clients", pathServerName), middleware(wrapMCPServer(h.RegisterClientEndpoint)))
-	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
 }
 
 func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config.Server)) http.HandlerFunc {
@@ -161,13 +157,16 @@ func (h *AuthHandler) OauthProtectedResource(w http.ResponseWriter, r *http.Requ
 // MetadataEndpoint serves /.well-known/oauth-authorization-server
 func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	baseURL := h.getBaseURL(r)
+	// RFC 8414: issuer は authorization_servers で公開した URL と一致しなければならない。
+	// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
+	issuerURL := fmt.Sprintf("%s/mcp/%s", baseURL, srv.Name)
 	metadata := map[string]any{
-		"issuer":                                baseURL,
+		"issuer":                                issuerURL,
 		"authorization_endpoint":                fmt.Sprintf("%s/%s/auth/login", baseURL, srv.Name),
 		"token_endpoint":                        fmt.Sprintf("%s/%s/auth/token", baseURL, srv.Name),
 		"registration_endpoint":                 fmt.Sprintf("%s/%s/auth/clients", baseURL, srv.Name),
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
 		"resource_indicators_supported":         true,
@@ -434,6 +433,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		OAuth2TokenURL:       srv.OAuth2.TokenURL,
 		OAuth2Scopes:         srv.OAuth2.Scopes,
 		UpstreamCodeVerifier: upstreamVerifier,
+		MCPServerName:        srv.Name,
 	}
 
 	baseURL := h.getBaseURL(r)
@@ -544,6 +544,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		CodeChallengeMethod: session.CodeChallengeMethod,
 		Resource:            session.Resource,
 		UpstreamTokenKey:    tokenKey,
+		MCPServerName:       srv.Name,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
 	if err := h.store.Set(r.Context(), "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
@@ -758,7 +759,7 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 			&oauthex.ClientRegistrationMetadata{
 				RedirectURIs: []string{callbackURL},
 				ClientName:   "manifold",
-				GrantTypes:   []string{"authorization_code"},
+				GrantTypes:   []string{"authorization_code", "refresh_token"},
 			}, nil)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic client registration: %w", err)

@@ -145,7 +145,7 @@ func TestMetadataEndpoint(t *testing.T) {
 	var body map[string]any
 	err := json.Unmarshal(rw.Body.Bytes(), &body)
 	require.NoError(t, err)
-	assert.Contains(t, body, "issuer")
+	assert.Equal(t, "http://gateway.example.com/mcp/testserver", body["issuer"])
 	assert.Contains(t, body, "authorization_endpoint")
 	assert.Contains(t, body, "token_endpoint")
 	assert.Contains(t, body, "registration_endpoint")
@@ -859,6 +859,188 @@ func TestIsPrivateIP(t *testing.T) {
 		require.NotNil(t, ip)
 		assert.False(t, isPrivateIP(ip), "expected public: %s", s)
 	}
+}
+
+// --- LoginEndpoint: MCPServerName がセッションに保存される ---
+
+func TestLoginEndpoint_SessionStoresMCPServerName(t *testing.T) {
+	clientReg := ClientRegistration{
+		ClientID:     "client1",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+	}
+	regJSON, _ := json.Marshal(clientReg)
+	st := newMockStore(map[string]string{
+		"oauth_client:client1": string(regJSON),
+	})
+	h := &AuthHandler{store: st, servers: config.Servers{}}
+	srv := &config.Server{
+		Name:   "myserver",
+		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+
+	// 保存されたセッションに MCPServerName が設定されていることを確認
+	var sessionKey string
+	for k := range st.data {
+		if len(k) > len("auth_session:") && k[:len("auth_session:")] == "auth_session:" {
+			sessionKey = k
+			break
+		}
+	}
+	require.NotEmpty(t, sessionKey, "auth_session should be stored")
+
+	var session AuthSession
+	require.NoError(t, json.Unmarshal([]byte(st.data[sessionKey]), &session))
+	assert.Equal(t, "myserver", session.MCPServerName)
+}
+
+// --- CallbackEndpoint: MCPServerName が authCodeData に保存される ---
+
+func TestCallbackEndpoint_AuthCodeStoresMCPServerName(t *testing.T) {
+	// 上流トークンエンドポイントのモック
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"access_token": "upstream-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenSrv.Close()
+
+	session := AuthSession{
+		ClientID:             "client1",
+		RedirectURI:          "http://localhost:3000/callback",
+		State:                "mystate",
+		CodeChallenge:        "challenge",
+		CodeChallengeMethod:  "S256",
+		OAuth2ClientID:       "upstream-client",
+		OAuth2ClientSecret:   "",
+		OAuth2TokenURL:       tokenSrv.URL + "/token",
+		UpstreamCodeVerifier: "verifier",
+		MCPServerName:        "myserver",
+	}
+	sessionJSON, _ := json.Marshal(session)
+	st := newMockStore(map[string]string{
+		"auth_session:mystate": string(sessionJSON),
+	})
+	encKey := make([]byte, 32)
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(encKey))
+	h.httpClient = http.DefaultClient // テスト用にプライベートIP制限を無効化
+	srv := &config.Server{
+		Name: "myserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream-client",
+			TokenURL: tokenSrv.URL + "/token",
+		},
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/callback?state=mystate&code=upstream-code", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+
+	// 保存された authCode に MCPServerName が設定されていることを確認
+	var authCodeKey string
+	for k := range st.data {
+		if len(k) > len("auth_code:") && k[:len("auth_code:")] == "auth_code:" {
+			authCodeKey = k
+			break
+		}
+	}
+	require.NotEmpty(t, authCodeKey, "auth_code should be stored")
+
+	var authCodeData AuthCodeData
+	require.NoError(t, json.Unmarshal([]byte(st.data[authCodeKey]), &authCodeData))
+	assert.Equal(t, "myserver", authCodeData.MCPServerName)
+}
+
+// --- discoverOAuth2: DCR に refresh_token が含まれる ---
+
+func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
+	var receivedGrantTypes []string
+
+	var authServerURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		issuer := authServerURL
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"issuer":                           issuer,
+				"authorization_endpoint":           issuer + "/auth",
+				"token_endpoint":                   issuer + "/token",
+				"registration_endpoint":            issuer + "/register",
+				"response_types_supported":         []string{"code"},
+				"grant_types_supported":            []string{"authorization_code", "refresh_token"},
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/register":
+			var req struct {
+				GrantTypes []string `json:"grant_types"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			receivedGrantTypes = req.GrantTypes
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"client_id":     "new-client-id",
+				"client_secret": "",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSrv.Close()
+	authServerURL = authSrv.URL
+
+	var mcpSrvURL string
+	var metaServerURL string
+	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"resource":              mcpSrvURL,
+			"authorization_servers": []string{authServerURL},
+		})
+	}))
+	defer metaSrv.Close()
+	metaServerURL = metaSrv.URL
+
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate",
+			fmt.Sprintf(`Bearer resource_metadata="%s"`, metaServerURL))
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mcpSrv.Close()
+	mcpSrvURL = mcpSrv.URL
+
+	h := &AuthHandler{
+		servers: config.Servers{
+			"testsrv": &config.Server{Name: "testsrv"},
+		},
+	}
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       mcpSrv.URL,
+	}
+
+	_, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+
+	assert.Contains(t, receivedGrantTypes, "authorization_code")
+	assert.Contains(t, receivedGrantTypes, "refresh_token")
 }
 
 // --- RegisterRoutes ---
