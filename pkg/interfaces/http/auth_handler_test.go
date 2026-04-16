@@ -1005,12 +1005,11 @@ func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
 	defer authSrv.Close()
 	authServerURL = authSrv.URL
 
-	var mcpSrvURL string
 	var metaServerURL string
 	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":              mcpSrvURL,
+			"resource":              metaServerURL,
 			"authorization_servers": []string{authServerURL},
 		})
 	}))
@@ -1023,7 +1022,6 @@ func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer mcpSrv.Close()
-	mcpSrvURL = mcpSrv.URL
 
 	h := &AuthHandler{
 		servers: config.Servers{
