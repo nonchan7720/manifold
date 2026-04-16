@@ -74,6 +74,17 @@ type StoreClientRegistration struct {
 	MCPServerName string `json:"mcp_server_name"`
 }
 
+// RefreshTokenSession リフレッシュトークン使用時に上流 OAuth2 設定を復元するためのデータ。
+type RefreshTokenSession struct {
+	OAuth2ClientID     string   `json:"oauth2_client_id"`
+	OAuth2ClientSecret string   `json:"oauth2_client_secret"`
+	OAuth2TokenURL     string   `json:"oauth2_token_url"`
+	OAuth2Scopes       []string `json:"oauth2_scopes"`
+	MCPServerName      string   `json:"mcp_server_name"`
+	Resource           string   `json:"resource,omitempty"`
+	ClientID           string   `json:"client_id,omitempty"`
+}
+
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
 	store       store.Client
@@ -537,6 +548,25 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
+	if upstreamToken.RefreshToken != "" {
+		rtSession := RefreshTokenSession{
+			OAuth2ClientID:     session.OAuth2ClientID,
+			OAuth2ClientSecret: session.OAuth2ClientSecret,
+			OAuth2TokenURL:     session.OAuth2TokenURL,
+			OAuth2Scopes:       session.OAuth2Scopes,
+			MCPServerName:      srv.Name,
+			Resource:           session.Resource,
+			ClientID:           session.ClientID,
+		}
+		rtSessionJSON, _ := json.Marshal(rtSession)
+		encryptedRTSession, err := h.encryptToken(rtSessionJSON)
+		if err != nil {
+			slog.Error("failed to encrypt refresh session", slog.Any("error", err))
+		} else if err := h.store.Set(r.Context(), "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
+			slog.Error("failed to store refresh session", slog.Any("error", err))
+		}
+	}
+
 	mcpCode := generateRandomString(32)
 	authCodeData := AuthCodeData{
 		ClientID:            session.ClientID,
@@ -574,6 +604,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.Bool("has_code", code != ""),
 		slog.Bool("has_verifier", codeVerifier != ""),
 	)
+
+	if grantType == "refresh_token" {
+		h.handleRefreshTokenGrant(w, r, clientID)
+		return
+	}
 
 	if grantType != "authorization_code" {
 		slog.Warn("unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
@@ -873,6 +908,89 @@ func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Cl
 		return nil, fmt.Errorf("no auth server metadata found at %s", authorizationServer)
 	}
 	return authMeta, nil
+}
+
+// handleRefreshTokenGrant は grant_type=refresh_token のリクエストを処理する。
+// 上流 OAuth2 サーバーに対してトークンリフレッシュを委譲し、新しいアクセストークンを返す。
+func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientID string) {
+	refreshToken := r.FormValue("refresh_token")
+	if refreshToken == "" {
+		http.Error(w, "missing refresh_token", http.StatusBadRequest)
+		return
+	}
+
+	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
+	if err != nil {
+		slog.Warn("refresh session not found", slog.String("error", err.Error()))
+		http.Error(w, "invalid_grant", http.StatusBadRequest)
+		return
+	}
+	rtSessionJSON, err := h.decryptToken(encryptedRTSession)
+	if err != nil {
+		slog.Warn("failed to decrypt refresh session", slog.Any("error", err))
+		http.Error(w, "invalid_grant", http.StatusUnauthorized)
+		return
+	}
+	var rtSession RefreshTokenSession
+	if err := json.Unmarshal(rtSessionJSON, &rtSession); err != nil {
+		slog.Error("failed to unmarshal refresh session", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
+		slog.Warn("client_id mismatch in refresh request",
+			slog.String("expected", rtSession.ClientID),
+			slog.String("got", util.SanitizeLog(clientID))) //nolint: gosec
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+
+	oauthCfg := &oauth2.Config{
+		ClientID:     rtSession.OAuth2ClientID,
+		ClientSecret: rtSession.OAuth2ClientSecret,
+		Scopes:       rtSession.OAuth2Scopes,
+		Endpoint: oauth2.Endpoint{
+			TokenURL: rtSession.OAuth2TokenURL,
+		},
+	}
+	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, h.httpClient)
+	ts := oauthCfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
+	newToken, err := ts.Token()
+	if err != nil {
+		slog.Error("upstream refresh failed", slog.Any("error", err))
+		http.Error(w, "invalid_grant", http.StatusUnauthorized)
+		return
+	}
+
+	_ = h.store.Del(r.Context(), "refresh_session:"+refreshToken)
+	if newToken.RefreshToken != "" {
+		rtSessionJSON2, _ := json.Marshal(rtSession)
+		encryptedNew, err := h.encryptToken(rtSessionJSON2)
+		if err != nil {
+			slog.Error("failed to encrypt new refresh session", slog.Any("error", err))
+		} else if err := h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
+			slog.Error("failed to store new refresh session", slog.Any("error", err))
+		}
+	}
+
+	var expiresIn int64
+	if !newToken.Expiry.IsZero() {
+		if secs := int64(time.Until(newToken.Expiry).Seconds()); secs > 0 {
+			expiresIn = secs
+		}
+	}
+
+	resp := map[string]any{
+		"access_token": newToken.AccessToken,
+		"token_type":   newToken.TokenType,
+		"expires_in":   expiresIn,
+	}
+	if newToken.RefreshToken != "" {
+		resp["refresh_token"] = newToken.RefreshToken
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // encryptToken は平文バイト列を AES-256-GCM で暗号化し、base64 エンコードした文字列を返す。

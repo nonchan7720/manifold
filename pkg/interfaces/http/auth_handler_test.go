@@ -1041,6 +1041,230 @@ func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
 	assert.Contains(t, receivedGrantTypes, "refresh_token")
 }
 
+// --- handleRefreshTokenGrant (TokenEndpoint 経由) ---
+
+func TestTokenEndpoint_RefreshToken_MissingToken(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
+func TestTokenEndpoint_RefreshToken_SessionNotFound(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token&refresh_token=unknown"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
+func TestTokenEndpoint_RefreshToken_InvalidSessionData(t *testing.T) {
+	st := newMockStore(map[string]string{
+		"refresh_session:bad-token": "not-valid-encrypted-data",
+	})
+	h := NewAuthHandler(st, config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token&refresh_token=bad-token"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+func TestTokenEndpoint_RefreshToken_ClientIDMismatch(t *testing.T) {
+	encKey := make([]byte, 32)
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(encKey))
+
+	rtSession := RefreshTokenSession{
+		ClientID:       "registered-client",
+		OAuth2TokenURL: "https://auth.example.com/token",
+	}
+	rtSessionJSON, _ := json.Marshal(rtSession)
+	encrypted, err := h.encryptToken(rtSessionJSON)
+	require.NoError(t, err)
+	st.data["refresh_session:mytoken"] = encrypted
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token=mytoken&client_id=other-client"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, &config.Server{Name: "testserver"})
+
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+func TestTokenEndpoint_RefreshToken_UpstreamFails(t *testing.T) {
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+	}))
+	defer upstreamSrv.Close()
+
+	encKey := make([]byte, 32)
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(encKey))
+	h.httpClient = http.DefaultClient
+
+	rtSession := RefreshTokenSession{
+		OAuth2ClientID: "upstream-client",
+		OAuth2TokenURL: upstreamSrv.URL + "/token",
+	}
+	rtSessionJSON, _ := json.Marshal(rtSession)
+	encrypted, err := h.encryptToken(rtSessionJSON)
+	require.NoError(t, err)
+	st.data["refresh_session:mytoken"] = encrypted
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token=mytoken"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, &config.Server{Name: "testserver"})
+
+	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+func TestTokenEndpoint_RefreshToken_Success(t *testing.T) {
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "refresh_token", r.FormValue("grant_type"))
+		assert.Equal(t, "old-refresh-token", r.FormValue("refresh_token"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-access-token",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "new-refresh-token",
+		})
+	}))
+	defer upstreamSrv.Close()
+
+	encKey := make([]byte, 32)
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(encKey))
+	h.httpClient = http.DefaultClient
+
+	rtSession := RefreshTokenSession{
+		ClientID:       "client1",
+		OAuth2ClientID: "upstream-client",
+		OAuth2TokenURL: upstreamSrv.URL + "/token",
+	}
+	rtSessionJSON, _ := json.Marshal(rtSession)
+	encrypted, err := h.encryptToken(rtSessionJSON)
+	require.NoError(t, err)
+	st.data["refresh_session:old-refresh-token"] = encrypted
+
+	body := "grant_type=refresh_token&refresh_token=old-refresh-token&client_id=client1"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, &config.Server{Name: "testserver"})
+
+	assert.Equal(t, http.StatusOK, rw.Code)
+	assert.Equal(t, "application/json", rw.Header().Get("Content-Type"))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &resp))
+	assert.Equal(t, "new-access-token", resp["access_token"])
+	assert.Equal(t, "new-refresh-token", resp["refresh_token"])
+
+	// 古いセッションが削除され、新しいセッションが保存されていることを確認
+	_, oldExists := st.data["refresh_session:old-refresh-token"]
+	assert.False(t, oldExists, "old refresh session should be deleted")
+	_, newExists := st.data["refresh_session:new-refresh-token"]
+	assert.True(t, newExists, "new refresh session should be stored")
+}
+
+// --- CallbackEndpoint: 上流が refresh_token を返す場合 ---
+
+func TestCallbackEndpoint_StoresRefreshSession(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "upstream-access-token",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": "upstream-refresh-token",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	session := AuthSession{
+		ClientID:             "client1",
+		RedirectURI:          "http://localhost:3000/callback",
+		State:                "mystate",
+		CodeChallenge:        "challenge",
+		CodeChallengeMethod:  "S256",
+		OAuth2ClientID:       "upstream-client",
+		OAuth2ClientSecret:   "upstream-secret",
+		OAuth2TokenURL:       tokenSrv.URL + "/token",
+		UpstreamCodeVerifier: "verifier",
+		MCPServerName:        "myserver",
+	}
+	sessionJSON, _ := json.Marshal(session)
+	st := newMockStore(map[string]string{
+		"auth_session:mystate": string(sessionJSON),
+	})
+	encKey := make([]byte, 32)
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(encKey))
+	h.httpClient = http.DefaultClient
+	srv := &config.Server{
+		Name: "myserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream-client",
+			TokenURL: tokenSrv.URL + "/token",
+		},
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/callback?state=mystate&code=upstream-code", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+
+	// refresh_session が暗号化されて保存されていることを確認
+	encryptedRTSession, exists := st.data["refresh_session:upstream-refresh-token"]
+	require.True(t, exists, "refresh_session should be stored when upstream returns refresh_token")
+
+	// 復号して内容を確認
+	rtSessionJSON, err := h.decryptToken(encryptedRTSession)
+	require.NoError(t, err)
+	var rtSession RefreshTokenSession
+	require.NoError(t, json.Unmarshal(rtSessionJSON, &rtSession))
+	assert.Equal(t, "upstream-client", rtSession.OAuth2ClientID)
+	assert.Equal(t, "upstream-secret", rtSession.OAuth2ClientSecret)
+	assert.Equal(t, tokenSrv.URL+"/token", rtSession.OAuth2TokenURL)
+	assert.Equal(t, "client1", rtSession.ClientID)
+	assert.Equal(t, "myserver", rtSession.MCPServerName)
+}
+
 // --- RegisterRoutes ---
 
 func TestRegisterRoutes(t *testing.T) {
