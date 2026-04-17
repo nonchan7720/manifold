@@ -1265,6 +1265,43 @@ func TestCallbackEndpoint_StoresRefreshSession(t *testing.T) {
 	assert.Equal(t, "myserver", rtSession.MCPServerName)
 }
 
+// --- resourceURLFromMetaURL ---
+
+func TestResourceURLFromMetaURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		metaURL string
+		want    string
+	}{
+		{
+			name:    "パスなし（ルートリソース）",
+			metaURL: "https://example.com/.well-known/oauth-protected-resource",
+			want:    "https://example.com",
+		},
+		{
+			name:    "パスあり（/mcp）",
+			metaURL: "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp",
+			want:    "https://mcp.notion.com/mcp",
+		},
+		{
+			name:    "パスあり（/mcp/notion）",
+			metaURL: "https://host/.well-known/oauth-protected-resource/mcp/notion",
+			want:    "https://host/mcp/notion",
+		},
+		{
+			name:    "HTTP スキーム",
+			metaURL: "http://localhost:9999/.well-known/oauth-protected-resource/mcp/srv",
+			want:    "http://localhost:9999/mcp/srv",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resourceURLFromMetaURL(tt.metaURL)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // --- RegisterRoutes ---
 
 func TestRegisterRoutes(t *testing.T) {

@@ -132,10 +132,14 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, 
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-protected-resource/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.OauthProtectedResource)))
 	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-authorization-server/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.MetadataEndpoint)))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/login", pathServerName), middleware(wrapMCPServer(h.LoginEndpoint)))
+	mux.HandleFunc("GET /authorize", wrapMCPServer(h.LoginEndpoint))
 	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/callback", pathServerName), middleware(wrapMCPServer(h.CallbackEndpoint)))
+	mux.HandleFunc("GET /callback", wrapMCPServer(h.CallbackEndpoint))
 	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/token", pathServerName), middleware(wrapMCPServer(h.TokenEndpoint)))
+	mux.HandleFunc("POST /token", wrapMCPServer(h.TokenEndpoint))
 	// // Dynamic Client Registration (RFC 7591)
 	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/clients", pathServerName), middleware(wrapMCPServer(h.RegisterClientEndpoint)))
+	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
 }
 
 func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config.Server)) http.HandlerFunc {
@@ -754,13 +758,9 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
-	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
-	resourceOrigin := srv.URL
-	if u, err := url.Parse(resourceMetaURL); err == nil {
-		resourceOrigin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
-	}
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin, h.httpClient)
+	// resource フィールドの検証に使う URL は RFC 9728 の逆変換で resourceMetaURL から導出する。
+	// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceURLFromMetaURL(resourceMetaURL), h.httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -886,6 +886,20 @@ func getResourceMetadata(wwwAuthenticate []string) (string, error) {
 		return "", fmt.Errorf("no resource_metadata found in WWW-Authenticate")
 	}
 	return resourceMetaURL, nil
+}
+
+// resourceURLFromMetaURL は RFC 9728 の逆変換で Protected Resource Metadata URL から
+// リソース URL を導出する。
+// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
+func resourceURLFromMetaURL(metaURL string) string {
+	const wellKnownPrefix = "/.well-known/oauth-protected-resource"
+	u, err := url.Parse(metaURL)
+	if err != nil {
+		return metaURL
+	}
+	u.Path = strings.TrimPrefix(u.Path, wellKnownPrefix)
+	u.RawPath = ""
+	return u.String()
 }
 
 func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) ([]string, error) {
