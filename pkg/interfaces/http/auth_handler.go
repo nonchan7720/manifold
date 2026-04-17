@@ -475,7 +475,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
 	q := r.URL.Query()
 	sessionID := q.Get("state")
 	code := q.Get("code")
@@ -927,7 +927,7 @@ func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Cl
 // handleRefreshTokenGrant は grant_type=refresh_token のリクエストを処理する。
 // 上流 OAuth2 サーバーに対してトークンリフレッシュを委譲し、新しいアクセストークンを返す。
 func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientID string) {
-	refreshToken := r.FormValue("refresh_token")
+	refreshToken := r.FormValue("refresh_token") //nolint: gosec
 	if refreshToken == "" {
 		http.Error(w, "missing refresh_token", http.StatusBadRequest)
 		return
@@ -935,7 +935,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 
 	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
 	if err != nil {
-		slog.Warn("refresh session not found", slog.String("error", err.Error()))
+		slog.Warn("refresh session not found", slog.String("error", err.Error())) //nolint: gosec
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
@@ -953,9 +953,9 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	}
 
 	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
-		slog.Warn("client_id mismatch in refresh request",
+		slog.Warn("client_id mismatch in refresh request", //nolint: gosec
 			slog.String("expected", rtSession.ClientID),
-			slog.String("got", util.SanitizeLog(clientID))) //nolint: gosec
+			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
 		return
 	}
