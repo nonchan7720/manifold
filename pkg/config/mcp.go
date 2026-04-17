@@ -39,7 +39,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&s.Description, validation.Required),
 		validation.Field(&s.BaseURL, validation.When(s.Spec != "", validation.Required)),
 		validation.Field(&s.Transport, validation.When(s.Spec == "", validation.In(MCPTransportHTTP, MCPTransportStdio))),
-		validation.Field(&s.URL, validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP), validation.Required),
+		validation.Field(&s.URL, validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP, validation.Required)),
 		validation.Field(&s.Command, validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required)),
 	)
 }
