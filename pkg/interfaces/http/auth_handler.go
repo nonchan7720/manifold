@@ -74,6 +74,17 @@ type StoreClientRegistration struct {
 	MCPServerName string `json:"mcp_server_name"`
 }
 
+// RefreshTokenSession リフレッシュトークン使用時に上流 OAuth2 設定を復元するためのデータ。
+type RefreshTokenSession struct {
+	OAuth2ClientID     string   `json:"oauth2_client_id"`
+	OAuth2ClientSecret string   `json:"oauth2_client_secret"`
+	OAuth2TokenURL     string   `json:"oauth2_token_url"`
+	OAuth2Scopes       []string `json:"oauth2_scopes"`
+	MCPServerName      string   `json:"mcp_server_name"`
+	Resource           string   `json:"resource,omitempty"`
+	ClientID           string   `json:"client_id,omitempty"`
+}
+
 // AuthHandler CLIおよびMCPクライアントの両方に対して、OAuth 2.1認証サーバーを実装。
 type AuthHandler struct {
 	store       store.Client
@@ -161,13 +172,16 @@ func (h *AuthHandler) OauthProtectedResource(w http.ResponseWriter, r *http.Requ
 // MetadataEndpoint serves /.well-known/oauth-authorization-server
 func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	baseURL := h.getBaseURL(r)
+	// RFC 8414: issuer は authorization_servers で公開した URL と一致しなければならない。
+	// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
+	issuerURL := fmt.Sprintf("%s/mcp/%s", baseURL, srv.Name)
 	metadata := map[string]any{
-		"issuer":                                baseURL,
+		"issuer":                                issuerURL,
 		"authorization_endpoint":                fmt.Sprintf("%s/%s/auth/login", baseURL, srv.Name),
 		"token_endpoint":                        fmt.Sprintf("%s/%s/auth/token", baseURL, srv.Name),
 		"registration_endpoint":                 fmt.Sprintf("%s/%s/auth/clients", baseURL, srv.Name),
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
 		"resource_indicators_supported":         true,
@@ -434,6 +448,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		OAuth2TokenURL:       srv.OAuth2.TokenURL,
 		OAuth2Scopes:         srv.OAuth2.Scopes,
 		UpstreamCodeVerifier: upstreamVerifier,
+		MCPServerName:        srv.Name,
 	}
 
 	baseURL := h.getBaseURL(r)
@@ -460,7 +475,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
 	q := r.URL.Query()
 	sessionID := q.Get("state")
 	code := q.Get("code")
@@ -537,6 +552,25 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
+	if upstreamToken.RefreshToken != "" {
+		rtSession := RefreshTokenSession{
+			OAuth2ClientID:     session.OAuth2ClientID,
+			OAuth2ClientSecret: session.OAuth2ClientSecret,
+			OAuth2TokenURL:     session.OAuth2TokenURL,
+			OAuth2Scopes:       session.OAuth2Scopes,
+			MCPServerName:      srv.Name,
+			Resource:           session.Resource,
+			ClientID:           session.ClientID,
+		}
+		rtSessionJSON, _ := json.Marshal(rtSession)
+		encryptedRTSession, err := h.encryptToken(rtSessionJSON)
+		if err != nil {
+			slog.Error("failed to encrypt refresh session", slog.Any("error", err))
+		} else if err := h.store.Set(r.Context(), "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
+			slog.Error("failed to store refresh session", slog.Any("error", err))
+		}
+	}
+
 	mcpCode := generateRandomString(32)
 	authCodeData := AuthCodeData{
 		ClientID:            session.ClientID,
@@ -544,6 +578,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		CodeChallengeMethod: session.CodeChallengeMethod,
 		Resource:            session.Resource,
 		UpstreamTokenKey:    tokenKey,
+		MCPServerName:       srv.Name,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
 	if err := h.store.Set(r.Context(), "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
@@ -573,6 +608,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.Bool("has_code", code != ""),
 		slog.Bool("has_verifier", codeVerifier != ""),
 	)
+
+	if grantType == "refresh_token" {
+		h.handleRefreshTokenGrant(w, r, clientID)
+		return
+	}
 
 	if grantType != "authorization_code" {
 		slog.Warn("unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
@@ -718,13 +758,9 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	// resource フィールドの検証に使うURLは resourceMetaURL のオリジン（スキーム+ホスト）にする。
-	// srv.URL にはパス（/mcp 等）が含まれる場合があり、メタデータが返す resource と一致しないことがある。
-	resourceOrigin := srv.URL
-	if u, err := url.Parse(resourceMetaURL); err == nil {
-		resourceOrigin = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
-	}
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceOrigin, h.httpClient)
+	// resource フィールドの検証に使う URL は RFC 9728 の逆変換で resourceMetaURL から導出する。
+	// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
+	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceURLFromMetaURL(resourceMetaURL), h.httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -758,7 +794,7 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 			&oauthex.ClientRegistrationMetadata{
 				RedirectURIs: []string{callbackURL},
 				ClientName:   "manifold",
-				GrantTypes:   []string{"authorization_code"},
+				GrantTypes:   []string{"authorization_code", "refresh_token"},
 			}, nil)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic client registration: %w", err)
@@ -852,6 +888,20 @@ func getResourceMetadata(wwwAuthenticate []string) (string, error) {
 	return resourceMetaURL, nil
 }
 
+// resourceURLFromMetaURL は RFC 9728 の逆変換で Protected Resource Metadata URL から
+// リソース URL を導出する。
+// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
+func resourceURLFromMetaURL(metaURL string) string {
+	const wellKnownPrefix = "/.well-known/oauth-protected-resource"
+	u, err := url.Parse(metaURL)
+	if err != nil {
+		return metaURL
+	}
+	u.Path = strings.TrimPrefix(u.Path, wellKnownPrefix)
+	u.RawPath = ""
+	return u.String()
+}
+
 func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) ([]string, error) {
 	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, url, c)
 	if err != nil {
@@ -872,6 +922,89 @@ func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Cl
 		return nil, fmt.Errorf("no auth server metadata found at %s", authorizationServer)
 	}
 	return authMeta, nil
+}
+
+// handleRefreshTokenGrant は grant_type=refresh_token のリクエストを処理する。
+// 上流 OAuth2 サーバーに対してトークンリフレッシュを委譲し、新しいアクセストークンを返す。
+func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientID string) {
+	refreshToken := r.FormValue("refresh_token") //nolint: gosec
+	if refreshToken == "" {
+		http.Error(w, "missing refresh_token", http.StatusBadRequest)
+		return
+	}
+
+	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
+	if err != nil {
+		slog.Warn("refresh session not found", slog.String("error", err.Error())) //nolint: gosec
+		http.Error(w, "invalid_grant", http.StatusBadRequest)
+		return
+	}
+	rtSessionJSON, err := h.decryptToken(encryptedRTSession)
+	if err != nil {
+		slog.Warn("failed to decrypt refresh session", slog.Any("error", err))
+		http.Error(w, "invalid_grant", http.StatusUnauthorized)
+		return
+	}
+	var rtSession RefreshTokenSession
+	if err := json.Unmarshal(rtSessionJSON, &rtSession); err != nil {
+		slog.Error("failed to unmarshal refresh session", slog.Any("error", err))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
+		slog.Warn("client_id mismatch in refresh request", //nolint: gosec
+			slog.String("expected", rtSession.ClientID),
+			slog.String("got", util.SanitizeLog(clientID)))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+
+	oauthCfg := &oauth2.Config{
+		ClientID:     rtSession.OAuth2ClientID,
+		ClientSecret: rtSession.OAuth2ClientSecret,
+		Scopes:       rtSession.OAuth2Scopes,
+		Endpoint: oauth2.Endpoint{
+			TokenURL: rtSession.OAuth2TokenURL,
+		},
+	}
+	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, h.httpClient)
+	ts := oauthCfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
+	newToken, err := ts.Token()
+	if err != nil {
+		slog.Error("upstream refresh failed", slog.Any("error", err))
+		http.Error(w, "invalid_grant", http.StatusUnauthorized)
+		return
+	}
+
+	_ = h.store.Del(r.Context(), "refresh_session:"+refreshToken)
+	if newToken.RefreshToken != "" {
+		rtSessionJSON2, _ := json.Marshal(rtSession)
+		encryptedNew, err := h.encryptToken(rtSessionJSON2)
+		if err != nil {
+			slog.Error("failed to encrypt new refresh session", slog.Any("error", err))
+		} else if err := h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
+			slog.Error("failed to store new refresh session", slog.Any("error", err))
+		}
+	}
+
+	var expiresIn int64
+	if !newToken.Expiry.IsZero() {
+		if secs := int64(time.Until(newToken.Expiry).Seconds()); secs > 0 {
+			expiresIn = secs
+		}
+	}
+
+	resp := map[string]any{
+		"access_token": newToken.AccessToken,
+		"token_type":   newToken.TokenType,
+		"expires_in":   expiresIn,
+	}
+	if newToken.RefreshToken != "" {
+		resp["refresh_token"] = newToken.RefreshToken
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // encryptToken は平文バイト列を AES-256-GCM で暗号化し、base64 エンコードした文字列を返す。
