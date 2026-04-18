@@ -71,10 +71,10 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 	}
 
 	if err := redisotel.InstrumentTracing(rdb); err != nil {
-		slog.Warn("failed to redisotel InstrumentTracing")
+		slog.WarnContext(ctx, "failed to redisotel InstrumentTracing")
 	}
 	if err := redisotel.InstrumentMetrics(rdb); err != nil {
-		slog.Warn("failed to redisotel InstrumentMetrics")
+		slog.WarnContext(ctx, "failed to redisotel InstrumentMetrics")
 	}
 
 	// Ping to verify connection

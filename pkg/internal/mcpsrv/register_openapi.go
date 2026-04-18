@@ -44,7 +44,7 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 		return err
 	}
 	if baseUrl == "" {
-		baseUrl = oastomcptool.GetBaseUrlFromSwagger(spec, specPath)
+		baseUrl = oastomcptool.GetBaseUrlFromSwagger(ctx, spec, specPath)
 	}
 	for path, pathItem := range spec.Paths {
 		for method, operation := range pathItem.Operations() {
@@ -81,7 +81,7 @@ func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 		return err
 	}
 	if baseUrl == "" {
-		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(spec, specPath)
+		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(ctx, spec, specPath)
 	}
 	for path, pathItem := range spec.Paths.Map() {
 		for method, operation := range pathItem.Operations() {

@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	httphandler "github.com/nonchan7720/manifold/pkg/interfaces/http"
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
+	"github.com/nonchan7720/manifold/pkg/internal/logging"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 	"github.com/spf13/cobra"
@@ -100,6 +102,13 @@ func runGatewayServer(ctx context.Context) error {
 		mux.Handle("/metrics", metricsHandler)
 	}
 
+	slogHandler := slog.NewMultiHandler(
+		logging.NewOTEL(logging.NewJSONHandler()),
+		logging.NewOTELLogs(),
+	)
+	logger := slog.New(slogHandler)
+	slog.SetDefault(logger)
+
 	gateway := globalConfig.Gateway
 	servePort := gateway.Port
 	if servePort == 0 {
@@ -109,7 +118,7 @@ func runGatewayServer(ctx context.Context) error {
 		Addr: fmt.Sprintf(":%d", servePort),
 		Handler: otelhttp.NewHandler(
 			middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux))),
-			"gateway",
+			fmt.Sprintf("%s/%s", trace.OpenTelemetryTracerName, "gateway"),
 		),
 	}
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
@@ -133,7 +142,7 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 func runServer(ctx context.Context, srv *http.Server, name string, port int, certFile, keyFile string) error {
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("starting server", slog.String("name", name), slog.Int("port", port))
+		slog.InfoContext(ctx, "starting server", slog.String("name", name), slog.Int("port", port))
 		if certFile != "" && keyFile != "" {
 			if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s error: %w", name, err)
@@ -149,7 +158,7 @@ func runServer(ctx context.Context, srv *http.Server, name string, port int, cer
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		slog.Info("shutdown signal received", slog.String("server", name))
+		slog.InfoContext(ctx, "shutdown signal received", slog.String("server", name))
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -158,6 +167,6 @@ func runServer(ctx context.Context, srv *http.Server, name string, port int, cer
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("%s graceful shutdown error: %w", name, err)
 	}
-	slog.Info("graceful shutdown completed", slog.String("server", name))
+	slog.InfoContext(shutdownCtx, "graceful shutdown completed", slog.String("server", name))
 	return nil
 }

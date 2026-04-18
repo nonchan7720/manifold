@@ -237,7 +237,7 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
 		if err = validateRedirectURI(uri); err != nil {
-			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -269,12 +269,12 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
-		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
 	if err = h.store.Set(ctx, "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
-		slog.Error("failed to store client registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
@@ -331,7 +331,7 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
 		if err = validateRedirectURI(uri); err != nil {
-			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -363,12 +363,12 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
-		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
 	if err = h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
-		slog.Error("failed to store client registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
@@ -392,7 +392,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	state := q.Get("state")
 	resource := q.Get("resource") // RFC 8707
 
-	slog.Info("LoginEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "LoginEndpoint called", //nolint: gosec
 		slog.String("client_id", util.SanitizeLog(clientID)),
 		slog.String("redirect_uri", util.SanitizeLog(redirectURI)),
 		slog.String("state", util.SanitizeLog(state)),
@@ -482,7 +482,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	sessionJSON, _ := json.Marshal(session)
 	if err = h.store.Set(ctx, "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
-		slog.Error("failed to store auth session", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -511,26 +511,26 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	sessionID := q.Get("state")
 	code := q.Get("code")
 
-	slog.Info("CallbackEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "CallbackEndpoint called", //nolint: gosec
 		slog.String("state", util.SanitizeLog(sessionID)),
 		slog.Bool("has_code", code != ""),
 	)
 
 	if sessionID == "" || code == "" {
-		slog.Warn("callback missing params")
+		slog.WarnContext(ctx, "callback missing params")
 		http.Error(w, "missing state or code", http.StatusBadRequest)
 		return
 	}
 
 	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
 	if err != nil {
-		slog.Warn("session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID))) //nolint: gosec
+		slog.WarnContext(ctx, "session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID))) //nolint: gosec
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
 		return
 	}
 	var session AuthSession
 	if err = json.Unmarshal([]byte(sessionJSON), &session); err != nil {
-		slog.Error("failed to unmarshal auth session", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to unmarshal auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -551,7 +551,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	// Exchange code with upstream OAuth2 server
 	upstreamToken, err := h.exchangeUpstreamToken(ctx, session, code, callbackURL)
 	if err != nil {
-		slog.Error("failed to exchange code with upstream", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to exchange code with upstream", slog.Any("error", err))
 		http.Error(w, "failed to authenticate with upstream", http.StatusInternalServerError)
 		return
 	}
@@ -566,19 +566,19 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	tokenKey := "upstream_token:" + generateRandomString(32)
 	tokenJSON, err := json.Marshal(upstreamToken) //nolint: gosec
 	if err != nil {
-		slog.Error("failed to marshal upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	// AES-256-GCM でトークンを暗号化して保存（平文保存を防ぐ）
 	encryptedToken, err := h.encryptToken(tokenJSON)
 	if err != nil {
-		slog.Error("failed to encrypt upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to encrypt upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	if err = h.store.Set(ctx, tokenKey, encryptedToken, tokenTTL); err != nil {
-		slog.Error("failed to store upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to store upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -596,9 +596,9 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		rtSessionJSON, _ := json.Marshal(rtSession)
 		encryptedRTSession, err := h.encryptToken(rtSessionJSON)
 		if err != nil {
-			slog.Error("failed to encrypt refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to encrypt refresh session", slog.Any("error", err))
 		} else if err = h.store.Set(ctx, "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
-			slog.Error("failed to store refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to store refresh session", slog.Any("error", err))
 		}
 	}
 
@@ -613,7 +613,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
 	if err = h.store.Set(ctx, "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
-		slog.Error("failed to store auth code", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to store auth code", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -639,7 +639,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	clientID := r.FormValue("client_id")
 	resource := r.FormValue("resource") // RFC 8707
 
-	slog.Info("TokenEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "TokenEndpoint called", //nolint: gosec
 		slog.String("grant_type", util.SanitizeLog(grantType)),
 		slog.Bool("has_code", code != ""),
 		slog.Bool("has_verifier", codeVerifier != ""),
@@ -651,33 +651,33 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	if grantType != "authorization_code" {
-		slog.Warn("unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
+		slog.WarnContext(ctx, "unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
 		return
 	}
 
 	if code == "" || codeVerifier == "" {
-		slog.Warn("missing code or verifier")
+		slog.WarnContext(ctx, "missing code or verifier")
 		http.Error(w, "missing code or code_verifier", http.StatusBadRequest)
 		return
 	}
 
 	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
 	if err != nil {
-		slog.Warn("auth code not found in redis", slog.String("code", util.SanitizeLog(code))) //nolint: gosec
+		slog.WarnContext(ctx, "auth code not found in redis", slog.String("code", util.SanitizeLog(code))) //nolint: gosec
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
 		return
 	}
 	var authCodeData AuthCodeData
 	if err = json.Unmarshal([]byte(authCodeJSON), &authCodeData); err != nil {
-		slog.Error("failed to unmarshal auth code data", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to unmarshal auth code data", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	// client_id をコード発行時のクライアントと照合
 	if authCodeData.ClientID != "" && clientID != authCodeData.ClientID {
-		slog.Warn("client_id mismatch in token request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in token request", //nolint: gosec
 			slog.String("expected", authCodeData.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -701,19 +701,19 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	encryptedToken, err := h.store.Get(ctx, authCodeData.UpstreamTokenKey)
 	if err != nil {
-		slog.Error("upstream token not found in redis", slog.Any("error", err))
+		slog.ErrorContext(ctx, "upstream token not found in redis", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	tokenJSON, err := h.decryptToken(encryptedToken)
 	if err != nil {
-		slog.Error("failed to decrypt upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to decrypt upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var upstreamToken oauth2.Token
 	if err = json.Unmarshal(tokenJSON, &upstreamToken); err != nil {
-		slog.Error("failed to unmarshal upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to unmarshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -990,25 +990,25 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 
 	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
 	if err != nil {
-		slog.Warn("refresh session not found", slog.String("error", err.Error())) //nolint: gosec
+		slog.WarnContext(ctx, "refresh session not found", slog.String("error", err.Error())) //nolint: gosec
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
 	rtSessionJSON, err := h.decryptToken(encryptedRTSession)
 	if err != nil {
-		slog.Warn("failed to decrypt refresh session", slog.Any("error", err))
+		slog.WarnContext(ctx, "failed to decrypt refresh session", slog.Any("error", err))
 		http.Error(w, "invalid_grant", http.StatusUnauthorized)
 		return
 	}
 	var rtSession RefreshTokenSession
 	if err = json.Unmarshal(rtSessionJSON, &rtSession); err != nil {
-		slog.Error("failed to unmarshal refresh session", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to unmarshal refresh session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
-		slog.Warn("client_id mismatch in refresh request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in refresh request", //nolint: gosec
 			slog.String("expected", rtSession.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -1027,7 +1027,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	ts := oauthCfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
 	newToken, err := ts.Token()
 	if err != nil {
-		slog.Error("upstream refresh failed", slog.Any("error", err))
+		slog.ErrorContext(ctx, "upstream refresh failed", slog.Any("error", err))
 		http.Error(w, "invalid_grant", http.StatusUnauthorized)
 		return
 	}
@@ -1037,9 +1037,9 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 		rtSessionJSON2, _ := json.Marshal(rtSession)
 		encryptedNew, err := h.encryptToken(rtSessionJSON2)
 		if err != nil {
-			slog.Error("failed to encrypt new refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to encrypt new refresh session", slog.Any("error", err))
 		} else if err = h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
-			slog.Error("failed to store new refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to store new refresh session", slog.Any("error", err))
 		}
 	}
 

@@ -45,9 +45,9 @@ func Logging(next http.Handler) http.Handler {
 			slog.String("request-uri", util.SanitizeLog(r.RequestURI)),
 		)
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		log.Info("http request")
+		log.InfoContext(ctx, "http request")
 		next.ServeHTTP(rw, r)
-		log.Info("http response",
+		log.InfoContext(ctx, "http response",
 			slog.Int("status", rw.status),
 			slog.Duration("duration", time.Since(start)),
 		)

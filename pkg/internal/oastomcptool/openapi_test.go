@@ -103,7 +103,7 @@ func TestDeriveBaseUrlFromSpecPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.specPath, func(t *testing.T) {
-			got := deriveBaseUrlFromSpecPath(tt.specPath)
+			got := deriveBaseUrlFromSpecPath(t.Context(), tt.specPath)
 			require.Equal(t, tt.expected, got)
 		})
 	}
@@ -117,7 +117,7 @@ func TestGetBaseUrl_OpenAPI3_AbsoluteServer(t *testing.T) {
 			map[string]any{"url": "https://api.example.com"},
 		},
 	}
-	got := GetBaseUrl(spec, "")
+	got := GetBaseUrl(t.Context(), spec, "")
 	require.Equal(t, "https://api.example.com", got)
 }
 
@@ -127,7 +127,7 @@ func TestGetBaseUrl_OpenAPI3_RelativeServer(t *testing.T) {
 			map[string]any{"url": "/api/v1"},
 		},
 	}
-	got := GetBaseUrl(spec, "https://example.com/openapi.json")
+	got := GetBaseUrl(t.Context(), spec, "https://example.com/openapi.json")
 	require.Equal(t, "https://example.com/api/v1", got)
 }
 
@@ -137,7 +137,7 @@ func TestGetBaseUrl_Swagger2_WithHost(t *testing.T) {
 		"schemes":  []any{"http"},
 		"basePath": "/v2",
 	}
-	got := GetBaseUrl(spec, "")
+	got := GetBaseUrl(t.Context(), spec, "")
 	require.Equal(t, "http://api.example.com/v2", got)
 }
 
@@ -146,12 +146,12 @@ func TestGetBaseUrl_Swagger2_DefaultScheme(t *testing.T) {
 		"host":     "api.example.com",
 		"basePath": "/v1",
 	}
-	got := GetBaseUrl(spec, "")
+	got := GetBaseUrl(t.Context(), spec, "")
 	require.Equal(t, "https://api.example.com/v1", got)
 }
 
 func TestGetBaseUrl_Fallback(t *testing.T) {
-	got := GetBaseUrl(map[string]any{}, "https://example.com/openapi.json")
+	got := GetBaseUrl(t.Context(), map[string]any{}, "https://example.com/openapi.json")
 	require.Equal(t, "https://example.com", got)
 }
 
@@ -163,7 +163,7 @@ func TestGetBaseUrlFromOpenAPI3_WithServer(t *testing.T) {
 			{URL: "https://api.example.com/v2"},
 		},
 	}
-	got := GetBaseUrlFromOpenAPI3(spec, "")
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "")
 	require.Equal(t, "https://api.example.com/v2", got)
 }
 
@@ -173,19 +173,19 @@ func TestGetBaseUrlFromOpenAPI3_RelativeServer(t *testing.T) {
 			{URL: "/api/v1"},
 		},
 	}
-	got := GetBaseUrlFromOpenAPI3(spec, "https://example.com/openapi.json")
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "https://example.com/openapi.json")
 	require.Equal(t, "https://example.com/api/v1", got)
 }
 
 func TestGetBaseUrlFromOpenAPI3_NoServers(t *testing.T) {
 	spec := &openapi3.T{}
-	got := GetBaseUrlFromOpenAPI3(spec, "https://example.com/openapi.json")
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "https://example.com/openapi.json")
 	require.Equal(t, "https://example.com", got)
 }
 
 func TestGetBaseUrlFromOpenAPI3_NoServersNoPath(t *testing.T) {
 	spec := &openapi3.T{}
-	got := GetBaseUrlFromOpenAPI3(spec, "")
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "")
 	require.Equal(t, "", got)
 }
 

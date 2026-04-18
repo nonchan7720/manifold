@@ -139,7 +139,7 @@ func TestGetBaseUrlFromSwagger_WithHostAndScheme(t *testing.T) {
 		Schemes:  []string{"https"},
 		BasePath: "/v2",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
 	require.Equal(t, "https://api.example.com/v2", got)
 }
 
@@ -148,7 +148,7 @@ func TestGetBaseUrlFromSwagger_WithHostNoScheme(t *testing.T) {
 		Host:     "api.example.com",
 		BasePath: "/v1",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
 	require.Equal(t, "https://api.example.com/v1", got)
 }
 
@@ -158,19 +158,19 @@ func TestGetBaseUrlFromSwagger_WithHTTPScheme(t *testing.T) {
 		Schemes:  []string{"http"},
 		BasePath: "/api",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
 	require.Equal(t, "http://localhost/api", got)
 }
 
 func TestGetBaseUrlFromSwagger_NoHost_DeriveFromPath(t *testing.T) {
 	spec := &openapi2.T{}
-	got := GetBaseUrlFromSwagger(spec, "https://example.com/swagger.json")
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "https://example.com/swagger.json")
 	require.Equal(t, "https://example.com", got)
 }
 
 func TestGetBaseUrlFromSwagger_NoHost_NoPath(t *testing.T) {
 	spec := &openapi2.T{}
-	got := GetBaseUrlFromSwagger(spec, "")
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
 	require.Equal(t, "", got)
 }
 

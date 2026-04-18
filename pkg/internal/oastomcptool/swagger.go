@@ -74,7 +74,7 @@ func removeBoolRequiredFromSchemas(v any) {
 }
 
 // GetBaseUrlFromSwagger extracts base URL from a Swagger 2.x typed spec.
-func GetBaseUrlFromSwagger(spec *openapi2.T, specPath string) string {
+func GetBaseUrlFromSwagger(ctx context.Context, spec *openapi2.T, specPath string) string {
 	if spec.Host != "" {
 		scheme := "https"
 		if len(spec.Schemes) > 0 {
@@ -82,7 +82,7 @@ func GetBaseUrlFromSwagger(spec *openapi2.T, specPath string) string {
 		}
 		return fmt.Sprintf("%s://%s%s", scheme, spec.Host, spec.BasePath)
 	}
-	return deriveBaseUrlFromSpecPath(specPath)
+	return deriveBaseUrlFromSpecPath(ctx, specPath)
 }
 
 // resolveSwaggerParamRef resolves a $ref parameter to the concrete *openapi2.Parameter.

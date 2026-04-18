@@ -87,7 +87,8 @@ func registerAPI(ctx context.Context, spec, baseURL string, srv *mcp.Server) err
 	tools := register.ListTools()
 	for _, tool := range tools {
 		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (_ *mcp.CallToolResult, rErr error) {
-			ctx = trace.StartSpan(ctx, "mcpsrv/MCPServer/Handler", attribute.String("tool-name", ctr.Params.Name))
+			spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
+			ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))
 			defer func() { trace.EndSpan(ctx, rErr) }()
 			slog.InfoContext(ctx, "call tool", slog.String("tool-name", ctr.Params.Name))
 

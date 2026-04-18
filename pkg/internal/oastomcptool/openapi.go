@@ -109,7 +109,7 @@ func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 }
 
 // GetBaseUrl extracts base URL from raw OpenAPI spec map.
-func GetBaseUrl(spec map[string]any, spec_path string) string {
+func GetBaseUrl(ctx context.Context, spec map[string]any, spec_path string) string {
 	// OpenAPI 3.x
 	if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 { //nolint: nestif
 		if server, ok := servers[0].(map[string]any); ok {
@@ -120,7 +120,7 @@ func GetBaseUrl(spec map[string]any, spec_path string) string {
 						if err == nil {
 							base_domain := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 							full_base_url := base_domain + server_url
-							slog.Info(fmt.Sprintf(
+							slog.InfoContext(ctx, fmt.Sprintf(
 								"OpenAPI spec has relative server URL '%s'. Deriving base from spec_path: %s",
 								server_url, full_base_url,
 							))
@@ -146,11 +146,11 @@ func GetBaseUrl(spec map[string]any, spec_path string) string {
 		}
 		return fmt.Sprintf("%s://%s%s", scheme, host, base_path)
 	}
-	return deriveBaseUrlFromSpecPath(spec_path)
+	return deriveBaseUrlFromSpecPath(ctx, spec_path)
 }
 
 // GetBaseUrlFromOpenAPI3 extracts base URL from an OpenAPI 3.x typed spec.
-func GetBaseUrlFromOpenAPI3(spec *openapi3.T, specPath string) string {
+func GetBaseUrlFromOpenAPI3(ctx context.Context, spec *openapi3.T, specPath string) string {
 	if len(spec.Servers) > 0 { //nolint: nestif
 		serverURL := spec.Servers[0].URL
 		if strings.HasPrefix(serverURL, "/") && specPath != "" {
@@ -159,7 +159,7 @@ func GetBaseUrlFromOpenAPI3(spec *openapi3.T, specPath string) string {
 				if err == nil {
 					baseDomain := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 					fullBaseURL := baseDomain + serverURL
-					slog.Info(fmt.Sprintf(
+					slog.InfoContext(ctx, fmt.Sprintf(
 						"OpenAPI spec has relative server URL '%s'. Deriving base from spec_path: %s",
 						serverURL, fullBaseURL,
 					))
@@ -169,10 +169,10 @@ func GetBaseUrlFromOpenAPI3(spec *openapi3.T, specPath string) string {
 		}
 		return serverURL
 	}
-	return deriveBaseUrlFromSpecPath(specPath)
+	return deriveBaseUrlFromSpecPath(ctx, specPath)
 }
 
-func deriveBaseUrlFromSpecPath(spec_path string) string {
+func deriveBaseUrlFromSpecPath(ctx context.Context, spec_path string) string {
 	if spec_path == "" {
 		return ""
 	}
@@ -182,7 +182,7 @@ func deriveBaseUrlFromSpecPath(spec_path string) string {
 	for _, suffix := range []string{"/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml"} {
 		if strings.HasSuffix(spec_path, suffix) {
 			base_url := spec_path[:len(spec_path)-len(suffix)]
-			slog.Info(fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
+			slog.InfoContext(ctx, fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
 			return base_url
 		}
 	}
@@ -190,7 +190,7 @@ func deriveBaseUrlFromSpecPath(spec_path string) string {
 	last := parts[len(parts)-1]
 	if strings.HasSuffix(last, ".json") || strings.HasSuffix(last, ".yaml") || strings.HasSuffix(last, ".yml") {
 		base_url := strings.Join(parts[:len(parts)-1], "/")
-		slog.Info(fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
+		slog.InfoContext(ctx, fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
 		return base_url
 	}
 	return ""
