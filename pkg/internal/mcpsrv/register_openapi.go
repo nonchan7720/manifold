@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
-func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string) (*MCPToolRegistry, error) {
+func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string) (_ *MCPToolRegistry, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	register := NewMCPToolRegistry()
 
 	// バージョン判定のため最小限の JSON デコード
@@ -26,18 +30,21 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string) (*MCP
 	if isSwagger {
 		swagger(ctx, register, specPath, baseUrl)
 	} else {
-		openapi(register, specPath, baseUrl)
+		openapi(ctx, register, specPath, baseUrl)
 	}
 	return register, nil
 }
 
-func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string) error {
+func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	spec, err := oastomcptool.LoadSwaggerSpec(ctx, specPath)
 	if err != nil {
 		return err
 	}
 	if baseUrl == "" {
-		baseUrl = oastomcptool.GetBaseUrlFromSwagger(spec, specPath)
+		baseUrl = oastomcptool.GetBaseUrlFromSwagger(ctx, spec, specPath)
 	}
 	for path, pathItem := range spec.Paths {
 		for method, operation := range pathItem.Operations() {
@@ -65,13 +72,16 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 	return nil
 }
 
-func openapi(register *MCPToolRegistry, specPath string, baseUrl string) error {
+func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	spec, err := oastomcptool.LoadOpenAPI3Spec(specPath)
 	if err != nil {
 		return err
 	}
 	if baseUrl == "" {
-		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(spec, specPath)
+		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(ctx, spec, specPath)
 	}
 	for path, pathItem := range spec.Paths.Map() {
 		for method, operation := range pathItem.Operations() {

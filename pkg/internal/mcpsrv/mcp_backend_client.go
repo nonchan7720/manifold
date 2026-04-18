@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"golang.org/x/oauth2"
@@ -30,7 +31,10 @@ type MCPBackendClient struct {
 
 // EnsureConnected は初回のみバックエンドへ接続してツールを登録する。
 // 接続失敗時は次のリクエストでリトライ可能（sync.Once は使わない）。
-func (c *MCPBackendClient) EnsureConnected(ctx context.Context) error {
+func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/EnsureConnected")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	c.mu.Lock()
 	if c.connected {
 		c.mu.Unlock()
@@ -65,7 +69,10 @@ func (c *MCPBackendClient) Close() {
 	}
 }
 
-func (c *MCPBackendClient) connect(ctx context.Context) (*mcp.ClientSession, error) {
+func (c *MCPBackendClient) connect(ctx context.Context) (_ *mcp.ClientSession, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/connect")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "manifold",
 		Version: "v1.0.0",
@@ -78,7 +85,10 @@ func (c *MCPBackendClient) connect(ctx context.Context) (*mcp.ClientSession, err
 	return client.Connect(ctx, transport, nil)
 }
 
-func (c *MCPBackendClient) buildTransport(ctx context.Context) (mcp.Transport, error) {
+func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/buildTransport")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	switch c.cfg.Transport {
 	case config.MCPTransportHTTP:
 		// AuthValue が設定されている場合は API キー等の静的認証。
@@ -124,7 +134,10 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (mcp.Transport, e
 	}
 }
 
-func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.ClientSession) error {
+func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.ClientSession) (rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/registerTools")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	result, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return err
@@ -148,7 +161,10 @@ type contextOAuthHandler struct{}
 
 var _ auth.OAuthHandler = (*contextOAuthHandler)(nil)
 
-func (h *contextOAuthHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+func (h *contextOAuthHandler) TokenSource(ctx context.Context) (_ oauth2.TokenSource, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/contextOAuthHandler/TokenSource")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	token := contexts.FromRequestAuthHeader(ctx)
 	if token == "" {
 		return nil, nil //nolint: nilnil

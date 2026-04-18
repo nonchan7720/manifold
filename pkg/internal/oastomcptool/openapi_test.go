@@ -8,7 +8,6 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,11 +36,11 @@ func TestSanitizePathParameterValue(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := sanitize_path_parameter_value(tt.paramValue, tt.paramName)
 			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Empty(t, got)
+				require.Error(t, err)
+				require.Empty(t, got)
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tt.want, got)
+				require.Equal(t, tt.want, got)
 			}
 		})
 	}
@@ -52,13 +51,13 @@ func TestSanitizePathParameterValue(t *testing.T) {
 func TestFetchSpecBytes_LocalFile(t *testing.T) {
 	data, err := FetchSpecBytes(context.Background(), "../mcpsrv/fixtures/petstore_oas.json")
 	require.NoError(t, err)
-	assert.NotEmpty(t, data)
+	require.NotEmpty(t, data)
 }
 
 func TestFetchSpecBytes_LocalFileNotFound(t *testing.T) {
 	_, err := FetchSpecBytes(context.Background(), "nonexistent_spec.json")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	require.Contains(t, err.Error(), "not found")
 }
 
 func TestFetchSpecBytes_URL_OK(t *testing.T) {
@@ -70,7 +69,7 @@ func TestFetchSpecBytes_URL_OK(t *testing.T) {
 
 	data, err := FetchSpecBytes(context.Background(), srv.URL+"/openapi.json")
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "openapi")
+	require.Contains(t, string(data), "openapi")
 }
 
 func TestFetchSpecBytes_URL_HTTPError(t *testing.T) {
@@ -81,7 +80,7 @@ func TestFetchSpecBytes_URL_HTTPError(t *testing.T) {
 
 	_, err := FetchSpecBytes(context.Background(), srv.URL+"/notfound")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "HTTP error")
+	require.Contains(t, err.Error(), "HTTP error")
 }
 
 // --- deriveBaseUrlFromSpecPath ---
@@ -104,8 +103,8 @@ func TestDeriveBaseUrlFromSpecPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.specPath, func(t *testing.T) {
-			got := deriveBaseUrlFromSpecPath(tt.specPath)
-			assert.Equal(t, tt.expected, got)
+			got := deriveBaseUrlFromSpecPath(t.Context(), tt.specPath)
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -118,8 +117,8 @@ func TestGetBaseUrl_OpenAPI3_AbsoluteServer(t *testing.T) {
 			map[string]any{"url": "https://api.example.com"},
 		},
 	}
-	got := GetBaseUrl(spec, "")
-	assert.Equal(t, "https://api.example.com", got)
+	got := GetBaseUrl(t.Context(), spec, "")
+	require.Equal(t, "https://api.example.com", got)
 }
 
 func TestGetBaseUrl_OpenAPI3_RelativeServer(t *testing.T) {
@@ -128,8 +127,8 @@ func TestGetBaseUrl_OpenAPI3_RelativeServer(t *testing.T) {
 			map[string]any{"url": "/api/v1"},
 		},
 	}
-	got := GetBaseUrl(spec, "https://example.com/openapi.json")
-	assert.Equal(t, "https://example.com/api/v1", got)
+	got := GetBaseUrl(t.Context(), spec, "https://example.com/openapi.json")
+	require.Equal(t, "https://example.com/api/v1", got)
 }
 
 func TestGetBaseUrl_Swagger2_WithHost(t *testing.T) {
@@ -138,8 +137,8 @@ func TestGetBaseUrl_Swagger2_WithHost(t *testing.T) {
 		"schemes":  []any{"http"},
 		"basePath": "/v2",
 	}
-	got := GetBaseUrl(spec, "")
-	assert.Equal(t, "http://api.example.com/v2", got)
+	got := GetBaseUrl(t.Context(), spec, "")
+	require.Equal(t, "http://api.example.com/v2", got)
 }
 
 func TestGetBaseUrl_Swagger2_DefaultScheme(t *testing.T) {
@@ -147,13 +146,13 @@ func TestGetBaseUrl_Swagger2_DefaultScheme(t *testing.T) {
 		"host":     "api.example.com",
 		"basePath": "/v1",
 	}
-	got := GetBaseUrl(spec, "")
-	assert.Equal(t, "https://api.example.com/v1", got)
+	got := GetBaseUrl(t.Context(), spec, "")
+	require.Equal(t, "https://api.example.com/v1", got)
 }
 
 func TestGetBaseUrl_Fallback(t *testing.T) {
-	got := GetBaseUrl(map[string]any{}, "https://example.com/openapi.json")
-	assert.Equal(t, "https://example.com", got)
+	got := GetBaseUrl(t.Context(), map[string]any{}, "https://example.com/openapi.json")
+	require.Equal(t, "https://example.com", got)
 }
 
 // --- GetBaseUrlFromOpenAPI3 ---
@@ -164,8 +163,8 @@ func TestGetBaseUrlFromOpenAPI3_WithServer(t *testing.T) {
 			{URL: "https://api.example.com/v2"},
 		},
 	}
-	got := GetBaseUrlFromOpenAPI3(spec, "")
-	assert.Equal(t, "https://api.example.com/v2", got)
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "")
+	require.Equal(t, "https://api.example.com/v2", got)
 }
 
 func TestGetBaseUrlFromOpenAPI3_RelativeServer(t *testing.T) {
@@ -174,20 +173,20 @@ func TestGetBaseUrlFromOpenAPI3_RelativeServer(t *testing.T) {
 			{URL: "/api/v1"},
 		},
 	}
-	got := GetBaseUrlFromOpenAPI3(spec, "https://example.com/openapi.json")
-	assert.Equal(t, "https://example.com/api/v1", got)
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "https://example.com/openapi.json")
+	require.Equal(t, "https://example.com/api/v1", got)
 }
 
 func TestGetBaseUrlFromOpenAPI3_NoServers(t *testing.T) {
 	spec := &openapi3.T{}
-	got := GetBaseUrlFromOpenAPI3(spec, "https://example.com/openapi.json")
-	assert.Equal(t, "https://example.com", got)
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "https://example.com/openapi.json")
+	require.Equal(t, "https://example.com", got)
 }
 
 func TestGetBaseUrlFromOpenAPI3_NoServersNoPath(t *testing.T) {
 	spec := &openapi3.T{}
-	got := GetBaseUrlFromOpenAPI3(spec, "")
-	assert.Equal(t, "", got)
+	got := GetBaseUrlFromOpenAPI3(t.Context(), spec, "")
+	require.Equal(t, "", got)
 }
 
 // --- BuildInputSchema ---
@@ -219,20 +218,20 @@ func TestBuildInputSchema_WithPathAndQueryParams(t *testing.T) {
 	}
 
 	schema := BuildInputSchema(op)
-	assert.Equal(t, "object", schema["type"])
+	require.Equal(t, "object", schema["type"])
 
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "petId")
-	assert.Contains(t, props, "status")
+	require.Contains(t, props, "petId")
+	require.Contains(t, props, "status")
 
 	petIdProp := props["petId"].(map[string]any)
-	assert.Equal(t, "integer", petIdProp["type"])
+	require.Equal(t, "integer", petIdProp["type"])
 
 	required, ok := schema["required"].([]string)
 	require.True(t, ok)
-	assert.Contains(t, required, "petId")
-	assert.NotContains(t, required, "status")
+	require.Contains(t, required, "petId")
+	require.NotContains(t, required, "status")
 }
 
 func TestBuildInputSchema_WithJSONBody(t *testing.T) {
@@ -267,13 +266,13 @@ func TestBuildInputSchema_WithJSONBody(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 
 	bodyProp := props["body"].(map[string]any)
-	assert.Equal(t, "object", bodyProp["type"])
+	require.Equal(t, "object", bodyProp["type"])
 
 	required := schema["required"].([]string)
-	assert.Contains(t, required, "body")
+	require.Contains(t, required, "body")
 }
 
 func TestBuildInputSchema_WithFormBody(t *testing.T) {
@@ -304,11 +303,11 @@ func TestBuildInputSchema_WithFormBody(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "username")
-	assert.Contains(t, props, "password")
+	require.Contains(t, props, "username")
+	require.Contains(t, props, "password")
 
 	required := schema["required"].([]string)
-	assert.Contains(t, required, "username")
+	require.Contains(t, required, "username")
 }
 
 func TestBuildInputSchema_WithMultipartBody(t *testing.T) {
@@ -335,17 +334,17 @@ func TestBuildInputSchema_WithMultipartBody(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "file")
+	require.Contains(t, props, "file")
 }
 
 func TestBuildInputSchema_NoParams(t *testing.T) {
 	op := &openapi3.Operation{}
 	schema := BuildInputSchema(op)
-	assert.Equal(t, "object", schema["type"])
+	require.Equal(t, "object", schema["type"])
 
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Empty(t, props)
+	require.Empty(t, props)
 }
 
 // --- LoadOpenapiSpec ---
@@ -353,10 +352,10 @@ func TestBuildInputSchema_NoParams(t *testing.T) {
 func TestLoadOpenapiSpec(t *testing.T) {
 	spec, err := LoadOpenapiSpec(context.Background(), "../mcpsrv/fixtures/petstore_oas.json")
 	require.NoError(t, err)
-	assert.NotNil(t, spec)
+	require.NotNil(t, spec)
 	// OpenAPI 3.x のspecはopenapi keyを持つ
 	_, hasOpenAPI := spec["openapi"]
-	assert.True(t, hasOpenAPI)
+	require.True(t, hasOpenAPI)
 }
 
 func TestLoadOpenapiSpec_NotFound(t *testing.T) {
@@ -370,7 +369,7 @@ func TestLoadOpenAPI3Spec(t *testing.T) {
 	spec, err := LoadOpenAPI3Spec("../mcpsrv/fixtures/petstore_oas.json")
 	require.NoError(t, err)
 	require.NotNil(t, spec)
-	assert.NotEmpty(t, spec.OpenAPI)
+	require.NotEmpty(t, spec.OpenAPI)
 }
 
 func TestLoadOpenAPI3Spec_NotFound(t *testing.T) {
@@ -382,8 +381,8 @@ func TestLoadOpenAPI3Spec_NotFound(t *testing.T) {
 
 func TestCreateToolFunction_GET(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/pets/42", r.URL.Path)
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/pets/42", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id":42}`)) //nolint: errcheck
 	}))
@@ -403,13 +402,13 @@ func TestCreateToolFunction_GET(t *testing.T) {
 	fn := CreateToolFunction("/pets/{petId}", "get", op, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{"petId": "42"})
 	require.NoError(t, err)
-	assert.Contains(t, result, "42")
+	require.Contains(t, result, "42")
 }
 
 func TestCreateToolFunction_POST_JSONBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"id":1}`)) //nolint: errcheck
 	}))
@@ -440,7 +439,7 @@ func TestCreateToolFunction_POST_JSONBody(t *testing.T) {
 		"body": map[string]any{"name": "Fido"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result, "1")
+	require.Contains(t, result, "1")
 }
 
 func TestCreateToolFunction_POST_StringBody(t *testing.T) {
@@ -470,7 +469,7 @@ func TestCreateToolFunction_POST_StringBody(t *testing.T) {
 		"body": `{"name":"Fido"}`,
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, result)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_WithQueryParams(t *testing.T) {
@@ -496,8 +495,8 @@ func TestCreateToolFunction_WithQueryParams(t *testing.T) {
 	fn := CreateToolFunction("/pets", "get", op, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{"status": "available"})
 	require.NoError(t, err)
-	assert.Equal(t, "available", capturedQuery)
-	assert.NotEmpty(t, result)
+	require.Equal(t, "available", capturedQuery)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_WithAuthHeader(t *testing.T) {
@@ -516,8 +515,8 @@ func TestCreateToolFunction_WithAuthHeader(t *testing.T) {
 
 	result, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer static-token", capturedAuth)
-	assert.NotEmpty(t, result)
+	require.Equal(t, "Bearer static-token", capturedAuth)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_AuthOverrideFromContext(t *testing.T) {
@@ -538,8 +537,8 @@ func TestCreateToolFunction_AuthOverrideFromContext(t *testing.T) {
 	result, err := fn(ctx, map[string]any{})
 	require.NoError(t, err)
 	// コンテキストのトークンで上書きされる
-	assert.Equal(t, "Bearer override-token", capturedAuth)
-	assert.NotEmpty(t, result)
+	require.Equal(t, "Bearer override-token", capturedAuth)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_HTTPError(t *testing.T) {
@@ -555,7 +554,7 @@ func TestCreateToolFunction_HTTPError(t *testing.T) {
 	// 400以上のステータスはエラーにならず、レスポンスボディをそのまま返す
 	result, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
-	assert.Contains(t, result, "not found")
+	require.Contains(t, result, "not found")
 }
 
 func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
@@ -573,8 +572,8 @@ func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
 	fn := CreateToolFunction("/items/{id}", "get", op, "http://example.com", nil)
 	// パスパラメータに "/" を含む場合エラー
 	_, err := fn(context.Background(), map[string]any{"id": "a/b"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid path parameter")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid path parameter")
 }
 
 func TestCreateToolFunction_UnsupportedMethod(t *testing.T) {
@@ -582,8 +581,8 @@ func TestCreateToolFunction_UnsupportedMethod(t *testing.T) {
 	fn := CreateToolFunction("/resource", "UNKNOWN", op, "http://example.com", nil)
 
 	_, err := fn(context.Background(), map[string]any{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported HTTP method")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported HTTP method")
 }
 
 func TestCreateToolFunction_FormURLEncoded(t *testing.T) {
@@ -618,13 +617,13 @@ func TestCreateToolFunction_FormURLEncoded(t *testing.T) {
 	fn := CreateToolFunction("/login", "post", op, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{"username": "alice"})
 	require.NoError(t, err)
-	assert.Contains(t, capturedContentType, "application/x-www-form-urlencoded")
-	assert.NotEmpty(t, result)
+	require.Contains(t, capturedContentType, "application/x-www-form-urlencoded")
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_DELETE(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, http.MethodDelete, r.Method)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -684,10 +683,10 @@ func TestBuildInputSchema_JSONBody_NestedObject(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 
 	bodyProp := props["body"].(map[string]any)
-	assert.Contains(t, bodyProp["description"], "address")
+	require.Contains(t, bodyProp["description"], "address")
 }
 
 func TestBuildInputSchema_JSONBody_ArrayOfObjects(t *testing.T) {
@@ -725,7 +724,7 @@ func TestBuildInputSchema_JSONBody_ArrayOfObjects(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 }
 
 func TestBuildInputSchema_JSONBody_EmptyBody(t *testing.T) {
@@ -749,7 +748,7 @@ func TestBuildInputSchema_JSONBody_EmptyBody(t *testing.T) {
 	schema := BuildInputSchema(op)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 }
 
 func TestCreateToolFunction_BodyAsNonMapString(t *testing.T) {
@@ -779,7 +778,7 @@ func TestCreateToolFunction_BodyAsNonMapString(t *testing.T) {
 		"body": 42,
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, result)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_ExtractParameters_BodyInParam(t *testing.T) {
@@ -806,12 +805,12 @@ func TestCreateToolFunction_ExtractParameters_BodyInParam(t *testing.T) {
 		"myBody": map[string]any{"key": "value"},
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, result)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunction_PATCH(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPatch, r.Method)
+		require.Equal(t, http.MethodPatch, r.Method)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"updated":true}`)) //nolint: errcheck
 	}))
@@ -836,5 +835,5 @@ func TestCreateToolFunction_PATCH(t *testing.T) {
 		"body": map[string]any{"name": "new-name"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result, "updated")
+	require.Contains(t, result, "updated")
 }

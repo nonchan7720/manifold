@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +37,7 @@ func TestSetAndGet(t *testing.T) {
 
 	got, err := c.Get(ctx, "key1")
 	require.NoError(t, err)
-	assert.Equal(t, "value1", got)
+	require.Equal(t, "value1", got)
 }
 
 func TestGet_NotFound(t *testing.T) {
@@ -47,7 +46,7 @@ func TestGet_NotFound(t *testing.T) {
 
 	_, err := c.Get(ctx, "nonexistent")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "key not found")
+	require.Contains(t, err.Error(), "key not found")
 }
 
 func TestGet_Expired(t *testing.T) {
@@ -60,7 +59,7 @@ func TestGet_Expired(t *testing.T) {
 
 	_, err = c.Get(ctx, "expiredkey")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "key not found")
+	require.Contains(t, err.Error(), "key not found")
 }
 
 func TestSet_Overwrite(t *testing.T) {
@@ -72,7 +71,7 @@ func TestSet_Overwrite(t *testing.T) {
 
 	got, err := c.Get(ctx, "k")
 	require.NoError(t, err)
-	assert.Equal(t, "second", got)
+	require.Equal(t, "second", got)
 }
 
 func TestDel(t *testing.T) {
@@ -130,7 +129,7 @@ func TestSet_ValueTypes(t *testing.T) {
 		require.NoError(t, c.Set(ctx, "k", "hello", time.Minute))
 		got, err := c.Get(ctx, "k")
 		require.NoError(t, err)
-		assert.Equal(t, "hello", got)
+		require.Equal(t, "hello", got)
 	})
 
 	t.Run("[]byte JSON", func(t *testing.T) {
@@ -141,7 +140,7 @@ func TestSet_ValueTypes(t *testing.T) {
 		require.NoError(t, c.Set(ctx, "k", raw, time.Minute))
 		got, err := c.Get(ctx, "k")
 		require.NoError(t, err)
-		assert.Equal(t, string(raw), got)
+		require.Equal(t, string(raw), got)
 	})
 
 	t.Run("[]byte roundtrip via json.Unmarshal", func(t *testing.T) {
@@ -162,7 +161,7 @@ func TestSet_ValueTypes(t *testing.T) {
 
 		var out payload
 		require.NoError(t, unmarshalJSON([]byte(got), &out))
-		assert.Equal(t, in, out)
+		require.Equal(t, in, out)
 	})
 }
 

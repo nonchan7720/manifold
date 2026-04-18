@@ -10,7 +10,6 @@ import (
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +37,7 @@ func TestNormalizeSwaggerJSON_RemovesBoolRequired(t *testing.T) {
 	defs := normalized["definitions"].(map[string]any)
 	pet := defs["Pet"].(map[string]any)
 	_, hasRequired := pet["required"]
-	assert.False(t, hasRequired, "boolean required should be removed from schema")
+	require.False(t, hasRequired, "boolean required should be removed from schema")
 }
 
 func TestNormalizeSwaggerJSON_KeepsStringArrayRequired(t *testing.T) {
@@ -64,8 +63,8 @@ func TestNormalizeSwaggerJSON_KeepsStringArrayRequired(t *testing.T) {
 	defs := normalized["definitions"].(map[string]any)
 	pet := defs["Pet"].(map[string]any)
 	required, hasRequired := pet["required"]
-	assert.True(t, hasRequired)
-	assert.IsType(t, []any{}, required)
+	require.True(t, hasRequired)
+	require.IsType(t, []any{}, required)
 }
 
 func TestNormalizeSwaggerJSON_KeepsParameterRequired(t *testing.T) {
@@ -90,13 +89,13 @@ func TestNormalizeSwaggerJSON_KeepsParameterRequired(t *testing.T) {
 	params := normalized["parameters"].(map[string]any)
 	petId := params["petId"].(map[string]any)
 	required, hasRequired := petId["required"]
-	assert.True(t, hasRequired, "parameter required should not be removed")
-	assert.Equal(t, true, required)
+	require.True(t, hasRequired, "parameter required should not be removed")
+	require.Equal(t, true, required)
 }
 
 func TestNormalizeSwaggerJSON_InvalidJSON(t *testing.T) {
 	_, err := normalizeSwaggerJSON([]byte("not valid json"))
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 // --- removeBoolRequiredFromSchemas ---
@@ -111,7 +110,7 @@ func TestRemoveBoolRequiredFromSchemas_Array(t *testing.T) {
 	removeBoolRequiredFromSchemas(input)
 	item := input[0].(map[string]any)
 	_, hasRequired := item["required"]
-	assert.False(t, hasRequired)
+	require.False(t, hasRequired)
 }
 
 func TestRemoveBoolRequiredFromSchemas_Nested(t *testing.T) {
@@ -126,10 +125,10 @@ func TestRemoveBoolRequiredFromSchemas_Nested(t *testing.T) {
 	removeBoolRequiredFromSchemas(input)
 	outer := input["outer"].(map[string]any)
 	_, hasOuterRequired := outer["required"]
-	assert.False(t, hasOuterRequired)
+	require.False(t, hasOuterRequired)
 	inner := outer["inner"].(map[string]any)
 	_, hasInnerRequired := inner["required"]
-	assert.False(t, hasInnerRequired)
+	require.False(t, hasInnerRequired)
 }
 
 // --- GetBaseUrlFromSwagger ---
@@ -140,8 +139,8 @@ func TestGetBaseUrlFromSwagger_WithHostAndScheme(t *testing.T) {
 		Schemes:  []string{"https"},
 		BasePath: "/v2",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
-	assert.Equal(t, "https://api.example.com/v2", got)
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
+	require.Equal(t, "https://api.example.com/v2", got)
 }
 
 func TestGetBaseUrlFromSwagger_WithHostNoScheme(t *testing.T) {
@@ -149,8 +148,8 @@ func TestGetBaseUrlFromSwagger_WithHostNoScheme(t *testing.T) {
 		Host:     "api.example.com",
 		BasePath: "/v1",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
-	assert.Equal(t, "https://api.example.com/v1", got)
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
+	require.Equal(t, "https://api.example.com/v1", got)
 }
 
 func TestGetBaseUrlFromSwagger_WithHTTPScheme(t *testing.T) {
@@ -159,20 +158,20 @@ func TestGetBaseUrlFromSwagger_WithHTTPScheme(t *testing.T) {
 		Schemes:  []string{"http"},
 		BasePath: "/api",
 	}
-	got := GetBaseUrlFromSwagger(spec, "")
-	assert.Equal(t, "http://localhost/api", got)
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
+	require.Equal(t, "http://localhost/api", got)
 }
 
 func TestGetBaseUrlFromSwagger_NoHost_DeriveFromPath(t *testing.T) {
 	spec := &openapi2.T{}
-	got := GetBaseUrlFromSwagger(spec, "https://example.com/swagger.json")
-	assert.Equal(t, "https://example.com", got)
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "https://example.com/swagger.json")
+	require.Equal(t, "https://example.com", got)
 }
 
 func TestGetBaseUrlFromSwagger_NoHost_NoPath(t *testing.T) {
 	spec := &openapi2.T{}
-	got := GetBaseUrlFromSwagger(spec, "")
-	assert.Equal(t, "", got)
+	got := GetBaseUrlFromSwagger(t.Context(), spec, "")
+	require.Equal(t, "", got)
 }
 
 // --- LoadSwaggerSpec ---
@@ -181,7 +180,7 @@ func TestLoadSwaggerSpec(t *testing.T) {
 	spec, err := LoadSwaggerSpec(context.Background(), "../mcpsrv/fixtures/petstore_swagger.json")
 	require.NoError(t, err)
 	require.NotNil(t, spec)
-	assert.NotEmpty(t, spec.Paths)
+	require.NotEmpty(t, spec.Paths)
 }
 
 func TestLoadSwaggerSpec_NotFound(t *testing.T) {
@@ -195,7 +194,7 @@ func TestResolveSwaggerParamRef_NoRef(t *testing.T) {
 	p := &openapi2.Parameter{Name: "id", In: "path"}
 	spec := &openapi2.T{}
 	got := resolveSwaggerParamRef(p, spec)
-	assert.Equal(t, p, got)
+	require.Equal(t, p, got)
 }
 
 func TestResolveSwaggerParamRef_WithRef(t *testing.T) {
@@ -207,14 +206,14 @@ func TestResolveSwaggerParamRef_WithRef(t *testing.T) {
 	}
 	p := &openapi2.Parameter{Ref: "#/parameters/petId"}
 	got := resolveSwaggerParamRef(p, spec)
-	assert.Equal(t, resolved, got)
+	require.Equal(t, resolved, got)
 }
 
 func TestResolveSwaggerParamRef_RefNotFound(t *testing.T) {
 	spec := &openapi2.T{}
 	p := &openapi2.Parameter{Ref: "#/parameters/nonexistent"}
 	got := resolveSwaggerParamRef(p, spec)
-	assert.Nil(t, got)
+	require.Nil(t, got)
 }
 
 // --- resolveSwaggerSchemaRef ---
@@ -222,7 +221,7 @@ func TestResolveSwaggerParamRef_RefNotFound(t *testing.T) {
 func TestResolveSwaggerSchemaRef_Nil(t *testing.T) {
 	spec := &openapi2.T{}
 	got := resolveSwaggerSchemaRef(nil, spec)
-	assert.Nil(t, got)
+	require.Nil(t, got)
 }
 
 func TestResolveSwaggerSchemaRef_NoRef(t *testing.T) {
@@ -230,7 +229,7 @@ func TestResolveSwaggerSchemaRef_NoRef(t *testing.T) {
 	ref := &openapi2.SchemaRef{Value: schema}
 	spec := &openapi2.T{}
 	got := resolveSwaggerSchemaRef(ref, spec)
-	assert.Equal(t, schema, got)
+	require.Equal(t, schema, got)
 }
 
 func TestResolveSwaggerSchemaRef_WithRef(t *testing.T) {
@@ -242,14 +241,14 @@ func TestResolveSwaggerSchemaRef_WithRef(t *testing.T) {
 	}
 	ref := &openapi2.SchemaRef{Ref: "#/definitions/Pet"}
 	got := resolveSwaggerSchemaRef(ref, spec)
-	assert.Equal(t, petSchema, got)
+	require.Equal(t, petSchema, got)
 }
 
 func TestResolveSwaggerSchemaRef_RefNotFound(t *testing.T) {
 	spec := &openapi2.T{}
 	ref := &openapi2.SchemaRef{Ref: "#/definitions/NotExist"}
 	got := resolveSwaggerSchemaRef(ref, spec)
-	assert.Nil(t, got)
+	require.Nil(t, got)
 }
 
 // --- BuildInputSchemaSwagger ---
@@ -264,15 +263,15 @@ func TestBuildInputSchemaSwagger_PathAndQuery(t *testing.T) {
 	spec := &openapi2.T{}
 
 	schema := BuildInputSchemaSwagger(op, nil, spec)
-	assert.Equal(t, "object", schema["type"])
+	require.Equal(t, "object", schema["type"])
 
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "petId")
-	assert.Contains(t, props, "status")
+	require.Contains(t, props, "petId")
+	require.Contains(t, props, "status")
 
 	required := schema["required"].([]string)
-	assert.Contains(t, required, "petId")
+	require.Contains(t, required, "petId")
 }
 
 func TestBuildInputSchemaSwagger_BodyParam(t *testing.T) {
@@ -296,18 +295,18 @@ func TestBuildInputSchemaSwagger_BodyParam(t *testing.T) {
 	schema := BuildInputSchemaSwagger(op, nil, spec)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 
 	required := schema["required"].([]string)
-	assert.Contains(t, required, "body")
+	require.Contains(t, required, "body")
 }
 
 // --- CreateToolFunctionSwagger ---
 
 func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodGet, r.Method)
-		assert.Equal(t, "/pets/99", r.URL.Path)
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/pets/99", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"id":99}`)) //nolint: errcheck
 	}))
@@ -323,12 +322,12 @@ func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 	fn := CreateToolFunctionSwagger("/pets/{petId}", "get", op, nil, spec, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{"petId": "99"})
 	require.NoError(t, err)
-	assert.Contains(t, result, "99")
+	require.Contains(t, result, "99")
 }
 
 func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"id":1}`)) //nolint: errcheck
 	}))
@@ -352,7 +351,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 		"body": map[string]any{"name": "Buddy"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result, "1")
+	require.Contains(t, result, "1")
 }
 
 func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
@@ -374,8 +373,8 @@ func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
 	fn := CreateToolFunctionSwagger("/pets", "get", op, nil, spec, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{"status": "sold"})
 	require.NoError(t, err)
-	assert.Equal(t, "sold", capturedQuery)
-	assert.NotEmpty(t, result)
+	require.Equal(t, "sold", capturedQuery)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunctionSwagger_UnsupportedMethod(t *testing.T) {
@@ -384,8 +383,8 @@ func TestCreateToolFunctionSwagger_UnsupportedMethod(t *testing.T) {
 
 	fn := CreateToolFunctionSwagger("/resource", "UNKNOWN", op, nil, spec, "http://example.com", nil)
 	_, err := fn(context.Background(), map[string]any{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported HTTP method")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported HTTP method")
 }
 
 func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
@@ -398,7 +397,7 @@ func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
 
 	fn := CreateToolFunctionSwagger("/items/{id}", "get", op, nil, spec, "http://example.com", nil)
 	_, err := fn(context.Background(), map[string]any{"id": "../evil"})
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
@@ -414,7 +413,7 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 	fn := CreateToolFunctionSwagger("/resource", "get", op, nil, spec, srv.URL, nil)
 	_, err := fn(context.Background(), map[string]any{})
 	// Swaggerのツールは400以上をエラーとして返す
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
@@ -436,13 +435,13 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 	ctx := contexts.ToRequestAuthHeader(context.Background(), "Bearer override")
 	result, err := fn(ctx, map[string]any{})
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer override", capturedAuth)
-	assert.NotEmpty(t, result)
+	require.Equal(t, "Bearer override", capturedAuth)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, http.MethodDelete, r.Method)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -458,7 +457,7 @@ func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 
 func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPatch, r.Method)
+		require.Equal(t, http.MethodPatch, r.Method)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"updated":true}`)) //nolint: errcheck
 	}))
@@ -482,7 +481,7 @@ func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
 		"body": map[string]any{"name": "updated"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result, "updated")
+	require.Contains(t, result, "updated")
 }
 
 // --- describeSchemaFieldsSwagger (nested objects, arrays) ---
@@ -520,10 +519,10 @@ func TestBuildInputSchemaSwagger_BodyWithNestedObject(t *testing.T) {
 	schema := BuildInputSchemaSwagger(op, nil, spec)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 	bodyProp := props["body"].(map[string]any)
 	// descriptionにネストされたフィールドの説明が含まれる
-	assert.NotEmpty(t, bodyProp["description"])
+	require.NotEmpty(t, bodyProp["description"])
 }
 
 func TestBuildInputSchemaSwagger_BodyWithArrayOfObjects(t *testing.T) {
@@ -556,7 +555,7 @@ func TestBuildInputSchemaSwagger_BodyWithArrayOfObjects(t *testing.T) {
 	schema := BuildInputSchemaSwagger(op, nil, spec)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 }
 
 func TestBuildInputSchemaSwagger_BodyWithRequiredDescription(t *testing.T) {
@@ -584,7 +583,7 @@ func TestBuildInputSchemaSwagger_BodyWithRequiredDescription(t *testing.T) {
 	schema := BuildInputSchemaSwagger(op, nil, spec)
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
-	assert.Contains(t, props, "body")
+	require.Contains(t, props, "body")
 }
 
 // --- mergeSwaggerParams ---
@@ -599,8 +598,8 @@ func TestMergeSwaggerParams_PathItemOnly(t *testing.T) {
 	spec := &openapi2.T{}
 
 	result := mergeSwaggerParams(op, pathItemParams, spec)
-	assert.Len(t, result, 1)
-	assert.Equal(t, "version", result[0].Name)
+	require.Len(t, result, 1)
+	require.Equal(t, "version", result[0].Name)
 }
 
 func TestMergeSwaggerParams_OperationOverridesPathItem(t *testing.T) {
@@ -616,7 +615,7 @@ func TestMergeSwaggerParams_OperationOverridesPathItem(t *testing.T) {
 
 	result := mergeSwaggerParams(op, pathItemParams, spec)
 	// 重複なく1つだけ
-	assert.Len(t, result, 1)
+	require.Len(t, result, 1)
 }
 
 func TestMergeSwaggerParams_BothDistinct(t *testing.T) {
@@ -631,7 +630,7 @@ func TestMergeSwaggerParams_BothDistinct(t *testing.T) {
 	spec := &openapi2.T{}
 
 	result := mergeSwaggerParams(op, pathItemParams, spec)
-	assert.Len(t, result, 2)
+	require.Len(t, result, 2)
 }
 
 func TestMergeSwaggerParams_NilResolve(t *testing.T) {
@@ -643,7 +642,7 @@ func TestMergeSwaggerParams_NilResolve(t *testing.T) {
 	spec := &openapi2.T{}
 
 	result := mergeSwaggerParams(op, pathItemParams, spec)
-	assert.Empty(t, result)
+	require.Empty(t, result)
 }
 
 // --- extractParametersSwagger ---
@@ -659,13 +658,13 @@ func TestExtractParametersSwagger_FormDataFile(t *testing.T) {
 	spec := &openapi2.T{}
 
 	ep := extractParametersSwagger(op, nil, spec)
-	assert.Contains(t, ep.formParams, "upload")
-	assert.True(t, ep.isMultipart)
+	require.Contains(t, ep.formParams, "upload")
+	require.True(t, ep.isMultipart)
 }
 
 func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPut, r.Method)
+		require.Equal(t, http.MethodPut, r.Method)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{}`)) //nolint: errcheck
 	}))
@@ -677,12 +676,12 @@ func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 	fn := CreateToolFunctionSwagger("/resource/1", "put", op, nil, spec, srv.URL, nil)
 	result, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
-	assert.NotEmpty(t, result)
+	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{}`)) //nolint: errcheck
 	}))
@@ -702,5 +701,5 @@ func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 		"password": "secret",
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, result)
+	require.NotEmpty(t, result)
 }

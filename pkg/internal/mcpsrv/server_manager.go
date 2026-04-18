@@ -3,11 +3,15 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/version"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type MCPServer struct {
@@ -21,15 +25,18 @@ type MCPServer struct {
 func NewMCPServer(servers config.Servers) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
-		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: fmt.Sprintf("v%s", version.Version)}, &mcp.ServerOptions{}),
+		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
 	}
 }
 
-func (s *MCPServer) Init(ctx context.Context) error {
+func (s *MCPServer) Init(ctx context.Context) (rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPServer/Init")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	for name, server := range s.servers {
-		srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: "v1.0.0"}, &mcp.ServerOptions{})
+		srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: version.MarkVersion}, &mcp.ServerOptions{})
 
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続のためクライアントを登録するのみ
@@ -80,7 +87,17 @@ func registerAPI(ctx context.Context, spec, baseURL string, srv *mcp.Server) err
 	}
 	tools := register.ListTools()
 	for _, tool := range tools {
-		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
+			spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
+			ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))
+			defer func() {
+				if res.IsError {
+					rErr = errors.Join(rErr, res.GetError())
+				}
+				trace.EndSpan(ctx, rErr)
+			}()
+			slog.InfoContext(ctx, "call tool", slog.String("tool-name", ctr.Params.Name))
+
 			var input map[string]any
 			if err := json.Unmarshal(ctr.Params.Arguments, &input); err != nil {
 				resp := &mcp.CallToolResult{}

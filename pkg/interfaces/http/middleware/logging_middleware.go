@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/netinternet/remoteaddr"
 	"github.com/nonchan7720/manifold/pkg/util"
 )
@@ -27,6 +28,11 @@ var clientIP = remoteaddr.Parse()
 // Logging returns a middleware that logs HTTP requests.
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = trace.StartSpan(ctx, "Middleware/Logging")
+		defer func() { trace.EndSpan(ctx, nil) }()
+		*r = *r.WithContext(ctx)
+
 		start := time.Now()
 		ip, _ := clientIP.IP(r)
 		log := slog.With(
@@ -39,9 +45,9 @@ func Logging(next http.Handler) http.Handler {
 			slog.String("request-uri", util.SanitizeLog(r.RequestURI)),
 		)
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		log.Info("http request")
+		log.InfoContext(ctx, "http request")
 		next.ServeHTTP(rw, r)
-		log.Info("http response",
+		log.InfoContext(ctx, "http response",
 			slog.Int("status", rw.status),
 			slog.Duration("duration", time.Since(start)),
 		)

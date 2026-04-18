@@ -7,15 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewGatewayCmd(t *testing.T) {
 	cmd := newGatewayCmd()
-	assert.Equal(t, "gateway", cmd.Use)
-	assert.Equal(t, "Start mcp gateway server", cmd.Short)
-	assert.NotNil(t, cmd.RunE)
+	require.Equal(t, "gateway", cmd.Use)
+	require.Equal(t, "Start mcp gateway server", cmd.Short)
+	require.NotNil(t, cmd.RunE)
 }
 
 func TestRunServer_GracefulShutdown(t *testing.T) {
@@ -48,7 +47,7 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// グレースフルシャットダウンはエラーなし
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServer did not return in time")
 	}
@@ -72,5 +71,5 @@ func TestRunServer_ServerError(t *testing.T) {
 	err := runServer(ctx, srv, "test-server", 0, "", "")
 	// ポートが使用中のためエラーが返る
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "test-server error")
+	require.Contains(t, err.Error(), "test-server error")
 }

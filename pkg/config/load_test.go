@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,19 +18,19 @@ func TestFindProjectRoot(t *testing.T) {
 	// go.mod が存在することを確認
 	goModPath := filepath.Join(root, "go.mod")
 	_, err := os.Stat(goModPath)
-	assert.NoError(t, err, "go.mod should exist in project root: %s", root)
+	require.NoError(t, err, "go.mod should exist in project root: %s", root)
 
 	// カレントディレクトリ配下であることを確認
 	cwd, err := os.Getwd()
-	assert.NoError(t, err)
-	assert.True(t, strings.HasPrefix(cwd, root) || root == cwd,
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(cwd, root) || root == cwd,
 		"cwd %s should be under or equal to root %s", cwd, root)
 }
 
 func TestFindProjectRoot_NotDot(t *testing.T) {
 	root := findProjectRoot()
 	// go.mod があるディレクトリが見つかれば "." でないはず
-	assert.NotEqual(t, ".", root)
+	require.NotEqual(t, ".", root)
 }
 
 func TestLoadInternal_Success(t *testing.T) {
@@ -40,5 +39,5 @@ func TestLoadInternal_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	// config.yaml に gateway.port: 9999 がある
-	assert.Equal(t, 9999, cfg.Gateway.Port)
+	require.Equal(t, 9998, cfg.Gateway.Port)
 }

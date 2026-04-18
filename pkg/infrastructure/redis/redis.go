@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -67,6 +70,13 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 		rdb = redis.NewClient(opt)
 	}
 
+	if err := redisotel.InstrumentTracing(rdb); err != nil {
+		slog.WarnContext(ctx, "failed to redisotel InstrumentTracing")
+	}
+	if err := redisotel.InstrumentMetrics(rdb); err != nil {
+		slog.WarnContext(ctx, "failed to redisotel InstrumentMetrics")
+	}
+
 	// Ping to verify connection
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -79,17 +89,26 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 }
 
 // Set stores a value with an expiration type
-func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
+func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) (rErr error) {
+	ctx = trace.StartSpan(ctx, "redis/Client/Set")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	return c.client.Set(ctx, key, value, expiration).Err()
 }
 
 // Get retrieves a string value by key
-func (c *Client) Get(ctx context.Context, key string) (string, error) {
+func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
+	ctx = trace.StartSpan(ctx, "redis/Client/Get")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	return c.client.Get(ctx, key).Result()
 }
 
 // Del removes a key
-func (c *Client) Del(ctx context.Context, key string) error {
+func (c *Client) Del(ctx context.Context, key string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "redis/Client/Del")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	return c.client.Del(ctx, key).Err()
 }
 

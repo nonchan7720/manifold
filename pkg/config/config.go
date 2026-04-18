@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 )
 
 type Config struct {
@@ -14,6 +15,8 @@ type Config struct {
 
 	Redis  *RedisConfig  `mapstructure:"redis"`
 	SQLite *SQLiteConfig `mapstructure:"sqlite"`
+
+	Telemetry telemetry.Config `mapstructure:"telemetry"`
 }
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {

@@ -13,12 +13,17 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi2"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
 // LoadSwaggerSpec loads a Swagger 2.x spec from a file path or URL.
-func LoadSwaggerSpec(ctx context.Context, specPath string) (*openapi2.T, error) {
+func LoadSwaggerSpec(ctx context.Context, specPath string) (_ *openapi2.T, rErr error) {
+	ctx = trace.StartSpan(ctx, "oastomcptool/LoadSwaggerSpec")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	data, err := FetchSpecBytes(ctx, specPath)
 	if err != nil {
 		return nil, err
@@ -69,7 +74,7 @@ func removeBoolRequiredFromSchemas(v any) {
 }
 
 // GetBaseUrlFromSwagger extracts base URL from a Swagger 2.x typed spec.
-func GetBaseUrlFromSwagger(spec *openapi2.T, specPath string) string {
+func GetBaseUrlFromSwagger(ctx context.Context, spec *openapi2.T, specPath string) string {
 	if spec.Host != "" {
 		scheme := "https"
 		if len(spec.Schemes) > 0 {
@@ -77,7 +82,7 @@ func GetBaseUrlFromSwagger(spec *openapi2.T, specPath string) string {
 		}
 		return fmt.Sprintf("%s://%s%s", scheme, spec.Host, spec.BasePath)
 	}
-	return deriveBaseUrlFromSpecPath(specPath)
+	return deriveBaseUrlFromSpecPath(ctx, specPath)
 }
 
 // resolveSwaggerParamRef resolves a $ref parameter to the concrete *openapi2.Parameter.
@@ -387,7 +392,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			}
 		}
 
-		client := getHttpClient()
+		client := client.HTTPClient()
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {

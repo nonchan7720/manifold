@@ -5,9 +5,14 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/cmd"
 	"github.com/nonchan7720/manifold/pkg/config"
 )
+
+func init() {
+	trace.OpenTelemetryTracerName = "github.com/nonchan7720/manifold"
+}
 
 func main() {
 	if err := run(); err != nil {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 )
 
@@ -22,6 +23,11 @@ func NewMCPHandler(cfg config.Servers) *MCPHandler {
 }
 
 func (h *MCPHandler) MCPList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "MCPHandler/MCPList")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	type mcpServer struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`

@@ -7,7 +7,6 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,8 +27,8 @@ func TestMCPServerApp_ServerNotFound(t *testing.T) {
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusNotFound, rw.Code)
-	assert.False(t, called)
+	require.Equal(t, http.StatusNotFound, rw.Code)
+	require.False(t, called)
 }
 
 func TestMCPServerApp_ServerFound(t *testing.T) {
@@ -50,10 +49,10 @@ func TestMCPServerApp_ServerFound(t *testing.T) {
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, http.StatusOK, rw.Code)
 	require.NotNil(t, gotServer)
-	assert.Equal(t, "myserver", gotServer.Name)
-	assert.Equal(t, "http://example.com", gotServer.BaseURL)
+	require.Equal(t, "myserver", gotServer.Name)
+	require.Equal(t, "http://example.com", gotServer.BaseURL)
 }
 
 func TestMCPServerApp_HeaderExtraction(t *testing.T) {
@@ -78,12 +77,12 @@ func TestMCPServerApp_HeaderExtraction(t *testing.T) {
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusOK, rw.Code)
-	assert.NotNil(t, gotHeaders)
+	require.Equal(t, http.StatusOK, rw.Code)
+	require.NotNil(t, gotHeaders)
 	// "x-svc-tenant-id" → プレフィックス "x-svc-" を除いた "tenant-id" がキー
-	assert.Equal(t, []string{"tenant-abc"}, gotHeaders["tenant-id"])
-	assert.Equal(t, []string{"us-east-1"}, gotHeaders["region"])
+	require.Equal(t, []string{"tenant-abc"}, gotHeaders["tenant-id"])
+	require.Equal(t, []string{"us-east-1"}, gotHeaders["region"])
 	// 関係ないヘッダーは含まれない
 	_, hasOther := gotHeaders["X-Other-Header"]
-	assert.False(t, hasOther)
+	require.False(t, hasOther)
 }

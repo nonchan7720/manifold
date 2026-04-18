@@ -7,7 +7,7 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtractBearerToken(t *testing.T) {
@@ -29,7 +29,7 @@ func TestExtractBearerToken(t *testing.T) {
 				r.Header.Set("Authorization", tt.header)
 			}
 			got := extractBearerToken(r)
-			assert.Equal(t, tt.expected, got)
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -49,8 +49,8 @@ func TestJWT_ServerNotFound(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/unknown/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.True(t, called)
-	assert.Equal(t, http.StatusOK, rw.Code)
+	require.True(t, called)
+	require.Equal(t, http.StatusOK, rw.Code)
 }
 
 func TestJWT_NoOAuth2_WithToken(t *testing.T) {
@@ -69,8 +69,8 @@ func TestJWT_NoOAuth2_WithToken(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer my-token")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.Equal(t, http.StatusOK, rw.Code)
-	assert.Equal(t, "Bearer my-token", capturedToken)
+	require.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, "Bearer my-token", capturedToken)
 }
 
 func TestJWT_NoOAuth2_NoToken(t *testing.T) {
@@ -88,8 +88,8 @@ func TestJWT_NoOAuth2_NoToken(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.False(t, called)
-	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.False(t, called)
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
 }
 
 func TestJWT_WithOAuth2_NoToken(t *testing.T) {
@@ -105,8 +105,8 @@ func TestJWT_WithOAuth2_NoToken(t *testing.T) {
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test/mcp", nil)
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.Equal(t, http.StatusUnauthorized, rw.Code)
-	assert.Contains(t, rw.Header().Get("WWW-Authenticate"), "Bearer resource_metadata=")
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.Contains(t, rw.Header().Get("WWW-Authenticate"), "Bearer resource_metadata=")
 }
 
 func TestJWT_WithOAuth2_WithToken(t *testing.T) {
@@ -125,8 +125,8 @@ func TestJWT_WithOAuth2_WithToken(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer oauth-token")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.Equal(t, http.StatusOK, rw.Code)
-	assert.Equal(t, "Bearer oauth-token", capturedToken)
+	require.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, "Bearer oauth-token", capturedToken)
 }
 
 func TestJWT_WithOAuth2_XForwardedProto(t *testing.T) {
@@ -143,7 +143,7 @@ func TestJWT_WithOAuth2_XForwardedProto(t *testing.T) {
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
-	assert.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
 	wwwAuth := rw.Header().Get("WWW-Authenticate")
-	assert.Contains(t, wwwAuth, "https://")
+	require.Contains(t, wwwAuth, "https://")
 }

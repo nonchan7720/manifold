@@ -1,19 +1,30 @@
 gateway:
-  port: 9999
+  port: 9998
   # openssl rand -base64 32
   encryptKey: ${ENCRYPT_KEY:-5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=}
   # key: tls/key.pem
   # cert: tls/cert.pem
 
 mcpServers:
-  minto:
-    transport: http
-    url: http://localhost:8080/mcp
-    description: テスト
   notion:
     transport: http
     url: https://mcp.notion.com/mcp
     description: notion mcpサーバー
+  google:
+    description: google calender
+    baseURL: https://www.googleapis.com/calendar/v3
+    spec: https://raw.githubusercontent.com/APIs-guru/openapi-directory/refs/heads/main/APIs/googleapis.com/calendar/v3/openapi.yaml
+    oauth2:
+      clientID: ${GOOGLE_CLIENT_ID}
+      clientSecret: ${GOOGLE_CLIENT_SECRET}
+      authURL: https://accounts.google.com/o/oauth2/auth
+      tokenURL: https://oauth2.googleapis.com/token
+      scopes:
+        - https://www.googleapis.com/auth/calendar
+        - https://www.googleapis.com/auth/calendar.events
+        - https://www.googleapis.com/auth/calendar.events.readonly
+        - https://www.googleapis.com/auth/calendar.readonly
+        - https://www.googleapis.com/auth/calendar.settings.readonly
 
 sqlite:
   path: ./tmp/manifold.db
@@ -26,3 +37,22 @@ sqlite:
 #   master_name: ${REDIS_MASTER_NAME}
 #   tls: ${REDIS_TLS:-false}
 #   cluster_mode: ${REDIS_CLUSTER_MODE:-false}
+
+telemetry:
+  serviceName: manifold
+
+  trace:
+    enabled: true
+    grpc:
+      addr: localhost:4317
+
+  metrics:
+    enabled: true
+    exporterType: push
+    grpc:
+      addr: localhost:4317
+
+  logs:
+    enabled: true
+    grpc:
+      addr: localhost:4317

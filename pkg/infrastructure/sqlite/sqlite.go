@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/uptrace/opentelemetry-go-extra/otelsql"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,7 +30,12 @@ type Client struct {
 // NewClient は指定されたファイルパスにSQLiteデータベースを開き、Clientを返す。
 // path に ":memory:" を指定するとインメモリDBとして動作する。
 func NewClient(ctx context.Context, path string) (*Client, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := otelsql.Open(
+		"sqlite",
+		path,
+		otelsql.WithAttributes(semconv.DBSystemNameSQLite),
+		otelsql.WithDBName(path),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
@@ -40,11 +48,16 @@ func NewClient(ctx context.Context, path string) (*Client, error) {
 		return nil, fmt.Errorf("failed to initialize sqlite schema: %w", err)
 	}
 
+	otelsql.ReportDBStatsMetrics(db)
+
 	return &Client{db: db}, nil
 }
 
 // Set はキーに値をTTL付きで保存する。
-func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
+func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) (rErr error) {
+	ctx = trace.StartSpan(ctx, "sqlite/Client/Set")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	expiresAt := time.Now().Add(expiration).Unix()
 	var strValue string
 	switch v := value.(type) {
@@ -68,7 +81,10 @@ func (c *Client) Set(ctx context.Context, key string, value any, expiration time
 }
 
 // Get はキーに対応する値を返す。キーが存在しないか期限切れの場合はエラーを返す。
-func (c *Client) Get(ctx context.Context, key string) (string, error) {
+func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
+	ctx = trace.StartSpan(ctx, "sqlite/Client/Get")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	var value string
 	err := c.db.QueryRowContext(
 		ctx,
@@ -85,7 +101,10 @@ func (c *Client) Get(ctx context.Context, key string) (string, error) {
 }
 
 // Del はキーを削除する。
-func (c *Client) Del(ctx context.Context, key string) error {
+func (c *Client) Del(ctx context.Context, key string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "sqlite/Client/Del")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	_, err := c.db.ExecContext(ctx, `DELETE FROM kv_store WHERE key = ?`, key)
 	if err != nil {
 		return fmt.Errorf("sqlite Del: %w", err)

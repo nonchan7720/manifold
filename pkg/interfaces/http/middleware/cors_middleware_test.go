@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCorsMiddleware_OPTIONS(t *testing.T) {
@@ -19,11 +19,11 @@ func TestCorsMiddleware_OPTIONS(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusOK, rw.Code)
-	assert.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
-	assert.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Methods"))
-	assert.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Headers"))
-	assert.Equal(t, "true", rw.Header().Get("Access-Control-Allow-Credentials"))
+	require.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Methods"))
+	require.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Headers"))
+	require.Equal(t, "true", rw.Header().Get("Access-Control-Allow-Credentials"))
 }
 
 func TestCorsMiddleware_GET(t *testing.T) {
@@ -38,10 +38,10 @@ func TestCorsMiddleware_GET(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.True(t, called)
-	assert.Equal(t, http.StatusOK, rw.Code)
-	assert.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
-	assert.Equal(t, "true", rw.Header().Get("Access-Control-Allow-Credentials"))
+	require.True(t, called)
+	require.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "true", rw.Header().Get("Access-Control-Allow-Credentials"))
 }
 
 func TestCorsMiddleware_POST(t *testing.T) {
@@ -56,7 +56,7 @@ func TestCorsMiddleware_POST(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.True(t, called)
-	assert.Equal(t, http.StatusCreated, rw.Code)
-	assert.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
+	require.True(t, called)
+	require.Equal(t, http.StatusCreated, rw.Code)
+	require.Equal(t, "*", rw.Header().Get("Access-Control-Allow-Origin"))
 }

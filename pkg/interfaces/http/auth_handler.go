@@ -11,20 +11,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/nonchan7720/manifold/pkg/util"
 	"golang.org/x/oauth2"
@@ -114,7 +114,7 @@ func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...Au
 	h := &AuthHandler{
 		store:      storeClient,
 		servers:    servers,
-		httpClient: newSafeHTTPClient(),
+		httpClient: client.SafeHTTPClient(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -144,12 +144,20 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, 
 
 func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config.Server)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		srvCfg := contexts.FromServerContext(r.Context())
+		ctx := r.Context()
+		ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/Middleware/WrapMCPServer")
+		defer func() { trace.EndSpan(ctx, nil) }()
+		*r = *r.WithContext(ctx)
+		srvCfg := contexts.FromServerContext(ctx)
 		next(w, r, srvCfg)
 	}
 }
 
 func (h *AuthHandler) OauthProtectedResource(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/OauthProtectedResource")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	baseURL := h.getBaseURL(r)
 	u, _ := url.Parse(baseURL)
 	mcpServerURL := u.JoinPath("/mcp", srv.Name)
@@ -171,6 +179,10 @@ func (h *AuthHandler) OauthProtectedResource(w http.ResponseWriter, r *http.Requ
 
 // MetadataEndpoint serves /.well-known/oauth-authorization-server
 func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/MetadataEndpoint")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	baseURL := h.getBaseURL(r)
 	// RFC 8414: issuer は authorization_servers で公開した URL と一致しなければならない。
 	// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
@@ -195,6 +207,11 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 
 // RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
 func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/RegisterClientEndpoint")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -208,7 +225,7 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 		ClientName              string   `json:"client_name"`
 		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, "invalid_client_metadata")
 		return
 	}
@@ -219,8 +236,8 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
-		if err := validateRedirectURI(uri); err != nil {
-			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+		if err = validateRedirectURI(uri); err != nil {
+			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -252,12 +269,12 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
-		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
-		slog.Error("failed to store client registration", slog.Any("error", err))
+	if err = h.store.Set(ctx, "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
@@ -273,6 +290,11 @@ var (
 
 // RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
 func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/RegisterClientEndpointByClaudeCode")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -286,7 +308,7 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 		ClientName              string   `json:"client_name"`
 		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, "invalid_client_metadata")
 		return
 	}
@@ -308,8 +330,8 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
-		if err := validateRedirectURI(uri); err != nil {
-			slog.Warn("invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+		if err = validateRedirectURI(uri); err != nil {
+			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -341,12 +363,12 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
-		slog.Error("failed to marshal store registration", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	if err := h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
-		slog.Error("failed to store client registration", slog.Any("error", err))
+	if err = h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
@@ -358,6 +380,10 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 
 func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/LoginEndpoint")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	q := r.URL.Query()
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
@@ -366,7 +392,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	state := q.Get("state")
 	resource := q.Get("resource") // RFC 8707
 
-	slog.Info("LoginEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "LoginEndpoint called",
 		slog.String("client_id", util.SanitizeLog(clientID)),
 		slog.String("redirect_uri", util.SanitizeLog(redirectURI)),
 		slog.String("state", util.SanitizeLog(state)),
@@ -382,18 +408,18 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	// client_id が提供された場合、登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ
 	var clientReg StoreClientRegistration
 	if clientID != "" {
-		clientJSON, err := h.store.Get(r.Context(), "oauth_client:"+clientID)
+		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
 		if err != nil {
 			slog.WarnContext(ctx, "unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return
 		}
-		if err := json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
+		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
 			slog.ErrorContext(ctx, "failed to unmarshal client registration", slog.Any("error", err))
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if !containsString(clientReg.RedirectURIs, redirectURI) {
+		if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
 			slog.WarnContext(ctx, "redirect_uri not registered for client",
 				slog.String("client_id", util.SanitizeLog(clientID)),
 				slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
@@ -455,8 +481,8 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 
 	sessionJSON, _ := json.Marshal(session)
-	if err := h.store.Set(r.Context(), "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
-		slog.Error("failed to store auth session", slog.Any("error", err))
+	if err = h.store.Set(ctx, "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
+		slog.ErrorContext(ctx, "failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -476,34 +502,39 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 }
 
 func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/CallbackEndpoint")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	q := r.URL.Query()
 	sessionID := q.Get("state")
 	code := q.Get("code")
 
-	slog.Info("CallbackEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "CallbackEndpoint called",
 		slog.String("state", util.SanitizeLog(sessionID)),
 		slog.Bool("has_code", code != ""),
 	)
 
 	if sessionID == "" || code == "" {
-		slog.Warn("callback missing params")
+		slog.WarnContext(ctx, "callback missing params")
 		http.Error(w, "missing state or code", http.StatusBadRequest)
 		return
 	}
 
-	sessionJSON, err := h.store.Get(r.Context(), "auth_session:"+sessionID)
+	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
 	if err != nil {
-		slog.Warn("session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID))) //nolint: gosec
+		slog.WarnContext(ctx, "session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID)))
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
 		return
 	}
 	var session AuthSession
-	if err := json.Unmarshal([]byte(sessionJSON), &session); err != nil {
-		slog.Error("failed to unmarshal auth session", slog.Any("error", err))
+	if err = json.Unmarshal([]byte(sessionJSON), &session); err != nil {
+		slog.ErrorContext(ctx, "failed to unmarshal auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	_ = h.store.Del(r.Context(), "auth_session:"+sessionID)
+	_ = h.store.Del(ctx, "auth_session:"+sessionID)
 	if srv == nil {
 		if v, ok := h.servers[session.MCPServerName]; ok {
 			srv = v
@@ -518,9 +549,9 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 
 	// Exchange code with upstream OAuth2 server
-	upstreamToken, err := h.exchangeUpstreamToken(r.Context(), session, code, callbackURL)
+	upstreamToken, err := h.exchangeUpstreamToken(ctx, session, code, callbackURL)
 	if err != nil {
-		slog.Error("failed to exchange code with upstream", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to exchange code with upstream", slog.Any("error", err))
 		http.Error(w, "failed to authenticate with upstream", http.StatusInternalServerError)
 		return
 	}
@@ -535,19 +566,19 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	tokenKey := "upstream_token:" + generateRandomString(32)
 	tokenJSON, err := json.Marshal(upstreamToken) //nolint: gosec
 	if err != nil {
-		slog.Error("failed to marshal upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to marshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	// AES-256-GCM でトークンを暗号化して保存（平文保存を防ぐ）
 	encryptedToken, err := h.encryptToken(tokenJSON)
 	if err != nil {
-		slog.Error("failed to encrypt upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to encrypt upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	if err := h.store.Set(r.Context(), tokenKey, encryptedToken, tokenTTL); err != nil {
-		slog.Error("failed to store upstream token", slog.Any("error", err))
+	if err = h.store.Set(ctx, tokenKey, encryptedToken, tokenTTL); err != nil {
+		slog.ErrorContext(ctx, "failed to store upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -565,9 +596,9 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		rtSessionJSON, _ := json.Marshal(rtSession)
 		encryptedRTSession, err := h.encryptToken(rtSessionJSON)
 		if err != nil {
-			slog.Error("failed to encrypt refresh session", slog.Any("error", err))
-		} else if err := h.store.Set(r.Context(), "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
-			slog.Error("failed to store refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to encrypt refresh session", slog.Any("error", err))
+		} else if err = h.store.Set(ctx, "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
+			slog.ErrorContext(ctx, "failed to store refresh session", slog.Any("error", err))
 		}
 	}
 
@@ -581,8 +612,8 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 		MCPServerName:       srv.Name,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
-	if err := h.store.Set(r.Context(), "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
-		slog.Error("failed to store auth code", slog.Any("error", err))
+	if err = h.store.Set(ctx, "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
+		slog.ErrorContext(ctx, "failed to store auth code", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -592,8 +623,13 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 }
 
 func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/TokenEndpoint")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
-	if err := r.ParseForm(); err != nil {
+	if err = r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -603,7 +639,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	clientID := r.FormValue("client_id")
 	resource := r.FormValue("resource") // RFC 8707
 
-	slog.Info("TokenEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "TokenEndpoint called",
 		slog.String("grant_type", util.SanitizeLog(grantType)),
 		slog.Bool("has_code", code != ""),
 		slog.Bool("has_verifier", codeVerifier != ""),
@@ -615,33 +651,33 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	if grantType != "authorization_code" {
-		slog.Warn("unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
+		slog.WarnContext(ctx, "unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType)))
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
 		return
 	}
 
 	if code == "" || codeVerifier == "" {
-		slog.Warn("missing code or verifier")
+		slog.WarnContext(ctx, "missing code or verifier")
 		http.Error(w, "missing code or code_verifier", http.StatusBadRequest)
 		return
 	}
 
-	authCodeJSON, err := h.store.Get(r.Context(), "auth_code:"+code)
+	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
 	if err != nil {
-		slog.Warn("auth code not found in redis", slog.String("code", util.SanitizeLog(code))) //nolint: gosec
+		slog.WarnContext(ctx, "auth code not found in redis", slog.String("code", util.SanitizeLog(code)))
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
 		return
 	}
 	var authCodeData AuthCodeData
-	if err := json.Unmarshal([]byte(authCodeJSON), &authCodeData); err != nil {
-		slog.Error("failed to unmarshal auth code data", slog.Any("error", err))
+	if err = json.Unmarshal([]byte(authCodeJSON), &authCodeData); err != nil {
+		slog.ErrorContext(ctx, "failed to unmarshal auth code data", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	// client_id をコード発行時のクライアントと照合
 	if authCodeData.ClientID != "" && clientID != authCodeData.ClientID {
-		slog.Warn("client_id mismatch in token request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in token request",
 			slog.String("expected", authCodeData.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -661,23 +697,23 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	_ = h.store.Del(r.Context(), "auth_code:"+code)
+	_ = h.store.Del(ctx, "auth_code:"+code)
 
-	encryptedToken, err := h.store.Get(r.Context(), authCodeData.UpstreamTokenKey)
+	encryptedToken, err := h.store.Get(ctx, authCodeData.UpstreamTokenKey)
 	if err != nil {
-		slog.Error("upstream token not found in redis", slog.Any("error", err))
+		slog.ErrorContext(ctx, "upstream token not found in redis", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	tokenJSON, err := h.decryptToken(encryptedToken)
 	if err != nil {
-		slog.Error("failed to decrypt upstream token", slog.Any("error", err))
+		slog.ErrorContext(ctx, "failed to decrypt upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	var upstreamToken oauth2.Token
-	if err := json.Unmarshal(tokenJSON, &upstreamToken); err != nil {
-		slog.Error("failed to unmarshal upstream token", slog.Any("error", err))
+	if err = json.Unmarshal(tokenJSON, &upstreamToken); err != nil {
+		slog.ErrorContext(ctx, "failed to unmarshal upstream token", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -702,7 +738,10 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSession, code, callbackURL string) (*oauth2.Token, error) {
+func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSession, code, callbackURL string) (_ *oauth2.Token, rErr error) {
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/exchangeUpstreamToken")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
 	oauthCfg := &oauth2.Config{
 		ClientID:     session.OAuth2ClientID,
@@ -732,7 +771,9 @@ var (
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
 // 結果は h.servers にキャッシュされる。
-func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (*config.OAuth2, error) {
+func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (_ *config.OAuth2, rErr error) {
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/discoverOAuth2")
+	defer func() { trace.EndSpan(ctx, rErr) }()
 	// キャッシュを確認
 	h.mu.RLock()
 	if cached, ok := h.servers[srv.Name]; ok && cached.OAuth2 != nil {
@@ -850,7 +891,10 @@ func generateS256Challenge(codeVerifier string) string {
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
-func sendProbeRequest(ctx context.Context, url string) ([]string, error) {
+func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) {
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/sendProbeRequest")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	probeReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(initializeJSON))
 	if err != nil {
 		return nil, fmt.Errorf("probe request build failed: %w", err)
@@ -902,7 +946,10 @@ func resourceURLFromMetaURL(metaURL string) string {
 	return u.String()
 }
 
-func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) ([]string, error) {
+func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) (_ []string, rErr error) {
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/getAuthorizationServers")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	prm, err := oauthex.GetProtectedResourceMetadata(ctx, resourceMetaURL, url, c)
 	if err != nil {
 		return nil, fmt.Errorf("get protected resource metadata: %w", err)
@@ -913,7 +960,10 @@ func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c
 	return prm.AuthorizationServers, nil
 }
 
-func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Client) (*oauthex.AuthServerMeta, error) {
+func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Client) (_ *oauthex.AuthServerMeta, rErr error) {
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/getAuthMetadata")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	authMeta, err := mcpauth.GetAuthServerMetadata(ctx, authorizationServer, c)
 	if err != nil {
 		return nil, fmt.Errorf("get auth server metadata: %w", err)
@@ -927,6 +977,11 @@ func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Cl
 // handleRefreshTokenGrant は grant_type=refresh_token のリクエストを処理する。
 // 上流 OAuth2 サーバーに対してトークンリフレッシュを委譲し、新しいアクセストークンを返す。
 func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientID string) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/handleRefreshTokenGrant")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
 	refreshToken := r.FormValue("refresh_token") //nolint: gosec
 	if refreshToken == "" {
 		http.Error(w, "missing refresh_token", http.StatusBadRequest)
@@ -935,25 +990,25 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 
 	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
 	if err != nil {
-		slog.Warn("refresh session not found", slog.String("error", err.Error())) //nolint: gosec
+		slog.WarnContext(ctx, "refresh session not found", slog.String("error", err.Error()))
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
 	rtSessionJSON, err := h.decryptToken(encryptedRTSession)
 	if err != nil {
-		slog.Warn("failed to decrypt refresh session", slog.Any("error", err))
+		slog.WarnContext(ctx, "failed to decrypt refresh session", slog.Any("error", err))
 		http.Error(w, "invalid_grant", http.StatusUnauthorized)
 		return
 	}
 	var rtSession RefreshTokenSession
-	if err := json.Unmarshal(rtSessionJSON, &rtSession); err != nil {
-		slog.Error("failed to unmarshal refresh session", slog.Any("error", err))
+	if err = json.Unmarshal(rtSessionJSON, &rtSession); err != nil {
+		slog.ErrorContext(ctx, "failed to unmarshal refresh session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
-		slog.Warn("client_id mismatch in refresh request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in refresh request",
 			slog.String("expected", rtSession.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -968,11 +1023,11 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 			TokenURL: rtSession.OAuth2TokenURL,
 		},
 	}
-	ctx := context.WithValue(r.Context(), oauth2.HTTPClient, h.httpClient)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
 	ts := oauthCfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
 	newToken, err := ts.Token()
 	if err != nil {
-		slog.Error("upstream refresh failed", slog.Any("error", err))
+		slog.ErrorContext(ctx, "upstream refresh failed", slog.Any("error", err))
 		http.Error(w, "invalid_grant", http.StatusUnauthorized)
 		return
 	}
@@ -982,9 +1037,9 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 		rtSessionJSON2, _ := json.Marshal(rtSession)
 		encryptedNew, err := h.encryptToken(rtSessionJSON2)
 		if err != nil {
-			slog.Error("failed to encrypt new refresh session", slog.Any("error", err))
-		} else if err := h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
-			slog.Error("failed to store new refresh session", slog.Any("error", err))
+			slog.ErrorContext(ctx, "failed to encrypt new refresh session", slog.Any("error", err))
+		} else if err = h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
+			slog.ErrorContext(ctx, "failed to store new refresh session", slog.Any("error", err))
 		}
 	}
 
@@ -1068,84 +1123,4 @@ func validateRedirectURI(rawURI string) error {
 		}
 	}
 	return fmt.Errorf("redirect_uri must use https or http://localhost")
-}
-
-func newSafeHTTPClient() *http.Client {
-	dialer := &net.Dialer{
-		ControlContext: func(ctx context.Context, network, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("invalid address %q: %w", address, err)
-			}
-			if ip := net.ParseIP(host); ip != nil {
-				// IP リテラル（通常はここに来る）
-				if isPrivateIP(ip) {
-					return fmt.Errorf("connection to private IP %s is not allowed", ip)
-				}
-			} else {
-				// ホスト名が渡された場合（エッジケース）のフォールバック
-				addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-				if err != nil {
-					return fmt.Errorf("DNS resolution failed for %q: %w", host, err)
-				}
-				for _, ipAddr := range addrs {
-					if isPrivateIP(ipAddr.IP) {
-						return fmt.Errorf("connection to private IP %s is not allowed", ipAddr.IP)
-					}
-				}
-			}
-			return nil
-		},
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: dialer.DialContext,
-		},
-		Timeout: 30 * time.Second,
-	}
-}
-
-// isPrivateIP は IP アドレスがプライベート・リンクローカル・ループバック等の
-// 予約済みレンジに属するか確認する。
-func isPrivateIP(ip net.IP) bool {
-	for _, cidr := range privateIPRanges {
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-// privateIPRanges はプライベート・予約済み IP レンジのリスト。
-var privateIPRanges []*net.IPNet
-
-func init() {
-	privateCIDRs := []string{
-		"127.0.0.0/8",    // IPv4 ループバック
-		"::1/128",        // IPv6 ループバック
-		"10.0.0.0/8",     // プライベート
-		"172.16.0.0/12",  // プライベート
-		"192.168.0.0/16", // プライベート
-		"169.254.0.0/16", // IPv4 リンクローカル
-		"fe80::/10",      // IPv6 リンクローカル
-		"fc00::/7",       // IPv6 ユニークローカル
-		"100.64.0.0/10",  // 共有アドレス空間 (RFC 6598)
-		"0.0.0.0/8",      // 未指定
-	}
-	for _, cidr := range privateCIDRs {
-		_, network, err := net.ParseCIDR(cidr)
-		if err == nil {
-			privateIPRanges = append(privateIPRanges, network)
-		}
-	}
-}
-
-// containsString は slice の中に target が含まれるか確認する。
-func containsString(slice []string, target string) bool {
-	for _, s := range slice {
-		if s == target {
-			return true
-		}
-	}
-	return false
 }

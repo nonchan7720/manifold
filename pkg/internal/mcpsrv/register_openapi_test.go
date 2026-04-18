@@ -3,7 +3,6 @@ package mcpsrv
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,7 +13,7 @@ func TestRegisterOpenAPI(t *testing.T) {
 
 	// OAS3 fixture には 19 オペレーションが定義されている
 	tools := r.ListTools()
-	assert.Len(t, tools, 19)
+	require.Len(t, tools, 19)
 }
 
 func TestRegisterSwagger(t *testing.T) {
@@ -24,7 +23,7 @@ func TestRegisterSwagger(t *testing.T) {
 
 	// Swagger fixture には 20 オペレーションが定義されている
 	tools := r.ListTools()
-	assert.Len(t, tools, 20)
+	require.Len(t, tools, 20)
 }
 
 func TestRegisterOpenAPI_Error_InvalidPath(t *testing.T) {
@@ -67,7 +66,7 @@ func TestRegisterOpenAPI_ToolNaming(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tool := r.GetTool(name)
 			require.NotNil(t, tool, "tool %q should be registered", name)
-			assert.Equal(t, name, tool.tool.Name)
+			require.Equal(t, name, tool.tool.Name)
 		})
 	}
 }
@@ -102,7 +101,7 @@ func TestRegisterSwagger_ToolNaming(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tool := r.GetTool(name)
 			require.NotNil(t, tool, "tool %q should be registered", name)
-			assert.Equal(t, name, tool.tool.Name)
+			require.Equal(t, name, tool.tool.Name)
 		})
 	}
 }
@@ -125,7 +124,7 @@ func TestRegisterOpenAPI_Description_UsesSummary(t *testing.T) {
 		t.Run(tc.toolName, func(t *testing.T) {
 			tool := r.GetTool(tc.toolName)
 			require.NotNil(t, tool)
-			assert.Equal(t, tc.wantSummary, tool.tool.Description)
+			require.Equal(t, tc.wantSummary, tool.tool.Description)
 		})
 	}
 }
@@ -147,7 +146,7 @@ func TestRegisterSwagger_Description_UsesSummary(t *testing.T) {
 		t.Run(tc.toolName, func(t *testing.T) {
 			tool := r.GetTool(tc.toolName)
 			require.NotNil(t, tool)
-			assert.Equal(t, tc.wantSummary, tool.tool.Description)
+			require.Equal(t, tc.wantSummary, tool.tool.Description)
 		})
 	}
 }
@@ -162,11 +161,11 @@ func TestRegisterOpenAPI_InputSchema(t *testing.T) {
 
 	schema, ok := tool.tool.InputSchema.(map[string]any)
 	require.True(t, ok, "InputSchema should be map[string]any")
-	assert.Equal(t, "object", schema["type"])
+	require.Equal(t, "object", schema["type"])
 
 	props, propsOk := schema["properties"].(map[string]any)
 	require.True(t, propsOk, "properties should be map[string]any")
-	assert.Contains(t, props, "petId")
+	require.Contains(t, props, "petId")
 }
 
 func TestRegisterSwagger_InputSchema(t *testing.T) {
@@ -179,11 +178,11 @@ func TestRegisterSwagger_InputSchema(t *testing.T) {
 
 	schema, ok := tool.tool.InputSchema.(map[string]any)
 	require.True(t, ok, "InputSchema should be map[string]any")
-	assert.Equal(t, "object", schema["type"])
+	require.Equal(t, "object", schema["type"])
 
 	props, propsOk := schema["properties"].(map[string]any)
 	require.True(t, propsOk, "properties should be map[string]any")
-	assert.Contains(t, props, "petId")
+	require.Contains(t, props, "petId")
 }
 
 func TestRegisterOpenAPI_Handler_NotNil(t *testing.T) {
@@ -192,7 +191,7 @@ func TestRegisterOpenAPI_Handler_NotNil(t *testing.T) {
 
 	tool := r.GetTool("updatepet")
 	require.NotNil(t, tool)
-	assert.NotNil(t, tool.handler)
+	require.NotNil(t, tool.handler)
 }
 
 func TestRegisterOpenAPI_BaseUrl_Override(t *testing.T) {
@@ -203,7 +202,7 @@ func TestRegisterOpenAPI_BaseUrl_Override(t *testing.T) {
 	require.NotNil(t, r)
 
 	tools := r.ListTools()
-	assert.Len(t, tools, 19)
+	require.Len(t, tools, 19)
 }
 
 func TestRegisterOpenAPI_GetTool_NotFound(t *testing.T) {
@@ -211,5 +210,5 @@ func TestRegisterOpenAPI_GetTool_NotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	tool := r.GetTool("nonexistenttool")
-	assert.Nil(t, tool)
+	require.Nil(t, tool)
 }

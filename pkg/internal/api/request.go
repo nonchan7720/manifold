@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
-func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod string, withBody bool, bodyBytes []byte, bodyContentType string, effective_headers map[string]string) (*http.Response, error) {
+func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod string, withBody bool, bodyBytes []byte, bodyContentType string, effective_headers map[string]string) (_ *http.Response, rErr error) {
+	ctx = trace.StartSpan(ctx, "api/DoRequest")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	var bodyReader io.Reader
 	if withBody && len(bodyBytes) > 0 {
 		bodyReader = bytes.NewReader(bodyBytes)
