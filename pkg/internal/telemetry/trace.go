@@ -55,16 +55,11 @@ func NewTracerProvider(ctx context.Context, opt *Config) (trace.TracerProvider, 
 	)
 
 	cleanup := func() { //nolint: contextcheck
-		f := func(fn func(ctx context.Context) error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := fn(ctx); err != nil {
-				slog.Warn(err.Error())
-			}
-			cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := sdkTP.Shutdown(ctx); err != nil {
+			slog.Warn(err.Error())
 		}
-		f(sdkTP.ForceFlush)
-		f(sdkTP.Shutdown)
-		f(exporter.Shutdown)
 	}
 
 	pp := newPropagator()
@@ -110,21 +105,23 @@ func newHTTPTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrac
 }
 
 func newGRPCTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrace.Client, error) {
-	traceOpts := []otlptracegrpc.Option{
-		otlptracegrpc.WithInsecure(),
+	opts := make([]otlptracegrpc.Option, 0, 10)
+	grpc := opt.GRPC
+	if grpc.Insecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
 	}
-	endpoint := opt.GRPC.Endpoint
+	endpoint := grpc.Endpoint
 	switch {
 	case endpoint.Endpoint != "":
-		traceOpts = append(traceOpts, otlptracegrpc.WithEndpoint(endpoint.Endpoint))
+		opts = append(opts, otlptracegrpc.WithEndpoint(endpoint.Endpoint))
 	case endpoint.EndpointURL != "":
-		traceOpts = append(traceOpts, otlptracegrpc.WithEndpointURL(endpoint.EndpointURL))
+		opts = append(opts, otlptracegrpc.WithEndpointURL(endpoint.EndpointURL))
 	default:
 		return nil, errors.New("please specify the endpoint or endpoint URL")
 	}
 	if gzipCompression {
-		traceOpts = append(traceOpts, otlptracegrpc.WithCompressor("gzip"))
+		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
 	}
-	traceClient := otlptracegrpc.NewClient(traceOpts...)
+	traceClient := otlptracegrpc.NewClient(opts...)
 	return traceClient, nil
 }

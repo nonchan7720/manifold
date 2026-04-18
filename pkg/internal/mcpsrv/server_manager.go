@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -86,10 +87,15 @@ func registerAPI(ctx context.Context, spec, baseURL string, srv *mcp.Server) err
 	}
 	tools := register.ListTools()
 	for _, tool := range tools {
-		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (_ *mcp.CallToolResult, rErr error) {
+		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
 			spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
 			ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))
-			defer func() { trace.EndSpan(ctx, rErr) }()
+			defer func() {
+				if res.IsError {
+					rErr = errors.Join(rErr, res.GetError())
+				}
+				trace.EndSpan(ctx, rErr)
+			}()
 			slog.InfoContext(ctx, "call tool", slog.String("tool-name", ctr.Params.Name))
 
 			var input map[string]any

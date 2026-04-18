@@ -71,10 +71,12 @@ func newHTTPLogExporter(ctx context.Context, opt *LogsConfig, gzipCompression bo
 }
 
 func newGRPCLogExporter(ctx context.Context, opt *LogsConfig, gzipCompression bool) (sdklog.Exporter, error) {
-	opts := []otlploggrpc.Option{
-		otlploggrpc.WithInsecure(),
+	opts := make([]otlploggrpc.Option, 0, 10)
+	grpc := opt.GRPC
+	if grpc.Insecure {
+		opts = append(opts, otlploggrpc.WithInsecure())
 	}
-	endpoint := opt.GRPC.Endpoint
+	endpoint := grpc.Endpoint
 	switch {
 	case endpoint.Endpoint != "":
 		opts = append(opts, otlploggrpc.WithEndpoint(endpoint.Endpoint))

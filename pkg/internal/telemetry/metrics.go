@@ -46,7 +46,9 @@ func newPullMeterProvider(_ context.Context, opt *Config) (metric.MeterProvider,
 		sdkmetric.WithResource(newResource(opt.ServiceName, version.Version, opt.Environment)),
 	)
 	cleanup := func() { //nolint: contextcheck
-		if err := meterProvider.Shutdown(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := meterProvider.Shutdown(ctx); err != nil {
 			slog.Warn(err.Error())
 		}
 	}
@@ -112,10 +114,12 @@ func newHTTPMetricExporter(ctx context.Context, opt *MetricsConfig, gzipCompress
 }
 
 func newGRPCMetricExporter(ctx context.Context, opt *MetricsConfig, gzipCompression bool) (sdkmetric.Exporter, error) {
-	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithInsecure(),
+	opts := make([]otlpmetricgrpc.Option, 0, 10)
+	grpc := opt.GRPC
+	if grpc.Insecure {
+		opts = append(opts, otlpmetricgrpc.WithInsecure())
 	}
-	endpoint := opt.GRPC.Endpoint
+	endpoint := grpc.Endpoint
 	switch {
 	case endpoint.Endpoint != "":
 		opts = append(opts, otlpmetricgrpc.WithEndpoint(endpoint.Endpoint))
