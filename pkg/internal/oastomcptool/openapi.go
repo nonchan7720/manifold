@@ -15,7 +15,9 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
@@ -24,11 +26,6 @@ type ToolFunc func(ctx context.Context, input map[string]any) (string, error)
 // MCPToolRegistry defines the interface for the global MCP tool registry
 type MCPToolRegistry interface {
 	RegisterTool(name, description string, input_schema map[string]any, handler func(context.Context, map[string]any) (string, error))
-}
-
-// getHttpClient returns an HTTP client (simulates litellm's getHttpClient)
-func getHttpClient() *http.Client {
-	return &http.Client{}
 }
 
 func sanitize_path_parameter_value(param_value any, param_name string) (string, error) {
@@ -57,9 +54,12 @@ func sanitize_path_parameter_value(param_value any, param_name string) (string, 
 }
 
 // FetchSpecBytes fetches spec bytes from a file path or URL.
-func FetchSpecBytes(ctx context.Context, specPath string) ([]byte, error) {
+func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error) {
+	ctx = trace.StartSpan(ctx, "oastomcptool/FetchSpecBytes")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
-		client := getHttpClient()
+		client := client.HTTPClient()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, specPath, nil)
 		if err != nil {
 			return nil, err
@@ -96,6 +96,7 @@ func LoadOpenapiSpec(ctx context.Context, filepath string) (map[string]any, erro
 // LoadOpenAPI3Spec loads an OpenAPI 3.x spec with automatic $ref resolution.
 func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 	loader := openapi3.NewLoader()
+	loader.ReadFromURIFunc = openapi3.URIMapCache(openapi3.ReadFromURIs(openapi3.ReadFromHTTP(client.HTTPClient()), openapi3.ReadFromFile))
 	loader.IsExternalRefsAllowed = true
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
 		u, err := url.Parse(specPath)
@@ -501,7 +502,7 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 		}
 
-		client := getHttpClient()
+		client := client.HTTPClient()
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {

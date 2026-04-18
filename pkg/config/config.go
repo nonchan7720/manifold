@@ -14,6 +14,8 @@ type Config struct {
 
 	Redis  *RedisConfig  `mapstructure:"redis"`
 	SQLite *SQLiteConfig `mapstructure:"sqlite"`
+
+	Telemetry Telemetry `mapstructure:"telemetry"`
 }
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
@@ -18,6 +19,9 @@ import (
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/sdk/metric"
 )
 
 func newGatewayCmd() *cobra.Command {
@@ -38,6 +42,33 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer storeClient.Close()
+	telemetry := globalConfig.Telemetry
+	traceOpts := []trace.Option{
+		trace.WithEnabled(telemetry.Enabled),
+		trace.WithServiceName(telemetry.ServiceName),
+		trace.WithEnvironment(telemetry.Environment),
+		trace.WithAgentAddr(telemetry.AgentAddr),
+	}
+	_, cleanup, err := trace.NewTracerProvider(ctx, traceOpts...)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	reader := metric.NewManualReader(
+		metric.WithProducer(runtime.NewProducer()),
+	)
+	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
+	defer func() {
+		err := meterProvider.Shutdown(context.Background())
+		if err != nil {
+			slog.Warn(err.Error())
+		}
+	}()
+	otel.SetMeterProvider(meterProvider)
+	if err := runtime.Start(runtime.WithMinimumReadMemStatsInterval(time.Second)); err != nil {
+		return err
+	}
 
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
