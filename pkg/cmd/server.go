@@ -11,17 +11,15 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	httphandler "github.com/nonchan7720/manifold/pkg/interfaces/http"
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
+	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/contrib/instrumentation/runtime"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func newGatewayCmd() *cobra.Command {
@@ -42,33 +40,23 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer storeClient.Close()
-	telemetry := globalConfig.Telemetry
-	traceOpts := []trace.Option{
-		trace.WithEnabled(telemetry.Enabled),
-		trace.WithServiceName(telemetry.ServiceName),
-		trace.WithEnvironment(telemetry.Environment),
-		trace.WithAgentAddr(telemetry.AgentAddr),
-	}
-	_, cleanup, err := trace.NewTracerProvider(ctx, traceOpts...)
+	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	reader := metric.NewManualReader(
-		metric.WithProducer(runtime.NewProducer()),
-	)
-	meterProvider := metric.NewMeterProvider(metric.WithReader(reader))
-	defer func() {
-		err := meterProvider.Shutdown(context.Background())
-		if err != nil {
-			slog.Warn(err.Error())
-		}
-	}()
-	otel.SetMeterProvider(meterProvider)
-	if err := runtime.Start(runtime.WithMinimumReadMemStatsInterval(time.Second)); err != nil {
+	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(ctx, &globalConfig.Telemetry)
+	if err != nil {
 		return err
 	}
+	defer metricsCleanup()
+
+	_, logsCleanup, err := telemetry.NewLoggerProvider(ctx, &globalConfig.Telemetry)
+	if err != nil {
+		return err
+	}
+	defer logsCleanup()
 
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
@@ -108,6 +96,9 @@ func runGatewayServer(ctx context.Context) error {
 	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
 	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
+	if metricsHandler != nil {
+		mux.Handle("/metrics", metricsHandler)
+	}
 
 	gateway := globalConfig.Gateway
 	servePort := gateway.Port
@@ -115,8 +106,11 @@ func runGatewayServer(ctx context.Context) error {
 		servePort = 8081
 	}
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", servePort),
-		Handler: middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux))),
+		Addr: fmt.Sprintf(":%d", servePort),
+		Handler: otelhttp.NewHandler(
+			middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux))),
+			"gateway",
+		),
 	}
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
 }

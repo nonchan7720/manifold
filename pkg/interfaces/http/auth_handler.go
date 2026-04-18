@@ -11,14 +11,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -26,9 +24,9 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/nonchan7720/manifold/pkg/util"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/oauth2"
 )
 
@@ -116,7 +114,7 @@ func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...Au
 	h := &AuthHandler{
 		store:      storeClient,
 		servers:    servers,
-		httpClient: newSafeHTTPClient(),
+		httpClient: client.SafeHTTPClient(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -1125,79 +1123,4 @@ func validateRedirectURI(rawURI string) error {
 		}
 	}
 	return fmt.Errorf("redirect_uri must use https or http://localhost")
-}
-
-func newSafeHTTPClient() *http.Client {
-	dialer := &net.Dialer{
-		ControlContext: func(ctx context.Context, network, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("invalid address %q: %w", address, err)
-			}
-			if ip := net.ParseIP(host); ip != nil {
-				// IP リテラル（通常はここに来る）
-				if isPrivateIP(ip) {
-					return fmt.Errorf("connection to private IP %s is not allowed", ip)
-				}
-			} else {
-				// ホスト名が渡された場合（エッジケース）のフォールバック
-				addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-				if err != nil {
-					return fmt.Errorf("DNS resolution failed for %q: %w", host, err)
-				}
-				for _, ipAddr := range addrs {
-					if isPrivateIP(ipAddr.IP) {
-						return fmt.Errorf("connection to private IP %s is not allowed", ipAddr.IP)
-					}
-				}
-			}
-			return nil
-		},
-	}
-	customTransport := http.DefaultTransport.(*http.Transport).Clone()
-	customTransport.DialContext = dialer.DialContext
-	customTransport.MaxIdleConns = 100
-	customTransport.MaxIdleConnsPerHost = 100
-	// NOTE: Set it to a value lower than ALB's default of 60 seconds
-	customTransport.IdleConnTimeout = 45 * time.Second
-	transport := otelhttp.NewTransport(customTransport)
-	return &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
-}
-
-// isPrivateIP は IP アドレスがプライベート・リンクローカル・ループバック等の
-// 予約済みレンジに属するか確認する。
-func isPrivateIP(ip net.IP) bool {
-	for _, cidr := range privateIPRanges {
-		if cidr.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-// privateIPRanges はプライベート・予約済み IP レンジのリスト。
-var privateIPRanges []*net.IPNet
-
-func init() {
-	privateCIDRs := []string{
-		"127.0.0.0/8",    // IPv4 ループバック
-		"::1/128",        // IPv6 ループバック
-		"10.0.0.0/8",     // プライベート
-		"172.16.0.0/12",  // プライベート
-		"192.168.0.0/16", // プライベート
-		"169.254.0.0/16", // IPv4 リンクローカル
-		"fe80::/10",      // IPv6 リンクローカル
-		"fc00::/7",       // IPv6 ユニークローカル
-		"100.64.0.0/10",  // 共有アドレス空間 (RFC 6598)
-		"0.0.0.0/8",      // 未指定
-	}
-	for _, cidr := range privateCIDRs {
-		_, network, err := net.ParseCIDR(cidr)
-		if err == nil {
-			privateIPRanges = append(privateIPRanges, network)
-		}
-	}
 }

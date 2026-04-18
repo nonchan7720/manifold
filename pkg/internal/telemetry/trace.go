@@ -20,8 +20,9 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-func NewTracerProvider(ctx context.Context, opt *Config) (trace.TracerProvider, context.CancelFunc, error) {
-	if !opt.Enabled {
+func NewTracerProvider(ctx context.Context, opt *Config) (trace.TracerProvider, func(), error) {
+	t := opt.Trace
+	if !t.Enabled {
 		return noop.NewTracerProvider(), func() {}, nil
 	}
 
@@ -30,10 +31,10 @@ func NewTracerProvider(ctx context.Context, opt *Config) (trace.TracerProvider, 
 		err         error
 	)
 	switch {
-	case opt.HTTP != nil:
-		traceClient, err = httpTrace(ctx, opt)
-	case opt.GRPC != nil:
-		traceClient, err = grpcTrace(ctx, opt)
+	case t.HTTP != nil:
+		traceClient, err = newHTTPTrace(ctx, &opt.Trace, opt.GzipCompression)
+	case t.GRPC != nil:
+		traceClient, err = newGRPCTrace(ctx, &opt.Trace, opt.GzipCompression)
 	default:
 		slog.Warn("enable tracing, configure HTTP or gRPC")
 		return noop.NewTracerProvider(), func() {}, nil
@@ -90,7 +91,7 @@ func newPropagator() propagation.TextMapPropagator {
 	)
 }
 
-func httpTrace(ctx context.Context, opt *Config) (otlptrace.Client, error) {
+func newHTTPTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrace.Client, error) {
 	traceOpts := []otlptracehttp.Option{}
 	endpoint := opt.HTTP.Endpoint
 	switch {
@@ -101,14 +102,14 @@ func httpTrace(ctx context.Context, opt *Config) (otlptrace.Client, error) {
 	default:
 		return nil, errors.New("please specify the endpoint or endpoint URL")
 	}
-	if opt.GzipCompression {
+	if gzipCompression {
 		traceOpts = append(traceOpts, otlptracehttp.WithCompression(otlptracehttp.GzipCompression))
 	}
 	traceClient := otlptracehttp.NewClient(traceOpts...)
 	return traceClient, nil
 }
 
-func grpcTrace(ctx context.Context, opt *Config) (otlptrace.Client, error) {
+func newGRPCTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrace.Client, error) {
 	traceOpts := []otlptracegrpc.Option{
 		otlptracegrpc.WithInsecure(),
 	}
@@ -121,7 +122,7 @@ func grpcTrace(ctx context.Context, opt *Config) (otlptrace.Client, error) {
 	default:
 		return nil, errors.New("please specify the endpoint or endpoint URL")
 	}
-	if opt.GzipCompression {
+	if gzipCompression {
 		traceOpts = append(traceOpts, otlptracegrpc.WithCompressor("gzip"))
 	}
 	traceClient := otlptracegrpc.NewClient(traceOpts...)
