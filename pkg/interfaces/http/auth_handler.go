@@ -392,7 +392,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	state := q.Get("state")
 	resource := q.Get("resource") // RFC 8707
 
-	slog.InfoContext(ctx, "LoginEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "LoginEndpoint called",
 		slog.String("client_id", util.SanitizeLog(clientID)),
 		slog.String("redirect_uri", util.SanitizeLog(redirectURI)),
 		slog.String("state", util.SanitizeLog(state)),
@@ -511,7 +511,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	sessionID := q.Get("state")
 	code := q.Get("code")
 
-	slog.InfoContext(ctx, "CallbackEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "CallbackEndpoint called",
 		slog.String("state", util.SanitizeLog(sessionID)),
 		slog.Bool("has_code", code != ""),
 	)
@@ -524,7 +524,7 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 
 	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
 	if err != nil {
-		slog.WarnContext(ctx, "session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID))) //nolint: gosec
+		slog.WarnContext(ctx, "session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID)))
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
 		return
 	}
@@ -639,7 +639,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	clientID := r.FormValue("client_id")
 	resource := r.FormValue("resource") // RFC 8707
 
-	slog.InfoContext(ctx, "TokenEndpoint called", //nolint: gosec
+	slog.InfoContext(ctx, "TokenEndpoint called",
 		slog.String("grant_type", util.SanitizeLog(grantType)),
 		slog.Bool("has_code", code != ""),
 		slog.Bool("has_verifier", codeVerifier != ""),
@@ -651,7 +651,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	if grantType != "authorization_code" {
-		slog.WarnContext(ctx, "unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType))) //nolint: gosec
+		slog.WarnContext(ctx, "unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType)))
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
 		return
 	}
@@ -664,7 +664,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
 	if err != nil {
-		slog.WarnContext(ctx, "auth code not found in redis", slog.String("code", util.SanitizeLog(code))) //nolint: gosec
+		slog.WarnContext(ctx, "auth code not found in redis", slog.String("code", util.SanitizeLog(code)))
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
 		return
 	}
@@ -677,7 +677,7 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	// client_id をコード発行時のクライアントと照合
 	if authCodeData.ClientID != "" && clientID != authCodeData.ClientID {
-		slog.WarnContext(ctx, "client_id mismatch in token request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in token request",
 			slog.String("expected", authCodeData.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
@@ -990,7 +990,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 
 	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
 	if err != nil {
-		slog.WarnContext(ctx, "refresh session not found", slog.String("error", err.Error())) //nolint: gosec
+		slog.WarnContext(ctx, "refresh session not found", slog.String("error", err.Error()))
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
@@ -1008,7 +1008,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	}
 
 	if rtSession.ClientID != "" && clientID != rtSession.ClientID {
-		slog.WarnContext(ctx, "client_id mismatch in refresh request", //nolint: gosec
+		slog.WarnContext(ctx, "client_id mismatch in refresh request",
 			slog.String("expected", rtSession.ClientID),
 			slog.String("got", util.SanitizeLog(clientID)))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)

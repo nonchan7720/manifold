@@ -2,7 +2,6 @@ package telemetry_test
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
@@ -41,8 +40,6 @@ func TestNewMeterProvider_Pull(t *testing.T) {
 	require.NotNil(t, handler)
 	require.NotNil(t, cleanup)
 	defer cleanup()
-	_, ok := handler.(http.Handler)
-	require.True(t, ok)
 }
 
 func TestNewMeterProvider_Push_HTTP(t *testing.T) {
