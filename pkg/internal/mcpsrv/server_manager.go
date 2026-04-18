@@ -24,7 +24,7 @@ type MCPServer struct {
 func NewMCPServer(servers config.Servers) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
-		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: fmt.Sprintf("v%s", version.MarkVersion)}, &mcp.ServerOptions{}),
+		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
 	}
