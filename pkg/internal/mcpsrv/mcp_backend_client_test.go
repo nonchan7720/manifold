@@ -8,7 +8,6 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,14 +23,14 @@ func TestContextOAuthHandler_TokenSource_WithToken(t *testing.T) {
 
 	token, err := ts.Token()
 	require.NoError(t, err)
-	assert.Equal(t, "my-access-token", token.AccessToken)
+	require.Equal(t, "my-access-token", token.AccessToken)
 }
 
 func TestContextOAuthHandler_TokenSource_NoToken(t *testing.T) {
 	h := &contextOAuthHandler{}
 	ts, err := h.TokenSource(context.Background())
 	require.NoError(t, err)
-	assert.Nil(t, ts)
+	require.Nil(t, ts)
 }
 
 func TestContextOAuthHandler_TokenSource_BearerPrefix(t *testing.T) {
@@ -45,7 +44,7 @@ func TestContextOAuthHandler_TokenSource_BearerPrefix(t *testing.T) {
 	token, err := ts.Token()
 	require.NoError(t, err)
 	// "Bearer " プレフィックスが取り除かれる
-	assert.Equal(t, "token-value", token.AccessToken)
+	require.Equal(t, "token-value", token.AccessToken)
 }
 
 func TestContextOAuthHandler_Authorize(t *testing.T) {
@@ -56,7 +55,7 @@ func TestContextOAuthHandler_Authorize(t *testing.T) {
 	}
 	err := h.Authorize(context.Background(), nil, resp)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "401")
+	require.Contains(t, err.Error(), "401")
 }
 
 // --- extraHeaderRoundTripper ---
@@ -83,7 +82,7 @@ func TestExtraHeaderRoundTripper_WithHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "custom-value", capturedHeader)
+	require.Equal(t, "custom-value", capturedHeader)
 }
 
 func TestExtraHeaderRoundTripper_NoHeaders(t *testing.T) {
@@ -104,7 +103,7 @@ func TestExtraHeaderRoundTripper_NoHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestExtraHeaderRoundTripper_EmptyHeaders(t *testing.T) {
@@ -125,7 +124,7 @@ func TestExtraHeaderRoundTripper_EmptyHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 // --- authValueRoundTripper ---
@@ -154,7 +153,7 @@ func TestAuthValueRoundTripper_WithPrefix(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "Bearer mytoken", capturedAuth)
+	require.Equal(t, "Bearer mytoken", capturedAuth)
 }
 
 func TestAuthValueRoundTripper_NoPrefix(t *testing.T) {
@@ -181,7 +180,7 @@ func TestAuthValueRoundTripper_NoPrefix(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, "secret-key", capturedHeader)
+	require.Equal(t, "secret-key", capturedHeader)
 }
 
 // --- buildTransport ---
@@ -197,7 +196,7 @@ func TestBuildTransport_StdioEmptyCommand(t *testing.T) {
 
 	_, err := c.buildTransport(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "command is required")
+	require.Contains(t, err.Error(), "command is required")
 }
 
 func TestBuildTransport_UnknownTransport(t *testing.T) {
@@ -210,7 +209,7 @@ func TestBuildTransport_UnknownTransport(t *testing.T) {
 
 	_, err := c.buildTransport(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown transport")
+	require.Contains(t, err.Error(), "unknown transport")
 }
 
 func TestBuildTransport_HTTP_NoAuthValue(t *testing.T) {
@@ -224,7 +223,7 @@ func TestBuildTransport_HTTP_NoAuthValue(t *testing.T) {
 
 	transport, err := c.buildTransport(context.Background())
 	require.NoError(t, err)
-	assert.NotNil(t, transport)
+	require.NotNil(t, transport)
 }
 
 func TestBuildTransport_HTTP_WithAuthValue(t *testing.T) {
@@ -243,7 +242,7 @@ func TestBuildTransport_HTTP_WithAuthValue(t *testing.T) {
 
 	transport, err := c.buildTransport(context.Background())
 	require.NoError(t, err)
-	assert.NotNil(t, transport)
+	require.NotNil(t, transport)
 }
 
 func TestBuildTransport_Stdio_WithCommand(t *testing.T) {
@@ -259,7 +258,7 @@ func TestBuildTransport_Stdio_WithCommand(t *testing.T) {
 
 	transport, err := c.buildTransport(context.Background())
 	require.NoError(t, err)
-	assert.NotNil(t, transport)
+	require.NotNil(t, transport)
 }
 
 // --- MCPBackendClient.Close ---
@@ -272,8 +271,8 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 		session:   nil,
 	}
 	// 接続していない場合はパニックしない
-	assert.NotPanics(t, func() {
+	require.NotPanics(t, func() {
 		c.Close()
 	})
-	assert.False(t, c.connected)
+	require.False(t, c.connected)
 }

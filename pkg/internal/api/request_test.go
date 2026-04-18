@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,13 +34,13 @@ func TestDoRequest_GET(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, http.MethodGet, receivedMethod)
-	assert.Equal(t, "secret", receivedCustomHeader)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.MethodGet, receivedMethod)
+	require.Equal(t, "secret", receivedCustomHeader)
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Contains(t, string(body), "ok")
+	require.Contains(t, string(body), "ok")
 }
 
 func TestDoRequest_POST_WithBody(t *testing.T) {
@@ -68,15 +67,15 @@ func TestDoRequest_POST_WithBody(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
-	assert.Equal(t, "application/json", receivedContentType)
-	assert.Equal(t, bodyBytes, receivedBody)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, "application/json", receivedContentType)
+	require.Equal(t, bodyBytes, receivedBody)
 }
 
 func TestDoRequest_POST_NoBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Empty(t, r.Header.Get("Content-Type"))
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Empty(t, r.Header.Get("Content-Type"))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -94,12 +93,12 @@ func TestDoRequest_POST_NoBody(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestDoRequest_PUT(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPut, r.Method)
+		require.Equal(t, http.MethodPut, r.Method)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -116,12 +115,12 @@ func TestDoRequest_PUT(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestDoRequest_DELETE(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, http.MethodDelete, r.Method)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -138,12 +137,12 @@ func TestDoRequest_DELETE(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
 func TestDoRequest_PATCH(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPatch, r.Method)
+		require.Equal(t, http.MethodPatch, r.Method)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -160,7 +159,7 @@ func TestDoRequest_PATCH(t *testing.T) {
 	)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestDoRequest_WithContextHeaders(t *testing.T) {
@@ -179,8 +178,8 @@ func TestDoRequest_WithContextHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "tenant-xyz", receivedContextHeader)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "tenant-xyz", receivedContextHeader)
 }
 
 func TestDoRequest_InvalidURL(t *testing.T) {
@@ -197,5 +196,5 @@ func TestDoRequest_InvalidURL(t *testing.T) {
 	if resp != nil {
 		resp.Body.Close()
 	}
-	assert.Error(t, err)
+	require.Error(t, err)
 }

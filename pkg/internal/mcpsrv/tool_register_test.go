@@ -4,14 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewMCPToolRegistry(t *testing.T) {
 	r := NewMCPToolRegistry()
 	require.NotNil(t, r)
-	assert.Empty(t, r.ListTools())
+	require.Empty(t, r.ListTools())
 }
 
 func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
@@ -25,15 +24,15 @@ func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
 
 	tool := r.GetTool("tool1")
 	require.NotNil(t, tool)
-	assert.Equal(t, "tool1", tool.tool.Name)
-	assert.Equal(t, "Test Tool 1", tool.tool.Description)
-	assert.NotNil(t, tool.handler)
+	require.Equal(t, "tool1", tool.tool.Name)
+	require.Equal(t, "Test Tool 1", tool.tool.Description)
+	require.NotNil(t, tool.handler)
 }
 
 func TestMCPToolRegistry_GetNotFound(t *testing.T) {
 	r := NewMCPToolRegistry()
 	tool := r.GetTool("nonexistent")
-	assert.Nil(t, tool)
+	require.Nil(t, tool)
 }
 
 func TestMCPToolRegistry_ListTools(t *testing.T) {
@@ -48,7 +47,7 @@ func TestMCPToolRegistry_ListTools(t *testing.T) {
 	r.RegisterTool("tool_c", "Tool C", nil, handler)
 
 	tools := r.ListTools()
-	assert.Len(t, tools, 3)
+	require.Len(t, tools, 3)
 }
 
 func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
@@ -67,11 +66,11 @@ func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
 	// 上書きされる
 	tool := r.GetTool("mytool")
 	require.NotNil(t, tool)
-	assert.Equal(t, "Version 2", tool.tool.Description)
+	require.Equal(t, "Version 2", tool.tool.Description)
 
 	result, err := tool.handler(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Equal(t, "v2", result)
+	require.Equal(t, "v2", result)
 }
 
 func TestMCPToolRegistry_HandlerExecution(t *testing.T) {
@@ -88,7 +87,7 @@ func TestMCPToolRegistry_HandlerExecution(t *testing.T) {
 
 	result, err := tool.handler(context.Background(), map[string]any{"name": "World"})
 	require.NoError(t, err)
-	assert.Equal(t, "Hello, World", result)
+	require.Equal(t, "Hello, World", result)
 }
 
 func TestMCPToolRegistry_InputSchema(t *testing.T) {
@@ -107,5 +106,5 @@ func TestMCPToolRegistry_InputSchema(t *testing.T) {
 
 	tool := r.GetTool("fetch")
 	require.NotNil(t, tool)
-	assert.Equal(t, schema, tool.tool.InputSchema)
+	require.Equal(t, schema, tool.tool.InputSchema)
 }

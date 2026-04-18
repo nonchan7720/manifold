@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
@@ -13,6 +14,9 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			ctx = trace.StartSpan(ctx, "Middleware/JWT")
+			defer func() { trace.EndSpan(ctx, nil) }()
+
 			srvName := r.PathValue(pathValueName)
 			_, ok := servers[srvName]
 			if !ok {

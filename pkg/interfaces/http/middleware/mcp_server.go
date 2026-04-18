@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
@@ -12,6 +13,10 @@ import (
 func MCPServerApp(servers config.Servers, pathValueName string) func(next http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			ctx = trace.StartSpan(ctx, "Middleware/MCPServer")
+			defer func() { trace.EndSpan(ctx, nil) }()
+
 			srvName := r.PathValue(pathValueName)
 			v, ok := servers[srvName]
 			if !ok {
@@ -25,7 +30,6 @@ func MCPServerApp(servers config.Servers, pathValueName string) func(next http.H
 					header[after] = value
 				}
 			}
-			ctx := r.Context()
 			ctx = contexts.ToServerContext(ctx, v)
 			ctx = contexts.ToHeaderContext(ctx, header)
 			*r = *r.WithContext(ctx)

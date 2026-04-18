@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLogging_OK(t *testing.T) {
@@ -21,8 +21,8 @@ func TestLogging_OK(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.True(t, called)
-	assert.Equal(t, http.StatusOK, rw.Code)
+	require.True(t, called)
+	require.Equal(t, http.StatusOK, rw.Code)
 }
 
 func TestLogging_NotFound(t *testing.T) {
@@ -35,7 +35,7 @@ func TestLogging_NotFound(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusNotFound, rw.Code)
+	require.Equal(t, http.StatusNotFound, rw.Code)
 }
 
 func TestLogging_WithUserAgent(t *testing.T) {
@@ -49,7 +49,7 @@ func TestLogging_WithUserAgent(t *testing.T) {
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
 
-	assert.Equal(t, http.StatusOK, rw.Code)
+	require.Equal(t, http.StatusOK, rw.Code)
 }
 
 func TestResponseWriter_WriteHeader(t *testing.T) {
@@ -58,8 +58,8 @@ func TestResponseWriter_WriteHeader(t *testing.T) {
 
 	wrapper.WriteHeader(http.StatusNotFound)
 
-	assert.Equal(t, http.StatusNotFound, wrapper.status)
-	assert.Equal(t, http.StatusNotFound, rw.Code)
+	require.Equal(t, http.StatusNotFound, wrapper.status)
+	require.Equal(t, http.StatusNotFound, rw.Code)
 }
 
 func TestResponseWriter_DefaultStatus(t *testing.T) {
@@ -67,5 +67,5 @@ func TestResponseWriter_DefaultStatus(t *testing.T) {
 	wrapper := &responseWriter{ResponseWriter: rw, status: http.StatusOK}
 
 	// WriteHeaderを呼ばない場合、statusはデフォルト200
-	assert.Equal(t, http.StatusOK, wrapper.status)
+	require.Equal(t, http.StatusOK, wrapper.status)
 }

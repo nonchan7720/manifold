@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/config"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,9 +14,9 @@ func TestNewMCPServer(t *testing.T) {
 	}
 	s := NewMCPServer(servers)
 	require.NotNil(t, s)
-	assert.NotNil(t, s.srv)
-	assert.NotNil(t, s.appSrv)
-	assert.NotNil(t, s.backendClients)
+	require.NotNil(t, s.srv)
+	require.NotNil(t, s.appSrv)
+	require.NotNil(t, s.backendClients)
 }
 
 func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
@@ -33,7 +32,7 @@ func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
 
 	srv, err := s.Server("petstore")
 	require.NoError(t, err)
-	assert.NotNil(t, srv)
+	require.NotNil(t, srv)
 }
 
 func TestMCPServer_Init_SwaggerMode(t *testing.T) {
@@ -49,7 +48,7 @@ func TestMCPServer_Init_SwaggerMode(t *testing.T) {
 
 	srv, err := s.Server("swagger")
 	require.NoError(t, err)
-	assert.NotNil(t, srv)
+	require.NotNil(t, srv)
 }
 
 func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
@@ -66,12 +65,12 @@ func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 	// MCP バックエンドモードのサーバーも appSrv に登録される
 	srv, err := s.Server("backend")
 	require.NoError(t, err)
-	assert.NotNil(t, srv)
+	require.NotNil(t, srv)
 
 	// バックエンドクライアントも登録される
 	bc, ok := s.BackendClient("backend")
-	assert.True(t, ok)
-	assert.NotNil(t, bc)
+	require.True(t, ok)
+	require.NotNil(t, bc)
 }
 
 func TestMCPServer_Init_InvalidSpec(t *testing.T) {
@@ -82,7 +81,7 @@ func TestMCPServer_Init_InvalidSpec(t *testing.T) {
 	}
 	s := NewMCPServer(servers)
 	err := s.Init(context.Background())
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestMCPServer_Server_NotFound(t *testing.T) {
@@ -91,8 +90,8 @@ func TestMCPServer_Server_NotFound(t *testing.T) {
 	_ = s.Init(context.Background())
 
 	_, err := s.Server("nonexistent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found mcp server")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found mcp server")
 }
 
 func TestMCPServer_BackendClient_NotFound(t *testing.T) {
@@ -101,8 +100,8 @@ func TestMCPServer_BackendClient_NotFound(t *testing.T) {
 	_ = s.Init(context.Background())
 
 	bc, ok := s.BackendClient("nonexistent")
-	assert.False(t, ok)
-	assert.Nil(t, bc)
+	require.False(t, ok)
+	require.Nil(t, bc)
 }
 
 func TestMCPServer_Close_NoBackends(t *testing.T) {
@@ -114,7 +113,7 @@ func TestMCPServer_Close_NoBackends(t *testing.T) {
 	require.NoError(t, err)
 
 	// バックエンドがない場合も Close はパニックしない
-	assert.NotPanics(t, func() {
+	require.NotPanics(t, func() {
 		s.Close()
 	})
 }
@@ -131,7 +130,7 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 	require.NoError(t, err)
 
 	// 接続していないバックエンドを Close してもパニックしない
-	assert.NotPanics(t, func() {
+	require.NotPanics(t, func() {
 		s.Close()
 	})
 }
@@ -159,14 +158,14 @@ func TestMCPServer_Init_MultipleServers(t *testing.T) {
 	for name := range servers {
 		srv, err := s.Server(name)
 		require.NoError(t, err, "server %s should be registered", name)
-		assert.NotNil(t, srv)
+		require.NotNil(t, srv)
 	}
 
 	// MCP バックエンドのみ BackendClient がある
 	bc, ok := s.BackendClient("mcp")
-	assert.True(t, ok)
-	assert.NotNil(t, bc)
+	require.True(t, ok)
+	require.NotNil(t, bc)
 
 	_, ok = s.BackendClient("oas")
-	assert.False(t, ok)
+	require.False(t, ok)
 }

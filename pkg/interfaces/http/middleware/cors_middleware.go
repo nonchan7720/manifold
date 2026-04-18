@@ -1,9 +1,18 @@
 package middleware
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/n-creativesystem/go-packages/lib/trace"
+)
 
 func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = trace.StartSpan(ctx, "Middleware/CORS")
+		defer func() { trace.EndSpan(ctx, nil) }()
+		*r = *r.WithContext(ctx)
+
 		// 1. 許可するオリジン（InspectorのURLに合わせて変更してください）
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
