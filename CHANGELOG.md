@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.1](https://github.com/nonchan7720/manifold/compare/v1.2.0...v1.2.1) (2026-04-19)
+
+
+### Bug Fixes
+
+* config ([#17](https://github.com/nonchan7720/manifold/issues/17)) ([17c0f06](https://github.com/nonchan7720/manifold/commit/17c0f06cd172f2c565b49142988f9ca64a17885a))
+* issue metadata ([#14](https://github.com/nonchan7720/manifold/issues/14)) ([81574a8](https://github.com/nonchan7720/manifold/commit/81574a89bdb325b65bcc6405051cb7ff170b9073))
+
+
+### Code Refactoring
+
+* add trace span ([#16](https://github.com/nonchan7720/manifold/issues/16)) ([a420d3a](https://github.com/nonchan7720/manifold/commit/a420d3a1f1240ff4a3257d8a651d5b2f79d0359c))
+
 ## [1.2.0](https://github.com/nonchan7720/manifold/compare/v1.1.1...v1.2.0) (2026-04-13)
 
 
