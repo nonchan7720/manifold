@@ -45,14 +45,17 @@ telemetry:
     enabled: true
     grpc:
       addr: localhost:4317
+      insecure: true
 
   metrics:
     enabled: true
     exporterType: push
     grpc:
       addr: localhost:4317
+      insecure: true
 
   logs:
     enabled: true
     grpc:
       addr: localhost:4317
+      insecure: true
