@@ -237,6 +237,12 @@ make test
 make lint
 ```
 
+## インスピレーション
+
+このプロジェクトは [LiteLLM](https://github.com/BerriAI/litellm) からインスピレーションを受けています。
+
+LiteLLM が「多数の LLM プロバイダーへの統一インターフェース」を提供するように、Manifold は「多数の MCP サーバー・REST API へのゲートウェイ」を単一の MCP インターフェースで提供することを目指しています。
+
 ## ライセンス
 
 MIT License
