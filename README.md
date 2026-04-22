@@ -237,6 +237,12 @@ make test
 make lint
 ```
 
+## インスピレーション
+
+このプロジェクトは [LiteLLM](https://github.com/BerriAI/litellm) の **Agent / MCP Gateway** からインスピレーションを受けています。
+
+LiteLLM の MCP Gateway が複数の MCP サーバーへの統一アクセスポイントを提供するように、Manifold も単一の MCP インターフェースから多数の MCP サーバー / REST API へ接続できるゲートウェイを目指しています。
+
 ## ライセンス
 
 MIT License
