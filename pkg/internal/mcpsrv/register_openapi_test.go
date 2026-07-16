@@ -7,7 +7,7 @@ import (
 )
 
 func TestRegisterOpenAPI(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -17,7 +17,7 @@ func TestRegisterOpenAPI(t *testing.T) {
 }
 
 func TestRegisterSwagger(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -27,17 +27,17 @@ func TestRegisterSwagger(t *testing.T) {
 }
 
 func TestRegisterOpenAPI_Error_InvalidPath(t *testing.T) {
-	_, err := RegisterOpenAPI(t.Context(), "fixtures/nonexistent.json", "")
+	_, err := RegisterOpenAPI(t.Context(), "fixtures/nonexistent.json", "", nil)
 	require.Error(t, err)
 }
 
 func TestRegisterSwagger_Error_InvalidPath(t *testing.T) {
-	_, err := RegisterOpenAPI(t.Context(), "fixtures/nonexistent_swagger.json", "")
+	_, err := RegisterOpenAPI(t.Context(), "fixtures/nonexistent_swagger.json", "", nil)
 	require.Error(t, err)
 }
 
 func TestRegisterOpenAPI_ToolNaming(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
 	// operationId を小文字化したものがツール名になる
@@ -72,7 +72,7 @@ func TestRegisterOpenAPI_ToolNaming(t *testing.T) {
 }
 
 func TestRegisterSwagger_ToolNaming(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
 	require.NoError(t, err)
 
 	cases := []string{
@@ -107,7 +107,7 @@ func TestRegisterSwagger_ToolNaming(t *testing.T) {
 }
 
 func TestRegisterOpenAPI_Description_UsesSummary(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -130,7 +130,7 @@ func TestRegisterOpenAPI_Description_UsesSummary(t *testing.T) {
 }
 
 func TestRegisterSwagger_Description_UsesSummary(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -152,7 +152,7 @@ func TestRegisterSwagger_Description_UsesSummary(t *testing.T) {
 }
 
 func TestRegisterOpenAPI_InputSchema(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
 	// getPetById はパスパラメータ petId を持つ
@@ -169,7 +169,7 @@ func TestRegisterOpenAPI_InputSchema(t *testing.T) {
 }
 
 func TestRegisterSwagger_InputSchema(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
 	require.NoError(t, err)
 
 	// getPetById はパスパラメータ petId を持つ
@@ -186,7 +186,7 @@ func TestRegisterSwagger_InputSchema(t *testing.T) {
 }
 
 func TestRegisterOpenAPI_Handler_NotNil(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
 	tool := r.GetTool("updatepet")
@@ -197,7 +197,7 @@ func TestRegisterOpenAPI_Handler_NotNil(t *testing.T) {
 func TestRegisterOpenAPI_BaseUrl_Override(t *testing.T) {
 	customBaseUrl := "https://example.com/api"
 	// baseUrl を上書きしてもエラーにならず、ツールが登録されること
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", customBaseUrl)
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", customBaseUrl, nil)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -206,7 +206,7 @@ func TestRegisterOpenAPI_BaseUrl_Override(t *testing.T) {
 }
 
 func TestRegisterOpenAPI_GetTool_NotFound(t *testing.T) {
-	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "")
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
 	tool := r.GetTool("nonexistenttool")

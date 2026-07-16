@@ -2,7 +2,9 @@ package oastomcptool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -660,6 +662,176 @@ func TestExtractParametersSwagger_FormDataFile(t *testing.T) {
 	ep := extractParametersSwagger(op, nil, spec)
 	require.Contains(t, ep.formParams, "upload")
 	require.True(t, ep.isMultipart)
+}
+
+// --- extractParametersSwagger: type: file の isFile 判定 ---
+
+func TestExtractParametersSwagger_FormDataFile_SetsIsFile(t *testing.T) {
+	fileType := openapi3.Types{"file"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "upload", In: "formData", Type: &fileType},
+			{Name: "caption", In: "formData"},
+		},
+	}
+	spec := &openapi2.T{}
+
+	ep := extractParametersSwagger(op, nil, spec)
+	require.True(t, ep.formParams["upload"].isFile)
+	require.False(t, ep.formParams["caption"].isFile)
+}
+
+// --- BuildInputSchemaSwagger: type: file スキーマ（openapi.go の buildFormPropertySchema と同じヘルパーを使う） ---
+
+func TestBuildInputSchemaSwagger_FormDataFile(t *testing.T) {
+	fileType := openapi3.Types{"file"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "upload", In: "formData", Type: &fileType, Description: "Avatar image"},
+		},
+	}
+	spec := &openapi2.T{}
+
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	uploadProp := props["upload"].(map[string]any)
+	// MCP の type としては string（実際の値は base64 文字列または URL）
+	require.Equal(t, "string", uploadProp["type"])
+
+	meta, ok := uploadProp["_meta"].(map[string]any)
+	require.True(t, ok)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+
+	desc, ok := uploadProp["description"].(string)
+	require.True(t, ok)
+	require.Contains(t, desc, "Avatar image")
+	require.Contains(t, desc, "base64")
+	require.Contains(t, desc, "URL")
+}
+
+func TestBuildInputSchemaSwagger_FormDataNonFile_Unchanged(t *testing.T) {
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "caption", In: "formData", Description: "Caption text"},
+		},
+	}
+	spec := &openapi2.T{}
+
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	props := schema["properties"].(map[string]any)
+	captionProp := props["caption"].(map[string]any)
+	require.Equal(t, "Caption text", captionProp["description"])
+}
+
+// --- CreateToolFunctionSwagger: multipart ファイル送信（base64 / URL） ---
+
+func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
+	content := []byte("hello swagger file")
+	var capturedFilename string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("upload")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fileType := openapi3.Types{"file"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "upload", In: "formData", Type: &fileType},
+		},
+	}
+	spec := &openapi2.T{}
+
+	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"upload": base64.StdEncoding.EncodeToString(content),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "upload", capturedFilename)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
+	content := []byte("swagger streamed file")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedFilename string
+	var capturedContentType string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("upload")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContentType = hdr.Header.Get("Content-Type")
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fileType := openapi3.Types{"file"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "upload", In: "formData", Type: &fileType},
+		},
+	}
+	spec := &openapi2.T{}
+
+	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"upload": fileSrv.URL + "/files/report.pdf?sig=abc123",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "report.pdf", capturedFilename)
+	require.Equal(t, "application/pdf", capturedContentType)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
+	// file と通常フィールドが混在する場合、通常フィールドは従来通りWriteFieldされる
+	var capturedCaption string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		capturedCaption = r.FormValue("caption")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fileType := openapi3.Types{"file"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "upload", In: "formData", Type: &fileType},
+			{Name: "caption", In: "formData"},
+		},
+	}
+	spec := &openapi2.T{}
+
+	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"upload":  base64.StdEncoding.EncodeToString([]byte("data")),
+		"caption": "hello",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hello", capturedCaption)
 }
 
 func TestCreateToolFunctionSwagger_PUT(t *testing.T) {

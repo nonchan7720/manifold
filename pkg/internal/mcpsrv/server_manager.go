@@ -47,7 +47,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 		} else {
 			// OpenAPI モード
-			err := registerAPI(ctx, server.Spec, server.BaseURL, srv)
+			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv)
 			if err != nil {
 				return err
 			}
@@ -79,9 +79,9 @@ func (s *MCPServer) Close() {
 	}
 }
 
-func registerAPI(ctx context.Context, spec, baseURL string, srv *mcp.Server) error {
+func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server) error {
 	// OpenAPI モード: 既存ロジック
-	register, err := RegisterOpenAPI(ctx, spec, baseURL)
+	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers)
 	if err != nil {
 		return err
 	}

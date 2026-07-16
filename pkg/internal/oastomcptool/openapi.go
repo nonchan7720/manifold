@@ -3,6 +3,7 @@ package oastomcptool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +11,10 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -204,33 +207,278 @@ func schemaTypeStr(t *openapi3.Types) string {
 	return (*t)[0]
 }
 
+type formParameter struct {
+	isFile       bool
+	originalName string
+	parameters   map[string]formParameter
+}
+
+type formParameters map[string]formParameter
+
 type extractParameter struct {
-	pathParams  []string
-	queryParams []string
-	bodyParams  []string
-	formParams  []string
-	isMultipart bool
+	pathParams   []string
+	queryParams  []string
+	bodyParams   []string
+	formParams   formParameters
+	isMultipart  bool
+	paramNameMap map[string]string // sanitized name -> original OpenAPI name
+}
+
+// sanitizeParamName converts an OpenAPI parameter/property name into one that is
+// safe to use as an MCP input schema property name. MCP does not allow "[" or "]"
+// in property names, which commonly appear in array/nested query or form parameter
+// names (e.g. "tag[]", "filter[status]").
+func sanitizeParamName(name string) string {
+	if !strings.ContainsAny(name, "[]") {
+		return name
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch r {
+		case '[':
+			b.WriteByte('_')
+		case ']':
+			// drop
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// schemaIsBinary は format: binary（または binary 要素の array）かどうかを返す。
+func schemaIsBinary(schema *openapi3.Schema) bool {
+	if schema == nil {
+		return false
+	}
+	if schema.Format == "binary" {
+		return true
+	}
+	if schemaTypeStr(schema.Type) == "array" && schema.Items != nil && schema.Items.Value != nil {
+		if schema.Items.Value.Format == "binary" {
+			return true
+		}
+	}
+	return false
+}
+
+// newFormParameter はフォームスキーマから formParameter を再帰的に構築する。
+func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
+	fp := formParameter{parameters: formParameters{}}
+	if schema == nil {
+		return fp
+	}
+	fp.isFile = schemaIsBinary(schema)
+
+	for _, ref := range schema.AllOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameter(ref.Value)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+	for _, ref := range schema.OneOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameter(ref.Value)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+	for _, ref := range schema.AnyOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameter(ref.Value)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+
+	for name, field := range schema.Properties {
+		if field != nil {
+			child := newFormParameter(field.Value)
+			child.originalName = name
+			fp.parameters[sanitizeParamName(name)] = child
+		}
+	}
+	return fp
+}
+
+// mergeAllOf は allOf の各ブランチをマージした合成スキーマを返す。
+func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
+	merged := *prop
+	merged.AllOf = nil
+
+	properties := openapi3.Schemas{}
+	maps.Copy(properties, merged.Properties)
+
+	required := append([]string{}, merged.Required...)
+
+	for _, ref := range prop.AllOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		sub := ref.Value
+		if len(sub.AllOf) > 0 {
+			sub = mergeAllOf(sub)
+		}
+		maps.Copy(properties, sub.Properties)
+		required = append(required, sub.Required...)
+		if merged.Type == nil || len(*merged.Type) == 0 {
+			merged.Type = sub.Type
+		}
+		if merged.Description == "" {
+			merged.Description = sub.Description
+		}
+		if merged.Format == "" {
+			merged.Format = sub.Format
+		}
+	}
+
+	merged.Properties = properties
+	merged.Required = required
+
+	return &merged
+}
+
+// fileInputHint は、ファイル入力フィールドが base64 文字列または URL（署名付き URL 等）の
+// どちらでも受け付けることを MCP クライアント側の LLM が判断できるようにする案内文。
+const fileInputHint = "Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from."
+
+// appendFileInputHint はファイル入力フィールドの説明に fileInputHint を付加する。
+func appendFileInputHint(desc string) string {
+	if desc == "" {
+		return fileInputHint
+	}
+	return desc + " " + fileInputHint
+}
+
+// buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
+func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: gocyclo
+	if prop == nil {
+		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
+	}
+	if len(prop.AllOf) > 0 {
+		prop = mergeAllOf(prop)
+	}
+
+	desc := prop.Description
+	if ext := prop.Extensions; ext != nil {
+		if x, ok := ext["x-mcp"].(map[string]any); ok && x != nil {
+			if v, ok := x["description"].(string); ok {
+				desc = v
+			}
+		}
+	}
+
+	metadata := map[string]any{}
+	if schemaIsBinary(prop) {
+		metadata["manifold"] = map[string]any{
+			"file":          true,
+			"fileInputHint": fileInputHint,
+		}
+	}
+
+	if len(prop.OneOf) > 0 {
+		branches := []any{}
+		for _, ref := range prop.OneOf {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			branches = append(branches, buildFormPropertySchema(ref.Value))
+		}
+		return map[string]any{
+			"oneOf":       branches,
+			"description": desc,
+			"_meta":       metadata,
+		}
+	}
+	if len(prop.AnyOf) > 0 {
+		branches := []any{}
+		for _, ref := range prop.AnyOf {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			branches = append(branches, buildFormPropertySchema(ref.Value))
+		}
+		return map[string]any{
+			"anyOf":       branches,
+			"description": desc,
+			"_meta":       metadata,
+		}
+	}
+
+	propType := schemaTypeStr(prop.Type)
+	if propType == "" {
+		if len(prop.Properties) > 0 {
+			propType = "object"
+		} else {
+			propType = "string"
+		}
+	}
+
+	result := map[string]any{
+		"type":        propType,
+		"description": desc,
+		"_meta":       metadata,
+	}
+
+	if propType == "object" && len(prop.Properties) > 0 {
+		properties := map[string]any{}
+		for propName, propRef := range prop.Properties {
+			if propRef == nil || propRef.Value == nil {
+				continue
+			}
+			properties[propName] = buildFormPropertySchema(propRef.Value)
+		}
+		result["properties"] = properties
+
+		required := []string{}
+		for _, r := range prop.Required {
+			if _, ok := prop.Properties[r]; ok {
+				required = append(required, r)
+			}
+		}
+		result["required"] = required
+	}
+
+	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
+		result["items"] = buildFormPropertySchema(prop.Items.Value)
+	}
+
+	return result
 }
 
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
-func extractParameters(operation *openapi3.Operation) extractParameter { //nolint: gocyclo
+func extractParameters(operation *openapi3.Operation) extractParameter {
 	var (
-		pathParams  = []string{}
-		queryParams = []string{}
-		bodyParams  = []string{}
-		formParams  = []string{}
-		isMultipart = false
+		pathParams   = []string{}
+		queryParams  = []string{}
+		bodyParams   = []string{}
+		formParams   = formParameters{}
+		isMultipart  = false
+		paramNameMap = map[string]string{}
 	)
 
 	for _, paramRef := range operation.Parameters {
 		p := paramRef.Value
+		name := sanitizeParamName(p.Name)
+		paramNameMap[name] = p.Name
 		switch p.In {
 		case "path":
-			pathParams = append(pathParams, p.Name)
+			pathParams = append(pathParams, name)
 		case "query":
-			queryParams = append(queryParams, p.Name)
+			queryParams = append(queryParams, name)
 		case "body":
-			bodyParams = append(bodyParams, p.Name)
+			bodyParams = append(bodyParams, name)
 		}
 	}
 
@@ -242,26 +490,23 @@ func extractParameters(operation *openapi3.Operation) extractParameter { //nolin
 		case content["application/x-www-form-urlencoded"] != nil:
 			mt := content["application/x-www-form-urlencoded"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-				for name := range mt.Schema.Value.Properties {
-					formParams = append(formParams, name)
-				}
+				formParams = newFormParameter(mt.Schema.Value).parameters
 			}
 		case content["multipart/form-data"] != nil:
 			isMultipart = true
 			mt := content["multipart/form-data"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-				for name := range mt.Schema.Value.Properties {
-					formParams = append(formParams, name)
-				}
+				formParams = newFormParameter(mt.Schema.Value).parameters
 			}
 		}
 	}
 	return extractParameter{
-		pathParams:  pathParams,
-		queryParams: queryParams,
-		bodyParams:  bodyParams,
-		formParams:  formParams,
-		isMultipart: isMultipart,
+		pathParams:   pathParams,
+		queryParams:  queryParams,
+		bodyParams:   bodyParams,
+		formParams:   formParams,
+		isMultipart:  isMultipart,
+		paramNameMap: paramNameMap,
 	}
 }
 
@@ -374,12 +619,13 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				paramType = t
 			}
 		}
-		properties[p.Name] = map[string]any{
+		name := sanitizeParamName(p.Name)
+		properties[name] = map[string]any{
 			"type":        paramType,
 			"description": p.Description,
 		}
 		if p.Required {
-			required = append(required, p.Name)
+			required = append(required, name)
 		}
 	}
 
@@ -425,6 +671,9 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				formSchema = mt.Schema.Value
 			}
 			if formSchema != nil {
+				if len(formSchema.AllOf) > 0 {
+					formSchema = mergeAllOf(formSchema)
+				}
 				schemaRequired := map[string]bool{}
 				for _, r := range formSchema.Required {
 					schemaRequired[r] = true
@@ -433,17 +682,10 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					if propRef == nil || propRef.Value == nil {
 						continue
 					}
-					prop := propRef.Value
-					propType := "string"
-					if t := schemaTypeStr(prop.Type); t != "" {
-						propType = t
-					}
-					properties[propName] = map[string]any{
-						"type":        propType,
-						"description": prop.Description,
-					}
+					name := sanitizeParamName(propName)
+					properties[name] = buildFormPropertySchema(propRef.Value)
 					if schemaRequired[propName] {
-						required = append(required, propName)
+						required = append(required, name)
 					}
 				}
 			}
@@ -454,6 +696,165 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 		"type":       "object",
 		"properties": properties,
 		"required":   required,
+	}
+}
+
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, `\"`)
+
+// decodeFileContent はファイル内容を bytes に変換する。base64 として解釈できない文字列は raw bytes として扱う。
+func decodeFileContent(v any) ([]byte, error) {
+	switch value := v.(type) {
+	case []byte:
+		return value, nil
+	case string:
+		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+			return decoded, nil
+		}
+		return []byte(value), nil
+	default:
+		return nil, fmt.Errorf("unsupported file content type %T", v)
+	}
+}
+
+// fetchFileFromURL は署名付き URL などからファイルを取得し、ボディをストリームとして返す。
+// 戻り値: body, URLパス末尾のファイル名（無ければ空）, レスポンスの Content-Type
+func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	resp, err := client.HTTPClient().Do(req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body.Close() //nolint: errcheck
+		return nil, "", "", fmt.Errorf("failed to download file from URL: %d %s", resp.StatusCode, resp.Status)
+	}
+
+	filename := ""
+	if u, err := url.Parse(rawURL); err == nil {
+		base := path.Base(u.Path)
+		if base != "/" && base != "." {
+			filename = base
+		}
+	}
+
+	return resp.Body, filename, resp.Header.Get("Content-Type"), nil
+}
+
+// isFileURL は値が http(s) から始まる URL 文字列かどうかを返す。
+func isFileURL(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return s, true
+	}
+	return "", false
+}
+
+// writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
+// または {filename, content, contentType} のオブジェクト（content は base64 または URL）。
+func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name string, value any) error { //nolint: gocyclo
+	filename := name
+	filenameExplicit := false
+	contentType := ""
+	contentTypeExplicit := false
+	content := value
+
+	if m, ok := value.(map[string]any); ok {
+		if fn, ok := m["filename"].(string); ok && fn != "" {
+			filename = fn
+			filenameExplicit = true
+		}
+		if ct, ok := m["contentType"].(string); ok && ct != "" {
+			contentType = ct
+			contentTypeExplicit = true
+		}
+		content = m["content"]
+	}
+
+	var data []byte
+	var body io.ReadCloser
+	if rawURL, ok := isFileURL(content); ok { //nolint: nestif
+		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
+		if err != nil {
+			return err
+		}
+		body = b
+		defer body.Close() //nolint: errcheck
+		if !filenameExplicit && urlFilename != "" {
+			filename = urlFilename
+		}
+		if !contentTypeExplicit && urlContentType != "" {
+			contentType = urlContentType
+		}
+	} else {
+		d, err := decodeFileContent(content)
+		if err != nil {
+			return err
+		}
+		data = d
+	}
+
+	var part io.Writer
+	var err error
+	if contentType == "" {
+		part, err = writer.CreateFormFile(name, filename)
+		if err != nil {
+			return err
+		}
+	} else {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteEscaper.Replace(name), quoteEscaper.Replace(filename)))
+		h.Set("Content-Type", contentType)
+		part, err = writer.CreatePart(h)
+		if err != nil {
+			return err
+		}
+	}
+
+	if body != nil {
+		_, err = io.Copy(part, body)
+		return err
+	}
+	_, err = part.Write(data)
+	return err
+}
+
+// writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。
+func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name string, value any, param formParameter) error {
+	if param.isFile {
+		if items, ok := value.([]any); ok {
+			for _, item := range items {
+				if err := writeMultipartFile(ctx, writer, name, item); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return writeMultipartFile(ctx, writer, name, value)
+	}
+
+	switch value.(type) {
+	case map[string]any, []any:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"`, quoteEscaper.Replace(name)))
+		h.Set("Content-Type", "application/json")
+		part, err := writer.CreatePart(h)
+		if err != nil {
+			return err
+		}
+		_, err = part.Write(data)
+		return err
+	default:
+		return writer.WriteField(name, fmt.Sprintf("%v", value))
 	}
 }
 
@@ -485,12 +886,13 @@ func CreateToolFunction( //nolint: gocyclo
 		for _, param_name := range extractParameter.pathParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
+				original_name := extractParameter.paramNameMap[param_name]
+				safe_value, err := sanitize_path_parameter_value(param_value, original_name)
 				if err != nil {
 					return "", fmt.Errorf("invalid path parameter: %w", err)
 				}
-				_url = strings.ReplaceAll(_url, "{"+param_name+"}", safe_value)
-				_url = strings.ReplaceAll(_url, "{{"+param_name+"}}", safe_value)
+				_url = strings.ReplaceAll(_url, "{"+original_name+"}", safe_value)
+				_url = strings.ReplaceAll(_url, "{{"+original_name+"}}", safe_value)
 			}
 		}
 
@@ -498,7 +900,8 @@ func CreateToolFunction( //nolint: gocyclo
 		for _, param_name := range extractParameter.queryParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				params[param_name] = param_value
+				original_name := extractParameter.paramNameMap[param_name]
+				params[original_name] = param_value
 			}
 		}
 
@@ -522,11 +925,17 @@ func CreateToolFunction( //nolint: gocyclo
 			if extractParameter.isMultipart {
 				var buf bytes.Buffer
 				writer := multipart.NewWriter(&buf)
-				for _, param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						if err := writer.WriteField(param_name, fmt.Sprintf("%v", v)); err != nil {
-							return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
-						}
+				for param_name, param := range extractParameter.formParams {
+					v := input[param_name]
+					if v == nil {
+						continue
+					}
+					if s, ok := v.(string); ok && s == "" {
+						continue
+					}
+					field_name := param.originalName
+					if err := writeMultipartValue(ctx, writer, field_name, v, param); err != nil {
+						return "", fmt.Errorf("error writing multipart field %s: %w", field_name, err)
 					}
 				}
 				writer.Close() //nolint: errcheck
@@ -534,9 +943,24 @@ func CreateToolFunction( //nolint: gocyclo
 				bodyContentType = writer.FormDataContentType()
 			} else {
 				formValues := url.Values{}
-				for _, param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						formValues.Set(param_name, fmt.Sprintf("%v", v))
+				for param_name, param := range extractParameter.formParams {
+					v := input[param_name]
+					if v == nil {
+						continue
+					}
+					if s, ok := v.(string); ok && s == "" {
+						continue
+					}
+					field_name := param.originalName
+					switch v.(type) {
+					case map[string]any, []any:
+						data, err := json.Marshal(v)
+						if err != nil {
+							return "", fmt.Errorf("error marshaling form field %s: %w", field_name, err)
+						}
+						formValues.Set(field_name, string(data))
+					default:
+						formValues.Set(field_name, fmt.Sprintf("%v", v))
 					}
 				}
 				bodyBytes = []byte(formValues.Encode())

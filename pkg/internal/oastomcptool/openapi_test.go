@@ -2,8 +2,12 @@ package oastomcptool
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -836,4 +840,906 @@ func TestCreateToolFunction_PATCH(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Contains(t, result, "updated")
+}
+
+// --- multipart/form-data スキーマ構築（ネスト・oneOf・allOf・binary） ---
+
+func multipartOperation(schema *openapi3.Schema) *openapi3.Operation {
+	return &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"multipart/form-data": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{Value: schema},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestBuildInputSchema_Multipart_BinaryFile(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	fileProp := props["file"].(map[string]any)
+	meta := fileProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+}
+
+func TestBuildInputSchema_Multipart_BinaryFile_DescriptionMentionsURLOption(t *testing.T) {
+	// LLM がファイルフィールドに base64 だけでなく URL（署名付きURL等）も渡せることを
+	// description から判断できるようにする
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:        &openapi3.Types{"string"},
+					Format:      "binary",
+					Description: "Avatar image",
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	fileProp := props["file"].(map[string]any)
+	desc, ok := fileProp["description"].(string)
+	require.True(t, ok)
+	// 元の説明文は保持される
+	require.Contains(t, desc, "Avatar image")
+	// base64 と URL のどちらでも渡せることが明記される
+	require.Contains(t, desc, "base64")
+	require.Contains(t, desc, "URL")
+}
+
+func TestBuildInputSchema_Multipart_BinaryFile_DescriptionWithoutOriginalDescription(t *testing.T) {
+	// 元の description が空でも案内文だけは付与される
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	fileProp := props["file"].(map[string]any)
+	desc, ok := fileProp["description"].(string)
+	require.True(t, ok)
+	require.Contains(t, desc, "base64")
+	require.Contains(t, desc, "URL")
+}
+
+func TestBuildInputSchema_Multipart_ArrayOfBinary_ItemsDescriptionMentionsURLOption(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	filesProp := props["files"].(map[string]any)
+	items := filesProp["items"].(map[string]any)
+	itemDesc, ok := items["description"].(string)
+	require.True(t, ok)
+	require.Contains(t, itemDesc, "base64")
+	require.Contains(t, itemDesc, "URL")
+}
+
+func TestBuildInputSchema_NonBinaryField_DescriptionUnchanged(t *testing.T) {
+	// binary でないフィールドには URL/base64 の案内を追加しない
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"username": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Description: "User name"},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	usernameProp := props["username"].(map[string]any)
+	require.Equal(t, "User name", usernameProp["description"])
+}
+
+func TestBuildInputSchema_Multipart_NestedForm(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Required: []string{"metadata"},
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:     &openapi3.Types{"object"},
+					Required: []string{"name"},
+					Properties: openapi3.Schemas{
+						"name": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+						},
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+
+	metadataProp := props["metadata"].(map[string]any)
+	require.Equal(t, "object", metadataProp["type"])
+
+	nested := metadataProp["properties"].(map[string]any)
+	require.Contains(t, nested, "name")
+	require.Contains(t, nested, "thumbnail")
+
+	nestedRequired := metadataProp["required"].([]string)
+	require.Contains(t, nestedRequired, "name")
+
+	thumbnail := nested["thumbnail"].(map[string]any)
+	meta := thumbnail["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+
+	required := schema["required"].([]string)
+	require.Contains(t, required, "metadata")
+}
+
+func TestBuildInputSchema_Multipart_ArrayOfBinary(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	filesProp := props["files"].(map[string]any)
+	require.Equal(t, "array", filesProp["type"])
+
+	meta := filesProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+
+	items := filesProp["items"].(map[string]any)
+	itemMeta := items["_meta"].(map[string]any)
+	itemManifold := itemMeta["manifold"].(map[string]any)
+	require.Equal(t, true, itemManifold["file"])
+}
+
+func TestBuildInputSchema_Multipart_AllOf(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"doc": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					AllOf: openapi3.SchemaRefs{
+						{Value: &openapi3.Schema{
+							Type:     &openapi3.Types{"object"},
+							Required: []string{"a"},
+							Properties: openapi3.Schemas{
+								"a": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+							},
+						}},
+						{Value: &openapi3.Schema{
+							Properties: openapi3.Schemas{
+								"b": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	docProp := props["doc"].(map[string]any)
+	require.Equal(t, "object", docProp["type"])
+
+	merged := docProp["properties"].(map[string]any)
+	require.Contains(t, merged, "a")
+	require.Contains(t, merged, "b")
+
+	mergedRequired := docProp["required"].([]string)
+	require.Contains(t, mergedRequired, "a")
+}
+
+func TestBuildInputSchema_Multipart_AllOfRoot(t *testing.T) {
+	// root スキーマ自体が allOf の場合もプロパティが展開される
+	op := multipartOperation(&openapi3.Schema{
+		AllOf: openapi3.SchemaRefs{
+			{Value: &openapi3.Schema{
+				Required: []string{"name"},
+				Properties: openapi3.Schemas{
+					"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+				},
+			}},
+			{Value: &openapi3.Schema{
+				Properties: openapi3.Schemas{
+					"file": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"}},
+				},
+			}},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "name")
+	require.Contains(t, props, "file")
+
+	required := schema["required"].([]string)
+	require.Contains(t, required, "name")
+}
+
+func TestBuildInputSchema_Multipart_OneOf(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"source": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					OneOf: openapi3.SchemaRefs{
+						{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+						{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"url": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+							},
+						}},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	sourceProp := props["source"].(map[string]any)
+
+	oneOf, ok := sourceProp["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+
+	second := oneOf[1].(map[string]any)
+	require.Equal(t, "object", second["type"])
+	require.Contains(t, second["properties"].(map[string]any), "url")
+}
+
+// --- extractParameters（ネスト・allOf・binary 検出） ---
+
+func TestExtractParameters_Multipart_NestedFileAndAllOf(t *testing.T) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+						},
+					},
+				},
+			},
+			"doc": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					AllOf: openapi3.SchemaRefs{
+						{Value: &openapi3.Schema{
+							Properties: openapi3.Schemas{
+								"attachment": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+								},
+							},
+						}},
+					},
+				},
+			},
+		},
+	})
+
+	extracted := extractParameters(op)
+	require.True(t, extracted.isMultipart)
+
+	require.True(t, extracted.formParams["file"].isFile)
+	require.True(t, extracted.formParams["files"].isFile)
+	require.False(t, extracted.formParams["metadata"].isFile)
+	require.True(t, extracted.formParams["metadata"].parameters["thumbnail"].isFile)
+	require.True(t, extracted.formParams["doc"].parameters["attachment"].isFile)
+}
+
+// --- CreateToolFunction（multipart データの書き込み） ---
+
+func TestCreateToolFunction_Multipart_FileBase64(t *testing.T) {
+	content := []byte("hello file")
+
+	var capturedFilename string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": base64.StdEncoding.EncodeToString(content),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "file", capturedFilename)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileObjectValue(t *testing.T) {
+	content := []byte("%PDF-1.7 dummy")
+
+	var capturedFilename string
+	var capturedContentType string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContentType = hdr.Header.Get("Content-Type")
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{
+			"filename":    "report.pdf",
+			"contentType": "application/pdf",
+			"content":     base64.StdEncoding.EncodeToString(content),
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "report.pdf", capturedFilename)
+	require.Equal(t, "application/pdf", capturedContentType)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileRawString(t *testing.T) {
+	// base64 として解釈できない文字列はそのままのバイト列として送信される
+	raw := "plain text ###"
+
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{"file": raw})
+	require.NoError(t, err)
+	require.Equal(t, []byte(raw), capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_MultipleFiles(t *testing.T) {
+	var capturedCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		capturedCount = len(r.MultipartForm.File["files"])
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"files": []any{
+			base64.StdEncoding.EncodeToString([]byte("one")),
+			base64.StdEncoding.EncodeToString([]byte("two")),
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, capturedCount)
+}
+
+func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
+	var capturedMetadata string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		capturedMetadata = r.FormValue("metadata")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"metadata": map[string]any{"name": "foo", "tags": []any{"a", "b"}},
+	})
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(capturedMetadata), &decoded))
+	require.Equal(t, "foo", decoded["name"])
+}
+
+func TestCreateToolFunction_FormURLEncoded_ComplexValue(t *testing.T) {
+	var capturedFilters string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		capturedFilters = r.FormValue("filters")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/x-www-form-urlencoded": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"filters": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{Type: &openapi3.Types{"object"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fn := CreateToolFunction("/search", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"filters": map[string]any{"status": "active"},
+	})
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(capturedFilters), &decoded))
+	require.Equal(t, "active", decoded["status"])
+}
+
+func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
+	// 署名付きURLのようにURLが渡された場合はダウンロードしてストリーム書き込みする
+	content := []byte("streamed file body")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.WriteHeader(http.StatusOK)
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedFilename string
+	var capturedContentType string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContentType = hdr.Header.Get("Content-Type")
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	// 署名付きURL相当（クエリ付き）
+	_, err := fn(context.Background(), map[string]any{
+		"file": fileSrv.URL + "/files/report.pdf?X-Signature=abc123&Expires=9999999999",
+	})
+	require.NoError(t, err)
+	// filename はURLパスの末尾（クエリは含まない）
+	require.Equal(t, "report.pdf", capturedFilename)
+	require.Equal(t, "application/pdf", capturedContentType)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testing.T) {
+	// オブジェクト形式で content にURLを渡した場合、filename / contentType の明示指定が優先される
+	content := []byte("object url content")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedFilename string
+	var capturedContentType string
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, hdr, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedFilename = hdr.Filename
+		capturedContentType = hdr.Header.Get("Content-Type")
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{
+			"filename":    "renamed.bin",
+			"contentType": "application/pdf",
+			"content":     fileSrv.URL + "/download",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "renamed.bin", capturedFilename)
+	require.Equal(t, "application/pdf", capturedContentType)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
+	// ダウンロード先が4xx/5xxを返した場合はツールエラーになる
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer fileSrv.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": fileSrv.URL + "/files/secret.pdf",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "file")
+}
+
+// --- sanitizeParamName ---
+// MCP の InputSchema プロパティ名は "[" "]" を許容しないため、
+// OpenAPI の配列/ネスト形式クエリパラメータ名（例: "tag[]", "filter[status]"）を
+// 安全な名前に変換する必要がある。
+
+func TestSanitizeParamName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no brackets", "status", "status"},
+		{"trailing array brackets", "tag[]", "tag_"},
+		{"nested key brackets", "filter[status]", "filter_status"},
+		{"multiple bracket groups", "a[b][c]", "a_b_c"},
+		{"empty string", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, sanitizeParamName(tt.in))
+		})
+	}
+}
+
+// --- BuildInputSchema: パラメータ名の [] サニタイズ ---
+
+func TestBuildInputSchema_QueryParamWithBrackets_IsSanitized(t *testing.T) {
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			&openapi3.ParameterRef{
+				Value: &openapi3.Parameter{
+					Name: "tag[]",
+					In:   "query",
+					Schema: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+					},
+				},
+			},
+		},
+	}
+
+	schema := BuildInputSchema(op)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, props, "tag[]")
+	require.Contains(t, props, "tag_")
+}
+
+func TestBuildInputSchema_FormParamWithBrackets_IsSanitized(t *testing.T) {
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/x-www-form-urlencoded": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Required: []string{"filter[status]"},
+								Properties: openapi3.Schemas{
+									"filter[status]": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	schema := BuildInputSchema(op)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, props, "filter[status]")
+	require.Contains(t, props, "filter_status")
+
+	required := schema["required"].([]string)
+	require.NotContains(t, required, "filter[status]")
+	require.Contains(t, required, "filter_status")
+}
+
+// --- CreateToolFunction: サニタイズ後の名前 -> 実リクエストでは元の名前を使用 ---
+
+func TestCreateToolFunction_QueryParamWithBrackets_UsesOriginalNameOnWire(t *testing.T) {
+	var capturedRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[]`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			&openapi3.ParameterRef{
+				Value: &openapi3.Parameter{
+					Name: "tag[]",
+					In:   "query",
+				},
+			},
+		},
+	}
+
+	fn := CreateToolFunction("/pets", "get", op, srv.URL, nil)
+	result, err := fn(context.Background(), map[string]any{"tag_": "cute"})
+	require.NoError(t, err)
+	require.NotEmpty(t, result)
+
+	q, err := url.ParseQuery(capturedRawQuery)
+	require.NoError(t, err)
+	require.Equal(t, "cute", q.Get("tag[]"))
+}
+
+func TestCreateToolFunction_PathParamWithBrackets_UsesOriginalNameOnWire(t *testing.T) {
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			&openapi3.ParameterRef{
+				Value: &openapi3.Parameter{
+					Name: "filter[id]",
+					In:   "path",
+				},
+			},
+		},
+	}
+
+	fn := CreateToolFunction("/pets/{filter[id]}", "get", op, srv.URL, nil)
+	result, err := fn(context.Background(), map[string]any{"filter_id": "42"})
+	require.NoError(t, err)
+	require.NotEmpty(t, result)
+	require.Equal(t, "/pets/42", capturedPath)
+}
+
+func TestCreateToolFunction_FormURLEncodedParamWithBrackets_UsesOriginalNameOnWire(t *testing.T) {
+	var capturedBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body) //nolint: errcheck
+		capturedBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/x-www-form-urlencoded": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"tag[]": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil)
+	result, err := fn(context.Background(), map[string]any{"tag_": "cute"})
+	require.NoError(t, err)
+	require.NotEmpty(t, result)
+
+	q, err := url.ParseQuery(capturedBody)
+	require.NoError(t, err)
+	require.Equal(t, "cute", q.Get("tag[]"))
+}
+
+func TestCreateToolFunction_MultipartParamWithBrackets_UsesOriginalNameOnWire(t *testing.T) {
+	var capturedFieldNames []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		for name := range r.MultipartForm.Value {
+			capturedFieldNames = append(capturedFieldNames, name)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"multipart/form-data": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"tag[]": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil)
+	result, err := fn(context.Background(), map[string]any{"tag_": "cute"})
+	require.NoError(t, err)
+	require.NotEmpty(t, result)
+	require.Contains(t, capturedFieldNames, "tag[]")
 }

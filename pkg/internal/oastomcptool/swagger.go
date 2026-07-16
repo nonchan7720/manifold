@@ -152,7 +152,7 @@ func extractParametersSwagger(operation *openapi2.Operation, pathItemParams []*o
 		pathParams  = []string{}
 		queryParams = []string{}
 		bodyParams  = []string{}
-		formParams  = []string{}
+		formParams  = formParameters{}
 		isMultipart = false
 	)
 
@@ -166,9 +166,10 @@ func extractParametersSwagger(operation *openapi2.Operation, pathItemParams []*o
 		case "body":
 			bodyParams = append(bodyParams, p.Name)
 		case "formData":
-			formParams = append(formParams, p.Name)
+			isFile := p.Type != nil && p.Type.Is("file")
+			formParams[p.Name] = formParameter{isFile: isFile}
 			// type: file requires multipart/form-data
-			if p.Type != nil && p.Type.Is("file") {
+			if isFile {
 				isMultipart = true
 			}
 		}
@@ -322,6 +323,19 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 					"properties":  bodyProps,
 				}
 			}
+		} else if p.In == "formData" && p.Type != nil && p.Type.Is("file") {
+			// formData の type: file は openapi.go の buildFormPropertySchema と同じ規約
+			// （_meta.manifold.file と URL/base64 の案内文）に揃える。
+			properties[p.Name] = map[string]any{
+				"type":        "string",
+				"description": appendFileInputHint(p.Description),
+				"_meta": map[string]any{
+					"manifold": map[string]any{
+						"file":          true,
+						"fileInputHint": fileInputHint,
+					},
+				},
+			}
 		} else {
 			// Non-body: "type" is directly on the parameter.
 			paramType := schemaTypeStr(p.Type)
@@ -412,11 +426,16 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			if extractParameter.isMultipart {
 				var buf bytes.Buffer
 				writer := multipart.NewWriter(&buf)
-				for _, param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						if err := writer.WriteField(param_name, fmt.Sprintf("%v", v)); err != nil {
-							return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
-						}
+				for param_name, param := range extractParameter.formParams {
+					v := input[param_name]
+					if v == nil {
+						continue
+					}
+					if s, ok := v.(string); ok && s == "" {
+						continue
+					}
+					if err := writeMultipartValue(ctx, writer, param_name, v, param); err != nil {
+						return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
 					}
 				}
 				writer.Close() //nolint: errcheck
@@ -424,7 +443,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 				bodyContentType = writer.FormDataContentType()
 			} else {
 				formValues := url.Values{}
-				for _, param_name := range extractParameter.formParams {
+				for param_name := range extractParameter.formParams {
 					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
 						formValues.Set(param_name, fmt.Sprintf("%v", v))
 					}
