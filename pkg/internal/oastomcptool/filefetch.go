@@ -37,11 +37,14 @@ var (
 
 // SetFileFetchConfig installs the file-fetch policy used by fetchFileFromURL and
 // writeMultipartFile. Call once at application startup, after loading config.
-// A MaxSize <= 0 resets to the built-in default (500 MiB).
+// A MaxSize <= 0 resets to the built-in default (500 MiB). AllowedHosts is cloned
+// before storing, so the caller's slice can never be mutated later to bypass the
+// lock (symmetric with getFileFetchConfig, which also returns a copy).
 func SetFileFetchConfig(cfg FileFetchConfig) {
 	if cfg.MaxSize <= 0 {
 		cfg.MaxSize = defaultFileFetchMaxSize
 	}
+	cfg.AllowedHosts = append([]string(nil), cfg.AllowedHosts...)
 	fileFetchMu.Lock()
 	defer fileFetchMu.Unlock()
 	fileFetchConfig = cfg

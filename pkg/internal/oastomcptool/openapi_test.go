@@ -2215,6 +2215,7 @@ func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(
 }
 
 func TestDecodeFileContent_MaxSize(t *testing.T) {
+	// raw テキスト（base64 として解釈できない）は入力文字列長で判定する
 	_, err := decodeFileContent("hello world", 5)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
@@ -2222,6 +2223,28 @@ func TestDecodeFileContent_MaxSize(t *testing.T) {
 	data, err := decodeFileContent("hi", 5)
 	require.NoError(t, err)
 	require.Equal(t, []byte("hi"), data)
+
+	// base64 は元データの約 4/3 倍に膨らむため、エンコード後の文字列長が上限を超えていても
+	// デコード後のサイズが上限内であれば受理されなければならない（上限ぎりぎりのファイルを
+	// エンコード前サイズで誤って拒否しないこと）
+	encoded := base64.StdEncoding.EncodeToString([]byte("abcdef")) // デコード後 6 bytes、エンコード後 8 文字
+	require.Greater(t, len(encoded), 6)
+	data, err = decodeFileContent(encoded, 6)
+	require.NoError(t, err)
+	require.Equal(t, []byte("abcdef"), data)
+
+	// デコード後のサイズが上限を超えていれば、エンコード後の文字列長が粗い上限（4/3倍+4）の
+	// 範囲内であってもデコード後サイズで正しく拒否される
+	_, err = decodeFileContent(encoded, 5)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
+
+	// 極端に長い入力は、base64 デコードを試みる前に粗い上限（4/3倍+4）で弾かれる
+	// （巨大な異常入力に対する無駄なデコード用アロケーションの回避）
+	hugeEncoded := base64.StdEncoding.EncodeToString(make([]byte, 1000))
+	_, err = decodeFileContent(hugeEncoded, 5)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
 }
 
 func TestIsHostAllowed(t *testing.T) {

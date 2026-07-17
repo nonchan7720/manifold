@@ -28,9 +28,13 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, heade
 	isSwagger := versionProbe.Swagger != ""
 
 	if isSwagger {
-		swagger(ctx, register, specPath, baseUrl, headers)
+		if err := swagger(ctx, register, specPath, baseUrl, headers); err != nil {
+			return nil, err
+		}
 	} else {
-		openapi(ctx, register, specPath, baseUrl, headers)
+		if err := openapi(ctx, register, specPath, baseUrl, headers); err != nil {
+			return nil, err
+		}
 	}
 	return register, nil
 }

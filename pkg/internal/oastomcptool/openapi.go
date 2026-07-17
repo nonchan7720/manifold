@@ -773,8 +773,10 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, `\"`)
 
 // decodeFileContent はファイル内容を bytes に変換する。base64 として解釈できない文字列は raw bytes として扱う。
-// maxSize（バイト）を超える場合はエラーを返す。base64 デコード後のサイズは入力文字列長以下になるため、
-// デコード前に入力長で判定すれば両方のケースを一度にはじける。
+// サイズ判定は「実際に使われる表現」のバイト数（base64 ならデコード後、raw テキストならそのままの
+// 長さ）に対して maxSize（バイト）を適用する。ただし base64 デコード自体を試みる前に、maxSize を
+// base64 化した場合にあり得る最大長（およそ 4/3 倍＋パディング余裕）を超える入力は、無駄な
+// デコード処理・アロケーションを避けるため粗く弾く。
 func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 	switch value := v.(type) {
 	case []byte:
@@ -783,11 +785,17 @@ func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 		}
 		return value, nil
 	case string:
-		if int64(len(value)) > maxSize {
+		if maxBase64Len := maxSize*4/3 + 4; int64(len(value)) > maxBase64Len {
 			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
 		}
 		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+			if int64(len(decoded)) > maxSize {
+				return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(decoded), maxSize)
+			}
 			return decoded, nil
+		}
+		if int64(len(value)) > maxSize {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
 		}
 		return []byte(value), nil
 	default:

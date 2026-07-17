@@ -71,6 +71,16 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowLocal(t *testing.T) {
 	require.True(t, cfg.FileFetch.AllowLocal)
 }
 
+func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
+	// viper の SetDefault + AutomaticEnv により FILEFETCH_ALLOWEDHOSTS で上書きできる。
+	// カンマ区切りの文字列が viper 既定の StringToSliceHookFunc(",") で []string にデコードされる。
+	t.Setenv("FILEFETCH_ALLOWEDHOSTS", "files.example.com,cdn.example.com")
+
+	cfg, err := loadInternal(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []string{"files.example.com", "cdn.example.com"}, cfg.FileFetch.AllowedHosts)
+}
+
 func TestFileFetchConfig_WithDefaults(t *testing.T) {
 	tests := []struct {
 		name string
