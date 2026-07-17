@@ -819,12 +819,13 @@ func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
 }
 
 // isHostAllowed は URL のホストが allowed リストに含まれるかを判定する。
-// ホスト名単体（ポート無し）とポート付きホストの両方で完全一致を試みる。
+// ホスト名単体（ポート無し）とポート付きホストの両方で一致を試みる。
+// DNS ホスト名は大文字小文字を区別しないため、比較は case-insensitive で行う。
 func isHostAllowed(allowed []string, u *url.URL) bool {
 	hostname := u.Hostname()
 	hostWithPort := u.Host
 	for _, h := range allowed {
-		if h == hostname || h == hostWithPort {
+		if strings.EqualFold(h, hostname) || strings.EqualFold(h, hostWithPort) {
 			return true
 		}
 	}
@@ -887,6 +888,8 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		return nil, "", "", err
 	}
 
+	// SafeHTTPClient / HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
+	// この CheckRedirect の設定がリクエスト間で共有・競合することはない。
 	httpClient := client.SafeHTTPClient()
 	if cfg.AllowLocal {
 		httpClient = client.HTTPClient()
@@ -916,11 +919,8 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 	}
 
 	filename := ""
-	if u, err := url.Parse(rawURL); err == nil {
-		base := path.Base(u.Path)
-		if base != "/" && base != "." {
-			filename = base
-		}
+	if base := path.Base(parsed.Path); base != "/" && base != "." {
+		filename = base
 	}
 
 	return newLimitedReadCloser(resp.Body, cfg.MaxSize), filename, resp.Header.Get("Content-Type"), nil
