@@ -704,11 +704,14 @@ func TestBuildInputSchemaSwagger_FormDataFile(t *testing.T) {
 	manifold := meta["manifold"].(map[string]any)
 	require.Equal(t, true, manifold["file"])
 
+	// description は元の説明のまま変更せず、base64/URL の案内は _meta.manifold.fileInputHint で伝える
 	desc, ok := uploadProp["description"].(string)
 	require.True(t, ok)
-	require.Contains(t, desc, "Avatar image")
-	require.Contains(t, desc, "base64")
-	require.Contains(t, desc, "URL")
+	require.Equal(t, "Avatar image", desc)
+	hint, ok := manifold["fileInputHint"].(string)
+	require.True(t, ok)
+	require.Contains(t, hint, "base64")
+	require.Contains(t, hint, "URL")
 }
 
 func TestBuildInputSchemaSwagger_FormDataNonFile_Unchanged(t *testing.T) {
