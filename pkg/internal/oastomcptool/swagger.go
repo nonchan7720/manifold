@@ -328,7 +328,7 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 			// （_meta.manifold.file と URL/base64 の案内文）に揃える。
 			properties[p.Name] = map[string]any{
 				"type":        "string",
-				"description": appendFileInputHint(p.Description),
+				"description": p.Description,
 				"_meta": map[string]any{
 					"manifold": map[string]any{
 						"file":          true,
