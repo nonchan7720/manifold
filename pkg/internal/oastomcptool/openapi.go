@@ -313,6 +313,10 @@ func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
 }
 
 // mergeAllOf は allOf の各ブランチをマージした合成スキーマを返す。
+// この関数がフラット化するのはトップレベル（および allOf ブランチ直下）の allOf のみで、
+// マージ結果の Properties の値に含まれる allOf までは解決しない。そのため呼び出し元が
+// 各プロパティを再帰的に処理する際は、階層ごとに mergeAllOf を呼び直す必要がある
+// （buildFormPropertySchema がその例）。
 func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
 	merged := *prop
 	merged.AllOf = nil
@@ -381,6 +385,7 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 
 	metadata := map[string]any{}
 	if schemaIsBinary(prop) {
+		desc = appendFileInputHint(desc)
 		metadata["manifold"] = map[string]any{
 			"file":          true,
 			"fileInputHint": fileInputHint,
@@ -513,6 +518,9 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 // describe_schema_fields_openapi recursively builds a human-readable field summary from an
 // OpenAPI 3.x schema. Since Loader auto-resolves $refs, propRef.Value is always populated.
 func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: gocyclo
+	if len(schema.AllOf) > 0 {
+		schema = mergeAllOf(schema)
+	}
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
@@ -541,6 +549,9 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 			continue
 		}
 		prop := propRef.Value
+		if len(prop.AllOf) > 0 {
+			prop = mergeAllOf(prop)
+		}
 
 		typ := schemaTypeStr(prop.Type)
 		if typ == "" {
@@ -568,6 +579,9 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 
 		if typ == "array" && prop.Items != nil && prop.Items.Value != nil { //nolint: nestif
 			itemSchema := prop.Items.Value
+			if len(itemSchema.AllOf) > 0 {
+				itemSchema = mergeAllOf(itemSchema)
+			}
 			itemType := schemaTypeStr(itemSchema.Type)
 			if itemType == "" {
 				itemType = "object"
@@ -639,12 +653,18 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 
 		if mt := content["application/json"]; mt != nil && mt.Schema != nil && mt.Schema.Value != nil {
 			schema := mt.Schema.Value
+			if len(schema.AllOf) > 0 {
+				schema = mergeAllOf(schema)
+			}
 			bodyProps := map[string]any{}
 			for propName, propRef := range schema.Properties {
 				if propRef == nil || propRef.Value == nil {
 					continue
 				}
 				prop := propRef.Value
+				if len(prop.AllOf) > 0 {
+					prop = mergeAllOf(prop)
+				}
 				propType := "string"
 				if t := schemaTypeStr(prop.Type); t != "" {
 					propType = t

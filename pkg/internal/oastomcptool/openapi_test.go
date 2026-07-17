@@ -755,6 +755,266 @@ func TestBuildInputSchema_JSONBody_EmptyBody(t *testing.T) {
 	require.Contains(t, props, "body")
 }
 
+// --- BuildInputSchema / describe_schema_fields_openapi: JSON body の allOf 解決 ---
+
+func TestBuildInputSchema_JSONBody_AllOfRoot(t *testing.T) {
+	// body スキーマ自体が allOf 合成の場合、トップレベルの Properties がフラット化されていないと
+	// bodyProps が空になってしまう。mergeAllOf でトップレベルを解決してからプロパティを読む。
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Required: true,
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								AllOf: openapi3.SchemaRefs{
+									{Value: &openapi3.Schema{
+										Required: []string{"name"},
+										Properties: openapi3.Schemas{
+											"name": &openapi3.SchemaRef{
+												Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+											},
+										},
+									}},
+									{Value: &openapi3.Schema{
+										Properties: openapi3.Schemas{
+											"age": &openapi3.SchemaRef{
+												Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+											},
+										},
+									}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "body")
+
+	bodyProp := props["body"].(map[string]any)
+	bodyProps := bodyProp["properties"].(map[string]any)
+	require.Contains(t, bodyProps, "name")
+	require.Contains(t, bodyProps, "age")
+
+	nameProp := bodyProps["name"].(map[string]any)
+	require.Equal(t, "string", nameProp["type"])
+	ageProp := bodyProps["age"].(map[string]any)
+	require.Equal(t, "integer", ageProp["type"])
+
+	// build_body_description_openapi (describe_schema_fields_openapi 経由) の description にも
+	// マージ後のフィールドが反映される
+	require.Contains(t, bodyProp["description"], "name")
+	require.Contains(t, bodyProp["description"], "age")
+}
+
+func TestBuildInputSchema_JSONBody_PropertyAllOf(t *testing.T) {
+	// プロパティの値自体が allOf 合成の場合、type/description を直接読むと空になり
+	// type が "string" にフォールバックしてしまう。mergeAllOf で解決してから読む。
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"address": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{
+											AllOf: openapi3.SchemaRefs{
+												{Value: &openapi3.Schema{
+													Type:        &openapi3.Types{"object"},
+													Description: "Composite address",
+													Properties: openapi3.Schemas{
+														"street": &openapi3.SchemaRef{
+															Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+														},
+													},
+												}},
+												{Value: &openapi3.Schema{
+													Properties: openapi3.Schemas{
+														"city": &openapi3.SchemaRef{
+															Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+														},
+													},
+												}},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	bodyProp := props["body"].(map[string]any)
+	bodyProps := bodyProp["properties"].(map[string]any)
+	require.Contains(t, bodyProps, "address")
+
+	addressProp := bodyProps["address"].(map[string]any)
+	// allOf のブランチをマージした結果 type: "object" が読み取れる（"string" にフォールバックしない）
+	require.Equal(t, "object", addressProp["type"])
+	require.Equal(t, "Composite address", addressProp["description"])
+
+	// describe_schema_fields_openapi 側でも allOf が解決され、ネストしたフィールド（street/city）が
+	// 説明文に反映される
+	require.Contains(t, bodyProp["description"], "address")
+	require.Contains(t, bodyProp["description"], "street")
+	require.Contains(t, bodyProp["description"], "city")
+}
+
+func TestBuildInputSchema_JSONBody_ArrayItemAllOf_DescribedInBodyDescription(t *testing.T) {
+	// 配列の items が allOf 合成の場合も describe_schema_fields_openapi がネストしたフィールドを
+	// 説明文に含められる
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"items": &openapi3.SchemaRef{
+										Value: &openapi3.Schema{
+											Type: &openapi3.Types{"array"},
+											Items: &openapi3.SchemaRef{
+												Value: &openapi3.Schema{
+													AllOf: openapi3.SchemaRefs{
+														{Value: &openapi3.Schema{
+															Properties: openapi3.Schemas{
+																"id": &openapi3.SchemaRef{
+																	Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+																},
+															},
+														}},
+														{Value: &openapi3.Schema{
+															Properties: openapi3.Schemas{
+																"label": &openapi3.SchemaRef{
+																	Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+																},
+															},
+														}},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	bodyProp := props["body"].(map[string]any)
+
+	require.Contains(t, bodyProp["description"], "items")
+	require.Contains(t, bodyProp["description"], "id")
+	require.Contains(t, bodyProp["description"], "label")
+}
+
+// --- describe_schema_fields_openapi（直接呼び出し） ---
+
+func TestDescribeSchemaFieldsOpenapi_TopLevelAllOf(t *testing.T) {
+	schema := &openapi3.Schema{
+		AllOf: openapi3.SchemaRefs{
+			{Value: &openapi3.Schema{
+				Required: []string{"name"},
+				Properties: openapi3.Schemas{
+					"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+				},
+			}},
+			{Value: &openapi3.Schema{
+				Properties: openapi3.Schemas{
+					"age": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+				},
+			}},
+		},
+	}
+
+	got := describe_schema_fields_openapi(schema)
+	require.Contains(t, got, "name (string, required)")
+	require.Contains(t, got, "age (integer)")
+}
+
+func TestDescribeSchemaFieldsOpenapi_PropertyAllOf(t *testing.T) {
+	schema := &openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"address": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					AllOf: openapi3.SchemaRefs{
+						{Value: &openapi3.Schema{
+							Type:        &openapi3.Types{"object"},
+							Description: "Composite address",
+							Properties: openapi3.Schemas{
+								"street": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+							},
+						}},
+						{Value: &openapi3.Schema{
+							Properties: openapi3.Schemas{
+								"city": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+							},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	got := describe_schema_fields_openapi(schema)
+	require.Contains(t, got, "address (object)")
+	require.Contains(t, got, "Composite address")
+	require.Contains(t, got, "street")
+	require.Contains(t, got, "city")
+}
+
+func TestDescribeSchemaFieldsOpenapi_ArrayItemAllOf(t *testing.T) {
+	schema := &openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"items": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							AllOf: openapi3.SchemaRefs{
+								{Value: &openapi3.Schema{
+									Properties: openapi3.Schemas{
+										"id": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+									},
+								}},
+								{Value: &openapi3.Schema{
+									Properties: openapi3.Schemas{
+										"label": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+									},
+								}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got := describe_schema_fields_openapi(schema)
+	require.Contains(t, got, "items (array of object)")
+	require.Contains(t, got, "id")
+	require.Contains(t, got, "label")
+}
+
 func TestCreateToolFunction_BodyAsNonMapString(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
