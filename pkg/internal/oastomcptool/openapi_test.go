@@ -1118,6 +1118,18 @@ func multipartOperation(schema *openapi3.Schema) *openapi3.Operation {
 	}
 }
 
+// setFileFetchConfigForTest はテスト用にパッケージレベルの fileFetch 設定を変更し、
+// テスト終了時に既定値（ゼロ値 = AllowLocal:false, MaxSize:デフォルト）へ戻す。
+// パッケージレベル設定はテスト間でグローバルに共有されるため、他のテストを汚染しないよう
+// 必ず t.Cleanup で元に戻すこと。
+func setFileFetchConfigForTest(t *testing.T, cfg FileFetchConfig) {
+	t.Helper()
+	SetFileFetchConfig(cfg)
+	t.Cleanup(func() {
+		SetFileFetchConfig(FileFetchConfig{})
+	})
+}
+
 func TestBuildInputSchema_Multipart_BinaryFile(t *testing.T) {
 	op := multipartOperation(&openapi3.Schema{
 		Properties: openapi3.Schemas{
@@ -1689,7 +1701,9 @@ func TestCreateToolFunction_FormURLEncoded_ComplexValue(t *testing.T) {
 }
 
 func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
-	// 署名付きURLのようにURLが渡された場合はダウンロードしてストリーム書き込みする
+	// 署名付きURLのようにURLが渡された場合はダウンロードしてストリーム書き込みする。
+	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("streamed file body")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -1737,6 +1751,7 @@ func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
 
 func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testing.T) {
 	// オブジェクト形式で content にURLを渡した場合、filename / contentType の明示指定が優先される
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("object url content")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -1786,6 +1801,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testin
 
 func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
 	// ダウンロード先が4xx/5xxを返した場合はツールエラーになる
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -1811,6 +1827,409 @@ func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "file")
+}
+
+// --- fileFetch SSRF 対策（AllowLocal / AllowedHosts / MaxSize） ---
+
+func TestCreateToolFunction_Multipart_FileFromURL_AllowLocalFalse_RejectsHTTP(t *testing.T) {
+	// 既定（AllowLocal=false）では http:// URL（httptest のループバックサーバーも含む）を拒否する
+	setFileFetchConfigForTest(t, FileFetchConfig{})
+
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secret")) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": fileSrv.URL + "/secret.txt",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "http://")
+	require.Contains(t, err.Error(), "not allowed")
+}
+
+func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP(t *testing.T) {
+	// https:// でもプライベート/ループバックIPへの接続は SafeHTTPClient の dialer が拒否する
+	// （スキームチェックとは独立した経路であることの確認）
+	setFileFetchConfigForTest(t, FileFetchConfig{})
+
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secret")) //nolint: errcheck
+	}))
+	defer tlsSrv.Close()
+
+	_, _, _, err := fetchFileFromURL(context.Background(), tlsSrv.URL+"/secret.txt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "private")
+}
+
+func TestFetchFileFromURL_AllowedHosts_AllowsMatchingHost(t *testing.T) {
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok")) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	fileSrvURL, err := url.Parse(fileSrv.URL)
+	require.NoError(t, err)
+
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{fileSrvURL.Host}})
+
+	body, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
+	require.NoError(t, err)
+	defer body.Close() //nolint: errcheck
+}
+
+func TestFetchFileFromURL_AllowedHosts_DeniesNonMatchingHost(t *testing.T) {
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok")) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{"example.com"}})
+
+	_, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not in the allowed hosts list")
+}
+
+func TestFetchFileFromURL_AllowedHosts_DeniesRedirectTarget(t *testing.T) {
+	// AllowedHosts はリダイレクト元だけでなく各ホップのリダイレクト先ホストにも適用される
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("target content")) //nolint: errcheck
+	}))
+	defer targetSrv.Close()
+
+	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetSrv.URL+"/final", http.StatusFound)
+	}))
+	defer redirectSrv.Close()
+
+	redirectSrvURL, err := url.Parse(redirectSrv.URL)
+	require.NoError(t, err)
+
+	// リダイレクト元のホストのみを許可し、リダイレクト先（targetSrv）は許可リストに含めない
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{redirectSrvURL.Host}})
+
+	_, _, _, err = fetchFileFromURL(context.Background(), redirectSrv.URL+"/start")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not in the allowed hosts list")
+}
+
+func TestFetchFileFromURL_MaxSize_ContentLengthExceeded(t *testing.T) {
+	// Content-Length が既知の場合はボディを読む前に即座にエラーになる
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 100)) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, MaxSize: 10})
+
+	_, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 10 bytes")
+}
+
+func TestFetchFileFromURL_MaxSize_StreamingExceeded(t *testing.T) {
+	// Content-Length が不明（chunked）な応答でも、ストリーミング中にサイズ上限が強制される
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for range 5 {
+			w.Write(make([]byte, 10)) //nolint: errcheck
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer fileSrv.Close()
+
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, MaxSize: 10})
+
+	body, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
+	// Content-Length 不明なのでヘッダー到達時点ではまだエラーにならない
+	require.NoError(t, err)
+	defer body.Close() //nolint: errcheck
+
+	_, err = io.ReadAll(body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size")
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitURLKey(t *testing.T) {
+	// {url: "..."} を明示指定すると fetchFileFromURL 経由で取得する
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	content := []byte("via explicit url key")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"url": fileSrv.URL + "/f"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitURLKey_RejectsNonHTTPValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"url": "not-a-url"},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "url must start with http:// or https://")
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitBase64Key(t *testing.T) {
+	// {base64: "..."} を明示指定すると必ず base64 としてデコードされる
+	content := []byte("via explicit base64 key")
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"base64": base64.StdEncoding.EncodeToString(content)},
+	})
+	require.NoError(t, err)
+	require.Equal(t, content, capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitBase64Key_InvalidBase64Errors(t *testing.T) {
+	// base64 キーを明示指定した場合、不正な base64 は raw フォールバックせずエラーになる
+	// （content/生文字列の場合の従来ヒューリスティックとは異なる挙動）
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"base64": "not valid base64!!!"},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid base64")
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitBase64Key_MaxSizeExceeded(t *testing.T) {
+	setFileFetchConfigForTest(t, FileFetchConfig{MaxSize: 5})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"base64": base64.StdEncoding.EncodeToString([]byte("this is definitely more than five bytes"))},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitTextKey(t *testing.T) {
+	// {text: "..."} はデコードせずそのまま bytes として使用される
+	text := "raw text content, not decoded as base64"
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{"text": text},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []byte(text), capturedContent)
+}
+
+func TestCreateToolFunction_Multipart_FileContentLegacy_MaxSizeExceeded(t *testing.T) {
+	// content キー（従来の生文字列ヒューリスティック）経路でもサイズ上限が強制される
+	setFileFetchConfigForTest(t, FileFetchConfig{MaxSize: 5})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": "this raw string is definitely longer than five bytes",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
+}
+
+func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(t *testing.T) {
+	// url / base64 / text / content が同時に指定された場合、url が最優先で使われ他は無視される
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	urlContent := []byte("from url")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(urlContent) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedContent []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		f, _, err := r.FormFile("file")
+		require.NoError(t, err)
+		defer f.Close() //nolint: errcheck
+		capturedContent, err = io.ReadAll(f)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"file": map[string]any{
+			"url":    fileSrv.URL + "/f",
+			"base64": base64.StdEncoding.EncodeToString([]byte("from base64, should be ignored")),
+			"text":   "from text, should be ignored",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, urlContent, capturedContent)
+}
+
+func TestDecodeFileContent_MaxSize(t *testing.T) {
+	_, err := decodeFileContent("hello world", 5)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
+
+	data, err := decodeFileContent("hi", 5)
+	require.NoError(t, err)
+	require.Equal(t, []byte("hi"), data)
+}
+
+func TestIsHostAllowed(t *testing.T) {
+	u, err := url.Parse("https://example.com:8443/path")
+	require.NoError(t, err)
+	require.True(t, isHostAllowed([]string{"example.com"}, u))
+	require.True(t, isHostAllowed([]string{"example.com:8443"}, u))
+	require.False(t, isHostAllowed([]string{"other.com"}, u))
 }
 
 // --- sanitizeParamName ---

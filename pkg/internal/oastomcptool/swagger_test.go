@@ -762,6 +762,8 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
+	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("swagger streamed file")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")

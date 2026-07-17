@@ -41,3 +41,50 @@ func TestLoadInternal_Success(t *testing.T) {
 	// config.yaml に gateway.port: 9999 がある
 	require.Equal(t, 9998, cfg.Gateway.Port)
 }
+
+// --- fileFetch ---
+
+func TestLoadInternal_FileFetch_Defaults(t *testing.T) {
+	// プロジェクトの config.yaml に fileFetch セクションは無いので、既定値が適用される
+	cfg, err := loadInternal(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, DefaultFileFetchMaxSize, cfg.FileFetch.MaxSize)
+	require.False(t, cfg.FileFetch.AllowLocal)
+	require.Empty(t, cfg.FileFetch.AllowedHosts)
+}
+
+func TestLoadInternal_FileFetch_EnvOverride_MaxSize(t *testing.T) {
+	// viper の SetDefault + AutomaticEnv により FILEFETCH_MAXSIZE で上書きできる
+	t.Setenv("FILEFETCH_MAXSIZE", "1048576")
+
+	cfg, err := loadInternal(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 1048576, cfg.FileFetch.MaxSize)
+}
+
+func TestLoadInternal_FileFetch_EnvOverride_AllowLocal(t *testing.T) {
+	// viper の SetDefault + AutomaticEnv により FILEFETCH_ALLOWLOCAL で上書きできる
+	t.Setenv("FILEFETCH_ALLOWLOCAL", "true")
+
+	cfg, err := loadInternal(t.Context())
+	require.NoError(t, err)
+	require.True(t, cfg.FileFetch.AllowLocal)
+}
+
+func TestFileFetchConfig_WithDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		in   FileFetchConfig
+		want int64
+	}{
+		{"zero value gets default", FileFetchConfig{}, DefaultFileFetchMaxSize},
+		{"negative gets default", FileFetchConfig{MaxSize: -1}, DefaultFileFetchMaxSize},
+		{"explicit value kept", FileFetchConfig{MaxSize: 1024}, 1024},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in.WithDefaults()
+			require.Equal(t, tt.want, got.MaxSize)
+		})
+	}
+}

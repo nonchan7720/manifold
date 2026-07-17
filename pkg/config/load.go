@@ -59,6 +59,15 @@ func loadInternal(ctx context.Context) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// Defaults must be registered explicitly for viper.AutomaticEnv() to take effect
+	// during Unmarshal — keys with no default, config-file entry, or bound env var
+	// are simply absent from the decoded struct's source data. Registering these
+	// defaults also makes the corresponding env vars (FILEFETCH_MAXSIZE,
+	// FILEFETCH_ALLOWLOCAL, FILEFETCH_ALLOWEDHOSTS) effective overrides.
+	v.SetDefault("fileFetch.maxSize", DefaultFileFetchMaxSize)
+	v.SetDefault("fileFetch.allowLocal", false)
+	v.SetDefault("fileFetch.allowedHosts", []string{})
+
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
@@ -79,6 +88,10 @@ func loadInternal(ctx context.Context) (*Config, error) {
 	if err := v.Unmarshal(&conf); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
+
+	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
+	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
+	conf.FileFetch = conf.FileFetch.WithDefaults()
 
 	for name, srv := range conf.MCPServer {
 		srv.Name = name

@@ -355,7 +355,12 @@ func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
 
 // fileInputHint は、ファイル入力フィールドが base64 文字列または URL（署名付き URL 等）の
 // どちらでも受け付けることを MCP クライアント側の LLM が判断できるようにする案内文。
-const fileInputHint = "Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from."
+// 明示的に取得元を指定したい場合は {url:"..."} / {base64:"..."} / {text:"..."} /
+// {content:...}（従来の自動判定）のいずれかのキーを持つオブジェクトも渡せることを併記する。
+const fileInputHint = "Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from. " +
+	"For explicit control, an object may be passed instead with one of these keys: " +
+	`{url:"..."} to download from a URL, {base64:"..."} for base64-encoded content, {text:"..."} for raw text content, ` +
+	`or {content:...} for the legacy auto-detected base64/URL form; filename/contentType may be included alongside any of these.`
 
 // appendFileInputHint はファイル入力フィールドの説明に fileInputHint を付加する。
 func appendFileInputHint(desc string) string {
@@ -721,11 +726,19 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, `\"`)
 
 // decodeFileContent はファイル内容を bytes に変換する。base64 として解釈できない文字列は raw bytes として扱う。
-func decodeFileContent(v any) ([]byte, error) {
+// maxSize（バイト）を超える場合はエラーを返す。base64 デコード後のサイズは入力文字列長以下になるため、
+// デコード前に入力長で判定すれば両方のケースを一度にはじける。
+func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 	switch value := v.(type) {
 	case []byte:
+		if int64(len(value)) > maxSize {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+		}
 		return value, nil
 	case string:
+		if int64(len(value)) > maxSize {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+		}
 		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
 			return decoded, nil
 		}
@@ -735,20 +748,129 @@ func decodeFileContent(v any) ([]byte, error) {
 	}
 }
 
+// fileFetchMaxRedirects は fetchFileFromURL がたどるリダイレクトの最大ホップ数。
+const fileFetchMaxRedirects = 10
+
+// checkFileFetchURL は FileFetchConfig に基づき URL のスキームと AllowedHosts を検証する。
+// プライベート/ループバック IP への接続拒否自体は client.SafeHTTPClient() の dialer が担うため
+// ここでは扱わない（isHostAllowed も参照）。
+func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
+	switch u.Scheme {
+	case "https":
+		// 常に許可
+	case "http":
+		if !cfg.AllowLocal {
+			return fmt.Errorf("http:// URLs are not allowed (enable fileFetch.allowLocal for local testing)")
+		}
+	default:
+		return fmt.Errorf("unsupported URL scheme %q: only http/https are allowed", u.Scheme)
+	}
+	if len(cfg.AllowedHosts) > 0 && !isHostAllowed(cfg.AllowedHosts, u) {
+		return fmt.Errorf("host %q is not in the allowed hosts list", u.Host)
+	}
+	return nil
+}
+
+// isHostAllowed は URL のホストが allowed リストに含まれるかを判定する。
+// ホスト名単体（ポート無し）とポート付きホストの両方で完全一致を試みる。
+func isHostAllowed(allowed []string, u *url.URL) bool {
+	hostname := u.Hostname()
+	hostWithPort := u.Host
+	for _, h := range allowed {
+		if h == hostname || h == hostWithPort {
+			return true
+		}
+	}
+	return false
+}
+
+// fileTooLargeError は取得/デコードしたファイルが MaxSize を超えた場合のエラー。
+type fileTooLargeError struct {
+	max int64
+}
+
+func (e *fileTooLargeError) Error() string {
+	return fmt.Sprintf("file exceeds the maximum allowed size of %d bytes", e.max)
+}
+
+// limitedReadCloser は、読み出しバイト数が max を超えようとした時点でエラーを返す io.ReadCloser。
+// Content-Length が不明なストリーミング応答（chunked 等）でもサイズ上限を強制するために使う。
+type limitedReadCloser struct {
+	r   io.Reader
+	c   io.Closer
+	max int64
+	n   int64
+}
+
+func newLimitedReadCloser(rc io.ReadCloser, max int64) *limitedReadCloser {
+	return &limitedReadCloser{r: rc, c: rc, max: max}
+}
+
+func (l *limitedReadCloser) Read(p []byte) (int, error) {
+	if l.n > l.max {
+		return 0, &fileTooLargeError{max: l.max}
+	}
+	// max を 1 バイト超えた時点で検知できるよう、上限+1 バイトまでは読み出しを許可する。
+	if allowed := l.max + 1 - l.n; int64(len(p)) > allowed {
+		p = p[:allowed]
+	}
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if l.n > l.max {
+		return n, &fileTooLargeError{max: l.max}
+	}
+	return n, err
+}
+
+func (l *limitedReadCloser) Close() error {
+	return l.c.Close()
+}
+
 // fetchFileFromURL は署名付き URL などからファイルを取得し、ボディをストリームとして返す。
 // 戻り値: body, URLパス末尾のファイル名（無ければ空）, レスポンスの Content-Type
+//
+// パッケージレベルの FileFetchConfig（SetFileFetchConfig で設定）に従い、SSRF 対策として
+// 既定ではプライベート/ループバック/リンクローカル IP への接続と http スキームを拒否する
+// （client.SafeHTTPClient() の dialer が接続時に判定）。AllowedHosts が設定されている場合は
+// ホストの許可リストをリクエスト前とリダイレクト各ホップで検証する。レスポンスボディは
+// MaxSize でサイズ上限を課す。
 func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string, string, error) {
+	cfg := getFileFetchConfig()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("invalid file URL: %w", err)
+	}
+	if err := checkFileFetchURL(cfg, parsed); err != nil {
+		return nil, "", "", err
+	}
+
+	httpClient := client.SafeHTTPClient()
+	if cfg.AllowLocal {
+		httpClient = client.HTTPClient()
+	}
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= fileFetchMaxRedirects {
+			return fmt.Errorf("stopped after %d redirects", fileFetchMaxRedirects)
+		}
+		return checkFileFetchURL(cfg, req.URL)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", "", err
 	}
-	resp, err := client.HTTPClient().Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, "", "", err
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close() //nolint: errcheck
 		return nil, "", "", fmt.Errorf("failed to download file from URL: %d %s", resp.StatusCode, resp.Status)
+	}
+	if resp.ContentLength > 0 && resp.ContentLength > cfg.MaxSize {
+		resp.Body.Close() //nolint: errcheck
+		return nil, "", "", fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", resp.ContentLength, cfg.MaxSize)
 	}
 
 	filename := ""
@@ -759,10 +881,11 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		}
 	}
 
-	return resp.Body, filename, resp.Header.Get("Content-Type"), nil
+	return newLimitedReadCloser(resp.Body, cfg.MaxSize), filename, resp.Header.Get("Content-Type"), nil
 }
 
 // isFileURL は値が http(s) から始まる URL 文字列かどうかを返す。
+// URL 形式かどうかの判定のみを行い、許可するかどうかの判定（checkFileFetchURL）とは分離する。
 func isFileURL(v any) (string, bool) {
 	s, ok := v.(string)
 	if !ok {
@@ -775,13 +898,33 @@ func isFileURL(v any) (string, bool) {
 }
 
 // writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
-// または {filename, content, contentType} のオブジェクト（content は base64 または URL）。
+// または {filename, contentType, ...} のオブジェクト。
+//
+// オブジェクトの場合、ファイル内容の取得元は明示キー url / base64 / text / content の
+// 優先順位（この順）で決定し、複数指定された場合は最初に一致したものだけを使い残りは無視する。
+//   - url: そのURLから取得する（fetchFileFromURL の SSRF 検証を経由）。http(s) で始まらない値はエラー。
+//   - base64: 文字列を必ず base64 としてデコードする。失敗したら raw フォールバックせずエラーにする。
+//   - text: 文字列をそのまま bytes として使用する。
+//   - content: 既存互換のヒューリスティック判定（isFileURL → decodeFileContent）。
+//
+// オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
 func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name string, value any) error { //nolint: gocyclo
+	cfg := getFileFetchConfig()
+
 	filename := name
 	filenameExplicit := false
 	contentType := ""
 	contentTypeExplicit := false
-	content := value
+	fallbackContent := value
+
+	var (
+		explicitURL    string
+		hasURL         bool
+		explicitBase64 string
+		hasBase64      bool
+		explicitText   string
+		hasText        bool
+	)
 
 	if m, ok := value.(map[string]any); ok {
 		if fn, ok := m["filename"].(string); ok && fn != "" {
@@ -792,13 +935,26 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 			contentType = ct
 			contentTypeExplicit = true
 		}
-		content = m["content"]
+		if v, ok := m["url"].(string); ok {
+			explicitURL, hasURL = v, true
+		}
+		if v, ok := m["base64"].(string); ok {
+			explicitBase64, hasBase64 = v, true
+		}
+		if v, ok := m["text"].(string); ok {
+			explicitText, hasText = v, true
+		}
+		fallbackContent = m["content"]
 	}
 
 	var data []byte
 	var body io.ReadCloser
-	if rawURL, ok := isFileURL(content); ok { //nolint: nestif
-		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
+	switch { //nolint: gocritic
+	case hasURL:
+		if !strings.HasPrefix(explicitURL, "http://") && !strings.HasPrefix(explicitURL, "https://") {
+			return fmt.Errorf("%q: url must start with http:// or https://", name)
+		}
+		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, explicitURL)
 		if err != nil {
 			return err
 		}
@@ -810,12 +966,41 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 		if !contentTypeExplicit && urlContentType != "" {
 			contentType = urlContentType
 		}
-	} else {
-		d, err := decodeFileContent(content)
+	case hasBase64:
+		decoded, err := base64.StdEncoding.DecodeString(explicitBase64)
 		if err != nil {
-			return err
+			return fmt.Errorf("%q: invalid base64 content: %w", name, err)
 		}
-		data = d
+		if int64(len(decoded)) > cfg.MaxSize {
+			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(decoded), cfg.MaxSize)
+		}
+		data = decoded
+	case hasText:
+		if int64(len(explicitText)) > cfg.MaxSize {
+			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(explicitText), cfg.MaxSize)
+		}
+		data = []byte(explicitText)
+	default:
+		if rawURL, ok := isFileURL(fallbackContent); ok { //nolint: nestif
+			b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
+			if err != nil {
+				return err
+			}
+			body = b
+			defer body.Close() //nolint: errcheck
+			if !filenameExplicit && urlFilename != "" {
+				filename = urlFilename
+			}
+			if !contentTypeExplicit && urlContentType != "" {
+				contentType = urlContentType
+			}
+		} else {
+			d, err := decodeFileContent(fallbackContent, cfg.MaxSize)
+			if err != nil {
+				return fmt.Errorf("%q: %w", name, err)
+			}
+			data = d
+		}
 	}
 
 	var part io.Writer
