@@ -362,14 +362,6 @@ const fileInputHint = "Provide the file content as a base64-encoded string, or a
 	`{url:"..."} to download from a URL, {base64:"..."} for base64-encoded content, {text:"..."} for raw text content, ` +
 	`or {content:...} for the legacy auto-detected base64/URL form; filename/contentType may be included alongside any of these.`
 
-// appendFileInputHint はファイル入力フィールドの説明に fileInputHint を付加する。
-func appendFileInputHint(desc string) string {
-	if desc == "" {
-		return fileInputHint
-	}
-	return desc + " " + fileInputHint
-}
-
 // buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
 func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: gocyclo
 	if prop == nil {
