@@ -264,18 +264,29 @@ func schemaIsBinary(schema *openapi3.Schema) bool {
 }
 
 // newFormParameter はフォームスキーマから formParameter を再帰的に構築する。
-func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
+func newFormParameter(schema *openapi3.Schema) formParameter {
+	return newFormParameterVisited(schema, map[*openapi3.Schema]bool{})
+}
+
+// newFormParameterVisited は newFormParameter の実体。visited は現在の再帰パス上にあるスキーマ
+// ポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref をポインタ循環と
+// して解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を検知した場合は
+// 空の formParameter を返す（それ以上再帰しない）。
+func newFormParameterVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) formParameter { //nolint: gocyclo
 	fp := formParameter{parameters: formParameters{}}
-	if schema == nil {
+	if schema == nil || visited[schema] {
 		return fp
 	}
+	visited[schema] = true
+	defer delete(visited, schema)
+
 	fp.isFile = schemaIsBinary(schema)
 
 	for _, ref := range schema.AllOf {
 		if ref == nil || ref.Value == nil {
 			continue
 		}
-		branch := newFormParameter(ref.Value)
+		branch := newFormParameterVisited(ref.Value, visited)
 		maps.Copy(fp.parameters, branch.parameters)
 		if branch.isFile {
 			fp.isFile = true
@@ -285,7 +296,7 @@ func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
 		if ref == nil || ref.Value == nil {
 			continue
 		}
-		branch := newFormParameter(ref.Value)
+		branch := newFormParameterVisited(ref.Value, visited)
 		maps.Copy(fp.parameters, branch.parameters)
 		if branch.isFile {
 			fp.isFile = true
@@ -295,7 +306,7 @@ func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
 		if ref == nil || ref.Value == nil {
 			continue
 		}
-		branch := newFormParameter(ref.Value)
+		branch := newFormParameterVisited(ref.Value, visited)
 		maps.Copy(fp.parameters, branch.parameters)
 		if branch.isFile {
 			fp.isFile = true
@@ -304,7 +315,7 @@ func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
 
 	for name, field := range schema.Properties {
 		if field != nil {
-			child := newFormParameter(field.Value)
+			child := newFormParameterVisited(field.Value, visited)
 			child.originalName = name
 			fp.parameters[sanitizeParamName(name)] = child
 		}
@@ -318,6 +329,14 @@ func newFormParameter(schema *openapi3.Schema) formParameter { //nolint: gocyclo
 // 各プロパティを再帰的に処理する際は、階層ごとに mergeAllOf を呼び直す必要がある
 // （buildFormPropertySchema がその例）。
 func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
+	return mergeAllOfVisited(prop, map[*openapi3.Schema]bool{})
+}
+
+// mergeAllOfVisited は mergeAllOf の実体。kin-openapi の Loader は $ref をポインタ循環として
+// 解決するため、allOf のブランチが自己参照・相互参照になっているスキーマが存在しうる。
+// visited は現在の再帰パス上にある allOf ブランチのスキーマポインタの集合で、無限再帰を防ぐ。
+// 同じスキーマへの再訪（＝循環）を検知した場合、そのブランチはマージ対象からスキップする。
+func mergeAllOfVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool) *openapi3.Schema {
 	merged := *prop
 	merged.AllOf = nil
 
@@ -326,13 +345,20 @@ func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
 
 	required := append([]string{}, merged.Required...)
 
+	visited[prop] = true
+	defer delete(visited, prop)
+
 	for _, ref := range prop.AllOf {
 		if ref == nil || ref.Value == nil {
 			continue
 		}
 		sub := ref.Value
+		if visited[sub] {
+			// 循環参照: このブランチはスキップする
+			continue
+		}
 		if len(sub.AllOf) > 0 {
-			sub = mergeAllOf(sub)
+			sub = mergeAllOfVisited(sub, visited)
 		}
 		maps.Copy(properties, sub.Properties)
 		required = append(required, sub.Required...)
@@ -363,10 +389,25 @@ const fileInputHint = "Provide the file content as a base64-encoded string, or a
 	`or {content:...} for the legacy auto-detected base64/URL form; filename/contentType may be included alongside any of these.`
 
 // buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
-func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: gocyclo
+func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
+	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{})
+}
+
+// buildFormPropertySchemaVisited は buildFormPropertySchema の実体。visited は現在の再帰パス上に
+// あるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref を
+// ポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を
+// 検知した場合、それ以上再帰せず浅いオブジェクト表現を返す。
+func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool) map[string]any { //nolint: gocyclo
 	if prop == nil {
 		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
 	}
+	if visited[prop] {
+		// 循環参照: これ以上再帰しない
+		return map[string]any{"type": "object", "description": prop.Description, "_meta": map[string]any{}}
+	}
+	visited[prop] = true
+	defer delete(visited, prop)
+
 	if len(prop.AllOf) > 0 {
 		prop = mergeAllOf(prop)
 	}
@@ -394,7 +435,7 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 			if ref == nil || ref.Value == nil {
 				continue
 			}
-			branches = append(branches, buildFormPropertySchema(ref.Value))
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
 		}
 		return map[string]any{
 			"oneOf":       branches,
@@ -408,7 +449,7 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 			if ref == nil || ref.Value == nil {
 				continue
 			}
-			branches = append(branches, buildFormPropertySchema(ref.Value))
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
 		}
 		return map[string]any{
 			"anyOf":       branches,
@@ -438,7 +479,7 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 			if propRef == nil || propRef.Value == nil {
 				continue
 			}
-			properties[propName] = buildFormPropertySchema(propRef.Value)
+			properties[propName] = buildFormPropertySchemaVisited(propRef.Value, visited)
 		}
 		result["properties"] = properties
 
@@ -452,7 +493,7 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 	}
 
 	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
-		result["items"] = buildFormPropertySchema(prop.Items.Value)
+		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited)
 	}
 
 	return result
@@ -513,7 +554,21 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 
 // describe_schema_fields_openapi recursively builds a human-readable field summary from an
 // OpenAPI 3.x schema. Since Loader auto-resolves $refs, propRef.Value is always populated.
-func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: gocyclo
+func describe_schema_fields_openapi(schema *openapi3.Schema) string {
+	return describeSchemaFieldsOpenapiVisited(schema, map[*openapi3.Schema]bool{})
+}
+
+// describeSchemaFieldsOpenapiVisited は describe_schema_fields_openapi の実体。visited は現在の
+// 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は
+// $ref をポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの
+// 再訪を検知した場合は空文字列を返し、それ以上再帰しない。
+func describeSchemaFieldsOpenapiVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) string { //nolint: gocyclo
+	if schema == nil || visited[schema] {
+		return ""
+	}
+	visited[schema] = true
+	defer delete(visited, schema)
+
 	if len(schema.AllOf) > 0 {
 		schema = mergeAllOf(schema)
 	}
@@ -567,7 +622,7 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 		}
 
 		if typ == "object" {
-			if nested := describe_schema_fields_openapi(prop); nested != "" {
+			if nested := describeSchemaFieldsOpenapiVisited(prop, visited); nested != "" {
 				parts = append(parts, fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested))
 				continue
 			}
@@ -583,7 +638,7 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 				itemType = "object"
 			}
 			if itemType == "object" {
-				if nested := describe_schema_fields_openapi(itemSchema); nested != "" {
+				if nested := describeSchemaFieldsOpenapiVisited(itemSchema, visited); nested != "" {
 					arrayMeta := "array of object"
 					if localRequired[name] {
 						arrayMeta += ", required"
@@ -787,25 +842,20 @@ func (e *fileTooLargeError) Error() string {
 
 // limitedReadCloser は、読み出しバイト数が max を超えようとした時点でエラーを返す io.ReadCloser。
 // Content-Length が不明なストリーミング応答（chunked 等）でもサイズ上限を強制するために使う。
+// 内部では io.LimitReader(rc, max+1) に読み出しを委譲する（max を 1 バイト超えた時点で
+// 検知できるよう、上限+1 バイトまでは素通しで読ませる）。呼び出し側で自前のスライス切り詰めは行わない。
 type limitedReadCloser struct {
-	r   io.Reader
+	r   io.Reader // io.LimitReader(rc, max+1)
 	c   io.Closer
 	max int64
 	n   int64
 }
 
 func newLimitedReadCloser(rc io.ReadCloser, maxSize int64) *limitedReadCloser {
-	return &limitedReadCloser{r: rc, c: rc, max: maxSize}
+	return &limitedReadCloser{r: io.LimitReader(rc, maxSize+1), c: rc, max: maxSize}
 }
 
 func (l *limitedReadCloser) Read(p []byte) (int, error) {
-	if l.n > l.max {
-		return 0, &fileTooLargeError{max: l.max}
-	}
-	// max を 1 バイト超えた時点で検知できるよう、上限+1 バイトまでは読み出しを許可する。
-	if allowed := l.max + 1 - l.n; int64(len(p)) > allowed {
-		p = p[:allowed]
-	}
 	n, err := l.r.Read(p)
 	l.n += int64(n)
 	if l.n > l.max {

@@ -47,9 +47,15 @@ func SetFileFetchConfig(cfg FileFetchConfig) {
 	fileFetchConfig = cfg
 }
 
-// getFileFetchConfig returns the currently active file-fetch policy.
+// getFileFetchConfig returns the currently active file-fetch policy. AllowedHosts
+// is returned as a copy so callers can never mutate the shared global slice's
+// backing array.
 func getFileFetchConfig() FileFetchConfig {
 	fileFetchMu.RLock()
 	defer fileFetchMu.RUnlock()
-	return fileFetchConfig
+	cfg := fileFetchConfig
+	if cfg.AllowedHosts != nil {
+		cfg.AllowedHosts = append([]string{}, cfg.AllowedHosts...)
+	}
+	return cfg
 }

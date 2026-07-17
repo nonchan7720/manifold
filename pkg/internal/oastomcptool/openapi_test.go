@@ -2232,6 +2232,214 @@ func TestIsHostAllowed(t *testing.T) {
 	require.False(t, isHostAllowed([]string{"other.com"}, u))
 }
 
+// --- 循環参照スキーマ（自己参照・相互参照）でのスタックオーバーフロー防止 ---
+// kin-openapi の Loader は $ref をポインタ循環として解決するため、自己参照/相互参照スキーマが
+// 実際に発生しうる（例: node が children: array of node を持つ、A⇄B の相互参照）。
+// テストでは Loader を介さず、同じ状況を素朴な Go ポインタ共有で再現する。
+
+// selfReferentialNodeSchema は node.properties.children が array of node（node 自身への
+// 自己参照）であるスキーマを返す。
+func selfReferentialNodeSchema() *openapi3.Schema {
+	node := &openapi3.Schema{
+		Type:       &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{},
+	}
+	node.Properties["name"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	node.Properties["children"] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:  &openapi3.Types{"array"},
+			Items: &openapi3.SchemaRef{Value: node},
+		},
+	}
+	return node
+}
+
+// mutuallyReferentialSchemas は a.properties.b == b、b.properties.a == a という
+// A→B→A の相互参照スキーマの組を返す。
+func mutuallyReferentialSchemas() (a, b *openapi3.Schema) {
+	a = &openapi3.Schema{Type: &openapi3.Types{"object"}, Properties: openapi3.Schemas{}}
+	b = &openapi3.Schema{Type: &openapi3.Types{"object"}, Properties: openapi3.Schemas{}}
+	a.Properties["name"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	a.Properties["b"] = &openapi3.SchemaRef{Value: b}
+	b.Properties["label"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	b.Properties["a"] = &openapi3.SchemaRef{Value: a}
+	return a, b
+}
+
+func TestBuildFormPropertySchema_SelfReferentialSchema(t *testing.T) {
+	node := selfReferentialNodeSchema()
+
+	var result map[string]any
+	require.NotPanics(t, func() {
+		result = buildFormPropertySchema(node)
+	})
+	require.Equal(t, "object", result["type"])
+	props := result["properties"].(map[string]any)
+	require.Contains(t, props, "name")
+	require.Contains(t, props, "children")
+}
+
+func TestBuildFormPropertySchema_MutuallyReferentialSchema(t *testing.T) {
+	a, _ := mutuallyReferentialSchemas()
+
+	var result map[string]any
+	require.NotPanics(t, func() {
+		result = buildFormPropertySchema(a)
+	})
+	require.Equal(t, "object", result["type"])
+	props := result["properties"].(map[string]any)
+	require.Contains(t, props, "name")
+	require.Contains(t, props, "b")
+}
+
+func TestDescribeSchemaFieldsOpenapi_SelfReferentialSchema(t *testing.T) {
+	node := selfReferentialNodeSchema()
+
+	var result string
+	require.NotPanics(t, func() {
+		result = describe_schema_fields_openapi(node)
+	})
+	require.Contains(t, result, "name")
+	require.Contains(t, result, "children")
+}
+
+func TestDescribeSchemaFieldsOpenapi_MutuallyReferentialSchema(t *testing.T) {
+	a, _ := mutuallyReferentialSchemas()
+
+	var result string
+	require.NotPanics(t, func() {
+		result = describe_schema_fields_openapi(a)
+	})
+	require.Contains(t, result, "name")
+	require.Contains(t, result, "b")
+}
+
+func TestNewFormParameter_SelfReferentialSchema(t *testing.T) {
+	node := selfReferentialNodeSchema()
+
+	var fp formParameter
+	require.NotPanics(t, func() {
+		fp = newFormParameter(node)
+	})
+	require.Contains(t, fp.parameters, "name")
+	require.Contains(t, fp.parameters, "children")
+}
+
+func TestNewFormParameter_MutuallyReferentialSchema(t *testing.T) {
+	a, _ := mutuallyReferentialSchemas()
+
+	var fp formParameter
+	require.NotPanics(t, func() {
+		fp = newFormParameter(a)
+	})
+	require.Contains(t, fp.parameters, "name")
+	require.Contains(t, fp.parameters, "b")
+}
+
+func TestBuildInputSchema_SelfReferentialSchema_ViaMultipart(t *testing.T) {
+	node := selfReferentialNodeSchema()
+	op := multipartOperation(node)
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "name")
+	require.Contains(t, props, "children")
+}
+
+func TestBuildInputSchema_MutuallyReferentialSchema_ViaMultipart(t *testing.T) {
+	a, _ := mutuallyReferentialSchemas()
+	op := multipartOperation(a)
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "name")
+	require.Contains(t, props, "b")
+}
+
+func TestBuildInputSchema_SelfReferentialSchema_ViaJSONBody(t *testing.T) {
+	node := selfReferentialNodeSchema()
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{Value: node},
+					},
+				},
+			},
+		},
+	}
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "body")
+	bodyProp := props["body"].(map[string]any)
+	require.Contains(t, bodyProp["description"], "name")
+	require.Contains(t, bodyProp["description"], "children")
+}
+
+func TestBuildInputSchema_MutuallyReferentialSchema_ViaJSONBody(t *testing.T) {
+	a, _ := mutuallyReferentialSchemas()
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{Value: a},
+					},
+				},
+			},
+		},
+	}
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+	props := schema["properties"].(map[string]any)
+	require.Contains(t, props, "body")
+	bodyProp := props["body"].(map[string]any)
+	require.Contains(t, bodyProp["description"], "name")
+	require.Contains(t, bodyProp["description"], "b")
+}
+
+func TestMergeAllOf_SelfReferentialAllOf(t *testing.T) {
+	self := &openapi3.Schema{
+		Type:       &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{"a": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}},
+	}
+	self.AllOf = openapi3.SchemaRefs{{Value: self}}
+
+	var merged *openapi3.Schema
+	require.NotPanics(t, func() {
+		merged = mergeAllOf(self)
+	})
+	require.Contains(t, merged.Properties, "a")
+}
+
+func TestMergeAllOf_MutuallyReferentialAllOf(t *testing.T) {
+	a := &openapi3.Schema{Properties: openapi3.Schemas{"x": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}}}
+	b := &openapi3.Schema{Properties: openapi3.Schemas{"y": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}}}
+	a.AllOf = openapi3.SchemaRefs{{Value: b}}
+	b.AllOf = openapi3.SchemaRefs{{Value: a}}
+
+	var merged *openapi3.Schema
+	require.NotPanics(t, func() {
+		merged = mergeAllOf(a)
+	})
+	require.Contains(t, merged.Properties, "x")
+	require.Contains(t, merged.Properties, "y")
+}
+
 // --- sanitizeParamName ---
 // MCP の InputSchema プロパティ名は "[" "]" を許容しないため、
 // OpenAPI の配列/ネスト形式クエリパラメータ名（例: "tag[]", "filter[status]"）を
