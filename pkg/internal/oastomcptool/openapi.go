@@ -794,8 +794,8 @@ type limitedReadCloser struct {
 	n   int64
 }
 
-func newLimitedReadCloser(rc io.ReadCloser, max int64) *limitedReadCloser {
-	return &limitedReadCloser{r: rc, c: rc, max: max}
+func newLimitedReadCloser(rc io.ReadCloser, maxSize int64) *limitedReadCloser {
+	return &limitedReadCloser{r: rc, c: rc, max: maxSize}
 }
 
 func (l *limitedReadCloser) Read(p []byte) (int, error) {
@@ -918,7 +918,7 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 		hasText        bool
 	)
 
-	if m, ok := value.(map[string]any); ok {
+	if m, ok := value.(map[string]any); ok { //nolint: nestif
 		if fn, ok := m["filename"].(string); ok && fn != "" {
 			filename = fn
 			filenameExplicit = true
@@ -941,7 +941,7 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 
 	var data []byte
 	var body io.ReadCloser
-	switch { //nolint: gocritic
+	switch {
 	case hasURL:
 		if !strings.HasPrefix(explicitURL, "http://") && !strings.HasPrefix(explicitURL, "https://") {
 			return fmt.Errorf("%q: url must start with http:// or https://", name)
