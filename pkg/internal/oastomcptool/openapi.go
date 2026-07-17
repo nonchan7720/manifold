@@ -385,7 +385,6 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any { //nolint: g
 
 	metadata := map[string]any{}
 	if schemaIsBinary(prop) {
-		desc = appendFileInputHint(desc)
 		metadata["manifold"] = map[string]any{
 			"file":          true,
 			"fileInputHint": fileInputHint,

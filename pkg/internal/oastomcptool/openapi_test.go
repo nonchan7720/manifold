@@ -1135,9 +1135,11 @@ func TestBuildInputSchema_Multipart_BinaryFile(t *testing.T) {
 	require.Equal(t, true, manifold["file"])
 }
 
-func TestBuildInputSchema_Multipart_BinaryFile_DescriptionMentionsURLOption(t *testing.T) {
-	// LLM がファイルフィールドに base64 だけでなく URL（署名付きURL等）も渡せることを
-	// description から判断できるようにする
+func TestBuildInputSchema_Multipart_BinaryFile_MetaMentionsURLOption(t *testing.T) {
+	// ファイル入力は description ではなく _meta.manifold.fileInputHint 経由で
+	// base64 / URL（署名付きURL等）のどちらでも渡せることを案内する。
+	// description は仕様上変更しない（自社内エージェントは _meta を解釈できるが、
+	// Claude web や CLI 系エージェントは _meta を利用できないため description を汚さない）。
 	op := multipartOperation(&openapi3.Schema{
 		Properties: openapi3.Schemas{
 			"file": &openapi3.SchemaRef{
@@ -1153,17 +1155,26 @@ func TestBuildInputSchema_Multipart_BinaryFile_DescriptionMentionsURLOption(t *t
 	schema := BuildInputSchema(op)
 	props := schema["properties"].(map[string]any)
 	fileProp := props["file"].(map[string]any)
+
+	// 元の説明文はそのまま保持され、案内文は付与されない
 	desc, ok := fileProp["description"].(string)
 	require.True(t, ok)
-	// 元の説明文は保持される
-	require.Contains(t, desc, "Avatar image")
-	// base64 と URL のどちらでも渡せることが明記される
-	require.Contains(t, desc, "base64")
-	require.Contains(t, desc, "URL")
+	require.Equal(t, "Avatar image", desc)
+	require.NotContains(t, desc, "base64")
+	require.NotContains(t, desc, "URL")
+
+	// 案内文と file フラグは _meta.manifold に格納される
+	meta := fileProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+	hint, ok := manifold["fileInputHint"].(string)
+	require.True(t, ok)
+	require.Contains(t, hint, "base64")
+	require.Contains(t, hint, "URL")
 }
 
-func TestBuildInputSchema_Multipart_BinaryFile_DescriptionWithoutOriginalDescription(t *testing.T) {
-	// 元の description が空でも案内文だけは付与される
+func TestBuildInputSchema_Multipart_BinaryFile_MetaWithoutOriginalDescription(t *testing.T) {
+	// 元の description が空の場合も description は空のままで、案内文は _meta にのみ入る
 	op := multipartOperation(&openapi3.Schema{
 		Properties: openapi3.Schemas{
 			"file": &openapi3.SchemaRef{
@@ -1175,13 +1186,22 @@ func TestBuildInputSchema_Multipart_BinaryFile_DescriptionWithoutOriginalDescrip
 	schema := BuildInputSchema(op)
 	props := schema["properties"].(map[string]any)
 	fileProp := props["file"].(map[string]any)
+
 	desc, ok := fileProp["description"].(string)
 	require.True(t, ok)
-	require.Contains(t, desc, "base64")
-	require.Contains(t, desc, "URL")
+	require.Empty(t, desc)
+
+	meta := fileProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+	hint, ok := manifold["fileInputHint"].(string)
+	require.True(t, ok)
+	require.Contains(t, hint, "base64")
+	require.Contains(t, hint, "URL")
 }
 
-func TestBuildInputSchema_Multipart_ArrayOfBinary_ItemsDescriptionMentionsURLOption(t *testing.T) {
+func TestBuildInputSchema_Multipart_ArrayOfBinary_ItemsMetaMentionsURLOption(t *testing.T) {
+	// array of binary の場合も items 側の description ではなく _meta に案内文が入る
 	op := multipartOperation(&openapi3.Schema{
 		Properties: openapi3.Schemas{
 			"files": &openapi3.SchemaRef{
@@ -1199,10 +1219,18 @@ func TestBuildInputSchema_Multipart_ArrayOfBinary_ItemsDescriptionMentionsURLOpt
 	props := schema["properties"].(map[string]any)
 	filesProp := props["files"].(map[string]any)
 	items := filesProp["items"].(map[string]any)
+
 	itemDesc, ok := items["description"].(string)
 	require.True(t, ok)
-	require.Contains(t, itemDesc, "base64")
-	require.Contains(t, itemDesc, "URL")
+	require.Empty(t, itemDesc)
+
+	itemMeta := items["_meta"].(map[string]any)
+	itemManifold := itemMeta["manifold"].(map[string]any)
+	require.Equal(t, true, itemManifold["file"])
+	hint, ok := itemManifold["fileInputHint"].(string)
+	require.True(t, ok)
+	require.Contains(t, hint, "base64")
+	require.Contains(t, hint, "URL")
 }
 
 func TestBuildInputSchema_NonBinaryField_DescriptionUnchanged(t *testing.T) {
