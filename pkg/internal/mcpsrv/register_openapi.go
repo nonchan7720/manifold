@@ -10,7 +10,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
-func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string) (_ *MCPToolRegistry, rErr error) {
+func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, headers map[string]string) (_ *MCPToolRegistry, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -28,14 +28,18 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string) (_ *M
 	isSwagger := versionProbe.Swagger != ""
 
 	if isSwagger {
-		swagger(ctx, register, specPath, baseUrl)
+		if err := swagger(ctx, register, specPath, baseUrl, headers); err != nil {
+			return nil, err
+		}
 	} else {
-		openapi(ctx, register, specPath, baseUrl)
+		if err := openapi(ctx, register, specPath, baseUrl, headers); err != nil {
+			return nil, err
+		}
 	}
 	return register, nil
 }
 
-func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string) (rErr error) {
+func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -64,7 +68,7 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 			}
 
 			inputSchema := oastomcptool.BuildInputSchemaSwagger(operation, pathItem.Parameters, spec)
-			toolFunc := oastomcptool.CreateToolFunctionSwagger(path, strings.ToLower(method), operation, pathItem.Parameters, spec, baseUrl, nil)
+			toolFunc := oastomcptool.CreateToolFunctionSwagger(path, strings.ToLower(method), operation, pathItem.Parameters, spec, baseUrl, headers)
 
 			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc))
 		}
@@ -72,7 +76,7 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 	return nil
 }
 
-func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string) (rErr error) {
+func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -101,7 +105,7 @@ func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 			}
 
 			inputSchema := oastomcptool.BuildInputSchema(operation)
-			toolFunc := oastomcptool.CreateToolFunction(path, strings.ToLower(method), operation, baseUrl, nil)
+			toolFunc := oastomcptool.CreateToolFunction(path, strings.ToLower(method), operation, baseUrl, headers)
 
 			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc))
 		}

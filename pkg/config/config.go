@@ -17,6 +17,8 @@ type Config struct {
 	SQLite *SQLiteConfig `mapstructure:"sqlite"`
 
 	Telemetry telemetry.Config `mapstructure:"telemetry"`
+
+	FileFetch FileFetchConfig `mapstructure:"fileFetch"`
 }
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {

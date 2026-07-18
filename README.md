@@ -202,6 +202,27 @@ redis:
 | ---------- | ------ | --------------------------------------------------- |
 | `path`     | string | データベースファイルパス（`:memory:` でインメモリ） |
 
+#### `fileFetch`
+
+OpenAPI/Swagger ツールのファイル入力フィールドに URL が渡された場合、Manifold がその URL からファイルをダウンロードします。SSRF 対策として、既定ではプライベート/ループバック/リンクローカル IP への接続と `http://` スキームを拒否します。
+
+| フィールド     | 型       | 説明                                                                                                              |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `allowLocal`   | bool     | プライベート/ループバック IP への接続と `http://` を許可（ローカルスタック等でのテスト用。デフォルト: `false`）    |
+| `allowedHosts` | []string | 許可するホストの許可リスト（ホスト名、または `host:port`）。空なら全ホスト許可（プライベート IP 遮断は別途有効）   |
+| `maxSize`      | int64    | ダウンロード/base64/text コンテンツの最大バイト数。0 または未指定でデフォルト 524288000（500MiB）                  |
+
+各フィールドは環境変数でも上書きできます（`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`）。
+
+```yaml
+fileFetch:
+  allowLocal: false
+  maxSize: 524288000 # 500MiB
+  # allowedHosts:
+  #   - example.com
+  #   - files.example.com:8443
+```
+
 ## HTTP エンドポイント
 
 Manifold が公開する HTTP エンドポイントの一覧です。
