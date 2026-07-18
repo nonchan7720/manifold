@@ -1147,6 +1147,80 @@ func TestBuildInputSchema_Multipart_BinaryFile(t *testing.T) {
 	require.Equal(t, true, manifold["file"])
 }
 
+func TestBuildInputSchema_Multipart_BinaryFile_OneOfStringOrObjectSchema(t *testing.T) {
+	// 実行時は bare string（base64/URL）とオブジェクト形式（{url,base64,text,content,...}）の
+	// どちらも受理する（writeMultipartFile 参照）。スキーマ検証するクライアントがオブジェクト
+	// 形式を誤って拒否しないよう、type:string ではなく oneOf [string, object] で両方の形を
+	// 表現しなければならない。
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	fileProp := props["file"].(map[string]any)
+
+	// 従来の "type" キーは無くなり、oneOf に置き換わる
+	require.NotContains(t, fileProp, "type")
+
+	oneOf, ok := fileProp["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+
+	stringBranch := oneOf[0].(map[string]any)
+	require.Equal(t, "string", stringBranch["type"])
+
+	objectBranch := oneOf[1].(map[string]any)
+	require.Equal(t, "object", objectBranch["type"])
+	objectProps := objectBranch["properties"].(map[string]any)
+	require.Contains(t, objectProps, "url")
+	require.Contains(t, objectProps, "base64")
+	require.Contains(t, objectProps, "text")
+	require.Contains(t, objectProps, "content")
+	require.Contains(t, objectProps, "filename")
+	require.Contains(t, objectProps, "contentType")
+	// 各プロパティの type と description も検証（LLM が使い方を判断できるように）
+	urlProp := objectProps["url"].(map[string]any)
+	require.Equal(t, "string", urlProp["type"])
+	require.NotEmpty(t, urlProp["description"])
+
+	// _meta と description（description は変更しない方針）は従来どおりトップレベルに残る
+	require.Contains(t, fileProp, "_meta")
+	require.Contains(t, fileProp, "description")
+}
+
+func TestBuildInputSchema_Multipart_ArrayOfBinary_ItemsOneOfSchema(t *testing.T) {
+	// array of binary の items 側も同じ oneOf [string, object] になる
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	filesProp := props["files"].(map[string]any)
+	// 配列自体の type は変わらず "array"
+	require.Equal(t, "array", filesProp["type"])
+
+	items := filesProp["items"].(map[string]any)
+	require.NotContains(t, items, "type")
+	oneOf, ok := items["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+}
+
 func TestBuildInputSchema_Multipart_BinaryFile_MetaMentionsURLOption(t *testing.T) {
 	// ファイル入力は description ではなく _meta.manifold.fileInputHint 経由で
 	// base64 / URL（署名付きURL等）のどちらでも渡せることを案内する。
@@ -1295,10 +1369,17 @@ func TestBuildInputSchema_Multipart_NestedForm(t *testing.T) {
 	nestedRequired := metadataProp["required"].([]string)
 	require.Contains(t, nestedRequired, "name")
 
+	// ネストしたオブジェクトプロパティ（metadata.thumbnail）は writeMultipartValue が
+	// param.isFile（トップレベルのみ）しか見ず、isFile でない値は json.Marshal でそのまま
+	// 送るだけで URL/base64 の解決を一切行わない。したがってスキーマも「ファイルとして
+	// 解決できる」と誤って約束しないよう、通常の type:string（oneOf も _meta.manifold も無し）
+	// として表現する。これはトップレベルの binary フィールド（_meta.manifold.file が付く。
+	// 他のテスト参照）とは意図的に異なる挙動。
 	thumbnail := nested["thumbnail"].(map[string]any)
+	require.Equal(t, "string", thumbnail["type"])
+	require.NotContains(t, thumbnail, "oneOf")
 	meta := thumbnail["_meta"].(map[string]any)
-	manifold := meta["manifold"].(map[string]any)
-	require.Equal(t, true, manifold["file"])
+	require.NotContains(t, meta, "manifold")
 
 	required := schema["required"].([]string)
 	require.Contains(t, required, "metadata")
@@ -1657,6 +1738,57 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal([]byte(capturedMetadata), &decoded))
 	require.Equal(t, "foo", decoded["name"])
+}
+
+func TestCreateToolFunction_Multipart_NestedBinaryField_NotResolved(t *testing.T) {
+	// metadata.thumbnail は schemaIsBinary(スキーマ側)では binary だが、writeMultipartValue は
+	// トップレベルの param.isFile しか見ないため、ネストしたオブジェクトは json.Marshal で
+	// そのまま送られる。ここで URL 文字列を渡してもダウンロードされず、リテラルな文字列として
+	// JSON に埋め込まれることを確認する（TestBuildInputSchema_Multipart_NestedForm がスキーマ側の
+	// 対応する挙動＝_meta.manifold を付与しないことを検証している）。
+	var urlServerHit bool
+	urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		urlServerHit = true
+		w.Write([]byte("should not be fetched")) //nolint: errcheck
+	}))
+	defer urlSrv.Close()
+
+	var capturedMetadata string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		capturedMetadata = r.FormValue("metadata")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	thumbnailURL := urlSrv.URL + "/thumb.png"
+	_, err := fn(context.Background(), map[string]any{
+		"metadata": map[string]any{"thumbnail": thumbnailURL},
+	})
+	require.NoError(t, err)
+
+	require.False(t, urlServerHit, "nested binary field must not trigger a URL fetch")
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(capturedMetadata), &decoded))
+	require.Equal(t, thumbnailURL, decoded["thumbnail"])
 }
 
 func TestCreateToolFunction_FormURLEncoded_ComplexValue(t *testing.T) {

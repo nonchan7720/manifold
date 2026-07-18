@@ -324,18 +324,15 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 				}
 			}
 		} else if p.In == "formData" && p.Type != nil && p.Type.Is("file") {
-			// formData の type: file は openapi.go の buildFormPropertySchema と同じ規約
-			// （_meta.manifold.file と URL/base64 の案内文）に揃える。
-			properties[p.Name] = map[string]any{
-				"type":        "string",
-				"description": p.Description,
-				"_meta": map[string]any{
-					"manifold": map[string]any{
-						"file":          true,
-						"fileInputHint": fileInputHint,
-					},
+			// formData の type: file は openapi.go の buildFormPropertySchema と同じヘルパー
+			// （binaryFieldMCPSchema: oneOf [string, {url/base64/text/content,...}] +
+			// _meta.manifold.file + URL/base64 の案内文）に揃える。
+			properties[p.Name] = binaryFieldMCPSchema(p.Description, map[string]any{
+				"manifold": map[string]any{
+					"file":          true,
+					"fileInputHint": fileInputHint,
 				},
-			}
+			})
 		} else {
 			// Non-body: "type" is directly on the parameter.
 			paramType := schemaTypeStr(p.Type)
@@ -419,28 +416,32 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		parsedURL.RawQuery = q.Encode()
 		finalURL := parsedURL.String()
 
-		var bodyBytes []byte
+		var bodyReader io.Reader
 		var bodyContentType string
 
 		if len(extractParameter.formParams) > 0 { //nolint: nestif
 			if extractParameter.isMultipart {
-				var buf bytes.Buffer
-				writer := multipart.NewWriter(&buf)
-				for param_name, param := range extractParameter.formParams {
-					v := input[param_name]
-					if v == nil {
-						continue
+				formParams := extractParameter.formParams
+				pr, ct := newMultipartStreamBody(func(mw *multipart.Writer) error {
+					for param_name, param := range formParams {
+						v := input[param_name]
+						if v == nil {
+							continue
+						}
+						if s, ok := v.(string); ok && s == "" {
+							continue
+						}
+						if err := writeMultipartValue(ctx, mw, param_name, v, param); err != nil {
+							return fmt.Errorf("error writing multipart field %s: %w", param_name, err)
+						}
 					}
-					if s, ok := v.(string); ok && s == "" {
-						continue
-					}
-					if err := writeMultipartValue(ctx, writer, param_name, v, param); err != nil {
-						return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
-					}
-				}
-				writer.Close() //nolint: errcheck
-				bodyBytes = buf.Bytes()
-				bodyContentType = writer.FormDataContentType()
+					return nil
+				})
+				// See newMultipartStreamBody's doc comment: Close is always safe here,
+				// whether the goroutine already finished or is still writing.
+				defer pr.Close() //nolint: errcheck
+				bodyReader = pr
+				bodyContentType = ct
 			} else {
 				formValues := url.Values{}
 				for param_name := range extractParameter.formParams {
@@ -448,7 +449,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 						formValues.Set(param_name, fmt.Sprintf("%v", v))
 					}
 				}
-				bodyBytes = []byte(formValues.Encode())
+				bodyReader = strings.NewReader(formValues.Encode())
 				bodyContentType = "application/x-www-form-urlencoded"
 			}
 		} else if len(extractParameter.bodyParams) > 0 {
@@ -490,10 +491,11 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			}
 
 			if json_body != nil {
-				bodyBytes, err = json.Marshal(json_body)
+				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
 					return "", fmt.Errorf("error marshaling request body: %w", err)
 				}
+				bodyReader = bytes.NewReader(bodyBytes)
 				bodyContentType = "application/json"
 			}
 		}
@@ -501,15 +503,15 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		var response *http.Response
 		switch original_method {
 		case "get":
-			response, err = api.DoRequest(ctx, client, finalURL, "get", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "get", false, bodyReader, bodyContentType, effective_headers)
 		case "post":
-			response, err = api.DoRequest(ctx, client, finalURL, "post", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "post", true, bodyReader, bodyContentType, effective_headers)
 		case "put":
-			response, err = api.DoRequest(ctx, client, finalURL, "put", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "put", true, bodyReader, bodyContentType, effective_headers)
 		case "delete":
-			response, err = api.DoRequest(ctx, client, finalURL, "delete", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "delete", false, bodyReader, bodyContentType, effective_headers)
 		case "patch":
-			response, err = api.DoRequest(ctx, client, finalURL, "patch", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
 		default:
 			return "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}

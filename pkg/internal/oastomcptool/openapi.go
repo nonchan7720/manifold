@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -389,16 +390,67 @@ const fileInputHint = "Provide the file content as a base64-encoded string, or a
 	`{url:"..."} to download from a URL, {base64:"..."} for base64-encoded content, {text:"..."} for raw text content, ` +
 	`or {content:...} for the legacy auto-detected base64/URL form; filename/contentType may be included alongside any of these.`
 
-// buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
-func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
-	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{})
+// binaryFieldMCPSchema builds the MCP input-schema fragment for a file-input field
+// (format: binary). At runtime, writeMultipartFile/decodeFileContent accept either a
+// bare string (a base64-encoded blob or a URL, auto-detected — see isFileURL) or an
+// explicit {url, base64, text, content, filename, contentType} object (see
+// writeMultipartFile's doc comment for the resolution priority). Previously the
+// generated schema advertised only `type: "string"`, so an MCP client that validates
+// tool input against the schema would reject the (fully supported) object form.
+// Describing both accepted shapes via oneOf fixes that mismatch. Both openapi.go
+// (buildFormPropertySchemaVisited) and swagger.go (BuildInputSchemaSwagger's
+// `type: file` handling) use this so the two OpenAPI-version code paths stay in sync.
+func binaryFieldMCPSchema(description string, metadata map[string]any) map[string]any {
+	return map[string]any{
+		"oneOf": []any{
+			map[string]any{
+				"type":        "string",
+				"description": "Base64-encoded file content, or a URL (e.g. a presigned URL) to download the file from.",
+			},
+			map[string]any{
+				"type":        "object",
+				"description": "Explicit file source; provide exactly one of url/base64/text/content.",
+				"properties": map[string]any{
+					"url":         map[string]any{"type": "string", "description": "URL to download the file content from."},
+					"base64":      map[string]any{"type": "string", "description": "Base64-encoded file content."},
+					"text":        map[string]any{"type": "string", "description": "Raw (non-base64-encoded) text file content."},
+					"content":     map[string]any{"type": "string", "description": "Legacy auto-detected base64 or URL content."},
+					"filename":    map[string]any{"type": "string", "description": "Filename to use for the upload."},
+					"contentType": map[string]any{"type": "string", "description": "MIME content type to use for the upload."},
+				},
+			},
+		},
+		"description": description,
+		"_meta":       metadata,
+	}
 }
 
-// buildFormPropertySchemaVisited は buildFormPropertySchema の実体。visited は現在の再帰パス上に
-// あるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref を
-// ポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を
-// 検知した場合、それ以上再帰せず浅いオブジェクト表現を返す。
-func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool) map[string]any { //nolint: gocyclo
+// buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
+func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
+	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{}, true)
+}
+
+// buildFormPropertySchemaVisited は buildFormPropertySchema の実体。
+//
+// visited は現在の再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ
+// （kin-openapi の Loader は $ref をポインタ循環として解決するため実際に発生しうる）による
+// 無限再帰を防ぐ。同じスキーマへの再訪を検知した場合、それ以上再帰せず浅いオブジェクト表現を返す。
+//
+// runtimeResolvable は、このスキーマ位置の値が実行時に writeMultipartValue /
+// writeMultipartFile によって実際に「ファイルとして解決」されうるかを表す。true になるのは
+// トップレベル呼び出し（buildFormPropertySchema 経由）と、その配下の array items /
+// oneOf・anyOf ブランチへの再帰のみで、schema.Properties（ネストしたオブジェクトプロパティ）へ
+// 再帰した時点で false になり、以降の再帰全てに伝播する。理由: writeMultipartValue は
+// トップレベルの param.isFile だけを見て、isFile なら writeMultipartFile で
+// url/base64/text/content を解決するが、isFile でない値（ネストしたオブジェクトを含む）は
+// json.Marshal でそのまま JSON 化するだけで、ネストしたオブジェクトプロパティの中まで
+// 立ち入って個々の isFile フィールドを解決することはない。したがってネストしたオブジェクト
+// プロパティ配下の binary フィールドに oneOf/_meta のファイル用スキーマを付けてしまうと、
+// スキーマが「URL や base64 オブジェクトを解決できる」と誤って約束することになる
+// （実際には json.Marshal でそのまま送られるだけで、URL は決してダウンロードされない）。
+// runtimeResolvable=false の間は binary リーフでも通常の type:string として扱い、
+// _meta.manifold も付与しない（＝スキーマを実際の挙動に合わせる）。
+func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool, runtimeResolvable bool) map[string]any { //nolint: gocyclo
 	if prop == nil {
 		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
 	}
@@ -423,11 +475,15 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 	}
 
 	metadata := map[string]any{}
-	if schemaIsBinary(prop) {
+	if runtimeResolvable && schemaIsBinary(prop) {
 		metadata["manifold"] = map[string]any{
 			"file":          true,
 			"fileInputHint": fileInputHint,
 		}
+	}
+
+	if runtimeResolvable && prop.Format == "binary" {
+		return binaryFieldMCPSchema(desc, metadata)
 	}
 
 	if len(prop.OneOf) > 0 {
@@ -436,7 +492,7 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 			if ref == nil || ref.Value == nil {
 				continue
 			}
-			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
 		}
 		return map[string]any{
 			"oneOf":       branches,
@@ -450,7 +506,7 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 			if ref == nil || ref.Value == nil {
 				continue
 			}
-			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
 		}
 		return map[string]any{
 			"anyOf":       branches,
@@ -480,7 +536,9 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 			if propRef == nil || propRef.Value == nil {
 				continue
 			}
-			properties[propName] = buildFormPropertySchemaVisited(propRef.Value, visited)
+			// オブジェクトプロパティへの再帰は常に runtimeResolvable=false
+			// （上記コメント参照）。
+			properties[propName] = buildFormPropertySchemaVisited(propRef.Value, visited, false)
 		}
 		result["properties"] = properties
 
@@ -494,7 +552,7 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 	}
 
 	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
-		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited)
+		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited, runtimeResolvable)
 	}
 
 	return result
@@ -948,6 +1006,40 @@ func isFileURL(v any) (string, bool) {
 	return "", false
 }
 
+// preferredExtensions は http.DetectContentType が返しうる代表的な Content-Type に対する
+// 拡張子の固定マップ。mime.ExtensionsByType は OS の mime テーブル（/etc/mime.types 等）に
+// 依存して結果も順序も環境ごとに変わるため（例: text/plain が .conf になる環境と .asc に
+// なる環境がある）、自動生成ファイル名を環境によらず決定的にする目的でこちらを優先する。
+var preferredExtensions = map[string]string{
+	"text/plain":               ".txt",
+	"text/html":                ".html",
+	"text/xml":                 ".xml",
+	"application/json":         ".json",
+	"application/pdf":          ".pdf",
+	"application/zip":          ".zip",
+	"application/octet-stream": ".bin",
+	"image/png":                ".png",
+	"image/jpeg":               ".jpg",
+	"image/gif":                ".gif",
+	"image/webp":               ".webp",
+}
+
+// preferredExtension は Content-Type から自動生成ファイル名に付ける拡張子を返す。
+// 固定マップにないタイプのみ mime.ExtensionsByType へフォールバックし、該当なしは空文字列。
+func preferredExtension(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	if ext, ok := preferredExtensions[mediaType]; ok {
+		return ext
+	}
+	if extensions, err := mime.ExtensionsByType(mediaType); err == nil && len(extensions) > 0 {
+		return extensions[0]
+	}
+	return ""
+}
+
 // writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
 // または {filename, contentType, ...} のオブジェクト。
 //
@@ -1177,29 +1269,36 @@ func CreateToolFunction( //nolint: gocyclo
 		parsedURL.RawQuery = q.Encode()
 		finalURL := parsedURL.String()
 
-		var bodyBytes []byte
+		var bodyReader io.Reader
 		var bodyContentType string
 
 		if len(extractParameter.formParams) > 0 { //nolint: nestif
 			if extractParameter.isMultipart {
-				var buf bytes.Buffer
-				writer := multipart.NewWriter(&buf)
-				for param_name, param := range extractParameter.formParams {
-					v := input[param_name]
-					if v == nil {
-						continue
+				formParams := extractParameter.formParams
+				pr, ct := newMultipartStreamBody(func(mw *multipart.Writer) error {
+					for param_name, param := range formParams {
+						v := input[param_name]
+						if v == nil {
+							continue
+						}
+						if s, ok := v.(string); ok && s == "" {
+							continue
+						}
+						field_name := param.originalName
+						if err := writeMultipartValue(ctx, mw, field_name, v, param); err != nil {
+							return fmt.Errorf("error writing multipart field %s: %w", field_name, err)
+						}
 					}
-					if s, ok := v.(string); ok && s == "" {
-						continue
-					}
-					field_name := param.originalName
-					if err := writeMultipartValue(ctx, writer, field_name, v, param); err != nil {
-						return "", fmt.Errorf("error writing multipart field %s: %w", field_name, err)
-					}
-				}
-				writer.Close() //nolint: errcheck
-				bodyBytes = buf.Bytes()
-				bodyContentType = writer.FormDataContentType()
+					return nil
+				})
+				// pr is always safe to Close after the request completes (or fails to
+				// even start): once its writer goroutine finishes, further Close calls
+				// are no-ops, and if the goroutine is still running, Close causes its
+				// next pipe Write to fail with io.ErrClosedPipe, letting it exit promptly
+				// instead of leaking (see newMultipartStreamBody's doc comment).
+				defer pr.Close() //nolint: errcheck
+				bodyReader = pr
+				bodyContentType = ct
 			} else {
 				formValues := url.Values{}
 				for param_name, param := range extractParameter.formParams {
@@ -1222,7 +1321,7 @@ func CreateToolFunction( //nolint: gocyclo
 						formValues.Set(field_name, fmt.Sprintf("%v", v))
 					}
 				}
-				bodyBytes = []byte(formValues.Encode())
+				bodyReader = strings.NewReader(formValues.Encode())
 				bodyContentType = "application/x-www-form-urlencoded"
 			}
 		} else if len(extractParameter.bodyParams) > 0 {
@@ -1264,10 +1363,11 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 
 			if json_body != nil {
-				bodyBytes, err = json.Marshal(json_body)
+				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
 					return "", fmt.Errorf("error marshaling request body: %w", err)
 				}
+				bodyReader = bytes.NewReader(bodyBytes)
 				bodyContentType = "application/json"
 			}
 		}
@@ -1275,15 +1375,15 @@ func CreateToolFunction( //nolint: gocyclo
 		var response *http.Response
 		switch original_method {
 		case "get":
-			response, err = api.DoRequest(ctx, client, finalURL, "get", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "get", false, bodyReader, bodyContentType, effective_headers)
 		case "post":
-			response, err = api.DoRequest(ctx, client, finalURL, "post", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "post", true, bodyReader, bodyContentType, effective_headers)
 		case "put":
-			response, err = api.DoRequest(ctx, client, finalURL, "put", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "put", true, bodyReader, bodyContentType, effective_headers)
 		case "delete":
-			response, err = api.DoRequest(ctx, client, finalURL, "delete", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "delete", false, bodyReader, bodyContentType, effective_headers)
 		case "patch":
-			response, err = api.DoRequest(ctx, client, finalURL, "patch", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
 		default:
 			return "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
