@@ -1005,6 +1005,40 @@ func isFileURL(v any) (string, bool) {
 	return "", false
 }
 
+// preferredExtensions は http.DetectContentType が返しうる代表的な Content-Type に対する
+// 拡張子の固定マップ。mime.ExtensionsByType は OS の mime テーブル（/etc/mime.types 等）に
+// 依存して結果も順序も環境ごとに変わるため（例: text/plain が .conf になる環境と .asc に
+// なる環境がある）、自動生成ファイル名を環境によらず決定的にする目的でこちらを優先する。
+var preferredExtensions = map[string]string{
+	"text/plain":               ".txt",
+	"text/html":                ".html",
+	"text/xml":                 ".xml",
+	"application/json":         ".json",
+	"application/pdf":          ".pdf",
+	"application/zip":          ".zip",
+	"application/octet-stream": ".bin",
+	"image/png":                ".png",
+	"image/jpeg":               ".jpg",
+	"image/gif":                ".gif",
+	"image/webp":               ".webp",
+}
+
+// preferredExtension は Content-Type から自動生成ファイル名に付ける拡張子を返す。
+// 固定マップにないタイプのみ mime.ExtensionsByType へフォールバックし、該当なしは空文字列。
+func preferredExtension(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	if ext, ok := preferredExtensions[mediaType]; ok {
+		return ext
+	}
+	if extensions, err := mime.ExtensionsByType(mediaType); err == nil && len(extensions) > 0 {
+		return extensions[0]
+	}
+	return ""
+}
+
 // writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
 // または {filename, contentType, ...} のオブジェクト。
 //
@@ -1106,10 +1140,11 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 				return fmt.Errorf("%q: %w", name, err)
 			}
 			body = io.NopCloser(bytes.NewBuffer(d))
-			contentType = http.DetectContentType(d)
-			extensions, err := mime.ExtensionsByType(contentType)
-			if defaultFilename == filename && err == nil && len(extensions) > 0 {
-				filename = fmt.Sprintf("%s%s", filename, extensions[0])
+			if !contentTypeExplicit {
+				contentType = http.DetectContentType(d)
+			}
+			if filename == defaultFilename {
+				filename += preferredExtension(contentType)
 			}
 		}
 	}

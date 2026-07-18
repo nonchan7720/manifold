@@ -1595,7 +1595,7 @@ func TestCreateToolFunction_Multipart_FileBase64(t *testing.T) {
 		"file": base64.StdEncoding.EncodeToString(content),
 	})
 	require.NoError(t, err)
-	require.Equal(t, "file.conf", capturedFilename)
+	require.Equal(t, "file.txt", capturedFilename)
 	require.Equal(t, content, capturedContent)
 }
 
