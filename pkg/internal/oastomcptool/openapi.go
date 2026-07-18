@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -960,8 +961,8 @@ func isFileURL(v any) (string, bool) {
 // オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
 func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name string, value any) error { //nolint: gocyclo
 	cfg := getFileFetchConfig()
-
-	filename := name
+	const defaultFilename = "file"
+	filename := defaultFilename
 	filenameExplicit := false
 	contentType := ""
 	contentTypeExplicit := false
@@ -997,7 +998,6 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 		fallbackContent = m["content"]
 	}
 
-	var data []byte
 	var body io.ReadCloser
 	switch {
 	case hasURL:
@@ -1009,7 +1009,6 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 			return err
 		}
 		body = b
-		defer body.Close() //nolint: errcheck
 		if !filenameExplicit && urlFilename != "" {
 			filename = urlFilename
 		}
@@ -1024,12 +1023,12 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 		if int64(len(decoded)) > cfg.MaxSize {
 			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(decoded), cfg.MaxSize)
 		}
-		data = decoded
+		body = io.NopCloser(bytes.NewBuffer(decoded))
 	case hasText:
 		if int64(len(explicitText)) > cfg.MaxSize {
 			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(explicitText), cfg.MaxSize)
 		}
-		data = []byte(explicitText)
+		body = io.NopCloser(bytes.NewBuffer([]byte(explicitText)))
 	default:
 		if rawURL, ok := isFileURL(fallbackContent); ok { //nolint: nestif
 			b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
@@ -1049,7 +1048,12 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 			if err != nil {
 				return fmt.Errorf("%q: %w", name, err)
 			}
-			data = d
+			body = io.NopCloser(bytes.NewBuffer(d))
+			contentType = http.DetectContentType(d)
+			extensions, err := mime.ExtensionsByType(contentType)
+			if defaultFilename == filename && err == nil && len(extensions) > 0 {
+				filename = fmt.Sprintf("%s%s", filename, extensions[0])
+			}
 		}
 	}
 
@@ -1071,10 +1075,10 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 	}
 
 	if body != nil {
+		defer body.Close() //nolint: errcheck
 		_, err = io.Copy(part, body)
 		return err
 	}
-	_, err = part.Write(data)
 	return err
 }
 
