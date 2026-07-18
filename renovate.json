@@ -1,6 +1,95 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    ":timezone(Asia/Tokyo)"
+  ],
+  "packageRules": [
+    {
+      "description": "全パッチ更新をまとめる",
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "groupName": "all patch updates"
+    },
+    {
+      "matchManagers": [
+        "gomod",
+        "dockerfile",
+        "docker-compose"
+      ],
+      "matchPackageNames": [
+        "go",
+        "golang"
+      ],
+      "matchDatasources": [
+        "golang-version",
+        "docker"
+      ],
+      "groupName": "golang version"
+    },
+    {
+      "description": "OpenTelemetry パッケージをまとめる",
+      "matchPackageNames": [
+        "/^go\\.opentelemetry\\.io\\//"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "groupName": "opentelemetry"
+    },
+    {
+      "description": "go-redis パッケージをまとめる",
+      "matchPackageNames": [
+        "/^github\\.com\\/redis\\/go-redis/"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "groupName": "go-redis"
+    },
+    {
+      "description": "golang.org/x パッケージをまとめる",
+      "matchPackageNames": [
+        "/^golang\\.org\\/x\\//"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "groupName": "golang.org/x"
+    },
+    {
+      "description": "google.golang.org パッケージをまとめる (genproto, grpc, protobuf)",
+      "matchPackageNames": [
+        "/^google\\.golang\\.org\\//"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "groupName": "google.golang.org"
+    },
+    {
+      "description": "GitHub Actions をまとめる",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github-actions"
+    },
+  ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "minimumReleaseAge": null
+  },
+  "minimumReleaseAge": "7 days",
+  "postUpdateOptions": [
+    "gomodTidy",
+    "gomodUpdateImportPaths"
   ]
 }
