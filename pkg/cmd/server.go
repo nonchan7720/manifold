@@ -19,6 +19,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
 	"github.com/nonchan7720/manifold/pkg/internal/logging"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
+	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -37,6 +38,13 @@ func newGatewayCmd() *cobra.Command {
 func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	oastomcptool.SetFileFetchConfig(oastomcptool.FileFetchConfig{
+		AllowLocal:   globalConfig.FileFetch.AllowLocal,
+		AllowedHosts: globalConfig.FileFetch.AllowedHosts,
+		MaxSize:      globalConfig.FileFetch.MaxSize,
+	})
+
 	storeClient, err := newStoreClient(ctx)
 	if err != nil {
 		return err

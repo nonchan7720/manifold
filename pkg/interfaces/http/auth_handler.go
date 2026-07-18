@@ -982,7 +982,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	var err error
 	defer func() { trace.EndSpan(ctx, err) }()
 
-	refreshToken := r.FormValue("refresh_token") //nolint: gosec
+	refreshToken := r.FormValue("refresh_token")
 	if refreshToken == "" {
 		http.Error(w, "missing refresh_token", http.StatusBadRequest)
 		return

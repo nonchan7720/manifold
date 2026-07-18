@@ -3,6 +3,7 @@ package oastomcptool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,10 +11,13 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
@@ -204,33 +208,380 @@ func schemaTypeStr(t *openapi3.Types) string {
 	return (*t)[0]
 }
 
+type formParameter struct {
+	isFile       bool
+	originalName string
+	parameters   map[string]formParameter
+}
+
+type formParameters map[string]formParameter
+
 type extractParameter struct {
-	pathParams  []string
-	queryParams []string
-	bodyParams  []string
-	formParams  []string
-	isMultipart bool
+	pathParams   []string
+	queryParams  []string
+	bodyParams   []string
+	formParams   formParameters
+	isMultipart  bool
+	paramNameMap map[string]string // sanitized name -> original OpenAPI name
+}
+
+// sanitizeParamName converts an OpenAPI parameter/property name into one that is
+// safe to use as an MCP input schema property name. MCP does not allow "[" or "]"
+// in property names, which commonly appear in array/nested query or form parameter
+// names (e.g. "tag[]", "filter[status]").
+func sanitizeParamName(name string) string {
+	if !strings.ContainsAny(name, "[]") {
+		return name
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch r {
+		case '[':
+			b.WriteByte('_')
+		case ']':
+			// drop
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// schemaIsBinary は format: binary（または binary 要素の array）かどうかを返す。
+func schemaIsBinary(schema *openapi3.Schema) bool {
+	if schema == nil {
+		return false
+	}
+	if schema.Format == "binary" {
+		return true
+	}
+	if schemaTypeStr(schema.Type) == "array" && schema.Items != nil && schema.Items.Value != nil {
+		if schema.Items.Value.Format == "binary" {
+			return true
+		}
+	}
+	return false
+}
+
+// newFormParameter はフォームスキーマから formParameter を再帰的に構築する。
+func newFormParameter(schema *openapi3.Schema) formParameter {
+	return newFormParameterVisited(schema, map[*openapi3.Schema]bool{})
+}
+
+// newFormParameterVisited は newFormParameter の実体。visited は現在の再帰パス上にあるスキーマ
+// ポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref をポインタ循環と
+// して解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を検知した場合は
+// 空の formParameter を返す（それ以上再帰しない）。
+func newFormParameterVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) formParameter { //nolint: gocyclo
+	fp := formParameter{parameters: formParameters{}}
+	if schema == nil || visited[schema] {
+		return fp
+	}
+	visited[schema] = true
+	defer delete(visited, schema)
+
+	fp.isFile = schemaIsBinary(schema)
+
+	for _, ref := range schema.AllOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameterVisited(ref.Value, visited)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+	for _, ref := range schema.OneOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameterVisited(ref.Value, visited)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+	for _, ref := range schema.AnyOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameterVisited(ref.Value, visited)
+		maps.Copy(fp.parameters, branch.parameters)
+		if branch.isFile {
+			fp.isFile = true
+		}
+	}
+
+	for name, field := range schema.Properties {
+		if field != nil {
+			child := newFormParameterVisited(field.Value, visited)
+			child.originalName = name
+			fp.parameters[sanitizeParamName(name)] = child
+		}
+	}
+	return fp
+}
+
+// mergeAllOf は allOf の各ブランチをマージした合成スキーマを返す。
+// この関数がフラット化するのはトップレベル（および allOf ブランチ直下）の allOf のみで、
+// マージ結果の Properties の値に含まれる allOf までは解決しない。そのため呼び出し元が
+// 各プロパティを再帰的に処理する際は、階層ごとに mergeAllOf を呼び直す必要がある
+// （buildFormPropertySchema がその例）。
+func mergeAllOf(prop *openapi3.Schema) *openapi3.Schema {
+	return mergeAllOfVisited(prop, map[*openapi3.Schema]bool{})
+}
+
+// mergeAllOfVisited は mergeAllOf の実体。kin-openapi の Loader は $ref をポインタ循環として
+// 解決するため、allOf のブランチが自己参照・相互参照になっているスキーマが存在しうる。
+// visited は現在の再帰パス上にある allOf ブランチのスキーマポインタの集合で、無限再帰を防ぐ。
+// 同じスキーマへの再訪（＝循環）を検知した場合、そのブランチはマージ対象からスキップする。
+func mergeAllOfVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool) *openapi3.Schema {
+	merged := *prop
+	merged.AllOf = nil
+
+	properties := openapi3.Schemas{}
+	maps.Copy(properties, merged.Properties)
+
+	required := append([]string{}, merged.Required...)
+
+	visited[prop] = true
+	defer delete(visited, prop)
+
+	for _, ref := range prop.AllOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		sub := ref.Value
+		if visited[sub] {
+			// 循環参照: このブランチはスキップする
+			continue
+		}
+		if len(sub.AllOf) > 0 {
+			sub = mergeAllOfVisited(sub, visited)
+		}
+		maps.Copy(properties, sub.Properties)
+		required = append(required, sub.Required...)
+		if merged.Type == nil || len(*merged.Type) == 0 {
+			merged.Type = sub.Type
+		}
+		if merged.Description == "" {
+			merged.Description = sub.Description
+		}
+		if merged.Format == "" {
+			merged.Format = sub.Format
+		}
+	}
+
+	merged.Properties = properties
+	merged.Required = required
+
+	return &merged
+}
+
+// fileInputHint は、ファイル入力フィールドが base64 文字列または URL（署名付き URL 等）の
+// どちらでも受け付けることを MCP クライアント側の LLM が判断できるようにする案内文。
+// 明示的に取得元を指定したい場合は {url:"..."} / {base64:"..."} / {text:"..."} /
+// {content:...}（従来の自動判定）のいずれかのキーを持つオブジェクトも渡せることを併記する。
+const fileInputHint = "Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from. " +
+	"For explicit control, an object may be passed instead with one of these keys: " +
+	`{url:"..."} to download from a URL, {base64:"..."} for base64-encoded content, {text:"..."} for raw text content, ` +
+	`or {content:...} for the legacy auto-detected base64/URL form; filename/contentType may be included alongside any of these.`
+
+// binaryFieldMCPSchema builds the MCP input-schema fragment for a file-input field
+// (format: binary). At runtime, writeMultipartFile/decodeFileContent accept either a
+// bare string (a base64-encoded blob or a URL, auto-detected — see isFileURL) or an
+// explicit {url, base64, text, content, filename, contentType} object (see
+// writeMultipartFile's doc comment for the resolution priority). Previously the
+// generated schema advertised only `type: "string"`, so an MCP client that validates
+// tool input against the schema would reject the (fully supported) object form.
+// Describing both accepted shapes via oneOf fixes that mismatch. Both openapi.go
+// (buildFormPropertySchemaVisited) and swagger.go (BuildInputSchemaSwagger's
+// `type: file` handling) use this so the two OpenAPI-version code paths stay in sync.
+func binaryFieldMCPSchema(description string, metadata map[string]any) map[string]any {
+	return map[string]any{
+		"oneOf": []any{
+			map[string]any{
+				"type":        "string",
+				"description": "Base64-encoded file content, or a URL (e.g. a presigned URL) to download the file from.",
+			},
+			map[string]any{
+				"type":        "object",
+				"description": "Explicit file source; provide exactly one of url/base64/text/content.",
+				"properties": map[string]any{
+					"url":         map[string]any{"type": "string", "description": "URL to download the file content from."},
+					"base64":      map[string]any{"type": "string", "description": "Base64-encoded file content."},
+					"text":        map[string]any{"type": "string", "description": "Raw (non-base64-encoded) text file content."},
+					"content":     map[string]any{"type": "string", "description": "Legacy auto-detected base64 or URL content."},
+					"filename":    map[string]any{"type": "string", "description": "Filename to use for the upload."},
+					"contentType": map[string]any{"type": "string", "description": "MIME content type to use for the upload."},
+				},
+			},
+		},
+		"description": description,
+		"_meta":       metadata,
+	}
+}
+
+// buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
+func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
+	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{}, true)
+}
+
+// buildFormPropertySchemaVisited は buildFormPropertySchema の実体。
+//
+// visited は現在の再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ
+// （kin-openapi の Loader は $ref をポインタ循環として解決するため実際に発生しうる）による
+// 無限再帰を防ぐ。同じスキーマへの再訪を検知した場合、それ以上再帰せず浅いオブジェクト表現を返す。
+//
+// runtimeResolvable は、このスキーマ位置の値が実行時に writeMultipartValue /
+// writeMultipartFile によって実際に「ファイルとして解決」されうるかを表す。true になるのは
+// トップレベル呼び出し（buildFormPropertySchema 経由）と、その配下の array items /
+// oneOf・anyOf ブランチへの再帰のみで、schema.Properties（ネストしたオブジェクトプロパティ）へ
+// 再帰した時点で false になり、以降の再帰全てに伝播する。理由: writeMultipartValue は
+// トップレベルの param.isFile だけを見て、isFile なら writeMultipartFile で
+// url/base64/text/content を解決するが、isFile でない値（ネストしたオブジェクトを含む）は
+// json.Marshal でそのまま JSON 化するだけで、ネストしたオブジェクトプロパティの中まで
+// 立ち入って個々の isFile フィールドを解決することはない。したがってネストしたオブジェクト
+// プロパティ配下の binary フィールドに oneOf/_meta のファイル用スキーマを付けてしまうと、
+// スキーマが「URL や base64 オブジェクトを解決できる」と誤って約束することになる
+// （実際には json.Marshal でそのまま送られるだけで、URL は決してダウンロードされない）。
+// runtimeResolvable=false の間は binary リーフでも通常の type:string として扱い、
+// _meta.manifold も付与しない（＝スキーマを実際の挙動に合わせる）。
+func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool, runtimeResolvable bool) map[string]any { //nolint: gocyclo
+	if prop == nil {
+		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
+	}
+	if visited[prop] {
+		// 循環参照: これ以上再帰しない
+		return map[string]any{"type": "object", "description": prop.Description, "_meta": map[string]any{}}
+	}
+	visited[prop] = true
+	defer delete(visited, prop)
+
+	if len(prop.AllOf) > 0 {
+		prop = mergeAllOf(prop)
+	}
+
+	desc := prop.Description
+	if ext := prop.Extensions; ext != nil {
+		if x, ok := ext["x-mcp"].(map[string]any); ok && x != nil {
+			if v, ok := x["description"].(string); ok {
+				desc = v
+			}
+		}
+	}
+
+	metadata := map[string]any{}
+	if runtimeResolvable && schemaIsBinary(prop) {
+		metadata["manifold"] = map[string]any{
+			"file":          true,
+			"fileInputHint": fileInputHint,
+		}
+	}
+
+	if runtimeResolvable && prop.Format == "binary" {
+		return binaryFieldMCPSchema(desc, metadata)
+	}
+
+	if len(prop.OneOf) > 0 {
+		branches := []any{}
+		for _, ref := range prop.OneOf {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
+		}
+		return map[string]any{
+			"oneOf":       branches,
+			"description": desc,
+			"_meta":       metadata,
+		}
+	}
+	if len(prop.AnyOf) > 0 {
+		branches := []any{}
+		for _, ref := range prop.AnyOf {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
+		}
+		return map[string]any{
+			"anyOf":       branches,
+			"description": desc,
+			"_meta":       metadata,
+		}
+	}
+
+	propType := schemaTypeStr(prop.Type)
+	if propType == "" {
+		if len(prop.Properties) > 0 {
+			propType = "object"
+		} else {
+			propType = "string"
+		}
+	}
+
+	result := map[string]any{
+		"type":        propType,
+		"description": desc,
+		"_meta":       metadata,
+	}
+
+	if propType == "object" && len(prop.Properties) > 0 {
+		properties := map[string]any{}
+		for propName, propRef := range prop.Properties {
+			if propRef == nil || propRef.Value == nil {
+				continue
+			}
+			// オブジェクトプロパティへの再帰は常に runtimeResolvable=false
+			// （上記コメント参照）。プロパティ名は sanitizeParamName で MCP スキーマ
+			// 上安全な名前に変換する（トップレベルのフォームパラメータと同じ規約）。
+			// 元の名前への復元は writeMultipartValue が formParameter.parameters
+			// （newFormParameterVisited が同じ規則で構築する originalName）を使って行う。
+			properties[sanitizeParamName(propName)] = buildFormPropertySchemaVisited(propRef.Value, visited, false)
+		}
+		result["properties"] = properties
+
+		required := []string{}
+		for _, r := range prop.Required {
+			if _, ok := prop.Properties[r]; ok {
+				required = append(required, sanitizeParamName(r))
+			}
+		}
+		result["required"] = required
+	}
+
+	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
+		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited, runtimeResolvable)
+	}
+
+	return result
 }
 
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
-func extractParameters(operation *openapi3.Operation) extractParameter { //nolint: gocyclo
+func extractParameters(operation *openapi3.Operation) extractParameter {
 	var (
-		pathParams  = []string{}
-		queryParams = []string{}
-		bodyParams  = []string{}
-		formParams  = []string{}
-		isMultipart = false
+		pathParams   = []string{}
+		queryParams  = []string{}
+		bodyParams   = []string{}
+		formParams   = formParameters{}
+		isMultipart  = false
+		paramNameMap = map[string]string{}
 	)
 
 	for _, paramRef := range operation.Parameters {
 		p := paramRef.Value
+		name := sanitizeParamName(p.Name)
+		paramNameMap[name] = p.Name
 		switch p.In {
 		case "path":
-			pathParams = append(pathParams, p.Name)
+			pathParams = append(pathParams, name)
 		case "query":
-			queryParams = append(queryParams, p.Name)
+			queryParams = append(queryParams, name)
 		case "body":
-			bodyParams = append(bodyParams, p.Name)
+			bodyParams = append(bodyParams, name)
 		}
 	}
 
@@ -242,32 +593,46 @@ func extractParameters(operation *openapi3.Operation) extractParameter { //nolin
 		case content["application/x-www-form-urlencoded"] != nil:
 			mt := content["application/x-www-form-urlencoded"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-				for name := range mt.Schema.Value.Properties {
-					formParams = append(formParams, name)
-				}
+				formParams = newFormParameter(mt.Schema.Value).parameters
 			}
 		case content["multipart/form-data"] != nil:
 			isMultipart = true
 			mt := content["multipart/form-data"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-				for name := range mt.Schema.Value.Properties {
-					formParams = append(formParams, name)
-				}
+				formParams = newFormParameter(mt.Schema.Value).parameters
 			}
 		}
 	}
 	return extractParameter{
-		pathParams:  pathParams,
-		queryParams: queryParams,
-		bodyParams:  bodyParams,
-		formParams:  formParams,
-		isMultipart: isMultipart,
+		pathParams:   pathParams,
+		queryParams:  queryParams,
+		bodyParams:   bodyParams,
+		formParams:   formParams,
+		isMultipart:  isMultipart,
+		paramNameMap: paramNameMap,
 	}
 }
 
 // describe_schema_fields_openapi recursively builds a human-readable field summary from an
 // OpenAPI 3.x schema. Since Loader auto-resolves $refs, propRef.Value is always populated.
-func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: gocyclo
+func describe_schema_fields_openapi(schema *openapi3.Schema) string {
+	return describeSchemaFieldsOpenapiVisited(schema, map[*openapi3.Schema]bool{})
+}
+
+// describeSchemaFieldsOpenapiVisited は describe_schema_fields_openapi の実体。visited は現在の
+// 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は
+// $ref をポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの
+// 再訪を検知した場合は空文字列を返し、それ以上再帰しない。
+func describeSchemaFieldsOpenapiVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) string { //nolint: gocyclo
+	if schema == nil || visited[schema] {
+		return ""
+	}
+	visited[schema] = true
+	defer delete(visited, schema)
+
+	if len(schema.AllOf) > 0 {
+		schema = mergeAllOf(schema)
+	}
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
@@ -296,6 +661,9 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 			continue
 		}
 		prop := propRef.Value
+		if len(prop.AllOf) > 0 {
+			prop = mergeAllOf(prop)
+		}
 
 		typ := schemaTypeStr(prop.Type)
 		if typ == "" {
@@ -315,7 +683,7 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 		}
 
 		if typ == "object" {
-			if nested := describe_schema_fields_openapi(prop); nested != "" {
+			if nested := describeSchemaFieldsOpenapiVisited(prop, visited); nested != "" {
 				parts = append(parts, fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested))
 				continue
 			}
@@ -323,12 +691,15 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string { //nolint: 
 
 		if typ == "array" && prop.Items != nil && prop.Items.Value != nil { //nolint: nestif
 			itemSchema := prop.Items.Value
+			if len(itemSchema.AllOf) > 0 {
+				itemSchema = mergeAllOf(itemSchema)
+			}
 			itemType := schemaTypeStr(itemSchema.Type)
 			if itemType == "" {
 				itemType = "object"
 			}
 			if itemType == "object" {
-				if nested := describe_schema_fields_openapi(itemSchema); nested != "" {
+				if nested := describeSchemaFieldsOpenapiVisited(itemSchema, visited); nested != "" {
 					arrayMeta := "array of object"
 					if localRequired[name] {
 						arrayMeta += ", required"
@@ -374,12 +745,13 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				paramType = t
 			}
 		}
-		properties[p.Name] = map[string]any{
+		name := sanitizeParamName(p.Name)
+		properties[name] = map[string]any{
 			"type":        paramType,
 			"description": p.Description,
 		}
 		if p.Required {
-			required = append(required, p.Name)
+			required = append(required, name)
 		}
 	}
 
@@ -393,12 +765,18 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 
 		if mt := content["application/json"]; mt != nil && mt.Schema != nil && mt.Schema.Value != nil {
 			schema := mt.Schema.Value
+			if len(schema.AllOf) > 0 {
+				schema = mergeAllOf(schema)
+			}
 			bodyProps := map[string]any{}
 			for propName, propRef := range schema.Properties {
 				if propRef == nil || propRef.Value == nil {
 					continue
 				}
 				prop := propRef.Value
+				if len(prop.AllOf) > 0 {
+					prop = mergeAllOf(prop)
+				}
 				propType := "string"
 				if t := schemaTypeStr(prop.Type); t != "" {
 					propType = t
@@ -425,6 +803,9 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				formSchema = mt.Schema.Value
 			}
 			if formSchema != nil {
+				if len(formSchema.AllOf) > 0 {
+					formSchema = mergeAllOf(formSchema)
+				}
 				schemaRequired := map[string]bool{}
 				for _, r := range formSchema.Required {
 					schemaRequired[r] = true
@@ -433,17 +814,10 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					if propRef == nil || propRef.Value == nil {
 						continue
 					}
-					prop := propRef.Value
-					propType := "string"
-					if t := schemaTypeStr(prop.Type); t != "" {
-						propType = t
-					}
-					properties[propName] = map[string]any{
-						"type":        propType,
-						"description": prop.Description,
-					}
+					name := sanitizeParamName(propName)
+					properties[name] = buildFormPropertySchema(propRef.Value)
 					if schemaRequired[propName] {
-						required = append(required, propName)
+						required = append(required, name)
 					}
 				}
 			}
@@ -454,6 +828,383 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 		"type":       "object",
 		"properties": properties,
 		"required":   required,
+	}
+}
+
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, `\"`)
+
+// decodeFileContent はファイル内容を bytes に変換する。base64 として解釈できない文字列は raw bytes として扱う。
+// サイズ判定は「実際に使われる表現」のバイト数（base64 ならデコード後、raw テキストならそのままの
+// 長さ）に対して maxSize（バイト）を適用する。ただし base64 デコード自体を試みる前に、maxSize を
+// base64 化した場合にあり得る最大長（およそ 4/3 倍＋パディング余裕）を超える入力は、無駄な
+// デコード処理・アロケーションを避けるため粗く弾く。
+func decodeFileContent(v any, maxSize int64) ([]byte, error) {
+	switch value := v.(type) {
+	case []byte:
+		if int64(len(value)) > maxSize {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+		}
+		return value, nil
+	case string:
+		if maxBase64Len := maxSize*4/3 + 4; int64(len(value)) > maxBase64Len {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+		}
+		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
+			if int64(len(decoded)) > maxSize {
+				return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(decoded), maxSize)
+			}
+			return decoded, nil
+		}
+		if int64(len(value)) > maxSize {
+			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+		}
+		return []byte(value), nil
+	default:
+		return nil, fmt.Errorf("unsupported file content type %T", v)
+	}
+}
+
+// fileFetchMaxRedirects は fetchFileFromURL がたどるリダイレクトの最大ホップ数。
+const fileFetchMaxRedirects = 10
+
+// checkFileFetchURL は FileFetchConfig に基づき URL のスキームと AllowedHosts を検証する。
+// プライベート/ループバック IP への接続拒否自体は client.SafeHTTPClient() の dialer が担うため
+// ここでは扱わない（isHostAllowed も参照）。
+func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
+	switch u.Scheme {
+	case "https":
+		// 常に許可
+	case "http":
+		if !cfg.AllowLocal {
+			return fmt.Errorf("http:// URLs are not allowed (enable fileFetch.allowLocal for local testing)")
+		}
+	default:
+		return fmt.Errorf("unsupported URL scheme %q: only http/https are allowed", u.Scheme)
+	}
+	if len(cfg.AllowedHosts) > 0 && !isHostAllowed(cfg.AllowedHosts, u) {
+		return fmt.Errorf("host %q is not in the allowed hosts list", u.Host)
+	}
+	return nil
+}
+
+// isHostAllowed は URL のホストが allowed リストに含まれるかを判定する。
+// ホスト名単体（ポート無し）とポート付きホストの両方で一致を試みる。
+// DNS ホスト名は大文字小文字を区別しないため、比較は case-insensitive で行う。
+func isHostAllowed(allowed []string, u *url.URL) bool {
+	hostname := u.Hostname()
+	hostWithPort := u.Host
+	for _, h := range allowed {
+		if strings.EqualFold(h, hostname) || strings.EqualFold(h, hostWithPort) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileTooLargeError は取得/デコードしたファイルが MaxSize を超えた場合のエラー。
+type fileTooLargeError struct {
+	max int64
+}
+
+func (e *fileTooLargeError) Error() string {
+	return fmt.Sprintf("file exceeds the maximum allowed size of %d bytes", e.max)
+}
+
+// limitedReadCloser は、読み出しバイト数が max を超えようとした時点でエラーを返す io.ReadCloser。
+// Content-Length が不明なストリーミング応答（chunked 等）でもサイズ上限を強制するために使う。
+// 内部では io.LimitReader(rc, max+1) に読み出しを委譲する（max を 1 バイト超えた時点で
+// 検知できるよう、上限+1 バイトまでは素通しで読ませる）。呼び出し側で自前のスライス切り詰めは行わない。
+type limitedReadCloser struct {
+	r   io.Reader // io.LimitReader(rc, max+1)
+	c   io.Closer
+	max int64
+	n   int64
+}
+
+func newLimitedReadCloser(rc io.ReadCloser, maxSize int64) *limitedReadCloser {
+	return &limitedReadCloser{r: io.LimitReader(rc, maxSize+1), c: rc, max: maxSize}
+}
+
+func (l *limitedReadCloser) Read(p []byte) (int, error) {
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if l.n > l.max {
+		return n, &fileTooLargeError{max: l.max}
+	}
+	return n, err
+}
+
+func (l *limitedReadCloser) Close() error {
+	return l.c.Close()
+}
+
+// fetchFileFromURL は署名付き URL などからファイルを取得し、ボディをストリームとして返す。
+// 戻り値: body, URLパス末尾のファイル名（無ければ空）, レスポンスの Content-Type
+//
+// パッケージレベルの FileFetchConfig（SetFileFetchConfig で設定）に従い、SSRF 対策として
+// 既定ではプライベート/ループバック/リンクローカル IP への接続と http スキームを拒否する
+// （client.SafeHTTPClient() の dialer が接続時に判定）。AllowedHosts が設定されている場合は
+// ホストの許可リストをリクエスト前とリダイレクト各ホップで検証する。レスポンスボディは
+// MaxSize でサイズ上限を課す。
+func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string, string, error) {
+	cfg := getFileFetchConfig()
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("invalid file URL: %w", err)
+	}
+	if err := checkFileFetchURL(cfg, parsed); err != nil {
+		return nil, "", "", err
+	}
+
+	// SafeHTTPClient / HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
+	// この CheckRedirect の設定がリクエスト間で共有・競合することはない。
+	httpClient := client.SafeHTTPClient()
+	if cfg.AllowLocal {
+		httpClient = client.HTTPClient()
+	}
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= fileFetchMaxRedirects {
+			return fmt.Errorf("stopped after %d redirects", fileFetchMaxRedirects)
+		}
+		return checkFileFetchURL(cfg, req.URL)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if resp.StatusCode >= 400 {
+		resp.Body.Close() //nolint: errcheck
+		return nil, "", "", fmt.Errorf("failed to download file from URL: %d %s", resp.StatusCode, resp.Status)
+	}
+	if resp.ContentLength > 0 && resp.ContentLength > cfg.MaxSize {
+		resp.Body.Close() //nolint: errcheck
+		return nil, "", "", fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", resp.ContentLength, cfg.MaxSize)
+	}
+
+	filename := ""
+	if base := path.Base(parsed.Path); base != "/" && base != "." {
+		filename = base
+	}
+
+	return newLimitedReadCloser(resp.Body, cfg.MaxSize), filename, resp.Header.Get("Content-Type"), nil
+}
+
+// isFileURL は値が http(s) から始まる URL 文字列かどうかを返す。
+// URL 形式かどうかの判定のみを行い、許可するかどうかの判定（checkFileFetchURL）とは分離する。
+func isFileURL(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return s, true
+	}
+	return "", false
+}
+
+// writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
+// または {filename, contentType, ...} のオブジェクト。
+//
+// オブジェクトの場合、ファイル内容の取得元は明示キー url / base64 / text / content の
+// 優先順位（この順）で決定し、複数指定された場合は最初に一致したものだけを使い残りは無視する。
+//   - url: そのURLから取得する（fetchFileFromURL の SSRF 検証を経由）。http(s) で始まらない値はエラー。
+//   - base64: 文字列を必ず base64 としてデコードする。失敗したら raw フォールバックせずエラーにする。
+//   - text: 文字列をそのまま bytes として使用する。
+//   - content: 既存互換のヒューリスティック判定（isFileURL → decodeFileContent）。
+//
+// オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
+func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name string, value any) error { //nolint: gocyclo
+	cfg := getFileFetchConfig()
+	const defaultFilename = "file"
+	filename := defaultFilename
+	filenameExplicit := false
+	contentType := ""
+	contentTypeExplicit := false
+	fallbackContent := value
+
+	var (
+		explicitURL    string
+		hasURL         bool
+		explicitBase64 string
+		hasBase64      bool
+		explicitText   string
+		hasText        bool
+	)
+
+	if m, ok := value.(map[string]any); ok { //nolint: nestif
+		if fn, ok := m["filename"].(string); ok && fn != "" {
+			filename = fn
+			filenameExplicit = true
+		}
+		if ct, ok := m["contentType"].(string); ok && ct != "" {
+			contentType = ct
+			contentTypeExplicit = true
+		}
+		if v, ok := m["url"].(string); ok {
+			explicitURL, hasURL = v, true
+		}
+		if v, ok := m["base64"].(string); ok {
+			explicitBase64, hasBase64 = v, true
+		}
+		if v, ok := m["text"].(string); ok {
+			explicitText, hasText = v, true
+		}
+		fallbackContent = m["content"]
+	}
+
+	var body io.ReadCloser
+	switch {
+	case hasURL:
+		if !strings.HasPrefix(explicitURL, "http://") && !strings.HasPrefix(explicitURL, "https://") {
+			return fmt.Errorf("%q: url must start with http:// or https://", name)
+		}
+		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, explicitURL)
+		if err != nil {
+			return err
+		}
+		body = b
+		if !filenameExplicit && urlFilename != "" {
+			filename = urlFilename
+		}
+		if !contentTypeExplicit && urlContentType != "" {
+			contentType = urlContentType
+		}
+	case hasBase64:
+		decoded, err := base64.StdEncoding.DecodeString(explicitBase64)
+		if err != nil {
+			return fmt.Errorf("%q: invalid base64 content: %w", name, err)
+		}
+		if int64(len(decoded)) > cfg.MaxSize {
+			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(decoded), cfg.MaxSize)
+		}
+		body = io.NopCloser(bytes.NewBuffer(decoded))
+	case hasText:
+		if int64(len(explicitText)) > cfg.MaxSize {
+			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(explicitText), cfg.MaxSize)
+		}
+		body = io.NopCloser(bytes.NewBuffer([]byte(explicitText)))
+	default:
+		if rawURL, ok := isFileURL(fallbackContent); ok { //nolint: nestif
+			b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
+			if err != nil {
+				return err
+			}
+			body = b
+			defer body.Close() //nolint: errcheck
+			if !filenameExplicit && urlFilename != "" {
+				filename = urlFilename
+			}
+			if !contentTypeExplicit && urlContentType != "" {
+				contentType = urlContentType
+			}
+		} else {
+			d, err := decodeFileContent(fallbackContent, cfg.MaxSize)
+			if err != nil {
+				return fmt.Errorf("%q: %w", name, err)
+			}
+			body = io.NopCloser(bytes.NewBuffer(d))
+			mtype := mimetype.Detect(d)
+			contentType = mtype.String()
+			extensions := mtype.Extension()
+			if defaultFilename == filename {
+				filename = fmt.Sprintf("%s%s", filename, extensions)
+			}
+		}
+	}
+
+	var part io.Writer
+	var err error
+	if contentType == "" {
+		part, err = writer.CreateFormFile(name, filename)
+		if err != nil {
+			return err
+		}
+	} else {
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteEscaper.Replace(name), quoteEscaper.Replace(filename)))
+		h.Set("Content-Type", contentType)
+		part, err = writer.CreatePart(h)
+		if err != nil {
+			return err
+		}
+	}
+
+	if body != nil {
+		defer body.Close() //nolint: errcheck
+		_, err = io.Copy(part, body)
+		return err
+	}
+	return err
+}
+
+// restoreOriginalParamNames は、buildFormPropertySchemaVisited が MCP スキーマ向けに
+// sanitizeParamName で書き換えたネストしたオブジェクトのキーを、元の OpenAPI プロパティ名
+// （newFormParameterVisited が構築する param.parameters[key].originalName）に復元した
+// コピーを返す。ブラケットを含む名前（例: "filter[status]"）がバックエンドへ送るペイロード
+// 上でも正しい wire 名になるよう、json.Marshal する前に必ず適用する。
+// param.parameters に対応するエントリが無いキー（sanitizeParamName が実質何もしなかった
+// 場合や、スキーマに現れないキーをユーザーが追加した場合）はそのまま素通しする。
+func restoreOriginalParamNames(value any, param formParameter) any {
+	switch v := value.(type) {
+	case map[string]any:
+		restored := make(map[string]any, len(v))
+		for key, val := range v {
+			child, ok := param.parameters[key]
+			outKey := key
+			if ok && child.originalName != "" {
+				outKey = child.originalName
+			}
+			restored[outKey] = restoreOriginalParamNames(val, child)
+		}
+		return restored
+	case []any:
+		restored := make([]any, len(v))
+		for i, item := range v {
+			restored[i] = restoreOriginalParamNames(item, param)
+		}
+		return restored
+	default:
+		return value
+	}
+}
+
+// writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。
+func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name string, value any, param formParameter) error {
+	if param.isFile {
+		if items, ok := value.([]any); ok {
+			for _, item := range items {
+				if err := writeMultipartFile(ctx, writer, name, item); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return writeMultipartFile(ctx, writer, name, value)
+	}
+
+	switch value.(type) {
+	case map[string]any, []any:
+		data, err := json.Marshal(restoreOriginalParamNames(value, param))
+		if err != nil {
+			return err
+		}
+		h := textproto.MIMEHeader{}
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"`, quoteEscaper.Replace(name)))
+		h.Set("Content-Type", "application/json")
+		part, err := writer.CreatePart(h)
+		if err != nil {
+			return err
+		}
+		_, err = part.Write(data)
+		return err
+	default:
+		return writer.WriteField(name, fmt.Sprintf("%v", value))
 	}
 }
 
@@ -485,12 +1236,13 @@ func CreateToolFunction( //nolint: gocyclo
 		for _, param_name := range extractParameter.pathParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
+				original_name := extractParameter.paramNameMap[param_name]
+				safe_value, err := sanitize_path_parameter_value(param_value, original_name)
 				if err != nil {
 					return "", fmt.Errorf("invalid path parameter: %w", err)
 				}
-				_url = strings.ReplaceAll(_url, "{"+param_name+"}", safe_value)
-				_url = strings.ReplaceAll(_url, "{{"+param_name+"}}", safe_value)
+				_url = strings.ReplaceAll(_url, "{"+original_name+"}", safe_value)
+				_url = strings.ReplaceAll(_url, "{{"+original_name+"}}", safe_value)
 			}
 		}
 
@@ -498,7 +1250,8 @@ func CreateToolFunction( //nolint: gocyclo
 		for _, param_name := range extractParameter.queryParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				params[param_name] = param_value
+				original_name := extractParameter.paramNameMap[param_name]
+				params[original_name] = param_value
 			}
 		}
 
@@ -515,31 +1268,59 @@ func CreateToolFunction( //nolint: gocyclo
 		parsedURL.RawQuery = q.Encode()
 		finalURL := parsedURL.String()
 
-		var bodyBytes []byte
+		var bodyReader io.Reader
 		var bodyContentType string
 
 		if len(extractParameter.formParams) > 0 { //nolint: nestif
 			if extractParameter.isMultipart {
-				var buf bytes.Buffer
-				writer := multipart.NewWriter(&buf)
-				for _, param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						if err := writer.WriteField(param_name, fmt.Sprintf("%v", v)); err != nil {
-							return "", fmt.Errorf("error writing multipart field %s: %w", param_name, err)
+				formParams := extractParameter.formParams
+				pr, ct := newMultipartStreamBody(func(mw *multipart.Writer) error {
+					for param_name, param := range formParams {
+						v := input[param_name]
+						if v == nil {
+							continue
+						}
+						if s, ok := v.(string); ok && s == "" {
+							continue
+						}
+						field_name := param.originalName
+						if err := writeMultipartValue(ctx, mw, field_name, v, param); err != nil {
+							return fmt.Errorf("error writing multipart field %s: %w", field_name, err)
 						}
 					}
-				}
-				writer.Close() //nolint: errcheck
-				bodyBytes = buf.Bytes()
-				bodyContentType = writer.FormDataContentType()
+					return nil
+				})
+				// pr is always safe to Close after the request completes (or fails to
+				// even start): once its writer goroutine finishes, further Close calls
+				// are no-ops, and if the goroutine is still running, Close causes its
+				// next pipe Write to fail with io.ErrClosedPipe, letting it exit promptly
+				// instead of leaking (see newMultipartStreamBody's doc comment).
+				defer pr.Close() //nolint: errcheck
+				bodyReader = pr
+				bodyContentType = ct
 			} else {
 				formValues := url.Values{}
-				for _, param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						formValues.Set(param_name, fmt.Sprintf("%v", v))
+				for param_name, param := range extractParameter.formParams {
+					v := input[param_name]
+					if v == nil {
+						continue
+					}
+					if s, ok := v.(string); ok && s == "" {
+						continue
+					}
+					field_name := param.originalName
+					switch v.(type) {
+					case map[string]any, []any:
+						data, err := json.Marshal(v)
+						if err != nil {
+							return "", fmt.Errorf("error marshaling form field %s: %w", field_name, err)
+						}
+						formValues.Set(field_name, string(data))
+					default:
+						formValues.Set(field_name, fmt.Sprintf("%v", v))
 					}
 				}
-				bodyBytes = []byte(formValues.Encode())
+				bodyReader = strings.NewReader(formValues.Encode())
 				bodyContentType = "application/x-www-form-urlencoded"
 			}
 		} else if len(extractParameter.bodyParams) > 0 {
@@ -581,10 +1362,11 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 
 			if json_body != nil {
-				bodyBytes, err = json.Marshal(json_body)
+				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
 					return "", fmt.Errorf("error marshaling request body: %w", err)
 				}
+				bodyReader = bytes.NewReader(bodyBytes)
 				bodyContentType = "application/json"
 			}
 		}
@@ -592,15 +1374,15 @@ func CreateToolFunction( //nolint: gocyclo
 		var response *http.Response
 		switch original_method {
 		case "get":
-			response, err = api.DoRequest(ctx, client, finalURL, "get", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "get", false, bodyReader, bodyContentType, effective_headers)
 		case "post":
-			response, err = api.DoRequest(ctx, client, finalURL, "post", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "post", true, bodyReader, bodyContentType, effective_headers)
 		case "put":
-			response, err = api.DoRequest(ctx, client, finalURL, "put", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "put", true, bodyReader, bodyContentType, effective_headers)
 		case "delete":
-			response, err = api.DoRequest(ctx, client, finalURL, "delete", false, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "delete", false, bodyReader, bodyContentType, effective_headers)
 		case "patch":
-			response, err = api.DoRequest(ctx, client, finalURL, "patch", true, bodyBytes, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
 		default:
 			return "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
