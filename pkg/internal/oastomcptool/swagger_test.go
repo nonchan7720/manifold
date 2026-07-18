@@ -731,7 +731,7 @@ func TestBuildInputSchemaSwagger_FormDataNonFile_Unchanged(t *testing.T) {
 // --- CreateToolFunctionSwagger: multipart ファイル送信（base64 / URL） ---
 
 func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
-	content := []byte("hello swagger file")
+	content := []byte("{\"text\":\"hello swagger file\"}")
 	var capturedFilename string
 	var capturedContent []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -760,7 +760,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 		"upload": base64.StdEncoding.EncodeToString(content),
 	})
 	require.NoError(t, err)
-	require.Equal(t, "file.conf", capturedFilename)
+	require.Equal(t, "file.json", capturedFilename)
 	require.Equal(t, content, capturedContent)
 }
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -18,6 +17,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
@@ -1049,10 +1049,11 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 				return fmt.Errorf("%q: %w", name, err)
 			}
 			body = io.NopCloser(bytes.NewBuffer(d))
-			contentType = http.DetectContentType(d)
-			extensions, err := mime.ExtensionsByType(contentType)
-			if defaultFilename == filename && err == nil && len(extensions) > 0 {
-				filename = fmt.Sprintf("%s%s", filename, extensions[0])
+			mtype := mimetype.Detect(d)
+			contentType = mtype.String()
+			extensions := mtype.Extension()
+			if defaultFilename == filename {
+				filename = fmt.Sprintf("%s%s", filename, extensions)
 			}
 		}
 	}

@@ -1484,7 +1484,7 @@ func TestExtractParameters_Multipart_NestedFileAndAllOf(t *testing.T) {
 // --- CreateToolFunction（multipart データの書き込み） ---
 
 func TestCreateToolFunction_Multipart_FileBase64(t *testing.T) {
-	content := []byte("hello file")
+	content := []byte("{\"text\":\"hello file\"}")
 
 	var capturedFilename string
 	var capturedContent []byte
@@ -1514,7 +1514,7 @@ func TestCreateToolFunction_Multipart_FileBase64(t *testing.T) {
 		"file": base64.StdEncoding.EncodeToString(content),
 	})
 	require.NoError(t, err)
-	require.Equal(t, "file.conf", capturedFilename)
+	require.Equal(t, "file.json", capturedFilename)
 	require.Equal(t, content, capturedContent)
 }
 
