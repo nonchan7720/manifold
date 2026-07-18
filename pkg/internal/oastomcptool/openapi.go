@@ -536,15 +536,18 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 				continue
 			}
 			// オブジェクトプロパティへの再帰は常に runtimeResolvable=false
-			// （上記コメント参照）。
-			properties[propName] = buildFormPropertySchemaVisited(propRef.Value, visited, false)
+			// （上記コメント参照）。プロパティ名は sanitizeParamName で MCP スキーマ
+			// 上安全な名前に変換する（トップレベルのフォームパラメータと同じ規約）。
+			// 元の名前への復元は writeMultipartValue が formParameter.parameters
+			// （newFormParameterVisited が同じ規則で構築する originalName）を使って行う。
+			properties[sanitizeParamName(propName)] = buildFormPropertySchemaVisited(propRef.Value, visited, false)
 		}
 		result["properties"] = properties
 
 		required := []string{}
 		for _, r := range prop.Required {
 			if _, ok := prop.Properties[r]; ok {
-				required = append(required, r)
+				required = append(required, sanitizeParamName(r))
 			}
 		}
 		result["required"] = required
@@ -1140,6 +1143,37 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 	return err
 }
 
+// restoreOriginalParamNames は、buildFormPropertySchemaVisited が MCP スキーマ向けに
+// sanitizeParamName で書き換えたネストしたオブジェクトのキーを、元の OpenAPI プロパティ名
+// （newFormParameterVisited が構築する param.parameters[key].originalName）に復元した
+// コピーを返す。ブラケットを含む名前（例: "filter[status]"）がバックエンドへ送るペイロード
+// 上でも正しい wire 名になるよう、json.Marshal する前に必ず適用する。
+// param.parameters に対応するエントリが無いキー（sanitizeParamName が実質何もしなかった
+// 場合や、スキーマに現れないキーをユーザーが追加した場合）はそのまま素通しする。
+func restoreOriginalParamNames(value any, param formParameter) any {
+	switch v := value.(type) {
+	case map[string]any:
+		restored := make(map[string]any, len(v))
+		for key, val := range v {
+			child, ok := param.parameters[key]
+			outKey := key
+			if ok && child.originalName != "" {
+				outKey = child.originalName
+			}
+			restored[outKey] = restoreOriginalParamNames(val, child)
+		}
+		return restored
+	case []any:
+		restored := make([]any, len(v))
+		for i, item := range v {
+			restored[i] = restoreOriginalParamNames(item, param)
+		}
+		return restored
+	default:
+		return value
+	}
+}
+
 // writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。
 func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name string, value any, param formParameter) error {
 	if param.isFile {
@@ -1156,7 +1190,7 @@ func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name str
 
 	switch value.(type) {
 	case map[string]any, []any:
-		data, err := json.Marshal(value)
+		data, err := json.Marshal(restoreOriginalParamNames(value, param))
 		if err != nil {
 			return err
 		}

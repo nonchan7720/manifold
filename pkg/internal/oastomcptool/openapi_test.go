@@ -1385,6 +1385,39 @@ func TestBuildInputSchema_Multipart_NestedForm(t *testing.T) {
 	require.Contains(t, required, "metadata")
 }
 
+func TestBuildInputSchema_Multipart_NestedForm_BracketedPropertyNamesAreSanitized(t *testing.T) {
+	// ネストしたオブジェクトのプロパティ名にブラケットが含まれる場合（例: "filter[status]"）、
+	// MCP スキーマの properties/required キーとして直接使うと不正になる。sanitizeParamName で
+	// トップレベルのフォームパラメータと同じ規則で変換されることを確認する。
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type:     &openapi3.Types{"object"},
+					Required: []string{"filter[status]"},
+					Properties: openapi3.Schemas{
+						"filter[status]": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	metadataProp := props["metadata"].(map[string]any)
+	nested := metadataProp["properties"].(map[string]any)
+
+	require.NotContains(t, nested, "filter[status]")
+	require.Contains(t, nested, "filter_status")
+
+	nestedRequired := metadataProp["required"].([]string)
+	require.NotContains(t, nestedRequired, "filter[status]")
+	require.Contains(t, nestedRequired, "filter_status")
+}
+
 func TestBuildInputSchema_Multipart_ArrayOfBinary(t *testing.T) {
 	op := multipartOperation(&openapi3.Schema{
 		Properties: openapi3.Schemas{
@@ -1738,6 +1771,45 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal([]byte(capturedMetadata), &decoded))
 	require.Equal(t, "foo", decoded["name"])
+}
+
+func TestCreateToolFunction_Multipart_NestedObjectAsJSON_RestoresBracketedPropertyNames(t *testing.T) {
+	// metadata.filter[status] は MCP スキーマ上 "filter_status" として公開される
+	// (TestBuildInputSchema_Multipart_NestedForm_BracketedPropertyNamesAreSanitized 参照)。
+	// クライアントはこの sanitize 済みキーで値を渡すが、バックエンドへ送る JSON では元の
+	// OpenAPI プロパティ名（ブラケット付き）に復元されていなければならない。
+	var capturedMetadata string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(10<<20))
+		capturedMetadata = r.FormValue("metadata")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"filter[status]": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil)
+	_, err := fn(context.Background(), map[string]any{
+		"metadata": map[string]any{"filter_status": "active"},
+	})
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(capturedMetadata), &decoded))
+	require.NotContains(t, decoded, "filter_status")
+	require.Equal(t, "active", decoded["filter[status]"])
 }
 
 func TestCreateToolFunction_Multipart_NestedBinaryField_NotResolved(t *testing.T) {
@@ -2344,6 +2416,46 @@ func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(
 	})
 	require.NoError(t, err)
 	require.Equal(t, urlContent, capturedContent)
+}
+
+func TestRestoreOriginalParamNames(t *testing.T) {
+	param := formParameter{
+		parameters: formParameters{
+			"filter_status": {originalName: "filter[status]"},
+			"tags": {
+				originalName: "tags",
+				parameters: formParameters{
+					"item_id": {originalName: "item[id]"},
+				},
+			},
+			"plain": {originalName: "plain"},
+		},
+	}
+
+	got := restoreOriginalParamNames(map[string]any{
+		"filter_status": "active",
+		"plain":         "unchanged",
+		"unknown":       "passthrough", // param.parameters に対応エントリが無いキーはそのまま
+		"tags": []any{
+			map[string]any{"item_id": "1"},
+			map[string]any{"item_id": "2"},
+		},
+	}, param)
+
+	restored, ok := got.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "active", restored["filter[status]"])
+	require.NotContains(t, restored, "filter_status")
+	require.Equal(t, "unchanged", restored["plain"])
+	require.Equal(t, "passthrough", restored["unknown"])
+
+	tags, ok := restored["tags"].([]any)
+	require.True(t, ok)
+	require.Len(t, tags, 2)
+	item0, ok := tags[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "1", item0["item[id]"])
+	require.NotContains(t, item0, "item_id")
 }
 
 func TestDecodeFileContent_MaxSize(t *testing.T) {
