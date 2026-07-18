@@ -696,8 +696,23 @@ func TestBuildInputSchemaSwagger_FormDataFile(t *testing.T) {
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
 	uploadProp := props["upload"].(map[string]any)
-	// MCP の type としては string（実際の値は base64 文字列または URL）
-	require.Equal(t, "string", uploadProp["type"])
+	// バリデーションするクライアントが object 形式（{url}/{base64}/{text}/{content}）を
+	// 誤って拒否しないよう、実行時に受理される両方の形を oneOf [string, object] で表現する
+	// （openapi.go の buildFormPropertySchema と同じ binaryFieldMCPSchema ヘルパーを使う）。
+	oneOf, ok := uploadProp["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+	stringBranch := oneOf[0].(map[string]any)
+	require.Equal(t, "string", stringBranch["type"])
+	objectBranch := oneOf[1].(map[string]any)
+	require.Equal(t, "object", objectBranch["type"])
+	objectProps := objectBranch["properties"].(map[string]any)
+	require.Contains(t, objectProps, "url")
+	require.Contains(t, objectProps, "base64")
+	require.Contains(t, objectProps, "text")
+	require.Contains(t, objectProps, "content")
+	require.Contains(t, objectProps, "filename")
+	require.Contains(t, objectProps, "contentType")
 
 	meta, ok := uploadProp["_meta"].(map[string]any)
 	require.True(t, ok)
