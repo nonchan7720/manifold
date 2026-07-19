@@ -13,6 +13,7 @@ type Storage struct {
 
 func (c *Storage) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, c,
+		validation.Field(&c.Type, validation.In("", "s3")),
 		validation.Field(&c.S3, validation.When(c.Type == "s3", validation.Required)),
 	)
 }
