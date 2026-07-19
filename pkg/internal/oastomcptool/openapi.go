@@ -988,9 +988,11 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		return nil, "", "", err
 	}
 
-	// HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
+	// SafeHTTPClient / HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
 	// この CheckRedirect の設定がリクエスト間で共有・競合することはない。
-	httpClient := client.HTTPClient()
+	// SSRF 対策は fileFetch.allowLocal 設定でのみ緩和できるようにするため、
+	// AllowLocal が false の場合は環境変数に依存しない SafeHTTPClient を必ず使う。
+	httpClient := client.SafeHTTPClient()
 	if cfg.AllowLocal {
 		httpClient = client.HTTPClient()
 	}
