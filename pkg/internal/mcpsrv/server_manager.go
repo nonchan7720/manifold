@@ -114,15 +114,15 @@ func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]s
 			resp, contentType, err := tool.handler(ctx, input)
 			if err != nil {
 				result.SetError(err)
+				return &result, nil
+			}
+			content, err := generateContent(ctx, contentType, resp, mediaUploader)
+			if err != nil {
+				result.SetError(err)
 			} else {
-				content, err := generateContent(ctx, contentType, resp, mediaUploader)
-				if err != nil {
-					result.SetError(err)
-				} else {
-					result.Content = content
-					if json.Valid(resp) {
-						result.StructuredContent = json.RawMessage(resp)
-					}
+				result.Content = content
+				if json.Valid(resp) {
+					result.StructuredContent = json.RawMessage(resp)
 				}
 			}
 			return &result, nil
