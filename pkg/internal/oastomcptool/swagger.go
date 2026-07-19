@@ -378,7 +378,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		maps.Copy(effective_headers, headers)
 		override_auth := contexts.FromRequestAuthHeader(ctx)
 		if override_auth != "" {
-			effective_headers["Authorization"] = override_auth
+			effective_headers["Authorization"] = "Bearer " + override_auth
 		}
 
 		_url := base_url + path

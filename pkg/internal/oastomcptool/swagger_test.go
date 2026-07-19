@@ -306,6 +306,7 @@ func TestBuildInputSchemaSwagger_BodyParam(t *testing.T) {
 // --- CreateToolFunctionSwagger ---
 
 func TestCreateToolFunctionSwagger_GET(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodGet, r.Method)
 		require.Equal(t, "/pets/99", r.URL.Path)
@@ -328,6 +329,7 @@ func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusCreated)
@@ -357,6 +359,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
+	t.Setenv("TEST", "true")
 	var capturedQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedQuery = r.URL.Query().Get("status")
@@ -403,6 +406,7 @@ func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`bad request`)) //nolint: errcheck
@@ -419,6 +423,7 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
+	t.Setenv("TEST", "true")
 	var capturedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
@@ -434,7 +439,7 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 		"Authorization": "Bearer static",
 	})
 
-	ctx := contexts.ToRequestAuthHeader(context.Background(), "Bearer override")
+	ctx := contexts.ToRequestAuthHeader(context.Background(), "override")
 	result, _, err := fn(ctx, map[string]any{})
 	require.NoError(t, err)
 	require.Equal(t, "Bearer override", capturedAuth)
@@ -442,6 +447,7 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodDelete, r.Method)
 		w.WriteHeader(http.StatusNoContent)
@@ -458,6 +464,7 @@ func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPatch, r.Method)
 		w.WriteHeader(http.StatusOK)
@@ -746,6 +753,7 @@ func TestBuildInputSchemaSwagger_FormDataNonFile_Unchanged(t *testing.T) {
 // --- CreateToolFunctionSwagger: multipart ファイル送信（base64 / URL） ---
 
 func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
+	t.Setenv("TEST", "true")
 	content := []byte("{\"text\":\"hello swagger file\"}")
 	var capturedFilename string
 	var capturedContent []byte
@@ -780,6 +788,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("swagger streamed file")
@@ -826,6 +835,7 @@ func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// file と通常フィールドが混在する場合、通常フィールドは従来通りWriteFieldされる
 	var capturedCaption string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -855,6 +865,7 @@ func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPut, r.Method)
 		w.WriteHeader(http.StatusOK)
@@ -872,6 +883,7 @@ func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusOK)

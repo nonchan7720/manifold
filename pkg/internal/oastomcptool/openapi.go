@@ -988,9 +988,9 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		return nil, "", "", err
 	}
 
-	// SafeHTTPClient / HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
+	// HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
 	// この CheckRedirect の設定がリクエスト間で共有・競合することはない。
-	httpClient := client.SafeHTTPClient()
+	httpClient := client.HTTPClient()
 	if cfg.AllowLocal {
 		httpClient = client.HTTPClient()
 	}
@@ -1241,6 +1241,7 @@ func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name str
 
 // CreateToolFunction creates a tool function for an OpenAPI 3.x operation.
 func CreateToolFunction( //nolint: gocyclo
+	client *http.Client,
 	path string,
 	method string,
 	operation *openapi3.Operation,
@@ -1260,7 +1261,7 @@ func CreateToolFunction( //nolint: gocyclo
 		maps.Copy(effective_headers, headers)
 		override_auth := contexts.FromRequestAuthHeader(ctx)
 		if override_auth != "" {
-			effective_headers["Authorization"] = override_auth
+			effective_headers["Authorization"] = "Bearer " + override_auth
 		}
 
 		_url := base_url + path
@@ -1286,8 +1287,6 @@ func CreateToolFunction( //nolint: gocyclo
 				params[original_name] = param_value
 			}
 		}
-
-		client := client.HTTPClient()
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {
