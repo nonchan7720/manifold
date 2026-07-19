@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -242,12 +243,11 @@ func TestBaseTokenRegistry_Get_ConcurrentSameKey_NoDuplication(t *testing.T) {
 
 func newTokenExchangeRequest(t *testing.T, authHeader string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "http://upstream.example.com/", nil)
+	ctx := context.Background()
 	if authHeader != "" {
-		ctx := contexts.ToRequestAuthHeader(req.Context(), authHeader)
-		req = req.WithContext(ctx)
+		ctx = contexts.ToRequestAuthHeader(ctx, authHeader)
 	}
-	return req
+	return httptest.NewRequestWithContext(ctx, http.MethodGet, "http://upstream.example.com/", nil)
 }
 
 func decodeErrorBody(t *testing.T, resp *http.Response) string {
