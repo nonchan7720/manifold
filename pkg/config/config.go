@@ -24,7 +24,9 @@ type Config struct {
 	Storage Storage `mapstructure:"storage"`
 }
 
-var pathRegex = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+// URL パスセグメントとして使われるサーバー名として妥当な文字集合。
+// ドットは除外しつつ、既存設定で使われてきたハイフン区切りの名前を壊さないようハイフンを許可する。
+var pathRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(

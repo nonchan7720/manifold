@@ -15,7 +15,6 @@ import (
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
-	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
@@ -358,6 +357,7 @@ func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*op
 
 // CreateToolFunctionSwagger creates a tool function for a Swagger 2.x operation.
 func CreateToolFunctionSwagger( //nolint: gocyclo
+	client *http.Client,
 	path string,
 	method string,
 	operation *openapi2.Operation,
@@ -402,8 +402,6 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 				params[param_name] = param_value
 			}
 		}
-
-		client := client.HTTPClient()
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {

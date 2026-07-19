@@ -1,4 +1,4 @@
-.PHONY: test lint
+.PHONY: test lint serve
 
 test: ## Run all tests with coverage
 	go test -coverprofile=coverage/all.out ./pkg/...

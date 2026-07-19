@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"fmt"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
@@ -45,7 +46,25 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&s.URL, validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP, validation.Required)),
 		validation.Field(&s.Command, validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required)),
 
-		validation.Field(&s.AuthValue),
+		// ランタイムの transport 選択（httpClientRoundTripper）は AuthValue > OAuth2 >
+		// TokenExchange の優先順位で暗黙に1つだけを採用してしまうため、複数同時設定を
+		// 設定ロード時点でエラーにする。いずれか1つ、または設定無しのみを許可する。
+		validation.Field(&s.AuthValue, validation.By(func(value any) error {
+			count := 0
+			if s.AuthValue != nil {
+				count++
+			}
+			if s.OAuth2 != nil {
+				count++
+			}
+			if s.TokenExchange != nil {
+				count++
+			}
+			if count > 1 {
+				return fmt.Errorf("only one of authValue, oauth2, tokenExchange may be configured")
+			}
+			return nil
+		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
 	)
@@ -86,6 +105,8 @@ type TokenExchange struct {
 
 func (c *TokenExchange) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, c,
-		validation.Field(&c.URL, validation.Required, is.RequestURI),
+		// is.RequestURI はスキーム無しの相対パス（例: "/token"）も許容してしまうため、
+		// スキーム付きの絶対 URL を要求する is.RequestURL を使う。
+		validation.Field(&c.URL, validation.Required, is.RequestURL),
 	)
 }

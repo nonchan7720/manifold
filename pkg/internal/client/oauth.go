@@ -1,8 +1,6 @@
 package client
 
 import (
-	"bytes"
-	"io"
 	"net/http"
 	"strings"
 
@@ -27,11 +25,7 @@ func (rt *oauth2RoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	ctx := req.Context()
 	token := contexts.FromRequestAuthHeader(ctx)
 	if token == "" {
-		return &http.Response{
-			Status:     http.StatusText(http.StatusUnauthorized),
-			StatusCode: http.StatusUnauthorized,
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":"token is empty"}`))),
-		}, nil
+		return unauthorizedResponse("token is empty"), nil
 	}
 	bearerToken := strings.TrimPrefix(token, "Bearer ")
 	req = req.Clone(ctx)

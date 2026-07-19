@@ -92,12 +92,22 @@ func isPrivateIP(ip net.IP) bool {
 		IP:   net.IPv4(100, 64, 0, 0),
 		Mask: net.CIDRMask(10, 32),
 	}
+	// "0.0.0.0/8"（このネットワーク上のホストを指す予約済みレンジ）。
+	// ip.IsUnspecified() は "0.0.0.0" 単体としか一致しないため、
+	// "0.1.2.3" のようなレンジ内の他アドレスを見逃してしまう。
+	var thisNetwork = net.IPNet{
+		IP:   net.IPv4(0, 0, 0, 0),
+		Mask: net.CIDRMask(8, 32),
+	}
 
 	// 標準メソッドでカバーできる範囲をチェック
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
 		return true
 	}
 	if sharedAddressSpace.Contains(ip) {
+		return true
+	}
+	if thisNetwork.Contains(ip) {
 		return true
 	}
 	return false

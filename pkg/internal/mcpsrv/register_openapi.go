@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
-	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
@@ -19,12 +18,13 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, heade
 		fn(opt)
 	}
 
-	rt := client.Transport()
-	if v := opt.tokenExchange; v != nil {
-		source := &client.InMemoryRegistry{}
-		registry := client.NewBaseTokenRegistry(v.URL, source)
-		rt = client.NewTokenExchangeRoundTrip(rt, registry)
-	}
+	// transport.go の httpClientRoundTripper を使い、AuthValue/OAuth2/TokenExchange の
+	// いずれが設定されていても正しい認証方式でトランスポートを組み立てる
+	// （以前は tokenExchange しか考慮しておらず、AuthValue/OAuth2 が無視されていた）。
+	// headers はここでは nil を渡す: openapi()/swagger() が生成する各ツール関数が
+	// effective_headers としてリクエストごとに headers を付加するため、トランスポート層でも
+	// 同じ headers を NewExtraHeaderRoundTripper で付加すると二重適用になってしまう。
+	rt := httpClientRoundTripper(opt.auth, opt.oauth2, opt.tokenExchange, nil)
 	c := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: rt,
@@ -45,7 +45,7 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, heade
 	isSwagger := versionProbe.Swagger != ""
 
 	if isSwagger {
-		if err := swagger(ctx, register, specPath, baseUrl, headers); err != nil {
+		if err := swagger(ctx, c, register, specPath, baseUrl, headers); err != nil {
 			return nil, err
 		}
 	} else {
@@ -56,7 +56,7 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, heade
 	return register, nil
 }
 
-func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
+func swagger(ctx context.Context, client *http.Client, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -85,7 +85,7 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 			}
 
 			inputSchema := oastomcptool.BuildInputSchemaSwagger(operation, pathItem.Parameters, spec)
-			toolFunc := oastomcptool.CreateToolFunctionSwagger(path, strings.ToLower(method), operation, pathItem.Parameters, spec, baseUrl, headers)
+			toolFunc := oastomcptool.CreateToolFunctionSwagger(client, path, strings.ToLower(method), operation, pathItem.Parameters, spec, baseUrl, headers)
 
 			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc))
 		}

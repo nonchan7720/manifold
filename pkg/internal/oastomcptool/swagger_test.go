@@ -322,7 +322,7 @@ func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets/{petId}", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets/{petId}", "get", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{"petId": "99"})
 	require.NoError(t, err)
 	require.Contains(t, string(result), "99")
@@ -350,7 +350,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets", "post", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "Buddy"},
 	})
@@ -375,7 +375,7 @@ func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets", "get", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{"status": "sold"})
 	require.NoError(t, err)
 	require.Equal(t, "sold", capturedQuery)
@@ -386,7 +386,7 @@ func TestCreateToolFunctionSwagger_UnsupportedMethod(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "UNKNOWN", op, nil, spec, "http://example.com", nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "UNKNOWN", op, nil, spec, "http://example.com", nil)
 	_, _, err := fn(context.Background(), map[string]any{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported HTTP method")
@@ -400,7 +400,7 @@ func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/items/{id}", "get", op, nil, spec, "http://example.com", nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/items/{id}", "get", op, nil, spec, "http://example.com", nil)
 	_, _, err := fn(context.Background(), map[string]any{"id": "../evil"})
 	require.Error(t, err)
 }
@@ -416,7 +416,7 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "get", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{})
 	// Swaggerのツールは400以上をエラーとして返す
 	require.Error(t, err)
@@ -435,7 +435,7 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "get", op, nil, spec, srv.URL, map[string]string{
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "get", op, nil, spec, srv.URL, map[string]string{
 		"Authorization": "Bearer static",
 	})
 
@@ -457,7 +457,7 @@ func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "delete", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "delete", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
 	_ = result
@@ -485,7 +485,7 @@ func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "patch", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "patch", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "updated"},
 	})
@@ -778,7 +778,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": base64.StdEncoding.EncodeToString(content),
 	})
@@ -824,7 +824,7 @@ func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": fileSrv.URL + "/files/report.pdf?sig=abc123",
 	})
@@ -855,7 +855,7 @@ func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload":  base64.StdEncoding.EncodeToString([]byte("data")),
 		"caption": "hello",
@@ -876,7 +876,7 @@ func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "put", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "put", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
@@ -899,7 +899,7 @@ func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/login", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/login", "post", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"username": "alice",
 		"password": "secret",
