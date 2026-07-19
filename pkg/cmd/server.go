@@ -87,7 +87,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer logsCleanup()
 
-	// authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
+	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, mediaUploader)
@@ -122,8 +122,8 @@ func runGatewayServer(ctx context.Context) error {
 		Stateless: true,
 	})
 	mux := http.NewServeMux()
-	// authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
-	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), mcpHTTPSrv)
+	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
+	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
