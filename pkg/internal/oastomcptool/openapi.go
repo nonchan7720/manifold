@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
@@ -25,7 +26,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
-type ToolFunc func(ctx context.Context, input map[string]any) (string, error)
+type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, contentType string, _ error)
 
 // MCPToolRegistry defines the interface for the global MCP tool registry
 type MCPToolRegistry interface {
@@ -831,6 +832,36 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 	}
 }
 
+func ResponseIsBinary(operation *openapi3.Operation) bool {
+	if operation.Responses == nil {
+		return false
+	}
+	respMap := operation.Responses.Map()
+	for status, field := range respMap {
+		statusInt, _ := strconv.ParseInt(status, 10, 64)
+		if status == "200" || (statusInt > 199 && statusInt < 300) {
+			if field.Value == nil {
+				continue
+			}
+			resp := field.Value
+			for _, mediaType := range resp.Content {
+				schema := mediaType.Schema
+				if schema == nil {
+					continue
+				}
+				value := schema.Value
+				if value == nil {
+					continue
+				}
+				if schemaIsBinary(value) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, `\"`)
 
 // decodeFileContent はファイル内容を bytes に変換する。base64 として解釈できない文字列は raw bytes として扱う。
@@ -1215,6 +1246,7 @@ func CreateToolFunction( //nolint: gocyclo
 	operation *openapi3.Operation,
 	base_url string,
 	headers map[string]string,
+	isBinaryResponse bool,
 ) ToolFunc {
 	if headers == nil {
 		headers = map[string]string{}
@@ -1223,7 +1255,7 @@ func CreateToolFunction( //nolint: gocyclo
 	extractParameter := extractParameters(operation)
 	original_method := strings.ToLower(method)
 
-	tool_function := func(ctx context.Context, input map[string]any) (string, error) {
+	tool_function := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
 		effective_headers := map[string]string{}
 		maps.Copy(effective_headers, headers)
 		override_auth := contexts.FromRequestAuthHeader(ctx)
@@ -1239,7 +1271,7 @@ func CreateToolFunction( //nolint: gocyclo
 				original_name := extractParameter.paramNameMap[param_name]
 				safe_value, err := sanitize_path_parameter_value(param_value, original_name)
 				if err != nil {
-					return "", fmt.Errorf("invalid path parameter: %w", err)
+					return nil, "", fmt.Errorf("invalid path parameter: %w", err)
 				}
 				_url = strings.ReplaceAll(_url, "{"+original_name+"}", safe_value)
 				_url = strings.ReplaceAll(_url, "{{"+original_name+"}}", safe_value)
@@ -1259,7 +1291,7 @@ func CreateToolFunction( //nolint: gocyclo
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {
-			return "", fmt.Errorf("error parsing URL: %w", err)
+			return nil, "", fmt.Errorf("error parsing URL: %w", err)
 		}
 		q := parsedURL.Query()
 		for k, v := range params {
@@ -1313,7 +1345,7 @@ func CreateToolFunction( //nolint: gocyclo
 					case map[string]any, []any:
 						data, err := json.Marshal(v)
 						if err != nil {
-							return "", fmt.Errorf("error marshaling form field %s: %w", field_name, err)
+							return nil, "", fmt.Errorf("error marshaling form field %s: %w", field_name, err)
 						}
 						formValues.Set(field_name, string(data))
 					default:
@@ -1364,7 +1396,7 @@ func CreateToolFunction( //nolint: gocyclo
 			if json_body != nil {
 				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
-					return "", fmt.Errorf("error marshaling request body: %w", err)
+					return nil, "", fmt.Errorf("error marshaling request body: %w", err)
 				}
 				bodyReader = bytes.NewReader(bodyBytes)
 				bodyContentType = "application/json"
@@ -1384,17 +1416,17 @@ func CreateToolFunction( //nolint: gocyclo
 		case "patch":
 			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
 		default:
-			return "", fmt.Errorf("unsupported HTTP method: %s", original_method)
+			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
 
 		if err != nil {
-			return "", fmt.Errorf("error making request: %w", err)
+			return nil, "", fmt.Errorf("error making request: %w", err)
 		}
 		defer response.Body.Close() //nolint: errcheck
 
 		respBody, err := io.ReadAll(response.Body)
 		if err != nil {
-			return "", fmt.Errorf("error reading response: %w", err)
+			return nil, "", fmt.Errorf("error reading response: %w", err)
 		}
 		// 400 以上はエラーとして返す
 		if response.StatusCode >= 400 {
@@ -1402,7 +1434,11 @@ func CreateToolFunction( //nolint: gocyclo
 				respBody = []byte(http.StatusText(response.StatusCode))
 			}
 		}
-		return string(respBody), nil
+		contentType := response.Header.Get("Content-Type")
+		if isBinaryResponse {
+			return []byte(base64.URLEncoding.EncodeToString(respBody)), contentType, nil
+		}
+		return respBody, response.Header.Get("Content-Type"), nil
 	}
 
 	return tool_function

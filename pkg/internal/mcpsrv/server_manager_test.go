@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,8 +13,9 @@ func TestNewMCPServer(t *testing.T) {
 	servers := config.Servers{
 		"test": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	require.NotNil(t, s)
+	require.NotNil(t, s.mediaUploader)
 	require.NotNil(t, s.srv)
 	require.NotNil(t, s.appSrv)
 	require.NotNil(t, s.backendClients)
@@ -26,7 +28,7 @@ func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
 			BaseURL: "https://petstore.example.com",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -42,7 +44,7 @@ func TestMCPServer_Init_SwaggerMode(t *testing.T) {
 			BaseURL: "https://petstore.example.com",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -58,7 +60,7 @@ func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 			URL:       "http://backend.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -79,14 +81,14 @@ func TestMCPServer_Init_InvalidSpec(t *testing.T) {
 			Spec: "fixtures/nonexistent.json",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.Error(t, err)
 }
 
 func TestMCPServer_Server_NotFound(t *testing.T) {
 	servers := config.Servers{}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	_ = s.Init(context.Background())
 
 	_, err := s.Server("nonexistent")
@@ -96,7 +98,7 @@ func TestMCPServer_Server_NotFound(t *testing.T) {
 
 func TestMCPServer_BackendClient_NotFound(t *testing.T) {
 	servers := config.Servers{}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	_ = s.Init(context.Background())
 
 	bc, ok := s.BackendClient("nonexistent")
@@ -108,7 +110,7 @@ func TestMCPServer_Close_NoBackends(t *testing.T) {
 	servers := config.Servers{
 		"openapi": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -125,7 +127,7 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 			URL:       "http://backend.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -150,7 +152,7 @@ func TestMCPServer_Init_MultipleServers(t *testing.T) {
 			URL:       "http://mcp.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewNoopUploader())
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 

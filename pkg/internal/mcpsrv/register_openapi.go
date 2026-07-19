@@ -105,9 +105,24 @@ func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 			}
 
 			inputSchema := oastomcptool.BuildInputSchema(operation)
-			toolFunc := oastomcptool.CreateToolFunction(path, strings.ToLower(method), operation, baseUrl, headers)
-
-			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc))
+			isBinaryResponse := oastomcptool.ResponseIsBinary(operation)
+			toolFunc := oastomcptool.CreateToolFunction(
+				path,
+				strings.ToLower(method),
+				operation,
+				baseUrl,
+				headers,
+				isBinaryResponse,
+			)
+			opts := make([]RegisterToolOptions, 0, 10)
+			if isBinaryResponse {
+				opts = append(opts, WithRegisterToolMeta(map[string]any{
+					"manifold": map[string]any{
+						"binaryResponse": true,
+					},
+				}))
+			}
+			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc), opts...)
 		}
 	}
 	return nil

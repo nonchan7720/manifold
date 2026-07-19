@@ -2,13 +2,14 @@ package mcpsrv
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type ToolFunc func(ctx context.Context, input map[string]any) (string, error)
+type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, contentType string, _ error)
 
 type Tool struct {
 	tool    mcp.Tool
@@ -26,8 +27,19 @@ func NewMCPToolRegistry() *MCPToolRegistry {
 	}
 }
 
-func (r *MCPToolRegistry) RegisterTool(name, description string, inputSchema map[string]any, handler ToolFunc) {
-	r.tools[name] = Tool{
+type RegisterToolOptions func(tool *Tool)
+
+func WithRegisterToolMeta(meta map[string]any) RegisterToolOptions {
+	return func(tool *Tool) {
+		if tool.tool.Meta == nil {
+			tool.tool.Meta = make(mcp.Meta)
+		}
+		maps.Copy(tool.tool.Meta, meta)
+	}
+}
+
+func (r *MCPToolRegistry) RegisterTool(name, description string, inputSchema map[string]any, handler ToolFunc, opts ...RegisterToolOptions) {
+	tool := Tool{
 		tool: mcp.Tool{
 			Name:        name,
 			Description: description,
@@ -35,6 +47,10 @@ func (r *MCPToolRegistry) RegisterTool(name, description string, inputSchema map
 		},
 		handler: handler,
 	}
+	for _, fn := range opts {
+		fn(&tool)
+	}
+	r.tools[name] = tool
 }
 
 func (r *MCPToolRegistry) GetTool(name string) *Tool {
