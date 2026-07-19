@@ -4,16 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
-func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, headers map[string]string) (_ *MCPToolRegistry, rErr error) {
+func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, headers map[string]string, opts ...RegisterOpenAPIOption) (_ *MCPToolRegistry, rErr error) {
+	opt := &registerOpenAPIOption{}
+	for _, fn := range opts {
+		fn(opt)
+	}
+
+	rt := client.Transport()
+	if v := opt.tokenExchange; v != nil {
+		source := &client.InMemoryRegistry{}
+		registry := client.NewBaseTokenRegistry(v.URL, source)
+		rt = client.NewTokenExchangeRoundTrip(rt, registry)
+	}
+	c := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: rt,
+	}
 	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
 	defer func() { trace.EndSpan(ctx, rErr) }()
-
 	register := NewMCPToolRegistry()
 
 	// バージョン判定のため最小限の JSON デコード
@@ -32,7 +49,7 @@ func RegisterOpenAPI(ctx context.Context, specPath string, baseUrl string, heade
 			return nil, err
 		}
 	} else {
-		if err := openapi(ctx, register, specPath, baseUrl, headers); err != nil {
+		if err := openapi(ctx, c, register, specPath, baseUrl, headers); err != nil {
 			return nil, err
 		}
 	}
@@ -76,7 +93,7 @@ func swagger(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 	return nil
 }
 
-func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
+func openapi(ctx context.Context, client *http.Client, register *MCPToolRegistry, specPath string, baseUrl string, headers map[string]string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -107,6 +124,7 @@ func openapi(ctx context.Context, register *MCPToolRegistry, specPath string, ba
 			inputSchema := oastomcptool.BuildInputSchema(operation)
 			isBinaryResponse := oastomcptool.ResponseIsBinary(operation)
 			toolFunc := oastomcptool.CreateToolFunction(
+				client,
 				path,
 				strings.ToLower(method),
 				operation,

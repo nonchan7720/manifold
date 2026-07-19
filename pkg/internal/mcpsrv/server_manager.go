@@ -53,7 +53,12 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 		} else {
 			// OpenAPI モード
-			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader)
+			opts := []RegisterOpenAPIOption{
+				WithAuth(server.AuthValue),
+				WithOAuth2(server.OAuth2),
+				WithTokenExchange(server.TokenExchange),
+			}
+			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader, opts...)
 			if err != nil {
 				return err
 			}
@@ -85,9 +90,16 @@ func (s *MCPServer) Close() {
 	}
 }
 
-func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server, mediaUploader storage.MediaUploadService) error {
+func registerAPI(
+	ctx context.Context,
+	spec, baseURL string,
+	headers map[string]string,
+	srv *mcp.Server,
+	mediaUploader storage.MediaUploadService,
+	opts ...RegisterOpenAPIOption,
+) error {
 	// OpenAPI モード: 既存ロジック
-	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers)
+	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers, opts...)
 	if err != nil {
 		return err
 	}
