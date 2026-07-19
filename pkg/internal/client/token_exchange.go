@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,37 @@ type TokenSource interface {
 // defaultRetryAfter は Retry-After ヘッダーが無い、または解釈できない場合に使う既定の待機時間。
 const defaultRetryAfter = 30 * time.Second
 
+// baseTokenSource.Token が返すエラーを分類するためのセンチネルエラー群。
+// tokenExchangeRoundTrip.RoundTrip はこれらを errors.Is / errors.As で判定し、
+// 失敗の種類に応じて異なる HTTP ステータスをクライアントに返す。
+var (
+	// errRateLimited はトークン交換エンドポイントが 429 を返した（または直近の 429 の
+	// ネガティブキャッシュ期間中である）ことを表す。呼び出し元の問題ではなく一時的な
+	// 過負荷なので 503 として扱う。
+	errRateLimited = errors.New("token exchange rate limited")
+
+	// errCredentialRejected はトークン交換エンドポイントが 401/403 を返したことを表す。
+	// これは API キー自体が拒否されたことを意味するため 401 として扱う。
+	errCredentialRejected = errors.New("token exchange credential rejected")
+
+	// errUpstreamUnavailable はネットワークエラー、5xx などの想定外のステータス、
+	// レスポンスのデコード失敗、リクエスト構築失敗など、呼び出し元にもトークン交換
+	// エンドポイントの資格情報にも起因しない一時的な障害を表す。502 として扱う。
+	errUpstreamUnavailable = errors.New("token exchange upstream unavailable")
+)
+
+// rateLimitedError は 429 によるトークン交換失敗を表す。RetryAfter が既知の場合、
+// RoundTrip はこれをもとに Retry-After ヘッダーを付与する。
+type rateLimitedError struct {
+	msg        string
+	retryAfter time.Duration
+}
+
+func (e *rateLimitedError) Error() string { return e.msg }
+
+// Is により errors.Is(err, errRateLimited) が true になるようにする。
+func (e *rateLimitedError) Is(target error) bool { return target == errRateLimited }
+
 type baseTokenSource struct {
 	client *http.Client
 	url    string
@@ -30,12 +62,12 @@ type baseTokenSource struct {
 	// now はテスト時にクロックを差し替えられるようにするためのフック。nil の場合は time.Now を使う。
 	now func() time.Time
 
-	// mu は rateLimitedUntil / rateLimitErr の読み書きを保護する。
+	// mu は rateLimitedUntil / rateLimitMsg の読み書きを保護する。
 	// 429 のレート制限ウィンドウ中は新規リクエストを発行せず、キャッシュしたエラーを
 	// 即座に返すため、複数 goroutine から同時に参照・更新されうる。
 	mu               sync.Mutex
 	rateLimitedUntil time.Time
-	rateLimitErr     error
+	rateLimitMsg     string
 }
 
 func (s *baseTokenSource) clock() time.Time {
@@ -47,44 +79,48 @@ func (s *baseTokenSource) clock() time.Time {
 
 func (s *baseTokenSource) Token() (*oauth2.Token, error) {
 	s.mu.Lock()
-	until, cachedErr := s.rateLimitedUntil, s.rateLimitErr
+	until, cachedMsg := s.rateLimitedUntil, s.rateLimitMsg
 	s.mu.Unlock()
-	if cachedErr != nil && s.clock().Before(until) {
+	if cachedMsg != "" && s.clock().Before(until) {
 		// レート制限ウィンドウ内なので、新規リクエストを発行せずキャッシュしたエラーを返す。
-		return nil, cachedErr
+		return nil, &rateLimitedError{msg: cachedMsg, retryAfter: until.Sub(s.clock())}
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build request: %w", err)
+		return nil, fmt.Errorf("%w: failed to build request: %w", errUpstreamUnavailable, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange request: %w", err)
+		return nil, fmt.Errorf("%w: failed to exchange request: %w", errUpstreamUnavailable, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfterHeader := resp.Header.Get("Retry-After")
 		retryAfter := parseRetryAfter(s.clock(), retryAfterHeader)
-		var rerr error
+		var msg string
 		if retryAfterHeader != "" {
-			rerr = fmt.Errorf("rate limited, retry after %s", retryAfterHeader)
+			msg = fmt.Sprintf("rate limited, retry after %s", retryAfterHeader)
 		} else {
-			rerr = fmt.Errorf("rate limited")
+			msg = "rate limited"
 		}
 		s.mu.Lock()
 		s.rateLimitedUntil = s.clock().Add(retryAfter)
-		s.rateLimitErr = rerr
+		s.rateLimitMsg = msg
 		s.mu.Unlock()
-		return nil, rerr
+		return nil, &rateLimitedError{msg: msg, retryAfter: retryAfter}
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// API キー自体が拒否された（トークン交換エンドポイントの資格情報エラー）。
+		return nil, fmt.Errorf("%w: exchange failed: status: %d", errCredentialRejected, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("exchange failed: status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: exchange failed: status: %d", errUpstreamUnavailable, resp.StatusCode)
 	}
 	var token oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("%w: failed to decode response: %w", errUpstreamUnavailable, err)
 	}
 	// RFC 8693 の expires_in（秒数）は Expiry に反映するのがアプリ側の責務
 	// （golang.org/x/oauth2 の Token.ExpiresIn のドキュメント参照）。
@@ -174,7 +210,28 @@ func (rt *tokenExchangeRoundTrip) RoundTrip(req *http.Request) (*http.Response, 
 	token, err := rt.registry.Get(baseToken).Token()
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to token exchange", logging.WithStackTrace(err)...)
-		return unauthorizedResponse("failed to token exchange"), nil
+		var rlErr *rateLimitedError
+		switch {
+		case errors.As(err, &rlErr):
+			// トークン交換エンドポイントが 429（一時的な過負荷）を返した。
+			// クライアントには 503 を返し、既知であれば Retry-After を付与する。
+			resp := errorResponse(http.StatusServiceUnavailable, "token exchange rate limited")
+			if rlErr.retryAfter > 0 {
+				secs := int(rlErr.retryAfter.Round(time.Second) / time.Second)
+				if secs < 1 {
+					secs = 1
+				}
+				resp.Header.Set("Retry-After", strconv.Itoa(secs))
+			}
+			return resp, nil
+		case errors.Is(err, errCredentialRejected):
+			// API キー自体が拒否された。
+			return unauthorizedResponse("failed to token exchange"), nil
+		default:
+			// ネットワークエラー、5xx、デコード失敗など、呼び出し元にもトークン交換の
+			// 資格情報にも起因しない一時的な障害。
+			return errorResponse(http.StatusBadGateway, "token exchange unavailable"), nil
+		}
 	}
 	req = req.Clone(ctx)
 	req.Header.Set("Authorization", token.Type()+" "+token.AccessToken)

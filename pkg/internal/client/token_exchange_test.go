@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 )
@@ -234,4 +236,98 @@ func TestBaseTokenRegistry_Get_ConcurrentSameKey_NoDuplication(t *testing.T) {
 	for i, got := range results {
 		require.Same(t, first, got, "goroutine %d should observe the same TokenSource instance", i)
 	}
+}
+
+// --- tokenExchangeRoundTrip.RoundTrip: 失敗種別ごとのステータスコード ---
+
+func newTokenExchangeRequest(t *testing.T, authHeader string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "http://upstream.example.com/", nil)
+	if authHeader != "" {
+		ctx := contexts.ToRequestAuthHeader(req.Context(), authHeader)
+		req = req.WithContext(ctx)
+	}
+	return req
+}
+
+func decodeErrorBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close() //nolint:errcheck
+	b, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(b, &body))
+	return body["error"]
+}
+
+func TestTokenExchangeRoundTrip_EmptyContextToken_Returns401(t *testing.T) {
+	registry := NewBaseTokenRegistry("http://example.com/token", &InMemoryRegistry{})
+	rt := NewTokenExchangeRoundTrip(nil, registry)
+
+	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, ""))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, "token is empty", decodeErrorBody(t, resp))
+}
+
+func TestTokenExchangeRoundTrip_RateLimited_Returns503WithRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	rt := NewTokenExchangeRoundTrip(nil, registry)
+
+	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	require.Equal(t, "token exchange rate limited", decodeErrorBody(t, resp))
+	require.NotEmpty(t, resp.Header.Get("Retry-After"))
+}
+
+func TestTokenExchangeRoundTrip_UpstreamServerError_Returns502(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	rt := NewTokenExchangeRoundTrip(nil, registry)
+
+	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	require.Equal(t, "token exchange unavailable", decodeErrorBody(t, resp))
+}
+
+func TestTokenExchangeRoundTrip_ExchangeRejectsCredential_Returns401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	rt := NewTokenExchangeRoundTrip(nil, registry)
+
+	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, "failed to token exchange", decodeErrorBody(t, resp))
+}
+
+func TestTokenExchangeRoundTrip_NetworkError_Returns502(t *testing.T) {
+	// サーバーを起動直後に閉じることで、接続エラー（ネットワーク到達不能）を発生させる。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	registry := NewBaseTokenRegistry(url, &InMemoryRegistry{})
+	rt := NewTokenExchangeRoundTrip(nil, registry)
+
+	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	require.Equal(t, "token exchange unavailable", decodeErrorBody(t, resp))
 }

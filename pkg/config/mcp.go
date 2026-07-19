@@ -88,8 +88,10 @@ func (c *OAuth2) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, c,
 		validation.Field(&c.ClientID, validation.Required),
 		validation.Field(&c.ClientSecret, validation.Required),
-		validation.Field(&c.AuthURL, validation.Required),
-		validation.Field(&c.TokenURL, validation.Required),
+		// is.RequestURI はスキーム無しの相対パス（例: "/auth"）も許容してしまうため、
+		// スキーム付きの絶対 URL を要求する is.RequestURL を使う（TokenExchange.URL と同様）。
+		validation.Field(&c.AuthURL, validation.Required, is.RequestURL),
+		validation.Field(&c.TokenURL, validation.Required, is.RequestURL),
 	)
 }
 
