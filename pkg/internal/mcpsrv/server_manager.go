@@ -2,7 +2,6 @@ package mcpsrv
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +24,10 @@ type MCPServer struct {
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
 
-	mediaUploader storage.MediaUploader
+	mediaUploader *storage.MediaUpload
 }
 
-func NewMCPServer(servers config.Servers, mediaUploader storage.MediaUploader) *MCPServer {
+func NewMCPServer(servers config.Servers, mediaUploader *storage.MediaUpload) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
 		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
@@ -86,7 +85,7 @@ func (s *MCPServer) Close() {
 	}
 }
 
-func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server, mediaUploader storage.MediaUploader) error {
+func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server, mediaUploader storage.MediaUploadService) error {
 	// OpenAPI モード: 既存ロジック
 	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers)
 	if err != nil {
@@ -132,16 +131,7 @@ func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]s
 	return nil
 }
 
-func decodeBase64(v []byte) (raw []byte, ok bool) {
-	dst := make([]byte, base64.URLEncoding.DecodedLen(len(v)))
-	_, err := base64.URLEncoding.Decode(dst, v)
-	if err == nil {
-		return dst, true
-	}
-	return nil, false
-}
-
-func generateContent(ctx context.Context, contentType string, data []byte, mediaUploader storage.MediaUploader) ([]mcp.Content, error) {
+func generateContent(ctx context.Context, contentType string, data []byte, mediaUploader storage.MediaUploadService) ([]mcp.Content, error) {
 	baseType := strings.SplitN(contentType, ";", 2)[0]
 	baseType = strings.TrimSpace(baseType)
 	textContent := []string{
@@ -153,12 +143,6 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 		"application/yml",
 	}
 	isEnabled := mediaUploader.Enabled()
-	if isEnabled {
-		rawData, base64Ok := decodeBase64(data)
-		if base64Ok {
-			data = rawData
-		}
-	}
 	switch {
 	case strings.HasPrefix(baseType, "text/"),
 		slices.Contains(textContent, baseType):

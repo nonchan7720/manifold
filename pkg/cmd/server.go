@@ -53,7 +53,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer storeClient.Close()
 
-	var mediaUploader storage.MediaUploader
+	var mediaUploadService storage.MediaUploadService
 	switch globalConfig.Storage.Type {
 	case "s3":
 		awsCfg, err := aws.NewConfig(ctx)
@@ -61,14 +61,14 @@ func runGatewayServer(ctx context.Context) error {
 			return err
 		}
 		s3Client := aws.NewS3Client(awsCfg)
-		mediaUploader = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
-		if err := mediaUploader.AccessCheck(ctx); err != nil {
+		mediaUploadService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
+		if err := mediaUploadService.AccessCheck(ctx); err != nil {
 			return err
 		}
 	default:
-		mediaUploader = storage.NewNoopUploader()
+		mediaUploadService = storage.NewNoopUploader()
 	}
-
+	mediaUploader := storage.NewMediaUploader(mediaUploadService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err

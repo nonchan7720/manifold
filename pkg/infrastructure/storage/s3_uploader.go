@@ -29,7 +29,7 @@ type s3Uploader struct {
 	keyPrefix string
 }
 
-func NewS3Uploader(api S3API, bucketName, keyPrefix string) MediaUploader {
+func NewS3Uploader(api S3API, bucketName, keyPrefix string) MediaUploadService {
 	return &s3Uploader{
 		api:       api,
 		bucket:    bucketName,
