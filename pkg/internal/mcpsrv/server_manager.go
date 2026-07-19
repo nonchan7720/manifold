@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/nonchan7720/manifold/pkg/version"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -20,14 +23,17 @@ type MCPServer struct {
 	srv            *mcp.Server
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
+
+	mediaUploader *storage.MediaUpload
 }
 
-func NewMCPServer(servers config.Servers) *MCPServer {
+func NewMCPServer(servers config.Servers, mediaUploader *storage.MediaUpload) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
 		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
+		mediaUploader:  mediaUploader,
 	}
 }
 
@@ -47,7 +53,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 		} else {
 			// OpenAPI モード
-			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv)
+			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader)
 			if err != nil {
 				return err
 			}
@@ -79,7 +85,7 @@ func (s *MCPServer) Close() {
 	}
 }
 
-func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server) error {
+func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]string, srv *mcp.Server, mediaUploader storage.MediaUploadService) error {
 	// OpenAPI モード: 既存ロジック
 	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers)
 	if err != nil {
@@ -105,14 +111,105 @@ func registerAPI(ctx context.Context, spec, baseURL string, headers map[string]s
 				return resp, nil
 			}
 			var result mcp.CallToolResult
-			resp, err := tool.handler(ctx, input)
+			resp, contentType, err := tool.handler(ctx, input)
+			if err != nil {
+				result.SetError(err)
+				return &result, nil
+			}
+			content, err := generateContent(ctx, contentType, resp, mediaUploader)
 			if err != nil {
 				result.SetError(err)
 			} else {
-				result.Content = append(result.Content, &mcp.TextContent{Text: resp})
+				result.Content = content
+				if json.Valid(resp) {
+					result.StructuredContent = json.RawMessage(resp)
+				}
 			}
 			return &result, nil
 		})
 	}
 	return nil
+}
+
+func generateContent(ctx context.Context, contentType string, data []byte, mediaUploader storage.MediaUploadService) ([]mcp.Content, error) {
+	baseType := strings.SplitN(contentType, ";", 2)[0]
+	baseType = strings.TrimSpace(baseType)
+	textContent := []string{
+		"application/json",
+		"application/xml",
+		"application/yaml",
+		// 非標準パターン
+		"application/x-yaml",
+		"application/yml",
+	}
+	isEnabled := mediaUploader.Enabled()
+	switch {
+	case strings.HasPrefix(baseType, "text/"),
+		slices.Contains(textContent, baseType):
+
+		return []mcp.Content{
+			&mcp.TextContent{
+				Text: string(data),
+			},
+		}, nil
+	case strings.HasPrefix(baseType, "image/"):
+		var content mcp.Content
+		if isEnabled {
+			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			if err != nil {
+				return nil, err
+			}
+			content = &mcp.ResourceLink{
+				URI:         url,
+				Name:        id,
+				MIMEType:    contentType,
+				Description: "When using the data, please use the accessible URL",
+			}
+		} else {
+			content = &mcp.ImageContent{
+				Data:     data,
+				MIMEType: contentType,
+			}
+		}
+		return []mcp.Content{content}, nil
+	case strings.HasPrefix(baseType, "audio/"):
+		var content mcp.Content
+		if isEnabled {
+			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			if err != nil {
+				return nil, err
+			}
+			content = &mcp.ResourceLink{
+				URI:         url,
+				Name:        id,
+				MIMEType:    contentType,
+				Description: "When using the data, please use the accessible URL",
+			}
+		} else {
+			content = &mcp.AudioContent{
+				Data:     data,
+				MIMEType: contentType,
+			}
+		}
+		return []mcp.Content{content}, nil
+	default:
+		var content mcp.Content
+		if isEnabled {
+			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			if err != nil {
+				return nil, err
+			}
+			content = &mcp.ResourceLink{
+				URI:         url,
+				Name:        id,
+				MIMEType:    contentType,
+				Description: "When using the data, please use the accessible URL",
+			}
+		} else {
+			content = &mcp.TextContent{
+				Text: string(data),
+			}
+		}
+		return []mcp.Content{content}, nil
+	}
 }

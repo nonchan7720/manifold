@@ -2,18 +2,76 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeMediaUploader は Enabled() を true にした状態での Do() 呼び出し内容を検証するためのテスト用スタブ。
+type fakeMediaUploader struct {
+	enabled bool
+	doFunc  func(ctx context.Context, data []byte, contentType string) (string, string, error)
+}
+
+func (f *fakeMediaUploader) Do(ctx context.Context, data []byte, contentType string) (string, string, error) {
+	return f.doFunc(ctx, data, contentType)
+}
+
+func (f *fakeMediaUploader) AccessCheck(ctx context.Context) error { return nil }
+
+func (f *fakeMediaUploader) Enabled() bool { return f.enabled }
+
+func TestGenerateContent_BinaryImage_NoopUploader(t *testing.T) {
+	raw := []byte("raw-image-bytes")
+	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
+
+	// mediaUploader が無効の場合、デコードはバックエンドサービス側の責務ではないため
+	// base64 のまま ImageContent.Data に格納される。
+	contents, err := generateContent(context.Background(), "image/png", encoded, storage.NewNoopUploader())
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+
+	img, ok := contents[0].(*mcp.ImageContent)
+	require.True(t, ok)
+	require.Equal(t, encoded, img.Data)
+}
+
+func TestGenerateContent_BinaryImage_EnabledUploader(t *testing.T) {
+	raw := []byte("raw-image-bytes")
+	encoded := []byte(base64.URLEncoding.EncodeToString(raw))
+
+	var gotData []byte
+	uploader := &fakeMediaUploader{
+		enabled: true,
+		doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
+			gotData = data
+			return "media-id", "https://example.com/media-id", nil
+		},
+	}
+
+	// generateContent 自体はデコードを行わず、そのまま MediaUploadService.Do に渡す。
+	// デコード（と失敗時のフォールバック）は storage.MediaUpload.Do が担う。
+	contents, err := generateContent(context.Background(), "image/png", encoded, uploader)
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+
+	link, ok := contents[0].(*mcp.ResourceLink)
+	require.True(t, ok)
+	require.Equal(t, "media-id", link.Name)
+	require.Equal(t, encoded, gotData)
+}
 
 func TestNewMCPServer(t *testing.T) {
 	servers := config.Servers{
 		"test": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	require.NotNil(t, s)
+	require.NotNil(t, s.mediaUploader)
 	require.NotNil(t, s.srv)
 	require.NotNil(t, s.appSrv)
 	require.NotNil(t, s.backendClients)
@@ -26,7 +84,7 @@ func TestMCPServer_Init_OpenAPIMode(t *testing.T) {
 			BaseURL: "https://petstore.example.com",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -42,7 +100,7 @@ func TestMCPServer_Init_SwaggerMode(t *testing.T) {
 			BaseURL: "https://petstore.example.com",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -58,7 +116,7 @@ func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 			URL:       "http://backend.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -79,14 +137,14 @@ func TestMCPServer_Init_InvalidSpec(t *testing.T) {
 			Spec: "fixtures/nonexistent.json",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.Error(t, err)
 }
 
 func TestMCPServer_Server_NotFound(t *testing.T) {
 	servers := config.Servers{}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	_ = s.Init(context.Background())
 
 	_, err := s.Server("nonexistent")
@@ -96,7 +154,7 @@ func TestMCPServer_Server_NotFound(t *testing.T) {
 
 func TestMCPServer_BackendClient_NotFound(t *testing.T) {
 	servers := config.Servers{}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	_ = s.Init(context.Background())
 
 	bc, ok := s.BackendClient("nonexistent")
@@ -108,7 +166,7 @@ func TestMCPServer_Close_NoBackends(t *testing.T) {
 	servers := config.Servers{
 		"openapi": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -125,7 +183,7 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 			URL:       "http://backend.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 
@@ -150,7 +208,7 @@ func TestMCPServer_Init_MultipleServers(t *testing.T) {
 			URL:       "http://mcp.example.com/mcp",
 		},
 	}
-	s := NewMCPServer(servers)
+	s := NewMCPServer(servers, storage.NewMediaUploader(storage.NewNoopUploader()))
 	err := s.Init(context.Background())
 	require.NoError(t, err)
 

@@ -16,8 +16,8 @@ func TestNewMCPToolRegistry(t *testing.T) {
 func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
 	r := NewMCPToolRegistry()
 
-	handler := func(ctx context.Context, input map[string]any) (string, error) {
-		return "result", nil
+	handler := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return []byte("result"), "text/plain", nil
 	}
 
 	r.RegisterTool("tool1", "Test Tool 1", map[string]any{"type": "object"}, handler)
@@ -38,8 +38,8 @@ func TestMCPToolRegistry_GetNotFound(t *testing.T) {
 func TestMCPToolRegistry_ListTools(t *testing.T) {
 	r := NewMCPToolRegistry()
 
-	handler := func(ctx context.Context, input map[string]any) (string, error) {
-		return "", nil
+	handler := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return nil, "", nil
 	}
 
 	r.RegisterTool("tool_a", "Tool A", nil, handler)
@@ -53,11 +53,11 @@ func TestMCPToolRegistry_ListTools(t *testing.T) {
 func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
 	r := NewMCPToolRegistry()
 
-	handler1 := func(ctx context.Context, input map[string]any) (string, error) {
-		return "v1", nil
+	handler1 := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return []byte("v1"), "text/plain", nil
 	}
-	handler2 := func(ctx context.Context, input map[string]any) (string, error) {
-		return "v2", nil
+	handler2 := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return []byte("v2"), "text/plain", nil
 	}
 
 	r.RegisterTool("mytool", "Version 1", nil, handler1)
@@ -68,26 +68,28 @@ func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
 	require.NotNil(t, tool)
 	require.Equal(t, "Version 2", tool.tool.Description)
 
-	result, err := tool.handler(context.Background(), nil)
+	result, contentType, err := tool.handler(context.Background(), nil)
 	require.NoError(t, err)
-	require.Equal(t, "v2", result)
+	require.Equal(t, []byte("v2"), result)
+	require.Equal(t, "text/plain", contentType)
 }
 
 func TestMCPToolRegistry_HandlerExecution(t *testing.T) {
 	r := NewMCPToolRegistry()
 
-	handler := func(ctx context.Context, input map[string]any) (string, error) {
+	handler := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
 		name, _ := input["name"].(string)
-		return "Hello, " + name, nil
+		return []byte("Hello, " + name), "text/plain", nil
 	}
 
 	r.RegisterTool("greet", "Greet tool", nil, handler)
 	tool := r.GetTool("greet")
 	require.NotNil(t, tool)
 
-	result, err := tool.handler(context.Background(), map[string]any{"name": "World"})
+	result, contentType, err := tool.handler(context.Background(), map[string]any{"name": "World"})
 	require.NoError(t, err)
-	require.Equal(t, "Hello, World", result)
+	require.Equal(t, []byte("Hello, World"), result)
+	require.Equal(t, "text/plain", contentType)
 }
 
 func TestMCPToolRegistry_InputSchema(t *testing.T) {
@@ -100,8 +102,8 @@ func TestMCPToolRegistry_InputSchema(t *testing.T) {
 		},
 	}
 
-	r.RegisterTool("fetch", "Fetch resource", schema, func(ctx context.Context, input map[string]any) (string, error) {
-		return "", nil
+	r.RegisterTool("fetch", "Fetch resource", schema, func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return nil, "", nil
 	})
 
 	tool := r.GetTool("fetch")

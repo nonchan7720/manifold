@@ -12,8 +12,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/aws"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	httphandler "github.com/nonchan7720/manifold/pkg/interfaces/http"
 	"github.com/nonchan7720/manifold/pkg/interfaces/http/middleware"
@@ -50,6 +52,23 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer storeClient.Close()
+
+	var mediaUploadService storage.MediaUploadService
+	switch globalConfig.Storage.Type {
+	case "s3":
+		awsCfg, err := aws.NewConfig(ctx)
+		if err != nil {
+			return err
+		}
+		s3Client := aws.NewS3Client(awsCfg)
+		mediaUploadService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
+		if err := mediaUploadService.AccessCheck(ctx); err != nil {
+			return err
+		}
+	default:
+		mediaUploadService = storage.NewNoopUploader()
+	}
+	mediaUploader := storage.NewMediaUploader(mediaUploadService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err
@@ -71,7 +90,7 @@ func runGatewayServer(ctx context.Context) error {
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
-	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer)
+	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, mediaUploader)
 	if err := mcpSrv.Init(ctx); err != nil {
 		return err
 	}

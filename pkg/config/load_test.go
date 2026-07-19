@@ -35,7 +35,7 @@ func TestFindProjectRoot_NotDot(t *testing.T) {
 
 func TestLoadInternal_Success(t *testing.T) {
 	// プロジェクトに config.yaml があるので loadInternal は成功するはず
-	cfg, err := loadInternal(t.Context())
+	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	// config.yaml に gateway.port: 9999 がある
@@ -46,7 +46,7 @@ func TestLoadInternal_Success(t *testing.T) {
 
 func TestLoadInternal_FileFetch_Defaults(t *testing.T) {
 	// プロジェクトの config.yaml に fileFetch セクションは無いので、既定値が適用される
-	cfg, err := loadInternal(t.Context())
+	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.Equal(t, DefaultFileFetchMaxSize, cfg.FileFetch.MaxSize)
 	require.False(t, cfg.FileFetch.AllowLocal)
@@ -57,7 +57,7 @@ func TestLoadInternal_FileFetch_EnvOverride_MaxSize(t *testing.T) {
 	// viper の SetDefault + AutomaticEnv により FILEFETCH_MAXSIZE で上書きできる
 	t.Setenv("FILEFETCH_MAXSIZE", "1048576")
 
-	cfg, err := loadInternal(t.Context())
+	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.EqualValues(t, 1048576, cfg.FileFetch.MaxSize)
 }
@@ -66,7 +66,7 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowLocal(t *testing.T) {
 	// viper の SetDefault + AutomaticEnv により FILEFETCH_ALLOWLOCAL で上書きできる
 	t.Setenv("FILEFETCH_ALLOWLOCAL", "true")
 
-	cfg, err := loadInternal(t.Context())
+	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.True(t, cfg.FileFetch.AllowLocal)
 }
@@ -76,7 +76,7 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
 	// カンマ区切りの文字列が viper 既定の StringToSliceHookFunc(",") で []string にデコードされる。
 	t.Setenv("FILEFETCH_ALLOWEDHOSTS", "files.example.com,cdn.example.com")
 
-	cfg, err := loadInternal(t.Context())
+	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"files.example.com", "cdn.example.com"}, cfg.FileFetch.AllowedHosts)
 }

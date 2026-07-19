@@ -373,7 +373,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 	extractParameter := extractParametersSwagger(operation, pathItemParams, spec)
 	original_method := strings.ToLower(method)
 
-	tool_function := func(ctx context.Context, input map[string]any) (string, error) {
+	tool_function := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
 		effective_headers := map[string]string{}
 		maps.Copy(effective_headers, headers)
 		override_auth := contexts.FromRequestAuthHeader(ctx)
@@ -388,7 +388,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			if param_value != nil && param_value != "" {
 				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
 				if err != nil {
-					return "", fmt.Errorf("invalid path parameter: %w", err)
+					return nil, "", fmt.Errorf("invalid path parameter: %w", err)
 				}
 				_url = strings.ReplaceAll(_url, "{"+param_name+"}", safe_value)
 				_url = strings.ReplaceAll(_url, "{{"+param_name+"}}", safe_value)
@@ -407,7 +407,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 
 		parsedURL, err := url.Parse(_url)
 		if err != nil {
-			return "", fmt.Errorf("error parsing URL: %w", err)
+			return nil, "", fmt.Errorf("error parsing URL: %w", err)
 		}
 		q := parsedURL.Query()
 		for k, v := range params {
@@ -493,7 +493,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			if json_body != nil {
 				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
-					return "", fmt.Errorf("error marshaling request body: %w", err)
+					return nil, "", fmt.Errorf("error marshaling request body: %w", err)
 				}
 				bodyReader = bytes.NewReader(bodyBytes)
 				bodyContentType = "application/json"
@@ -513,26 +513,26 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		case "patch":
 			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
 		default:
-			return "", fmt.Errorf("unsupported HTTP method: %s", original_method)
+			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
 
 		if err != nil {
-			return "", fmt.Errorf("error making request: %w", err)
+			return nil, "", fmt.Errorf("error making request: %w", err)
 		}
 		defer response.Body.Close() //nolint: errcheck
 
 		respBody, err := io.ReadAll(response.Body)
 		if err != nil {
-			return "", fmt.Errorf("error reading response: %w", err)
+			return nil, "", fmt.Errorf("error reading response: %w", err)
 		}
 		// 400 以上はエラーとして返す
 		if response.StatusCode >= 400 {
 			if len(respBody) == 0 {
 				respBody = []byte(http.StatusText(response.StatusCode))
 			}
-			return "", fmt.Errorf("%s", respBody)
+			return nil, "", fmt.Errorf("%s", respBody)
 		}
-		return string(respBody), nil
+		return respBody, response.Header.Get("Content-Type"), nil
 	}
 
 	return tool_function

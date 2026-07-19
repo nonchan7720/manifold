@@ -19,6 +19,8 @@ type Config struct {
 	Telemetry telemetry.Config `mapstructure:"telemetry"`
 
 	FileFetch FileFetchConfig `mapstructure:"fileFetch"`
+
+	Storage Storage `mapstructure:"storage"`
 }
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {
