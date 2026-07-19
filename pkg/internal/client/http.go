@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nonchan7720/manifold/pkg/internal/env"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -38,19 +39,14 @@ func Transport() http.RoundTripper {
 }
 
 func HTTPClient() *http.Client {
-	c := &http.Client{
-		Transport: Transport(),
-		Timeout:   10 * time.Second,
+	if env.IsLocalOrCIOrTest() {
+		c := &http.Client{
+			Transport: Transport(),
+			Timeout:   10 * time.Second,
+		}
+		return c
 	}
-	return c
-}
-
-func MergeTransport(rt http.RoundTripper) http.RoundTripper {
-	switch t := rt.(type) { //nolint: gocritic
-	case *http.Transport:
-		setTransportSetting(t)
-	}
-	return rt
+	return SafeHTTPClient()
 }
 
 func SafeHTTPClient() *http.Client {
@@ -92,34 +88,17 @@ func SafeHTTPClient() *http.Client {
 // isPrivateIP は IP アドレスがプライベート・リンクローカル・ループバック等の
 // 予約済みレンジに属するか確認する。
 func isPrivateIP(ip net.IP) bool {
-	for _, cidr := range privateIPRanges {
-		if cidr.Contains(ip) {
-			return true
-		}
+	var sharedAddressSpace = net.IPNet{
+		IP:   net.IPv4(100, 64, 0, 0),
+		Mask: net.CIDRMask(10, 32),
+	}
+
+	// 標準メソッドでカバーできる範囲をチェック
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return true
+	}
+	if sharedAddressSpace.Contains(ip) {
+		return true
 	}
 	return false
-}
-
-// privateIPRanges はプライベート・予約済み IP レンジのリスト。
-var privateIPRanges []*net.IPNet
-
-func init() {
-	privateCIDRs := []string{
-		"127.0.0.0/8",    // IPv4 ループバック
-		"::1/128",        // IPv6 ループバック
-		"10.0.0.0/8",     // プライベート
-		"172.16.0.0/12",  // プライベート
-		"192.168.0.0/16", // プライベート
-		"169.254.0.0/16", // IPv4 リンクローカル
-		"fe80::/10",      // IPv6 リンクローカル
-		"fc00::/7",       // IPv6 ユニークローカル
-		"100.64.0.0/10",  // 共有アドレス空間 (RFC 6598)
-		"0.0.0.0/8",      // 未指定
-	}
-	for _, cidr := range privateCIDRs {
-		_, network, err := net.ParseCIDR(cidr)
-		if err == nil {
-			privateIPRanges = append(privateIPRanges, network)
-		}
-	}
 }
