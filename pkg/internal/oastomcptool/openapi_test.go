@@ -65,6 +65,7 @@ func TestFetchSpecBytes_LocalFileNotFound(t *testing.T) {
 }
 
 func TestFetchSpecBytes_URL_OK(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"openapi":"3.0.0"}`)) //nolint: errcheck
@@ -77,6 +78,7 @@ func TestFetchSpecBytes_URL_OK(t *testing.T) {
 }
 
 func TestFetchSpecBytes_URL_HTTPError(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -403,7 +405,7 @@ func TestCreateToolFunction_GET(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/pets/{petId}", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets/{petId}", "get", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"petId": "42"})
 	require.NoError(t, err)
 	require.Contains(t, string(result), "42")
@@ -438,7 +440,7 @@ func TestCreateToolFunction_POST_JSONBody(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "post", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "Fido"},
 	})
@@ -467,7 +469,7 @@ func TestCreateToolFunction_POST_StringBody(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "post", op, srv.URL, nil, false)
 	// body が JSON 文字列として渡される
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": `{"name":"Fido"}`,
@@ -496,7 +498,7 @@ func TestCreateToolFunction_WithQueryParams(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "get", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"status": "available"})
 	require.NoError(t, err)
 	require.Equal(t, "available", capturedQuery)
@@ -513,9 +515,10 @@ func TestCreateToolFunction_WithAuthHeader(t *testing.T) {
 	defer srv.Close()
 
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction("/resource", "get", op, srv.URL, map[string]string{
-		"Authorization": "Bearer static-token",
-	}, false)
+	fn := CreateToolFunction(http.DefaultClient,
+		"/resource", "get", op, srv.URL, map[string]string{
+			"Authorization": "Bearer static-token",
+		}, false)
 
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
@@ -533,11 +536,12 @@ func TestCreateToolFunction_AuthOverrideFromContext(t *testing.T) {
 	defer srv.Close()
 
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction("/resource", "get", op, srv.URL, map[string]string{
-		"Authorization": "Bearer static-token",
-	}, false)
+	fn := CreateToolFunction(http.DefaultClient,
+		"/resource", "get", op, srv.URL, map[string]string{
+			"Authorization": "Bearer static-token",
+		}, false)
 
-	ctx := contexts.ToRequestAuthHeader(context.Background(), "Bearer override-token")
+	ctx := contexts.ToRequestAuthHeader(context.Background(), "override-token")
 	result, _, err := fn(ctx, map[string]any{})
 	require.NoError(t, err)
 	// コンテキストのトークンで上書きされる
@@ -553,7 +557,7 @@ func TestCreateToolFunction_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction("/missing", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/missing", "get", op, srv.URL, nil, false)
 
 	// 400以上のステータスはエラーにならず、レスポンスボディをそのまま返す
 	result, _, err := fn(context.Background(), map[string]any{})
@@ -573,7 +577,7 @@ func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/items/{id}", "get", op, "http://example.com", nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/items/{id}", "get", op, "http://example.com", nil, false)
 	// パスパラメータに "/" を含む場合エラー
 	_, _, err := fn(context.Background(), map[string]any{"id": "a/b"})
 	require.Error(t, err)
@@ -582,7 +586,7 @@ func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
 
 func TestCreateToolFunction_UnsupportedMethod(t *testing.T) {
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction("/resource", "UNKNOWN", op, "http://example.com", nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/resource", "UNKNOWN", op, "http://example.com", nil, false)
 
 	_, _, err := fn(context.Background(), map[string]any{})
 	require.Error(t, err)
@@ -618,7 +622,7 @@ func TestCreateToolFunction_FormURLEncoded(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/login", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/login", "post", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"username": "alice"})
 	require.NoError(t, err)
 	require.Contains(t, capturedContentType, "application/x-www-form-urlencoded")
@@ -633,7 +637,7 @@ func TestCreateToolFunction_DELETE(t *testing.T) {
 	defer srv.Close()
 
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction("/resource/1", "delete", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/resource/1", "delete", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
 	_ = result
@@ -1036,7 +1040,7 @@ func TestCreateToolFunction_BodyAsNonMapString(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "post", op, srv.URL, nil, false)
 	// body が非JSONの文字列（数値など）の場合
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": 42,
@@ -1064,7 +1068,7 @@ func TestCreateToolFunction_ExtractParameters_BodyInParam(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/resource", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/resource", "post", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{
 		"myBody": map[string]any{"key": "value"},
 	})
@@ -1094,7 +1098,7 @@ func TestCreateToolFunction_PATCH(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/resource/1", "patch", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/resource/1", "patch", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "new-name"},
 	})
@@ -1623,7 +1627,7 @@ func TestCreateToolFunction_Multipart_FileBase64(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": base64.StdEncoding.EncodeToString(content),
 	})
@@ -1660,7 +1664,7 @@ func TestCreateToolFunction_Multipart_FileObjectValue(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{
 			"filename":    "report.pdf",
@@ -1699,7 +1703,7 @@ func TestCreateToolFunction_Multipart_FileRawString(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{"file": raw})
 	require.NoError(t, err)
 	require.Equal(t, []byte(raw), capturedContent)
@@ -1728,7 +1732,7 @@ func TestCreateToolFunction_Multipart_MultipleFiles(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"files": []any{
 			base64.StdEncoding.EncodeToString([]byte("one")),
@@ -1762,7 +1766,7 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"metadata": map[string]any{"name": "foo", "tags": []any{"a", "b"}},
 	})
@@ -1800,7 +1804,7 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON_RestoresBracketedProper
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"metadata": map[string]any{"filter_status": "active"},
 	})
@@ -1849,7 +1853,7 @@ func TestCreateToolFunction_Multipart_NestedBinaryField_NotResolved(t *testing.T
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	thumbnailURL := urlSrv.URL + "/thumb.png"
 	_, _, err := fn(context.Background(), map[string]any{
 		"metadata": map[string]any{"thumbnail": thumbnailURL},
@@ -1893,7 +1897,7 @@ func TestCreateToolFunction_FormURLEncoded_ComplexValue(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction("/search", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/search", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"filters": map[string]any{"status": "active"},
 	})
@@ -1905,6 +1909,7 @@ func TestCreateToolFunction_FormURLEncoded_ComplexValue(t *testing.T) {
 }
 
 func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// 署名付きURLのようにURLが渡された場合はダウンロードしてストリーム書き込みする。
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
@@ -1941,7 +1946,7 @@ func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	// 署名付きURL相当（クエリ付き）
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": fileSrv.URL + "/files/report.pdf?X-Signature=abc123&Expires=9999999999",
@@ -1954,6 +1959,7 @@ func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
 }
 
 func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// オブジェクト形式で content にURLを渡した場合、filename / contentType の明示指定が優先される
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("object url content")
@@ -1989,7 +1995,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testin
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{
 			"filename":    "renamed.bin",
@@ -2025,7 +2031,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": fileSrv.URL + "/files/secret.pdf",
 	})
@@ -2058,7 +2064,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_AllowLocalFalse_RejectsHTTP(t 
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": fileSrv.URL + "/secret.txt",
 	})
@@ -2083,6 +2089,7 @@ func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP(t *testing.T) {
 }
 
 func TestFetchFileFromURL_AllowedHosts_AllowsMatchingHost(t *testing.T) {
+	t.Setenv("TEST", "true")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok")) //nolint: errcheck
 	}))
@@ -2112,6 +2119,7 @@ func TestFetchFileFromURL_AllowedHosts_DeniesNonMatchingHost(t *testing.T) {
 }
 
 func TestFetchFileFromURL_AllowedHosts_DeniesRedirectTarget(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// AllowedHosts はリダイレクト元だけでなく各ホップのリダイレクト先ホストにも適用される
 	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("target content")) //nolint: errcheck
@@ -2135,6 +2143,7 @@ func TestFetchFileFromURL_AllowedHosts_DeniesRedirectTarget(t *testing.T) {
 }
 
 func TestFetchFileFromURL_MaxSize_ContentLengthExceeded(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// Content-Length が既知の場合はボディを読む前に即座にエラーになる
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(make([]byte, 100)) //nolint: errcheck
@@ -2149,6 +2158,7 @@ func TestFetchFileFromURL_MaxSize_ContentLengthExceeded(t *testing.T) {
 }
 
 func TestFetchFileFromURL_MaxSize_StreamingExceeded(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// Content-Length が不明（chunked）な応答でも、ストリーミング中にサイズ上限が強制される
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -2176,6 +2186,7 @@ func TestFetchFileFromURL_MaxSize_StreamingExceeded(t *testing.T) {
 }
 
 func TestCreateToolFunction_Multipart_FileExplicitURLKey(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// {url: "..."} を明示指定すると fetchFileFromURL 経由で取得する
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("via explicit url key")
@@ -2205,7 +2216,7 @@ func TestCreateToolFunction_Multipart_FileExplicitURLKey(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"url": fileSrv.URL + "/f"},
 	})
@@ -2228,7 +2239,7 @@ func TestCreateToolFunction_Multipart_FileExplicitURLKey_RejectsNonHTTPValue(t *
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"url": "not-a-url"},
 	})
@@ -2260,7 +2271,7 @@ func TestCreateToolFunction_Multipart_FileExplicitBase64Key(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"base64": base64.StdEncoding.EncodeToString(content)},
 	})
@@ -2285,7 +2296,7 @@ func TestCreateToolFunction_Multipart_FileExplicitBase64Key_InvalidBase64Errors(
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"base64": "not valid base64!!!"},
 	})
@@ -2310,7 +2321,7 @@ func TestCreateToolFunction_Multipart_FileExplicitBase64Key_MaxSizeExceeded(t *t
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"base64": base64.StdEncoding.EncodeToString([]byte("this is definitely more than five bytes"))},
 	})
@@ -2342,7 +2353,7 @@ func TestCreateToolFunction_Multipart_FileExplicitTextKey(t *testing.T) {
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{"text": text},
 	})
@@ -2368,7 +2379,7 @@ func TestCreateToolFunction_Multipart_FileContentLegacy_MaxSizeExceeded(t *testi
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": "this raw string is definitely longer than five bytes",
 	})
@@ -2377,6 +2388,7 @@ func TestCreateToolFunction_Multipart_FileContentLegacy_MaxSizeExceeded(t *testi
 }
 
 func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// url / base64 / text / content が同時に指定された場合、url が最優先で使われ他は無視される
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	urlContent := []byte("from url")
@@ -2406,7 +2418,7 @@ func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(
 		},
 	})
 
-	fn := CreateToolFunction("/upload", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
 		"file": map[string]any{
 			"url":    fileSrv.URL + "/f",
@@ -2810,7 +2822,7 @@ func TestCreateToolFunction_QueryParamWithBrackets_UsesOriginalNameOnWire(t *tes
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "get", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"tag_": "cute"})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
@@ -2840,7 +2852,7 @@ func TestCreateToolFunction_PathParamWithBrackets_UsesOriginalNameOnWire(t *test
 		},
 	}
 
-	fn := CreateToolFunction("/pets/{filter[id]}", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets/{filter[id]}", "get", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"filter_id": "42"})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
@@ -2877,7 +2889,7 @@ func TestCreateToolFunction_FormURLEncodedParamWithBrackets_UsesOriginalNameOnWi
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "post", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"tag_": "cute"})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
@@ -2919,7 +2931,7 @@ func TestCreateToolFunction_MultipartParamWithBrackets_UsesOriginalNameOnWire(t 
 		},
 	}
 
-	fn := CreateToolFunction("/pets", "post", op, srv.URL, nil, false)
+	fn := CreateToolFunction(http.DefaultClient, "/pets", "post", op, srv.URL, nil, false)
 	result, _, err := fn(context.Background(), map[string]any{"tag_": "cute"})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)

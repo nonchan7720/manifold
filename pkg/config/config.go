@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"regexp"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
@@ -23,12 +24,27 @@ type Config struct {
 	Storage Storage `mapstructure:"storage"`
 }
 
+// URL パスセグメントとして使われるサーバー名として妥当な文字集合。
+// ドットは除外しつつ、既存設定で使われてきたハイフン区切りの名前を壊さないようハイフンを許可する。
+var pathRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 func (c *Config) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
 		c,
 		validation.Field(&c.Gateway),
-		validation.Field(&c.MCPServer),
+		validation.Field(&c.MCPServer, validation.By(func(value any) error {
+			mp, ok := value.(Servers)
+			if !ok {
+				return fmt.Errorf("type error: %T", value)
+			}
+			for key := range mp {
+				if !pathRegex.MatchString(key) {
+					return fmt.Errorf("key '%s' contains invalid characters", key)
+				}
+			}
+			return nil
+		})),
 		validation.Field(&c.Redis, validation.When(c.SQLite == nil, validation.Required)),
 		validation.Field(&c.SQLite, validation.When(c.Redis == nil, validation.Required)),
 	)

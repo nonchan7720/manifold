@@ -306,6 +306,7 @@ func TestBuildInputSchemaSwagger_BodyParam(t *testing.T) {
 // --- CreateToolFunctionSwagger ---
 
 func TestCreateToolFunctionSwagger_GET(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodGet, r.Method)
 		require.Equal(t, "/pets/99", r.URL.Path)
@@ -321,13 +322,14 @@ func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets/{petId}", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets/{petId}", "get", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{"petId": "99"})
 	require.NoError(t, err)
 	require.Contains(t, string(result), "99")
 }
 
 func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusCreated)
@@ -348,7 +350,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets", "post", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "Buddy"},
 	})
@@ -357,6 +359,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
+	t.Setenv("TEST", "true")
 	var capturedQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedQuery = r.URL.Query().Get("status")
@@ -372,7 +375,7 @@ func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/pets", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets", "get", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{"status": "sold"})
 	require.NoError(t, err)
 	require.Equal(t, "sold", capturedQuery)
@@ -383,7 +386,7 @@ func TestCreateToolFunctionSwagger_UnsupportedMethod(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "UNKNOWN", op, nil, spec, "http://example.com", nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "UNKNOWN", op, nil, spec, "http://example.com", nil)
 	_, _, err := fn(context.Background(), map[string]any{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported HTTP method")
@@ -397,12 +400,13 @@ func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/items/{id}", "get", op, nil, spec, "http://example.com", nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/items/{id}", "get", op, nil, spec, "http://example.com", nil)
 	_, _, err := fn(context.Background(), map[string]any{"id": "../evil"})
 	require.Error(t, err)
 }
 
 func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`bad request`)) //nolint: errcheck
@@ -412,13 +416,14 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "get", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{})
 	// Swaggerのツールは400以上をエラーとして返す
 	require.Error(t, err)
 }
 
 func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
+	t.Setenv("TEST", "true")
 	var capturedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
@@ -430,11 +435,11 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource", "get", op, nil, spec, srv.URL, map[string]string{
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource", "get", op, nil, spec, srv.URL, map[string]string{
 		"Authorization": "Bearer static",
 	})
 
-	ctx := contexts.ToRequestAuthHeader(context.Background(), "Bearer override")
+	ctx := contexts.ToRequestAuthHeader(context.Background(), "override")
 	result, _, err := fn(ctx, map[string]any{})
 	require.NoError(t, err)
 	require.Equal(t, "Bearer override", capturedAuth)
@@ -442,6 +447,7 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodDelete, r.Method)
 		w.WriteHeader(http.StatusNoContent)
@@ -451,13 +457,14 @@ func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "delete", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "delete", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
 	_ = result
 }
 
 func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPatch, r.Method)
 		w.WriteHeader(http.StatusOK)
@@ -478,7 +485,7 @@ func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "patch", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "patch", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "updated"},
 	})
@@ -746,6 +753,7 @@ func TestBuildInputSchemaSwagger_FormDataNonFile_Unchanged(t *testing.T) {
 // --- CreateToolFunctionSwagger: multipart ファイル送信（base64 / URL） ---
 
 func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
+	t.Setenv("TEST", "true")
 	content := []byte("{\"text\":\"hello swagger file\"}")
 	var capturedFilename string
 	var capturedContent []byte
@@ -770,7 +778,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": base64.StdEncoding.EncodeToString(content),
 	})
@@ -780,6 +788,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
 	content := []byte("swagger streamed file")
@@ -815,7 +824,7 @@ func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": fileSrv.URL + "/files/report.pdf?sig=abc123",
 	})
@@ -826,6 +835,7 @@ func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
+	t.Setenv("TEST", "true")
 	// file と通常フィールドが混在する場合、通常フィールドは従来通りWriteFieldされる
 	var capturedCaption string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -845,7 +855,7 @@ func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/upload", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/upload", "post", op, nil, spec, srv.URL, nil)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload":  base64.StdEncoding.EncodeToString([]byte("data")),
 		"caption": "hello",
@@ -855,6 +865,7 @@ func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
 }
 
 func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPut, r.Method)
 		w.WriteHeader(http.StatusOK)
@@ -865,13 +876,14 @@ func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 	op := &openapi2.Operation{}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/resource/1", "put", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/resource/1", "put", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
 }
 
 func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
+	t.Setenv("TEST", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		w.WriteHeader(http.StatusOK)
@@ -887,7 +899,7 @@ func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger("/login", "post", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(http.DefaultClient, "/login", "post", op, nil, spec, srv.URL, nil)
 	result, _, err := fn(context.Background(), map[string]any{
 		"username": "alice",
 		"password": "secret",

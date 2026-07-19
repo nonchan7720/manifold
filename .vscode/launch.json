@@ -11,9 +11,11 @@
       "mode": "auto",
       "program": "${workspaceFolder}/main.go",
       "args": [
-        "gateway"
+        "gateway",
+        "-c",
+        "config-test.yaml"
       ],
-      // "envFile": "${workspaceFolder}/.env",
+      "envFile": "${workspaceFolder}/.env",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     }

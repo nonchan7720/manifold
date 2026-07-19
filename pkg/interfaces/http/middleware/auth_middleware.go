@@ -52,8 +52,8 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 
 func extractBearerToken(r *http.Request) string {
 	value := r.Header.Get("Authorization")
-	if strings.HasPrefix(value, "Bearer ") {
-		return value
+	if token, ok := strings.CutPrefix(value, "Bearer "); ok {
+		return token
 	}
 	return ""
 }

@@ -16,11 +16,11 @@ func TestExtractBearerToken(t *testing.T) {
 		header   string
 		expected string
 	}{
-		{"valid bearer", "Bearer token123", "Bearer token123"},
+		{"valid bearer", "Bearer token123", "token123"},
 		{"empty header", "", ""},
 		{"basic auth", "Basic dXNlcjpwYXNz", ""},
 		{"no space after Bearer", "Bearertoken", ""},
-		{"bearer with complex token", "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig", "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig"},
+		{"bearer with complex token", "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig", "eyJhbGciOiJSUzI1NiJ9.payload.sig"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -70,7 +70,7 @@ func TestJWT_NoOAuth2_WithToken(t *testing.T) {
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusOK, rw.Code)
-	require.Equal(t, "Bearer my-token", capturedToken)
+	require.Equal(t, "my-token", capturedToken)
 }
 
 func TestJWT_NoOAuth2_NoToken(t *testing.T) {
@@ -126,7 +126,7 @@ func TestJWT_WithOAuth2_WithToken(t *testing.T) {
 	rw := httptest.NewRecorder()
 	mux.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusOK, rw.Code)
-	require.Equal(t, "Bearer oauth-token", capturedToken)
+	require.Equal(t, "oauth-token", capturedToken)
 }
 
 func TestJWT_WithOAuth2_XForwardedProto(t *testing.T) {
