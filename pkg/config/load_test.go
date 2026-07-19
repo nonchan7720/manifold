@@ -34,6 +34,9 @@ func TestFindProjectRoot_NotDot(t *testing.T) {
 }
 
 func TestLoadInternal_Success(t *testing.T) {
+	// config.yaml の mcpServers.google.oauth2 が必須にしているダミー値を設定する
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
 	// プロジェクトに config.yaml があるので loadInternal は成功するはず
 	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
@@ -45,6 +48,8 @@ func TestLoadInternal_Success(t *testing.T) {
 // --- fileFetch ---
 
 func TestLoadInternal_FileFetch_Defaults(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
 	// プロジェクトの config.yaml に fileFetch セクションは無いので、既定値が適用される
 	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
@@ -54,6 +59,8 @@ func TestLoadInternal_FileFetch_Defaults(t *testing.T) {
 }
 
 func TestLoadInternal_FileFetch_EnvOverride_MaxSize(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
 	// viper の SetDefault + AutomaticEnv により FILEFETCH_MAXSIZE で上書きできる
 	t.Setenv("FILEFETCH_MAXSIZE", "1048576")
 
@@ -63,6 +70,8 @@ func TestLoadInternal_FileFetch_EnvOverride_MaxSize(t *testing.T) {
 }
 
 func TestLoadInternal_FileFetch_EnvOverride_AllowLocal(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
 	// viper の SetDefault + AutomaticEnv により FILEFETCH_ALLOWLOCAL で上書きできる
 	t.Setenv("FILEFETCH_ALLOWLOCAL", "true")
 
@@ -72,6 +81,8 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowLocal(t *testing.T) {
 }
 
 func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
 	// viper の SetDefault + AutomaticEnv により FILEFETCH_ALLOWEDHOSTS で上書きできる。
 	// カンマ区切りの文字列が viper 既定の StringToSliceHookFunc(",") で []string にデコードされる。
 	t.Setenv("FILEFETCH_ALLOWEDHOSTS", "files.example.com,cdn.example.com")
