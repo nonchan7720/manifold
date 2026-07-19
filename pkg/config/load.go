@@ -38,18 +38,21 @@ func findProjectRoot() string {
 }
 
 // Load reads the configuration from the config.yaml file and environment variables.
-func Load(ctx context.Context) (*Config, error) {
+func Load(ctx context.Context, configName string) (*Config, error) {
 	once.Do(func() {
-		cachedConfig, errLoad = loadInternal(ctx)
+		cachedConfig, errLoad = loadInternal(ctx, configName)
 	})
 	return cachedConfig, errLoad
 }
 
-func loadInternal(ctx context.Context) (*Config, error) {
+func loadInternal(ctx context.Context, configName string) (*Config, error) {
+	if configName == "" {
+		configName = "config"
+	}
 	root := findProjectRoot()
 
 	v := viper.New()
-	v.SetConfigName("config")
+	v.SetConfigName(configName)
 	v.SetConfigType("yaml")
 	v.AddConfigPath(".")
 	v.AddConfigPath(root)

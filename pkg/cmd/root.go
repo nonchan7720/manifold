@@ -1,26 +1,29 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/spf13/cobra"
 )
 
-var globalConfig *config.Config
+var (
+	cfgFile      string
+	globalConfig *config.Config
+)
 
 var rootCmd = &cobra.Command{
-	Use:   "manifold",
-	Short: "manifold — mcp gateway service",
-	Long:  `manifold - mcp gateway service A component that combines multiple inputs into a single output`,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load(cmd.Context())
-		if err != nil {
-			return fmt.Errorf("failed resolving config: %w", err)
-		}
-		globalConfig = cfg
-		return nil
-	},
+	Use:           "manifold",
+	Short:         "manifold — mcp gateway service",
+	Long:          `manifold - mcp gateway service A component that combines multiple inputs into a single output`,
+	SilenceErrors: true,
+	SilenceUsage:  true,
+}
+
+func initialize() {
+	cfg, err := config.Load(rootCmd.Context(), cfgFile)
+	if err != nil {
+		panic(err)
+	}
+	globalConfig = cfg
 }
 
 func Execute() error {
@@ -28,6 +31,8 @@ func Execute() error {
 }
 
 func init() {
+	cobra.OnInitialize(initialize)
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 	rootCmd.AddCommand(
 		newGatewayCmd(),
 	)
