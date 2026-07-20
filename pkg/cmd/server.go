@@ -40,7 +40,7 @@ func newGatewayCmd() *cobra.Command {
 
 // storageHostURL は設定されたホスト URL を解析する。空文字や不正な値は起動を止めず、
 // 警告ログを出した上で nil(ストレージ提供の URL をそのまま使う)を返す。
-func storageHostURL(ctx context.Context, rawURL string) *url.URL {
+func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
 	if rawURL == "" {
 		return nil
 	}
@@ -52,10 +52,10 @@ func storageHostURL(ctx context.Context, rawURL string) *url.URL {
 		)
 		return nil
 	}
-	return parsedURL
+	return parsedURL.JoinPath(path)
 }
 
-func runGatewayServer(ctx context.Context) error {
+func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
@@ -86,7 +86,8 @@ func runGatewayServer(ctx context.Context) error {
 	default:
 		mediaService = storage.NewNoopUploader()
 	}
-	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL)
+	const mediaDownloadPath = "/media/download"
+	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL, mediaDownloadPath)
 	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
@@ -148,10 +149,12 @@ func runGatewayServer(ctx context.Context) error {
 		mux.Handle("/metrics", metricsHandler)
 	}
 
-	mediaHandler := &httphandler.MediaHandler{
-		ContentManager: contentManagementService,
+	if hostURL != nil {
+		mediaHandler := &httphandler.MediaHandler{
+			ContentManager: contentManagementService,
+		}
+		mux.Handle(fmt.Sprintf("%s/{id}", mediaDownloadPath), http.HandlerFunc(mediaHandler.DownloadContent))
 	}
-	mux.Handle("/media/download/{id}", http.HandlerFunc(mediaHandler.DownloadContent))
 
 	slogHandler := slog.NewMultiHandler(
 		logging.NewOTEL(logging.NewJSONHandler()),
