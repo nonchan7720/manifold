@@ -69,7 +69,18 @@ func runGatewayServer(ctx context.Context) error {
 	default:
 		mediaService = storage.NewNoopUploader()
 	}
-	hostURL, _ := url.Parse(globalConfig.Storage.HostURL)
+	var hostURL *url.URL
+	if rawURL := globalConfig.Storage.HostURL; rawURL != "" {
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			slog.WarnContext(ctx, "invalid storage host URL; using storage-provided URL",
+				slog.String("host_url", rawURL),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			hostURL = parsedURL
+		}
+	}
 	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {

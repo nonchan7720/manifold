@@ -3,6 +3,7 @@ package httphandler
 import (
 	_ "embed"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -43,7 +44,7 @@ func (m *MediaHandler) DownloadContent(w http.ResponseWriter, r *http.Request) {
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	if err != nil {
+	if _, err = io.Copy(w, body); err != nil {
 		slog.ErrorContext(ctx,
 			"failed to copy content to response",
 			logging.WithStackTrace(err)...,

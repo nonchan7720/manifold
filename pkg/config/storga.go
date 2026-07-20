@@ -4,7 +4,6 @@ import (
 	"context"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
-	"github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
 type Storage struct {
@@ -16,7 +15,6 @@ type Storage struct {
 func (c *Storage) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, c,
 		validation.Field(&c.Type, validation.In("", "s3")),
-		validation.Field(&c.HostURL, validation.When(c.HostURL != "", is.RequestURL)),
 		validation.Field(&c.S3, validation.When(c.Type == "s3", validation.Required)),
 	)
 }
