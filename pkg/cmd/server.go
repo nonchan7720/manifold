@@ -38,6 +38,23 @@ func newGatewayCmd() *cobra.Command {
 	}
 }
 
+// storageHostURL は設定されたホスト URL を解析する。空文字や不正な値は起動を止めず、
+// 警告ログを出した上で nil(ストレージ提供の URL をそのまま使う)を返す。
+func storageHostURL(ctx context.Context, rawURL string) *url.URL {
+	if rawURL == "" {
+		return nil
+	}
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		slog.WarnContext(ctx, "invalid storage host URL; using storage-provided URL",
+			slog.String("host_url", rawURL),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	return parsedURL
+}
+
 func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -69,18 +86,7 @@ func runGatewayServer(ctx context.Context) error {
 	default:
 		mediaService = storage.NewNoopUploader()
 	}
-	var hostURL *url.URL
-	if rawURL := globalConfig.Storage.HostURL; rawURL != "" {
-		parsedURL, err := url.Parse(rawURL)
-		if err != nil {
-			slog.WarnContext(ctx, "invalid storage host URL; using storage-provided URL",
-				slog.String("host_url", rawURL),
-				slog.String("error", err.Error()),
-			)
-		} else {
-			hostURL = parsedURL
-		}
-	}
+	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL)
 	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
