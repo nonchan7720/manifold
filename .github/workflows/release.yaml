@@ -31,7 +31,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: generate-token
         with:
-          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_PEM }}
           owner: ${{ github.repository_owner }}
       - name: Run release-please
@@ -60,9 +60,14 @@ jobs:
           echo "VERSION=${{ github.sha }}" >> "$GITHUB_ENV"
       - name: output release tag name
         id: output_tag
+        env:
+          VERSION: ${{ env.VERSION }}
         run: |
-          echo "tag=${{ env.VERSION }}" >> "$GITHUB_OUTPUT"
-
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Tag version"
+            printf '`%s`\n' "${VERSION}"
+          } >> "${GITHUB_STEP_SUMMARY}"
   docker-build:
     needs:
       - release-please
@@ -145,7 +150,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: generate-token
         with:
-          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_PEM }}
           owner: ${{ github.repository_owner }}
       - name: Set up Go
