@@ -7,8 +7,9 @@ import (
 )
 
 type Storage struct {
-	Type string `mapstructure:"type"`
-	S3   *S3    `mapstructure:"s3"`
+	Type    string `mapstructure:"type"`
+	HostURL string `mapstructure:"hostURL"`
+	S3      *S3    `mapstructure:"s3"`
 }
 
 func (c *Storage) ValidateWithContext(ctx context.Context) error {

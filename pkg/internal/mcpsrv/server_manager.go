@@ -24,10 +24,10 @@ type MCPServer struct {
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
 
-	mediaUploader *storage.MediaUpload
+	mediaUploader *storage.ContentManagementService
 }
 
-func NewMCPServer(servers config.Servers, mediaUploader *storage.MediaUpload) *MCPServer {
+func NewMCPServer(servers config.Servers, mediaUploader *storage.ContentManagementService) *MCPServer {
 	return &MCPServer{
 		servers:        servers,
 		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
@@ -95,7 +95,7 @@ func registerAPI(
 	spec, baseURL string,
 	headers map[string]string,
 	srv *mcp.Server,
-	mediaUploader storage.MediaUploadService,
+	mediaUploader storage.MediaService,
 	opts ...RegisterOpenAPIOption,
 ) error {
 	// OpenAPI モード: 既存ロジック
@@ -143,7 +143,7 @@ func registerAPI(
 	return nil
 }
 
-func generateContent(ctx context.Context, contentType string, data []byte, mediaUploader storage.MediaUploadService) ([]mcp.Content, error) {
+func generateContent(ctx context.Context, contentType string, data []byte, mediaService storage.MediaService) ([]mcp.Content, error) {
 	baseType := strings.SplitN(contentType, ";", 2)[0]
 	baseType = strings.TrimSpace(baseType)
 	textContent := []string{
@@ -154,7 +154,7 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 		"application/x-yaml",
 		"application/yml",
 	}
-	isEnabled := mediaUploader.Enabled()
+	isEnabled := mediaService.Enabled()
 	switch {
 	case strings.HasPrefix(baseType, "text/"),
 		slices.Contains(textContent, baseType):
@@ -167,7 +167,7 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 	case strings.HasPrefix(baseType, "image/"):
 		var content mcp.Content
 		if isEnabled {
-			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			id, url, err := mediaService.SaveContent(ctx, data, contentType)
 			if err != nil {
 				return nil, err
 			}
@@ -187,7 +187,7 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 	case strings.HasPrefix(baseType, "audio/"):
 		var content mcp.Content
 		if isEnabled {
-			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			id, url, err := mediaService.SaveContent(ctx, data, contentType)
 			if err != nil {
 				return nil, err
 			}
@@ -207,7 +207,7 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 	default:
 		var content mcp.Content
 		if isEnabled {
-			id, url, err := mediaUploader.Do(ctx, data, contentType)
+			id, url, err := mediaService.SaveContent(ctx, data, contentType)
 			if err != nil {
 				return nil, err
 			}

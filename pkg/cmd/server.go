@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/signal"
 	"syscall"
 	"time"
@@ -37,7 +38,24 @@ func newGatewayCmd() *cobra.Command {
 	}
 }
 
-func runGatewayServer(ctx context.Context) error {
+// storageHostURL は設定されたホスト URL を解析する。空文字や不正な値は起動を止めず、
+// 警告ログを出した上で nil(ストレージ提供の URL をそのまま使う)を返す。
+func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
+	if rawURL == "" {
+		return nil
+	}
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		slog.WarnContext(ctx, "invalid storage host URL; using storage-provided URL",
+			slog.String("host_url", rawURL),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	return parsedURL.JoinPath(path)
+}
+
+func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
@@ -53,7 +71,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer storeClient.Close()
 
-	var mediaUploadService storage.MediaUploadService
+	var mediaService storage.MediaService
 	switch globalConfig.Storage.Type {
 	case "s3":
 		awsCfg, err := aws.NewConfig(ctx)
@@ -61,14 +79,16 @@ func runGatewayServer(ctx context.Context) error {
 			return err
 		}
 		s3Client := aws.NewS3Client(awsCfg)
-		mediaUploadService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
-		if err := mediaUploadService.AccessCheck(ctx); err != nil {
+		mediaService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
+		if err := mediaService.AccessCheck(ctx); err != nil {
 			return err
 		}
 	default:
-		mediaUploadService = storage.NewNoopUploader()
+		mediaService = storage.NewNoopUploader()
 	}
-	mediaUploader := storage.NewMediaUploader(mediaUploadService)
+	const mediaDownloadPath = "/media/download"
+	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL, mediaDownloadPath)
+	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err
@@ -90,7 +110,7 @@ func runGatewayServer(ctx context.Context) error {
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
-	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, mediaUploader)
+	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService)
 	if err := mcpSrv.Init(ctx); err != nil {
 		return err
 	}
@@ -127,6 +147,13 @@ func runGatewayServer(ctx context.Context) error {
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
+	}
+
+	if hostURL != nil {
+		mediaHandler := &httphandler.MediaHandler{
+			ContentManager: contentManagementService,
+		}
+		mux.Handle(fmt.Sprintf("%s/{id}", mediaDownloadPath), http.HandlerFunc(mediaHandler.DownloadContent))
 	}
 
 	slogHandler := slog.NewMultiHandler(

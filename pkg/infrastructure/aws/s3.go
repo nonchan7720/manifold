@@ -12,7 +12,7 @@ import (
 )
 
 type S3ClientImpl struct {
-	s3Client       *s3.Client
+	*s3.Client
 	transferClient *transfermanager.Client
 	presignClient  *s3.PresignClient
 }
@@ -25,7 +25,7 @@ func NewS3Client(cfg awsSDK.Config) *S3ClientImpl {
 	presignClient := s3.NewPresignClient(s3Client)
 
 	return &S3ClientImpl{
-		s3Client:       s3Client,
+		Client:         s3Client,
 		transferClient: transferClient,
 		presignClient:  presignClient,
 	}
@@ -57,7 +57,7 @@ func (c *S3ClientImpl) PresignGetObject(
 }
 
 func (c *S3ClientImpl) AccessCheck(ctx context.Context, bucket string) error {
-	_, err := c.s3Client.ListObjects(ctx, &s3.ListObjectsInput{
+	_, err := c.ListObjects(ctx, &s3.ListObjectsInput{
 		Bucket:  awsSDK.String(bucket),
 		MaxKeys: awsSDK.Int32(1),
 	})

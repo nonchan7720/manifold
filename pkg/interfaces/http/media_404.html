@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 Not Found | manifold</title>
+  <style>
+    /* ベーススタイル */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      overflow: hidden;
+    }
+
+    /* 背景の幾何学的な装飾（Manifoldをイメージ） */
+    .background-shape {
+      position: absolute;
+      width: 600px;
+      height: 600px;
+      background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
+      opacity: 0.1;
+      animation: morph 15s ease-in-out infinite alternate;
+      z-index: -1;
+    }
+
+    @keyframes morph {
+      0% {
+        border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
+        transform: rotate(0deg) scale(1);
+      }
+
+      50% {
+        border-radius: 50% 50% 30% 70% / 50% 50% 70% 30%;
+        transform: rotate(45deg) scale(1.1);
+      }
+
+      100% {
+        border-radius: 70% 30% 50% 50% / 30% 70% 50% 50%;
+        transform: rotate(90deg) scale(1);
+      }
+    }
+
+    /* コンテンツエリア */
+    .container {
+      max-width: 600px;
+      padding: 40px 20px;
+      z-index: 1;
+    }
+
+    .error-code {
+      font-size: 8rem;
+      font-weight: 800;
+      line-height: 1;
+      margin: 0;
+      background: linear-gradient(to right, #38bdf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -4px;
+    }
+
+    .error-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 10px 0 20px;
+      color: #e2e8f0;
+    }
+
+    .error-message {
+      font-size: 1rem;
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 40px;
+    }
+
+    /* ボタンデザイン */
+    .btn-home {
+      display: inline-block;
+      padding: 14px 32px;
+      background-color: #3b82f6;
+      color: #ffffff;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    }
+
+    .btn-home:hover {
+      background-color: #2563eb;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+    }
+
+    .links {
+      margin-top: 30px;
+    }
+
+    .links a {
+      color: #64748b;
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin: 0 10px;
+      transition: color 0.3s;
+    }
+
+    .links a:hover {
+      color: #94a3b8;
+      text-decoration: underline;
+    }
+
+    /* スマホ対応 */
+    @media (max-width: 480px) {
+      .error-code {
+        font-size: 6rem;
+      }
+
+      .error-title {
+        font-size: 1.25rem;
+      }
+
+      .background-shape {
+        width: 300px;
+        height: 300px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <!-- 背景のアニメーション装飾 -->
+  <div class="background-shape"></div>
+
+  <div class="container">
+    <h1 class="error-code">404</h1>
+    <h2 class="error-title">Lost in the Manifold...</h2>
+    <p class="error-message">
+      アクセスしようとしたページは存在しないか、<br>
+      すでにURLが変更・削除された可能性があります。
+    </p>
+
+    <a href="/" class="btn-home">トップページへ戻る</a>
+  </div>
+</body>
+
+</html>
