@@ -57,7 +57,7 @@ func (c *S3ClientImpl) PresignGetObject(
 }
 
 func (c *S3ClientImpl) AccessCheck(ctx context.Context, bucket string) error {
-	_, err := c.Client.ListObjects(ctx, &s3.ListObjectsInput{
+	_, err := c.ListObjects(ctx, &s3.ListObjectsInput{
 		Bucket:  awsSDK.String(bucket),
 		MaxKeys: awsSDK.Int32(1),
 	})
