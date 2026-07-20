@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/signal"
 	"syscall"
 	"time"
@@ -53,7 +54,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer storeClient.Close()
 
-	var mediaUploadService storage.MediaUploadService
+	var mediaService storage.MediaService
 	switch globalConfig.Storage.Type {
 	case "s3":
 		awsCfg, err := aws.NewConfig(ctx)
@@ -61,14 +62,15 @@ func runGatewayServer(ctx context.Context) error {
 			return err
 		}
 		s3Client := aws.NewS3Client(awsCfg)
-		mediaUploadService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
-		if err := mediaUploadService.AccessCheck(ctx); err != nil {
+		mediaService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
+		if err := mediaService.AccessCheck(ctx); err != nil {
 			return err
 		}
 	default:
-		mediaUploadService = storage.NewNoopUploader()
+		mediaService = storage.NewNoopUploader()
 	}
-	mediaUploader := storage.NewMediaUploader(mediaUploadService)
+	hostURL, _ := url.Parse(globalConfig.Storage.HostURL)
+	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
 	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err
@@ -90,7 +92,7 @@ func runGatewayServer(ctx context.Context) error {
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
-	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, mediaUploader)
+	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService)
 	if err := mcpSrv.Init(ctx); err != nil {
 		return err
 	}
@@ -128,6 +130,11 @@ func runGatewayServer(ctx context.Context) error {
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
 	}
+
+	mediaHandler := &httphandler.MediaHandler{
+		ContentManager: contentManagementService,
+	}
+	mux.Handle("/media/download/{id}", http.HandlerFunc(mediaHandler.DownloadContent))
 
 	slogHandler := slog.NewMultiHandler(
 		logging.NewOTEL(logging.NewJSONHandler()),

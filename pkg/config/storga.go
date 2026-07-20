@@ -4,16 +4,19 @@ import (
 	"context"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
 type Storage struct {
-	Type string `mapstructure:"type"`
-	S3   *S3    `mapstructure:"s3"`
+	Type    string `mapstructure:"type"`
+	HostURL string `mapstructure:"hostURL"`
+	S3      *S3    `mapstructure:"s3"`
 }
 
 func (c *Storage) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, c,
 		validation.Field(&c.Type, validation.In("", "s3")),
+		validation.Field(&c.HostURL, validation.When(c.HostURL != "", is.RequestURL)),
 		validation.Field(&c.S3, validation.When(c.Type == "s3", validation.Required)),
 	)
 }
