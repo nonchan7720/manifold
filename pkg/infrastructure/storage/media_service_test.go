@@ -3,23 +3,29 @@ package storage
 import (
 	"context"
 	"encoding/base64"
+	"io"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-type fakeMediaUploadService struct {
+type fakeMediaService struct {
 	enabled bool
 	doFunc  func(ctx context.Context, data []byte, contentType string) (string, string, error)
 }
 
-func (f *fakeMediaUploadService) Do(ctx context.Context, data []byte, contentType string) (string, string, error) {
+func (f *fakeMediaService) SaveContent(ctx context.Context, data []byte, contentType string) (string, string, error) {
 	return f.doFunc(ctx, data, contentType)
 }
 
-func (f *fakeMediaUploadService) AccessCheck(ctx context.Context) error { return nil }
+func (f *fakeMediaService) AccessCheck(ctx context.Context) error { return nil }
 
-func (f *fakeMediaUploadService) Enabled() bool { return f.enabled }
+func (f *fakeMediaService) Enabled() bool { return f.enabled }
+
+func (f *fakeMediaService) DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error) {
+	return nil, "", nil
+}
 
 func TestDecodeBase64(t *testing.T) {
 	t.Run("パディングを含むデータは実際の長さに切り詰められる", func(t *testing.T) {
@@ -41,15 +47,15 @@ func TestMediaUpload_Do(t *testing.T) {
 		encoded := []byte(base64.URLEncoding.EncodeToString(raw))
 
 		var gotData []byte
-		service := &fakeMediaUploadService{
+		service := &fakeMediaService{
 			doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
 				gotData = data
 				return "id", "https://example.com/id", nil
 			},
 		}
-
-		uploader := NewMediaUploader(service)
-		id, url, err := uploader.Do(context.Background(), encoded, "image/png")
+		u, _ := url.Parse("https://example.com")
+		uploader := NewContentManagementService(u, service)
+		id, url, err := uploader.SaveContent(context.Background(), encoded, "image/png")
 		require.NoError(t, err)
 		require.Equal(t, "id", id)
 		require.Equal(t, "https://example.com/id", url)
@@ -60,15 +66,16 @@ func TestMediaUpload_Do(t *testing.T) {
 		raw := []byte("not-valid-base64!!!")
 
 		var gotData []byte
-		service := &fakeMediaUploadService{
+		service := &fakeMediaService{
 			doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
 				gotData = data
 				return "id", "https://example.com/id", nil
 			},
 		}
 
-		uploader := NewMediaUploader(service)
-		_, _, err := uploader.Do(context.Background(), raw, "image/png")
+		u, _ := url.Parse("https://example.com")
+		uploader := NewContentManagementService(u, service)
+		_, _, err := uploader.SaveContent(context.Background(), raw, "image/png")
 		require.NoError(t, err)
 		require.Equal(t, raw, gotData)
 	})
