@@ -14,7 +14,7 @@ import (
 
 var (
 	//go:embed media_404.html
-	mediaNotFoundPage string
+	mediaNotFoundPage []byte
 )
 
 type MediaHandler struct {
@@ -28,7 +28,7 @@ func (m *MediaHandler) DownloadContent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		err = fmt.Errorf("%s", http.StatusText(http.StatusNotFound))
-		http.Error(w, mediaNotFoundPage, http.StatusNotFound)
+		renderNotFoundPage(w)
 		return
 	}
 	body, contentType, err := m.ContentManager.DownloadContent(ctx, id)
@@ -37,7 +37,7 @@ func (m *MediaHandler) DownloadContent(w http.ResponseWriter, r *http.Request) {
 			"failed to content download",
 			logging.WithStackTrace(err)...,
 		)
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		renderNotFoundPage(w)
 		return
 	}
 	defer body.Close()
@@ -51,4 +51,10 @@ func (m *MediaHandler) DownloadContent(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+}
+
+func renderNotFoundPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write(mediaNotFoundPage) //nolint: errcheck
 }
