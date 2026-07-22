@@ -14,7 +14,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/n-creativesystem/go-packages/lib/trace v1.2.0
-	github.com/netinternet/remoteaddr v0.0.2
+	github.com/netinternet/remoteaddr v0.2.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/extra/redisotel/v9 v9.21.0
 	github.com/redis/go-redis/v9 v9.21.0
