@@ -58,12 +58,15 @@ type Gateway struct {
 	Cert string `mapstructure:"cert"`
 
 	EncryptKey string `mapstructure:"encryptKey"`
+
+	ToolSearch ToolSearchConfig `mapstructure:"toolSearch"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
 		&c,
+		validation.Field(&c.ToolSearch),
 		validation.Field(&c.EncryptKey,
 			validation.Required,
 			validation.When(c.EncryptKey != "",

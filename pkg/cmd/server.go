@@ -110,7 +110,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	const pathServerName = "server_name"
-	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService)
+	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService, mcpsrv.WithToolSearchConfig(globalConfig.Gateway.ToolSearch))
 	if err := mcpSrv.Init(ctx); err != nil {
 		return err
 	}

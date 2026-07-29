@@ -92,6 +92,75 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
 	require.Equal(t, []string{"files.example.com", "cdn.example.com"}, cfg.FileFetch.AllowedHosts)
 }
 
+// --- gateway.toolSearch ---
+
+func TestLoadInternal_ToolSearch_Defaults(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// プロジェクトの config.yaml に gateway.toolSearch セクションは無いので、既定値が適用される
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, DefaultToolSearchThreshold, cfg.Gateway.ToolSearch.Threshold)
+	require.Equal(t, DefaultToolSearchLimit, cfg.Gateway.ToolSearch.DefaultLimit)
+	require.Equal(t, ToolSearchResultFormatDefault, cfg.Gateway.ToolSearch.ResultFormat)
+	require.Equal(t, DefaultToolSearchDigestMaxTools, cfg.Gateway.ToolSearch.DigestMaxTools)
+}
+
+func TestLoadInternal_ToolSearch_EnvOverride_DigestMaxTools(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS", "20")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, 20, cfg.Gateway.ToolSearch.DigestMaxTools)
+}
+
+// TestLoadInternal_ToolSearch_ExplicitZeroDigestMaxTools_ReturnsValidationError は、
+// digestMaxTools が明示的に 0 に設定された場合、WithDefaults による -1 への正規化より前に
+// validation が実行され、確実にエラーとして検出されることを確認する
+// （load.go 内で validation.ValidateWithContext を WithDefaults の defensive fallback より
+// 前に実行する順序に依存する）。
+func TestLoadInternal_ToolSearch_ExplicitZeroDigestMaxTools_ReturnsValidationError(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS", "0")
+
+	_, err := loadInternal(t.Context(), "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be -1 (all) or a positive number")
+}
+
+func TestLoadInternal_ToolSearch_EnvOverride_ResultFormat(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("GATEWAY_TOOLSEARCH_RESULTFORMAT", "claude")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, ToolSearchResultFormatClaude, cfg.Gateway.ToolSearch.ResultFormat)
+}
+
+func TestLoadInternal_ToolSearch_EnvOverride_Threshold(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("GATEWAY_TOOLSEARCH_THRESHOLD", "5")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, 5, cfg.Gateway.ToolSearch.Threshold)
+}
+
+func TestLoadInternal_ToolSearch_EnvOverride_DefaultLimit(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("GATEWAY_TOOLSEARCH_DEFAULTLIMIT", "3")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, 3, cfg.Gateway.ToolSearch.DefaultLimit)
+}
+
 func TestFileFetchConfig_WithDefaults(t *testing.T) {
 	tests := []struct {
 		name string

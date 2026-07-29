@@ -13,6 +13,9 @@ func newValidConfigWithServers(servers Servers) *Config {
 	return &Config{
 		Gateway: Gateway{
 			EncryptKey: validEncryptKey,
+			// ToolSearchConfig{}.WithDefaults() を経由し、DigestMaxTools が -1
+			// （ゼロ値のまま渡すと ValidateWithContext が常にエラーにする）になるようにする。
+			ToolSearch: ToolSearchConfig{}.WithDefaults(),
 		},
 		MCPServer: servers,
 		SQLite:    &SQLiteConfig{Path: ":memory:"},
@@ -79,4 +82,20 @@ func TestConfig_ValidateWithContext_ServerKey_Space_Invalid(t *testing.T) {
 	})
 	err := cfg.ValidateWithContext(t.Context())
 	require.Error(t, err)
+}
+
+// --- gateway.toolSearch のバリデーションが Config 経由でも効くこと ---
+
+func TestConfig_ValidateWithContext_ToolSearch_NegativeThreshold_Invalid(t *testing.T) {
+	cfg := newValidConfigWithServers(Servers{})
+	cfg.Gateway.ToolSearch = ToolSearchConfig{Threshold: -1}
+	err := cfg.ValidateWithContext(t.Context())
+	require.Error(t, err)
+}
+
+func TestConfig_ValidateWithContext_ToolSearch_Defaults_Valid(t *testing.T) {
+	cfg := newValidConfigWithServers(Servers{})
+	cfg.Gateway.ToolSearch = ToolSearchConfig{}.WithDefaults()
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err)
 }

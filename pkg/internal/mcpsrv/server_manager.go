@@ -13,6 +13,7 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/internal/toolsearch"
 	"github.com/nonchan7720/manifold/pkg/version"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -25,16 +26,36 @@ type MCPServer struct {
 	backendClients map[string]*MCPBackendClient
 
 	mediaUploader *storage.ContentManagementService
+
+	catalog       *toolsearch.Catalog
+	toolSearchCfg config.ToolSearchConfig
 }
 
-func NewMCPServer(servers config.Servers, mediaUploader *storage.ContentManagementService) *MCPServer {
-	return &MCPServer{
+// MCPServerOption は NewMCPServer の任意設定を行うオプション関数。
+type MCPServerOption func(*MCPServer)
+
+// WithToolSearchConfig は tool_search 機能の閾値・デフォルト検索件数を設定する。
+// 未指定の場合は config.ToolSearchConfig{}.WithDefaults() が適用される。
+func WithToolSearchConfig(cfg config.ToolSearchConfig) MCPServerOption {
+	return func(s *MCPServer) {
+		s.toolSearchCfg = cfg.WithDefaults()
+	}
+}
+
+func NewMCPServer(servers config.Servers, mediaUploader *storage.ContentManagementService, opts ...MCPServerOption) *MCPServer {
+	s := &MCPServer{
 		servers:        servers,
 		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
 		mediaUploader:  mediaUploader,
+		catalog:        toolsearch.NewCatalog(),
+		toolSearchCfg:  config.ToolSearchConfig{}.WithDefaults(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *MCPServer) Init(ctx context.Context) (rErr error) {
@@ -47,9 +68,10 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続のためクライアントを登録するのみ
 			s.backendClients[name] = &MCPBackendClient{
-				name: name,
-				cfg:  server,
-				srv:  srv,
+				name:    name,
+				cfg:     server,
+				srv:     srv,
+				catalog: s.catalog,
 			}
 		} else {
 			// OpenAPI モード
@@ -58,11 +80,15 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				WithOAuth2(server.OAuth2),
 				WithTokenExchange(server.TokenExchange),
 			}
-			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader, opts...)
+			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader, name, s.catalog, opts...)
 			if err != nil {
 				return err
 			}
 		}
+
+		registerToolSearch(srv, name, s.catalog, s.toolSearchCfg)
+		srv.AddReceivingMiddleware(hideToolsMiddleware(name, s.catalog, s.toolSearchCfg))
+
 		s.appSrv[name] = srv
 	}
 	return nil
@@ -96,6 +122,8 @@ func registerAPI(
 	headers map[string]string,
 	srv *mcp.Server,
 	mediaUploader storage.MediaService,
+	serverName string,
+	catalog *toolsearch.Catalog,
 	opts ...RegisterOpenAPIOption,
 ) error {
 	// OpenAPI モード: 既存ロジック
@@ -105,6 +133,11 @@ func registerAPI(
 	}
 	tools := register.ListTools()
 	for _, tool := range tools {
+		catalog.Add(serverName, toolsearch.ToolDef{
+			Name:        tool.tool.Name,
+			Description: tool.tool.Description,
+			InputSchema: tool.tool.InputSchema,
+		})
 		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
 			spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
 			ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))

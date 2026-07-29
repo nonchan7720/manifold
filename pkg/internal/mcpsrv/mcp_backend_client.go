@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/toolsearch"
 	"github.com/nonchan7720/manifold/pkg/version"
 )
 
@@ -20,6 +22,8 @@ type MCPBackendClient struct {
 	name string
 	cfg  *config.Server
 	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
+
+	catalog *toolsearch.Catalog
 
 	mu        sync.Mutex
 	session   *mcp.ClientSession
@@ -126,6 +130,17 @@ func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.Clien
 	}
 	for _, tool := range result.Tools {
 		t := tool
+		if t.Name == toolSearchName {
+			// 合成ツール tool_search の上書きを防ぐため、上流に同名のツールがあっても登録しない。
+			slog.WarnContext(ctx, "backend upstream tool name collides with synthetic tool_search; skipping registration",
+				slog.String("backend", c.name))
+			continue
+		}
+		c.catalog.Add(c.name, toolsearch.ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
 		c.srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return session.CallTool(ctx, &mcp.CallToolParams{
 				Name:      req.Params.Name,

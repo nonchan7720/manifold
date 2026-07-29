@@ -70,6 +70,10 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("fileFetch.maxSize", DefaultFileFetchMaxSize)
 	v.SetDefault("fileFetch.allowLocal", false)
 	v.SetDefault("fileFetch.allowedHosts", []string{})
+	v.SetDefault("gateway.toolSearch.threshold", DefaultToolSearchThreshold)
+	v.SetDefault("gateway.toolSearch.defaultLimit", DefaultToolSearchLimit)
+	v.SetDefault("gateway.toolSearch.resultFormat", ToolSearchResultFormatDefault)
+	v.SetDefault("gateway.toolSearch.digestMaxTools", DefaultToolSearchDigestMaxTools)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
@@ -92,16 +96,27 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
 
-	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
-	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
-	conf.FileFetch = conf.FileFetch.WithDefaults()
-
 	for name, srv := range conf.MCPServer {
 		srv.Name = name
 	}
 
+	// Validate before applying the defensive WithDefaults fallbacks below. This matters for
+	// gateway.toolSearch.digestMaxTools: an explicit `digestMaxTools: 0` in the config file
+	// (or the equivalent env var) must be rejected as a configuration error rather than
+	// silently normalized to -1 by WithDefaults — see ToolSearchConfig.DigestMaxTools's doc
+	// comment. Since v.SetDefault above already fills in every gateway.toolSearch.* default
+	// during Unmarshal when the key is omitted, validation here sees the same values
+	// WithDefaults would otherwise have produced for the omitted case anyway.
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
 	}
+
+	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
+	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
+	conf.FileFetch = conf.FileFetch.WithDefaults()
+
+	// Defensive fallback: same reasoning as FileFetch above, for gateway.toolSearch.
+	conf.Gateway.ToolSearch = conf.Gateway.ToolSearch.WithDefaults()
+
 	return &conf, nil
 }
