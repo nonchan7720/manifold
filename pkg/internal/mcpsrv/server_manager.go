@@ -133,6 +133,12 @@ func registerAPI(
 	}
 	tools := register.ListTools()
 	for _, tool := range tools {
+		if tool.tool.Name == toolSearchName {
+			// 合成ツール tool_search の上書きを防ぐため、上流に同名のツールがあっても登録しない。
+			slog.WarnContext(ctx, "upstream tool name collides with synthetic tool_search; skipping registration",
+				slog.String("server", serverName))
+			continue
+		}
 		catalog.Add(serverName, toolsearch.ToolDef{
 			Name:        tool.tool.Name,
 			Description: tool.tool.Description,
