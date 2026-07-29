@@ -5,7 +5,13 @@ import "regexp"
 // searchRegexp は query を大文字小文字を区別しない正規表現としてコンパイルし、
 // name / description / 引数名 / 引数の説明のいずれかにマッチしたドキュメントを
 // 元の順序のまま limit 件返す。不正な正規表現の場合はコンパイルエラーをそのまま返す。
+// query が空文字の場合、空パターンは全文字列にマッチしてしまうため、bm25/fuzzy と
+// 挙動を揃えて早期に nil（該当なし）を返す。
 func searchRegexp(docs []ToolDef, query string, limit int) ([]ToolDef, error) {
+	if query == "" {
+		return nil, nil
+	}
+
 	re, err := regexp.Compile("(?i)" + query)
 	if err != nil {
 		return nil, err
