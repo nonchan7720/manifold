@@ -3,23 +3,26 @@ package toolsearch
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
 // Catalog は全 mcpServers 分のツール定義を集約する。集計（Total）は全サーバー横断、
 // 検索（Search）はサーバー単位のスコープで行う。
 type Catalog struct {
-	mu       sync.RWMutex
-	byServer map[string][]ToolDef
+	mu        sync.RWMutex
+	byServer  map[string][]ToolDef
+	bm25Cache map[string][]bm25Doc
 }
 
 // NewCatalog は空の Catalog を生成する。
 func NewCatalog() *Catalog {
-	return &Catalog{byServer: map[string][]ToolDef{}}
+	return &Catalog{byServer: map[string][]ToolDef{}, bm25Cache: map[string][]bm25Doc{}}
 }
 
 // Add は指定サーバーにツール定義を追加する。同名のツールが既に存在する場合は
-// 二重計上せず内容を置き換える。
+// 二重計上せず内容を置き換える。BM25 用の前処理キャッシュ（bm25Cache）は
+// 内容が古くなるため、対象サーバーの分を破棄する。
 func (c *Catalog) Add(server string, defs ...ToolDef) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -38,6 +41,7 @@ func (c *Catalog) Add(server string, defs ...ToolDef) {
 		existing = append(existing, d)
 	}
 	c.byServer[server] = existing
+	delete(c.bm25Cache, server)
 }
 
 // Total は全サーバー合計のツール数を返す。
@@ -83,20 +87,44 @@ func (c *Catalog) Digest(server string) []DigestEntry {
 }
 
 // Search は指定サーバーのスコープ内でツール定義を検索する。method が空文字の場合は
-// bm25 として扱う。未知の method はエラーを返す。
+// bm25 として扱う。method の大文字小文字は区別しない。未知の method はエラーを返す。
 func (c *Catalog) Search(server, query string, method Method, limit int) ([]ToolDef, error) {
-	c.mu.RLock()
-	docs := append([]ToolDef(nil), c.byServer[server]...)
-	c.mu.RUnlock()
-
-	switch method {
+	switch Method(strings.ToLower(string(method))) {
 	case "", MethodBM25:
-		return searchBM25(docs, query, limit), nil
+		return searchBM25Docs(c.bm25Docs(server), query, limit), nil
 	case MethodRegexp:
-		return searchRegexp(docs, query, limit)
+		return searchRegexp(c.docsFor(server), query, limit)
 	case MethodFuzzy:
-		return searchFuzzy(docs, query, limit), nil
+		return searchFuzzy(c.docsFor(server), query, limit), nil
 	default:
 		return nil, fmt.Errorf("unknown tool_search method: %s", method)
 	}
+}
+
+// docsFor は指定サーバーのツール定義のスナップショットを返す。
+func (c *Catalog) docsFor(server string) []ToolDef {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]ToolDef(nil), c.byServer[server]...)
+}
+
+// bm25Docs は指定サーバーの BM25 前処理済みドキュメント集合を返す。Add で当該
+// サーバーのツールが変更されるまでキャッシュを再利用し、tool_search 呼び出しの
+// たびにトークナイズをやり直すコストを避ける。
+func (c *Catalog) bm25Docs(server string) []bm25Doc {
+	c.mu.RLock()
+	if bdocs, ok := c.bm25Cache[server]; ok {
+		c.mu.RUnlock()
+		return bdocs
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if bdocs, ok := c.bm25Cache[server]; ok {
+		return bdocs
+	}
+	bdocs := buildBM25Docs(c.byServer[server])
+	c.bm25Cache[server] = bdocs
+	return bdocs
 }

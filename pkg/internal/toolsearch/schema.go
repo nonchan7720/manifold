@@ -69,6 +69,34 @@ func walkSchemaForSearchTexts(schema map[string]any, depth int, texts *[]string)
 	if itemsRaw, ok := schema["items"]; ok {
 		if itemsMap, ok := asSchemaMap(itemsRaw); ok {
 			walkSchemaForSearchTexts(itemsMap, depth+1, texts)
+		} else if itemSchemas, ok := asSchemaMapSlice(itemsRaw); ok {
+			for _, itemMap := range itemSchemas {
+				walkSchemaForSearchTexts(itemMap, depth+1, texts)
+			}
 		}
 	}
+}
+
+// asSchemaMapSlice は tuple 形式の items（`"items": [{...}, {...}]`）を
+// []map[string]any として解釈する。既に []any であれば各要素を asSchemaMap で
+// map 化し、それ以外は JSON ラウンドトリップでのフォールバックを試みる。
+func asSchemaMapSlice(items any) ([]map[string]any, bool) {
+	arr, ok := items.([]any)
+	if !ok {
+		data, err := json.Marshal(items)
+		if err != nil {
+			return nil, false
+		}
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return nil, false
+		}
+	}
+
+	result := make([]map[string]any, 0, len(arr))
+	for _, item := range arr {
+		if m, ok := asSchemaMap(item); ok {
+			result = append(result, m)
+		}
+	}
+	return result, true
 }

@@ -22,13 +22,21 @@ type bm25Doc struct {
 // searchBM25 は BM25 スコアリングにより docs を query に対してランキングする。
 // スコアが 0（クエリトークンが一つも一致しない）のドキュメントは除外し、
 // スコア降順、同点は名前昇順で並び替えたうえで limit 件に切り詰める。
+// 呼び出しのたびに docs 全体を前処理し直すため、繰り返し呼ぶ場合は
+// buildBM25Docs の結果をキャッシュした上で searchBM25Docs を使う方が良い
+// （Catalog.Search はサーバーごとに前処理結果をキャッシュしている）。
 func searchBM25(docs []ToolDef, query string, limit int) []ToolDef {
+	return searchBM25Docs(buildBM25Docs(docs), query, limit)
+}
+
+// searchBM25Docs は前処理済みの bdocs（buildBM25Docs の結果）を query に対して
+// ランキングする。前処理コストをキャッシュ・再利用したい呼び出し元向けの入口。
+func searchBM25Docs(bdocs []bm25Doc, query string, limit int) []ToolDef {
 	queryTerms := Tokenize(query)
-	if len(queryTerms) == 0 || len(docs) == 0 {
+	if len(queryTerms) == 0 || len(bdocs) == 0 {
 		return nil
 	}
 
-	bdocs := buildBM25Docs(docs)
 	idf := computeBM25IDF(bdocs, queryTerms)
 	avgdl := computeBM25AvgDL(bdocs)
 

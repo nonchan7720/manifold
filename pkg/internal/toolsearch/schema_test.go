@@ -80,6 +80,35 @@ func TestSchemaSearchTexts_ItemsArray(t *testing.T) {
 	require.ElementsMatch(t, []string{"filters", "List of filters", "field", "Field name to filter on"}, texts)
 }
 
+func TestSchemaSearchTexts_ItemsTuple(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"coordinates": map[string]any{
+				"type":        "array",
+				"description": "Tuple-form coordinate pair",
+				"items": []any{
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"lat": map[string]any{"type": "number", "description": "Latitude value"},
+						},
+					},
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"lon": map[string]any{"type": "number", "description": "Longitude value"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	texts := schemaSearchTexts(schema)
+	require.ElementsMatch(t, []string{"coordinates", "Tuple-form coordinate pair", "lat", "Latitude value", "lon", "Longitude value"}, texts)
+}
+
 func TestSchemaSearchTexts_CJKDescription(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",

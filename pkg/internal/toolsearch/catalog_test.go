@@ -54,6 +54,34 @@ func TestCatalog_Search_DefaultMethodIsBM25(t *testing.T) {
 	require.Len(t, docs, 1)
 }
 
+func TestCatalog_Search_MethodIsCaseInsensitive(t *testing.T) {
+	c := NewCatalog()
+	c.Add("serverA", ToolDef{Name: "order search", Description: "find orders"})
+
+	docs, err := c.Search("serverA", "order", Method("BM25"), 10)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+
+	docs, err = c.Search("serverA", "order", Method("Regexp"), 10)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+}
+
+func TestCatalog_Search_BM25CacheReflectsSubsequentAdd(t *testing.T) {
+	c := NewCatalog()
+	c.Add("serverA", ToolDef{Name: "order search", Description: "find orders"})
+
+	docs, err := c.Search("serverA", "order", MethodBM25, 10)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+
+	c.Add("serverA", ToolDef{Name: "cancel order", Description: "cancel orders"})
+
+	docs, err = c.Search("serverA", "order", MethodBM25, 10)
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+}
+
 func TestCatalog_Search_UnknownMethodReturnsError(t *testing.T) {
 	c := NewCatalog()
 	c.Add("serverA", ToolDef{Name: "order search", Description: "find orders"})
