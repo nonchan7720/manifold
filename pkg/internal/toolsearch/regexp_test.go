@@ -70,6 +70,13 @@ func TestSearchRegexp(t *testing.T) {
 			limit: 10,
 			want:  nil,
 		},
+		{
+			name:  "symbol_only_query_returns_no_results",
+			docs:  docs,
+			query: ".",
+			limit: 10,
+			want:  nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

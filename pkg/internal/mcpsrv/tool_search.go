@@ -17,6 +17,15 @@ import (
 // 合成ツールの名前。
 const toolSearchName = "tool_search"
 
+// isReservedToolName は name が toolSearchName と衝突するかどうかを返す。上流（OpenAPI
+// スペック／MCP バックエンド）のツール登録経路は、この名前のツールを登録すると
+// registerToolSearch の AddTool 呼び出しに上書きされてしまうため、登録前にこの関数で
+// チェックしてスキップする必要がある。判定ロジックを一箇所にまとめることで、将来
+// 登録経路が増えてもチェック漏れが起きないようにする。
+func isReservedToolName(name string) bool {
+	return name == toolSearchName
+}
+
 // methodListTools は go-sdk v1.6.1 が "tools/list" のメソッド名定数を非公開にしているため、
 // パッケージ内で文字列リテラルを定数化したもの。
 const methodListTools = "tools/list"

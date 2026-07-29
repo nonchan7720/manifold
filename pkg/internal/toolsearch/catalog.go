@@ -10,14 +10,18 @@ import (
 // Catalog は全 mcpServers 分のツール定義を集約する。集計（Total）は全サーバー横断、
 // 検索（Search）はサーバー単位のスコープで行う。
 type Catalog struct {
-	mu        sync.RWMutex
-	byServer  map[string][]ToolDef
-	bm25Cache map[string][]bm25Doc
+	mu       sync.RWMutex
+	byServer map[string][]ToolDef
+
+	// bm25Cache はサーバーごとの BM25 前処理済みドキュメント（server string -> []bm25Doc）。
+	// sync.Map.LoadOrStore により、同一サーバーへの同時初回アクセス同士が同じ前処理結果に
+	// 収束することを保証する（pkg/internal/client.InMemoryRegistry.GetOrCreate と同じパターン）。
+	bm25Cache sync.Map
 }
 
 // NewCatalog は空の Catalog を生成する。
 func NewCatalog() *Catalog {
-	return &Catalog{byServer: map[string][]ToolDef{}, bm25Cache: map[string][]bm25Doc{}}
+	return &Catalog{byServer: map[string][]ToolDef{}}
 }
 
 // Add は指定サーバーにツール定義を追加する。同名のツールが既に存在する場合は
@@ -41,7 +45,7 @@ func (c *Catalog) Add(server string, defs ...ToolDef) {
 		existing = append(existing, d)
 	}
 	c.byServer[server] = existing
-	delete(c.bm25Cache, server)
+	c.bm25Cache.Delete(server)
 }
 
 // Total は全サーバー合計のツール数を返す。
@@ -112,19 +116,10 @@ func (c *Catalog) docsFor(server string) []ToolDef {
 // サーバーのツールが変更されるまでキャッシュを再利用し、tool_search 呼び出しの
 // たびにトークナイズをやり直すコストを避ける。
 func (c *Catalog) bm25Docs(server string) []bm25Doc {
-	c.mu.RLock()
-	if bdocs, ok := c.bm25Cache[server]; ok {
-		c.mu.RUnlock()
-		return bdocs
+	if v, ok := c.bm25Cache.Load(server); ok {
+		return v.([]bm25Doc)
 	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if bdocs, ok := c.bm25Cache[server]; ok {
-		return bdocs
-	}
-	bdocs := buildBM25Docs(c.byServer[server])
-	c.bm25Cache[server] = bdocs
-	return bdocs
+	bdocs := buildBM25Docs(c.docsFor(server))
+	actual, _ := c.bm25Cache.LoadOrStore(server, bdocs)
+	return actual.([]bm25Doc)
 }

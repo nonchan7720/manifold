@@ -5,10 +5,12 @@ import "regexp"
 // searchRegexp は query を大文字小文字を区別しない正規表現としてコンパイルし、
 // name / description / 引数名 / 引数の説明のいずれかにマッチしたドキュメントを
 // 元の順序のまま limit 件返す。不正な正規表現の場合はコンパイルエラーをそのまま返す。
-// query が空文字の場合、空パターンは全文字列にマッチしてしまうため、bm25/fuzzy と
-// 挙動を揃えて早期に nil（該当なし）を返す。
+// query が Tokenize で1つもトークンを生成しない場合（空文字や "." のような記号のみの
+// クエリ）は、bm25/fuzzy と挙動を揃えて早期に nil（該当なし）を返す。そうしないと、
+// 例えば "." は空パターンと同様に全文字列にマッチしてしまい、カタログ全体が
+// 返ってしまう。
 func searchRegexp(docs []ToolDef, query string, limit int) ([]ToolDef, error) {
-	if query == "" {
+	if len(Tokenize(query)) == 0 {
 		return nil, nil
 	}
 
