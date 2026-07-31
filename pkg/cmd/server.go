@@ -110,6 +110,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
+	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService)
 	if err := mcpSrv.Init(ctx); err != nil {
@@ -146,6 +147,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
 	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
+	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
 	}
