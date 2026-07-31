@@ -6,11 +6,14 @@
   ],
   "packageRules": [
     {
-      "description": "全パッチ更新をまとめる",
+      "description": "全パッチ更新をまとめる。CI が通れば自動マージする",
       "matchUpdateTypes": [
         "patch"
       ],
-      "groupName": "all patch updates"
+      "groupName": "all patch updates",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
     },
     {
       "description": "Go モジュールの minor 更新をまとめる（下の個別グループが優先）",
