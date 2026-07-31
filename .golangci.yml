@@ -94,6 +94,4 @@ formatters:
     - goimports
 
 run:
-  timeout: 5m
   allow-parallel-runners: true
-  concurrency: 4

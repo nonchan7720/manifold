@@ -11,7 +11,7 @@ import (
 
 func TestHealthHandler_Healthz(t *testing.T) {
 	h := NewHealthHandler()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
 	h.Healthz(rec, req)
