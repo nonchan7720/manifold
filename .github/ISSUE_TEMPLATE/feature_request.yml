@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an idea or improvement for Manifold
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! 日本語での提案も歓迎します。
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What are you trying to achieve? Describing the problem (not just the solution) makes discussion much easier.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How do you imagine this working? Config examples are welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative designs you have considered.
