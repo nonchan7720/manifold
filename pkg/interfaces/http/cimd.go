@@ -103,14 +103,18 @@ func (h *AuthHandler) fetchClientIDMetadata(ctx context.Context, clientID string
 
 // fetchCIMDDocument は client_id URL に GET リクエストを送り、
 // CIMD ドキュメントを取得・パースして返す。内容の検証は行わない。
+//
+// CIMD は仕様上クライアントが提示した URL の取得が必須となる。SSRF 対策として
+// isCIMDClientID で https スキームを強制し、本番では SafeHTTPClient
+// （プライベート IP への接続拒否）を使用、さらにサイズ上限と Content-Type 検証を課す。
 func fetchCIMDDocument(ctx context.Context, httpClient *http.Client, clientID string) (*ClientIDMetadataDocument, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil) //nolint: gosec // G704: CIMD requires fetching the client-supplied URL; mitigated above
 	if err != nil {
 		return nil, fmt.Errorf("build CIMD request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient.Do(req) //nolint: gosec // G704: see above
 	if err != nil {
 		return nil, fmt.Errorf("fetch CIMD document: %w", err)
 	}
