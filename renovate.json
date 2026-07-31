@@ -13,6 +13,16 @@
       "groupName": "all patch updates"
     },
     {
+      "description": "Go モジュールの minor 更新をまとめる（下の個別グループが優先）",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "go minor dependencies"
+    },
+    {
       "matchManagers": [
         "gomod",
         "dockerfile",
@@ -78,7 +88,7 @@
         "github-actions"
       ],
       "groupName": "github-actions"
-    },
+    }
   ],
   "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
