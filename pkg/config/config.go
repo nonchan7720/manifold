@@ -16,6 +16,7 @@ type Config struct {
 
 	Redis  *RedisConfig  `mapstructure:"redis"`
 	SQLite *SQLiteConfig `mapstructure:"sqlite"`
+	Memory *MemoryConfig `mapstructure:"memory"`
 
 	Telemetry telemetry.Config `mapstructure:"telemetry"`
 
@@ -45,8 +46,8 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 			}
 			return nil
 		})),
-		validation.Field(&c.Redis, validation.When(c.SQLite == nil, validation.Required)),
-		validation.Field(&c.SQLite, validation.When(c.Redis == nil, validation.Required)),
+		validation.Field(&c.Redis, validation.When(c.SQLite == nil && c.Memory == nil, validation.Required)),
+		validation.Field(&c.SQLite, validation.When(c.Redis == nil && c.Memory == nil, validation.Required)),
 		validation.Field(&c.Storage),
 	)
 }
