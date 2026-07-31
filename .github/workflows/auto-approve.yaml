@@ -1,0 +1,25 @@
+name: Auto approve
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event.pull_request.user.login == 'renovate[bot]' &&
+        contains(github.event.pull_request.labels.*.name, 'automerge-patch')) ||
+      github.event.pull_request.user.login == 'nonchan7720'
+    steps:
+      - uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
