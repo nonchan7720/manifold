@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/nonchan7720/manifold/compare/v1.3.0...v1.4.0) (2026-07-31)
+
+
+### Features
+
+* add healthz path ([#55](https://github.com/nonchan7720/manifold/issues/55)) ([69ebbfb](https://github.com/nonchan7720/manifold/commit/69ebbfb1196dfc609c3f429b95b96b6b424fae55))
+
 ## [1.3.0](https://github.com/nonchan7720/manifold/compare/v1.2.1...v1.3.0) (2026-07-31)
 
 
