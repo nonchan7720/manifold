@@ -1,0 +1,23 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+mcpServers:
+  # stdio transport: Manifold spawns the process and speaks MCP over stdin/stdout
+  everything:
+    description: MCP "everything" reference server (stdio)
+    transport: stdio
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-everything"
+
+  # http transport: Manifold proxies to a remote Streamable HTTP MCP server
+  # notion:
+  #   description: Notion MCP server
+  #   transport: http
+  #   url: https://mcp.notion.com/mcp
+
+sqlite:
+  path: ./tmp/manifold.db

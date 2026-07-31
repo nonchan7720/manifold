@@ -2,28 +2,35 @@
 
 **One interface. Many connections. Manifold.**
 
-Manifold は MCP サーバーとして振る舞いながら、バックエンドで複数の外部 MCP サーバーや OpenAPI / Swagger 準拠の REST API へ接続するゲートウェイです。
+[![CI](https://github.com/nonchan7720/manifold/actions/workflows/ci.yaml/badge.svg)](https://github.com/nonchan7720/manifold/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/nonchan7720/manifold)](https://github.com/nonchan7720/manifold/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nonchan7720/manifold)](https://goreportcard.com/report/github.com/nonchan7720/manifold)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+English | [日本語](README.ja.md)
+
+Manifold is a gateway that acts as an MCP server while connecting to multiple external MCP servers and OpenAPI / Swagger compliant REST APIs on the backend.
 
 ## Why "Manifold"?
 
-**Manifold**（マニフォールド）はエンジンの**吸気マニフォールド**から来ています。
+The name **Manifold** comes from an engine's **intake manifold**.
 
-吸気マニフォールドは、エンジンの単一の入口から複数のシリンダーへ、均等かつ効率的に空気と燃料を分配する部品です。このプロジェクトの構造と似ていることから **Manifold** と名付けました。
+An intake manifold is the component that distributes air and fuel evenly and efficiently from a single inlet to multiple cylinders. We named this project **Manifold** because its structure is similar.
 
-| エンジンのマニフォールド | このプロジェクト                 |
-| ------------------------ | -------------------------------- |
-| 単一の入口               | MCP クライアントからのリクエスト |
-| 分配・整流               | プロトコル変換・ルーティング     |
-| 複数のシリンダーへ       | 複数の外部 MCP / REST API へ     |
+| Engine manifold        | This project                        |
+| ---------------------- | ----------------------------------- |
+| Single inlet           | Requests from MCP clients           |
+| Distribution / routing | Protocol conversion / routing       |
+| To multiple cylinders  | To multiple external MCP / REST APIs |
 
-## アーキテクチャ
+## Architecture
 
 ```
 MCP Client
     │
     ▼
 ┌─────────────┐
-│   Manifold  │   ← このサーバー
+│   Manifold  │   ← this server
 └─────────────┘
     │       │
     ▼       ▼
@@ -32,29 +39,29 @@ MCP       REST API Server
 Server
 ```
 
-## 主な機能
+## Features
 
-- **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
-- **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
-- **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵
-- **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
-- **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
-- **遅延接続**: バックエンドへの接続を初回リクエスト時に確立（ゲートウェイ起動時のバックエンド依存性を排除）
-- **ストレージ選択可能**: Redis または SQLite によるセッション・トークン管理
-- **OpenTelemetry 対応**: トレース・メトリクス・ログの OTLP エクスポート（メトリクスは Prometheus 形式の pull にも対応）
+- **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
+- **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
+- **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support
+- **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
+- **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
+- **Lazy connection**: Connects to backends on first request (no backend dependency at gateway startup)
+- **Selectable storage**: Session / token management backed by Redis or SQLite
+- **OpenTelemetry support**: OTLP export of traces, metrics, and logs (metrics also support Prometheus-style pull)
 
-## 必要要件
+## Requirements
 
 - Go 1.26+
-- Redis または SQLite（セッション管理用）
+- Redis or SQLite (for session management)
 
-## インストール
+## Installation
 
-### バイナリダウンロード
+### Download binary
 
-[Releases](https://github.com/nonchan7720/manifold/releases) から最新バイナリをダウンロードしてください。
+Download the latest binary from [Releases](https://github.com/nonchan7720/manifold/releases).
 
-### ソースからビルド
+### Build from source
 
 ```bash
 git clone https://github.com/nonchan7720/manifold.git
@@ -68,42 +75,44 @@ go build -o manifold .
 docker pull ghcr.io/nonchan7720/manifold:latest
 ```
 
-## 使い方
+## Usage
 
-### 起動
+### Start the gateway
 
 ```bash
-# バイナリ実行
+# Run the binary
 manifold gateway
 
-# 設定ファイルを明示指定（-c / --config、拡張子なしの設定名）
+# Specify a config file explicitly (-c / --config, config name without extension)
 manifold gateway -c config
 
-# ソースから実行
+# Run from source
 go run main.go gateway
 
-# Docker（作業ディレクトリは /home/nonroot）
+# Docker (working directory is /home/nonroot)
 docker run -p 9999:9999 \
   -v $(pwd)/config.yaml:/home/nonroot/config.yaml \
   ghcr.io/nonchan7720/manifold:latest
 ```
 
-### Docker Compose（開発環境）
+### Docker Compose (development)
 
-Redis を含む開発環境を一括起動します。
+Starts a development environment including Redis.
 
 ```bash
 docker compose up -d
 ```
 
-## 設定
+Ready-to-run configuration examples are available in the [`examples/`](examples/) directory.
 
-設定ファイル（`config.yaml`）をカレントディレクトリまたは `config/` サブディレクトリに配置します。
-設定値には `${VAR}` または `${VAR:-default}` 形式の環境変数展開が使えます。
+## Configuration
 
-### MCP バックエンドへの接続
+Place a configuration file (`config.yaml`) in the current directory or in a `config/` subdirectory.
+Configuration values support environment variable expansion in the form `${VAR}` or `${VAR:-default}`.
 
-外部 MCP サーバーを Manifold 経由で公開します。
+### Connecting to an MCP backend
+
+Expose an external MCP server through Manifold.
 
 ```yaml
 gateway:
@@ -113,7 +122,7 @@ gateway:
 
 mcpServers:
   my-mcp-server:
-    description: 外部 MCP サーバー
+    description: External MCP server
     transport: http
     url: http://localhost:8080/mcp
 
@@ -121,9 +130,9 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
-### OpenAPI / Swagger バックエンドへの接続
+### Connecting to an OpenAPI / Swagger backend
 
-OpenAPI 仕様から MCP ツールを自動生成します。
+Automatically generate MCP tools from an OpenAPI specification.
 
 ```yaml
 gateway:
@@ -132,12 +141,12 @@ gateway:
 
 mcpServers:
   my-api:
-    description: サンプル REST API
+    description: Sample REST API
     spec: https://example.com/api/openapi.json
     baseURL: https://example.com
 ```
 
-### OAuth 2.1 認証付きの OpenAPI バックエンド
+### OpenAPI backend with OAuth 2.1 authentication
 
 ```yaml
 gateway:
@@ -146,7 +155,7 @@ gateway:
 
 mcpServers:
   my-api:
-    description: OAuth 認証付き API
+    description: OAuth-protected API
     spec: https://example.com/api/openapi.json
     baseURL: https://example.com
     oauth2:
@@ -164,87 +173,87 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
-### 設定リファレンス
+### Configuration reference
 
 #### `gateway`
 
-| フィールド   | 型     | 説明                                                                              |
+| Field        | Type   | Description                                                                       |
 | ------------ | ------ | --------------------------------------------------------------------------------- |
-| `port`       | int    | リスニングポート（デフォルト: 8081）                                              |
-| `key`        | string | TLS 秘密鍵ファイルパス（オプション）                                              |
-| `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
-| `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
+| `port`       | int    | Listening port (default: 8081)                                                    |
+| `key`        | string | TLS private key file path (optional)                                              |
+| `cert`       | string | TLS certificate file path (optional)                                              |
+| `encryptKey` | string | Token encryption key (**required**). Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32` |
 
 #### `mcpServers.<name>`
 
-サーバー名（`<name>`）は URL パスに使われるため、英数字・`_`・`-` のみ使用できます。
+Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `-` are allowed.
 
-| フィールド      | 型                | 説明                                                       |
-| --------------- | ----------------- | ---------------------------------------------------------- |
-| `description`   | string            | サーバーの説明（**必須**。`/mcp/list` のレスポンスに含まれる） |
-| `transport`     | string            | MCP バックエンド用トランスポート（`http` または `stdio`）  |
-| `url`           | string            | HTTP トランスポートのエンドポイント                        |
-| `command`       | string            | stdio トランスポートのコマンド                             |
-| `args`          | []string          | stdio コマンドの引数                                       |
-| `env`           | map[string]string | stdio プロセスの環境変数                                   |
-| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL               |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` 指定時は必須）   |
-| `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
-| `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
-| `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
-| `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| Field           | Type              | Description                                                    |
+| --------------- | ----------------- | -------------------------------------------------------------- |
+| `description`   | string            | Server description (**required**; included in `/mcp/list` responses) |
+| `transport`     | string            | Transport for MCP backends (`http` or `stdio`)                 |
+| `url`           | string            | Endpoint for the HTTP transport                                |
+| `command`       | string            | Command for the stdio transport                                |
+| `args`          | []string          | Arguments for the stdio command                                |
+| `env`           | map[string]string | Environment variables for the stdio process                    |
+| `spec`          | string            | Path or URL of an OpenAPI/Swagger specification                |
+| `baseURL`       | string            | API base URL in OpenAPI mode (required when `spec` is set)     |
+| `headers`       | map[string]string | Extra headers added to API requests                            |
+| `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)   |
+| `oauth2`        | object            | OAuth 2.0 settings (see below)                                 |
+| `tokenExchange` | object            | Token Exchange settings (see below)                            |
 
-`authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
+`authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 
 #### `mcpServers.<name>.oauth2`
 
-| フィールド     | 型       | 説明                     |
-| -------------- | -------- | ------------------------ |
-| `clientID`     | string   | クライアント ID          |
-| `clientSecret` | string   | クライアントシークレット |
-| `authURL`      | string   | Authorization Endpoint   |
-| `tokenURL`     | string   | Token Endpoint           |
-| `scopes`       | []string | リクエストするスコープ   |
+| Field          | Type     | Description            |
+| -------------- | -------- | ---------------------- |
+| `clientID`     | string   | Client ID              |
+| `clientSecret` | string   | Client secret          |
+| `authURL`      | string   | Authorization endpoint |
+| `tokenURL`     | string   | Token endpoint         |
+| `scopes`       | []string | Scopes to request      |
 
 #### `mcpServers.<name>.tokenExchange`
 
-クライアントから受け取った API キーを、指定 URL のトークン交換エンドポイントで OAuth トークンに交換してバックエンドへのリクエストに使用します。交換結果はキャッシュされ、レートリミット（429）にも追従します。
+Exchanges the API key received from the client for an OAuth token at the specified token exchange endpoint, and uses it for backend requests. Exchange results are cached, and rate limits (429) are respected.
 
-| フィールド | 型     | 説明                                             |
-| ---------- | ------ | ------------------------------------------------ |
-| `url`      | string | トークン交換エンドポイントの絶対 URL（**必須**） |
+| Field | Type   | Description                                          |
+| ----- | ------ | ---------------------------------------------------- |
+| `url` | string | Absolute URL of the token exchange endpoint (**required**) |
 
 #### `redis`
 
-| フィールド     | 型       | 説明                                                  |
-| -------------- | -------- | ----------------------------------------------------- |
-| `url`          | string   | Redis URL（例: `redis://user:pass@localhost:6379/0`） |
-| `addrs`        | []string | ホスト:ポートのリスト（Cluster/Sentinel 用）          |
-| `user`         | string   | ユーザー名                                            |
-| `password`     | string   | パスワード                                            |
-| `db`           | int      | データベース番号                                      |
-| `master_name`  | string   | Sentinel マスター名                                   |
-| `tls`          | bool     | TLS 有効化                                            |
-| `cluster_mode` | bool     | Cluster モード有効化                                  |
+| Field          | Type     | Description                                            |
+| -------------- | -------- | ------------------------------------------------------ |
+| `url`          | string   | Redis URL (e.g. `redis://user:pass@localhost:6379/0`)  |
+| `addrs`        | []string | List of host:port pairs (for Cluster/Sentinel)         |
+| `user`         | string   | Username                                               |
+| `password`     | string   | Password                                               |
+| `db`           | int      | Database number                                        |
+| `master_name`  | string   | Sentinel master name                                   |
+| `tls`          | bool     | Enable TLS                                             |
+| `cluster_mode` | bool     | Enable Cluster mode                                    |
 
 #### `sqlite`
 
-| フィールド | 型     | 説明                                                |
-| ---------- | ------ | --------------------------------------------------- |
-| `path`     | string | データベースファイルパス（`:memory:` でインメモリ） |
+| Field  | Type   | Description                                          |
+| ------ | ------ | ---------------------------------------------------- |
+| `path` | string | Database file path (`:memory:` for in-memory)        |
 
-`redis` と `sqlite` はどちらか一方の設定が必須です。
+Either `redis` or `sqlite` must be configured.
 
 #### `storage`
 
-OpenAPI/Swagger ツールのレスポンスに含まれるコンテンツ（画像・バイナリ等）を外部ストレージへ保存し、リソースリンク（ダウンロード URL）として返します。未設定の場合はストレージ保存を行いません。
+Stores content included in OpenAPI/Swagger tool responses (images, binaries, etc.) in external storage and returns resource links (download URLs). When unset, no storage is used.
 
-| フィールド     | 型     | 説明                                                                         |
+| Field          | Type   | Description                                                                  |
 | -------------- | ------ | ---------------------------------------------------------------------------- |
-| `type`         | string | ストレージ種別。現在は `s3` のみ対応                                          |
-| `hostURL`      | string | ダウンロード URL のホスト（設定時は Manifold の `/media/download/{id}` で配信） |
-| `s3.bucket`    | string | S3 バケット名（`type: s3` の場合必須）                                        |
-| `s3.keyPrefix` | string | S3 オブジェクトキーのプレフィックス（`type: s3` の場合必須）                  |
+| `type`         | string | Storage type. Currently only `s3` is supported                               |
+| `hostURL`      | string | Host for download URLs (when set, content is served via Manifold's `/media/download/{id}`) |
+| `s3.bucket`    | string | S3 bucket name (required when `type: s3`)                                    |
+| `s3.keyPrefix` | string | S3 object key prefix (required when `type: s3`)                              |
 
 ```yaml
 storage:
@@ -257,15 +266,15 @@ storage:
 
 #### `fileFetch`
 
-OpenAPI/Swagger ツールのファイル入力フィールドに URL が渡された場合、Manifold がその URL からファイルをダウンロードします。SSRF 対策として、既定ではプライベート/ループバック/リンクローカル IP への接続と `http://` スキームを拒否します。
+When a URL is passed to a file input field of an OpenAPI/Swagger tool, Manifold downloads the file from that URL. As an SSRF countermeasure, connections to private/loopback/link-local IPs and the `http://` scheme are rejected by default.
 
-| フィールド     | 型       | 説明                                                                                                              |
-| -------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
-| `allowLocal`   | bool     | プライベート/ループバック IP への接続と `http://` を許可（ローカルスタック等でのテスト用。デフォルト: `false`）    |
-| `allowedHosts` | []string | 許可するホストの許可リスト（ホスト名、または `host:port`）。空なら全ホスト許可（プライベート IP 遮断は別途有効）   |
-| `maxSize`      | int64    | ダウンロード/base64/text コンテンツの最大バイト数。0 または未指定でデフォルト 524288000（500MiB）                  |
+| Field          | Type     | Description                                                                                            |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `allowLocal`   | bool     | Allow connections to private/loopback IPs and `http://` (for testing with local stacks; default: `false`) |
+| `allowedHosts` | []string | Allowlist of hosts (hostname, or `host:port`). Empty allows all hosts (private IP blocking still applies) |
+| `maxSize`      | int64    | Maximum bytes for downloaded/base64/text content. 0 or unset defaults to 524288000 (500 MiB)           |
 
-各フィールドは環境変数でも上書きできます（`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`）。
+Each field can also be overridden via environment variables (`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`).
 
 ```yaml
 fileFetch:
@@ -278,18 +287,18 @@ fileFetch:
 
 #### `telemetry`
 
-OpenTelemetry によるトレース・メトリクス・ログの出力設定です。
+Output settings for traces, metrics, and logs via OpenTelemetry.
 
-| フィールド        | 型     | 説明                                                               |
+| Field             | Type   | Description                                                        |
 | ----------------- | ------ | ------------------------------------------------------------------ |
-| `serviceName`     | string | サービス名                                                         |
-| `environment`     | string | 環境名（`deployment.environment` 属性）                            |
-| `gzipCompression` | bool   | OTLP エクスポート時の gzip 圧縮                                    |
-| `trace`           | object | トレース設定（`enabled`, `http`, `grpc`）                          |
-| `metrics`         | object | メトリクス設定（`enabled`, `exporterType`: `push` / `pull`, `http`, `grpc`） |
-| `logs`            | object | ログ設定（`enabled`, `http`, `grpc`）                              |
+| `serviceName`     | string | Service name                                                       |
+| `environment`     | string | Environment name (`deployment.environment` attribute)              |
+| `gzipCompression` | bool   | Gzip compression for OTLP export                                   |
+| `trace`           | object | Trace settings (`enabled`, `http`, `grpc`)                         |
+| `metrics`         | object | Metrics settings (`enabled`, `exporterType`: `push` / `pull`, `http`, `grpc`) |
+| `logs`            | object | Log settings (`enabled`, `http`, `grpc`)                           |
 
-`http` / `grpc` エクスポーターには `addr`（ホスト:ポート）または `url` を指定します。`grpc` は `insecure` も指定できます。`metrics.exporterType: pull` の場合は OTLP push の代わりに `/metrics` エンドポイントで Prometheus 形式のメトリクスを公開します。
+For the `http` / `grpc` exporters, specify `addr` (host:port) or `url`. `grpc` also accepts `insecure`. With `metrics.exporterType: pull`, Prometheus-format metrics are exposed at the `/metrics` endpoint instead of OTLP push.
 
 ```yaml
 telemetry:
@@ -312,40 +321,42 @@ telemetry:
       insecure: true
 ```
 
-## HTTP エンドポイント
+## HTTP endpoints
 
-Manifold が公開する HTTP エンドポイントの一覧です。
+The HTTP endpoints exposed by Manifold.
 
 ### MCP
 
-| メソッド | パス                 | 説明                                     |
-| -------- | -------------------- | ---------------------------------------- |
-| `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）        |
-| `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前と説明）取得 |
+| Method | Path                 | Description                                          |
+| ------ | -------------------- | ---------------------------------------------------- |
+| `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP)                       |
+| `GET`  | `/mcp/list`          | List registered servers (names and descriptions)     |
 
 ### OAuth 2.1
 
-| メソッド | パス                                                        | 説明                            |
-| -------- | ----------------------------------------------------------- | ------------------------------- |
-| `GET`    | `/.well-known/oauth-authorization-server/mcp/{server_name}` | Authorization Server メタデータ |
-| `GET`    | `/.well-known/oauth-protected-resource/mcp/{server_name}`   | Protected Resource メタデータ   |
-| `GET`    | `/{server_name}/auth/login`                                 | ログインページへリダイレクト    |
-| `GET`    | `/{server_name}/auth/callback`                              | OAuth コールバック              |
-| `POST`   | `/{server_name}/auth/token`                                 | トークン発行                    |
-| `POST`   | `/{server_name}/auth/clients`                               | クライアント動的登録 (RFC 7591) |
-| `GET`    | `/authorize`, `/callback`                                   | サーバー名なしのエイリアス      |
-| `POST`   | `/token`, `/register`                                       | サーバー名なしのエイリアス      |
+| Method | Path                                                        | Description                          |
+| ------ | ----------------------------------------------------------- | ------------------------------------ |
+| `GET`  | `/.well-known/oauth-authorization-server/mcp/{server_name}` | Authorization Server metadata        |
+| `GET`  | `/.well-known/oauth-protected-resource/mcp/{server_name}`   | Protected Resource metadata          |
+| `GET`  | `/{server_name}/auth/login`                                 | Redirect to the login page           |
+| `GET`  | `/{server_name}/auth/callback`                              | OAuth callback                       |
+| `POST` | `/{server_name}/auth/token`                                 | Token issuance                       |
+| `POST` | `/{server_name}/auth/clients`                               | Dynamic client registration (RFC 7591) |
+| `GET`  | `/authorize`, `/callback`                                   | Aliases without a server name        |
+| `POST` | `/token`, `/register`                                       | Aliases without a server name        |
 
-### その他
+### Other
 
-| メソッド | パス                   | 説明                                                          |
-| -------- | ---------------------- | ------------------------------------------------------------- |
-| `GET`    | `/media/download/{id}` | ストレージ保存コンテンツのダウンロード（`storage.hostURL` 設定時のみ） |
-| `GET`    | `/metrics`             | Prometheus メトリクス（`telemetry.metrics.exporterType: pull` 時のみ） |
+| Method | Path                   | Description                                                        |
+| ------ | ---------------------- | ------------------------------------------------------------------ |
+| `GET`  | `/media/download/{id}` | Download stored content (only when `storage.hostURL` is set)       |
+| `GET`  | `/metrics`             | Prometheus metrics (only when `telemetry.metrics.exporterType: pull`) |
 
-## 開発
+## Development
 
-### テスト
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a development environment and submit changes.
+
+### Test
 
 ```bash
 make test
@@ -357,12 +368,12 @@ make test
 make lint
 ```
 
-## インスピレーション
+## Inspiration
 
-このプロジェクトは [LiteLLM](https://github.com/BerriAI/litellm) の **Agent / MCP Gateway** からインスピレーションを受けています。
+This project is inspired by the **Agent / MCP Gateway** of [LiteLLM](https://github.com/BerriAI/litellm).
 
-LiteLLM の MCP Gateway が複数の MCP サーバーへの統一アクセスポイントを提供するように、Manifold も単一の MCP インターフェースから多数の MCP サーバー / REST API へ接続できるゲートウェイを目指しています。
+Just as LiteLLM's MCP Gateway provides a unified access point to multiple MCP servers, Manifold aims to be a gateway that connects a single MCP interface to many MCP servers / REST APIs.
 
-## ライセンス
+## License
 
 MIT License
