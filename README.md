@@ -43,7 +43,7 @@ Server
 
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
-- **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support
+- **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support, Dynamic Client Registration (RFC 7591), and Client ID Metadata Documents (CIMD, MCP 2025-11-25)
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
 - **Lazy connection**: Connects to backends on first request (no backend dependency at gateway startup)
@@ -342,8 +342,11 @@ The HTTP endpoints exposed by Manifold.
 | `GET`  | `/{server_name}/auth/callback`                              | OAuth callback                       |
 | `POST` | `/{server_name}/auth/token`                                 | Token issuance                       |
 | `POST` | `/{server_name}/auth/clients`                               | Dynamic client registration (RFC 7591) |
+| `GET`  | `/{server_name}/auth/client-metadata.json`                  | Manifold's own Client ID Metadata Document (CIMD) presented to upstream authorization servers |
 | `GET`  | `/authorize`, `/callback`                                   | Aliases without a server name        |
 | `POST` | `/token`, `/register`                                       | Aliases without a server name        |
+
+In addition to Dynamic Client Registration, the built-in authorization server accepts Client ID Metadata Documents (CIMD): an MCP client may pass an HTTPS URL as `client_id`, and Manifold fetches and validates the metadata document from that URL. When connecting to upstream MCP servers, Manifold prefers CIMD if the upstream authorization server advertises `client_id_metadata_document_supported` (requires the gateway to be served over HTTPS) and falls back to Dynamic Client Registration otherwise.
 
 ### Other
 
