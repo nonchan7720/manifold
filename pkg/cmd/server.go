@@ -182,6 +182,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。
 // sqlite.path が設定されている場合はSQLiteを、memory.enabled が true の場合はインメモリを、
 // それ以外の場合はRedisを使用する。
+// Redisの設定が無い場合は、外部サービス不要で動作するインメモリにフォールバックする。
 func newStoreClient(ctx context.Context) (store.Client, error) {
 	if globalConfig.SQLite != nil && globalConfig.SQLite.Path != "" {
 		c, err := sqlite.NewClient(ctx, globalConfig.SQLite.Path)
@@ -192,6 +193,10 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 		return c, nil
 	}
 	if globalConfig.Memory != nil && globalConfig.Memory.Enabled {
+		return memory.NewClient(ctx)
+	}
+	if globalConfig.Redis == nil {
+		slog.WarnContext(ctx, "no storage backend configured, falling back to the in-memory store")
 		return memory.NewClient(ctx)
 	}
 	return redis.NewClient(ctx, globalConfig.Redis)
