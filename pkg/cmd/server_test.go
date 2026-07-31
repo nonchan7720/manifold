@@ -59,6 +59,47 @@ func TestNewStoreClient_SQLiteNil_DoesNotPanic(t *testing.T) {
 	})
 }
 
+func TestNewStoreClient_MemoryDisabled_FallsBackToMemory(t *testing.T) {
+	// memory セクションだけが存在し enabled が false でも、Redis 設定が無ければ
+	// パニックせずインメモリにフォールバックすること
+	withGlobalConfig(t, &config.Config{
+		Memory: &config.MemoryConfig{Enabled: false},
+	})
+
+	c, err := newStoreClient(t.Context())
+	require.NoError(t, err)
+	defer c.Close()
+
+	require.IsType(t, &memory.Client{}, c)
+}
+
+func TestNewStoreClient_SQLiteEmptyPath_FallsBackToMemory(t *testing.T) {
+	// sqlite.path が空文字の場合も Redis 設定が無ければインメモリにフォールバックすること
+	withGlobalConfig(t, &config.Config{
+		SQLite: &config.SQLiteConfig{Path: ""},
+	})
+
+	c, err := newStoreClient(t.Context())
+	require.NoError(t, err)
+	defer c.Close()
+
+	require.IsType(t, &memory.Client{}, c)
+}
+
+func TestNewStoreClient_MemoryDisabled_PrefersRedis(t *testing.T) {
+	// memory.enabled が false の場合は Redis 設定が優先されること。
+	// 接続先が存在しないため接続エラーになるが、インメモリにフォールバックしないことを確認する。
+	withGlobalConfig(t, &config.Config{
+		Memory: &config.MemoryConfig{Enabled: false},
+		Redis:  &config.RedisConfig{Addrs: []string{"127.0.0.1:1"}},
+	})
+
+	c, err := newStoreClient(t.Context())
+	require.Error(t, err, "redis へ接続を試みるべき")
+	require.ErrorContains(t, err, "redis")
+	require.Nil(t, c)
+}
+
 func TestNewGatewayCmd(t *testing.T) {
 	cmd := newGatewayCmd()
 	require.Equal(t, "gateway", cmd.Use)
