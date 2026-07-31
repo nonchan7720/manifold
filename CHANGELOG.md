@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.3.0](https://github.com/nonchan7720/manifold/compare/v1.2.1...v1.3.0) (2026-07-31)
+
+
+### Features
+
+* add resource link support ([#30](https://github.com/nonchan7720/manifold/issues/30)) ([e48c0d5](https://github.com/nonchan7720/manifold/commit/e48c0d5a1df80b67470c020cf5ecc95e086fa422))
+* alias download handler ([#41](https://github.com/nonchan7720/manifold/issues/41)) ([cb8cc23](https://github.com/nonchan7720/manifold/commit/cb8cc23d230b4dc4c6f4d5b455adb8145ea7e1a7))
+* support inmemory ([#53](https://github.com/nonchan7720/manifold/issues/53)) ([c2f734b](https://github.com/nonchan7720/manifold/commit/c2f734bf44e5d633042caa92a24b9b6a470488a7))
+* Token Exchange対応とMCPバックエンド認証方式の統合 ([#35](https://github.com/nonchan7720/manifold/issues/35)) ([0df35cd](https://github.com/nonchan7720/manifold/commit/0df35cd086b0bfa3d6eec9d62a25ce2432760bab))
+
+
+### Bug Fixes
+
+* **deps:** update go-redis to v9.21.0 ([#28](https://github.com/nonchan7720/manifold/issues/28)) ([13ffcbc](https://github.com/nonchan7720/manifold/commit/13ffcbc4831858b2ede00db7d7abef0ac5a17521))
+* **deps:** update module github.com/compose-spec/compose-go/v2 to v2.13.0 ([#31](https://github.com/nonchan7720/manifold/issues/31)) ([eed6a5a](https://github.com/nonchan7720/manifold/commit/eed6a5a38513cd8dc4b048db085b9045aba774b1))
+* **deps:** update module github.com/getkin/kin-openapi to v0.142.0 ([#29](https://github.com/nonchan7720/manifold/issues/29)) ([c2f754f](https://github.com/nonchan7720/manifold/commit/c2f754fa0b194485e004ff061e08979f5618b372))
+* **deps:** update module github.com/modelcontextprotocol/go-sdk to v1.6.1 ([#32](https://github.com/nonchan7720/manifold/issues/32)) ([3671ec1](https://github.com/nonchan7720/manifold/commit/3671ec18344b53e86afbf86de15c93a17a798f0a))
+* **deps:** update module modernc.org/sqlite to v1.53.0 ([#36](https://github.com/nonchan7720/manifold/issues/36)) ([f05093d](https://github.com/nonchan7720/manifold/commit/f05093d092b66d9abfba0a9fb15358d17cfb5184))
+* **deps:** update opentelemetry ([#37](https://github.com/nonchan7720/manifold/issues/37)) ([4f8a6ca](https://github.com/nonchan7720/manifold/commit/4f8a6caf03b60253201e87363ede8984b6cabd53))
+* parameter rename and file upload support and nested parameters ([#21](https://github.com/nonchan7720/manifold/issues/21)) ([5387561](https://github.com/nonchan7720/manifold/commit/5387561059916df7c1b304662138809bc0e3ce9e))
+
+
+### Miscellaneous
+
+* Configure Renovate ([#23](https://github.com/nonchan7720/manifold/issues/23)) ([c7729fa](https://github.com/nonchan7720/manifold/commit/c7729fa3ee6d235a7ffe331352946d2ce78f806d))
+* **deps:** update github-actions (major) ([#38](https://github.com/nonchan7720/manifold/issues/38)) ([86c112f](https://github.com/nonchan7720/manifold/commit/86c112f9149a309e68ebbe636f517507af9e84f2))
+
+
+### Documentation
+
+* READMEにLiteLLMへのインスピレーションを追記 ([#18](https://github.com/nonchan7720/manifold/issues/18)) ([115547b](https://github.com/nonchan7720/manifold/commit/115547b19486796667f6239e4c93620781575188))
+* Update README with new features and configuration options ([#42](https://github.com/nonchan7720/manifold/issues/42)) ([1c405cc](https://github.com/nonchan7720/manifold/commit/1c405ccc6ec26ec397c0e0d3b5409348d9570d73))
+
+
+### Code Refactoring
+
+* 404 page ([#43](https://github.com/nonchan7720/manifold/issues/43)) ([f1791f1](https://github.com/nonchan7720/manifold/commit/f1791f1d53c3b9a2bdd3cc95ebdb5759bab25aed))
+
 ## [1.2.1](https://github.com/nonchan7720/manifold/compare/v1.2.0...v1.2.1) (2026-04-19)
 
 
