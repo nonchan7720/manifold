@@ -28,6 +28,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static:nonroot
 ENV TZ=Asia/Tokyo
 
+# Ownership verification marker for the MCP Registry (must match server.json name)
+LABEL io.modelcontextprotocol.server.name="io.github.nonchan7720/manifold"
+
 COPY --from=builder --chown=nonroot:nonroot /bin/manifold /usr/local/bin/manifold
 # current directory is `/home/nonroot`
 # COPY --chown=nonroot:nonroot config.yaml config.yaml
