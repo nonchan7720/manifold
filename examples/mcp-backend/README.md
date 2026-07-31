@@ -11,7 +11,8 @@ The config demonstrates both transports:
 
 ```bash
 cd examples/mcp-backend
-export ENCRYPT_KEY=$(openssl rand -base64 32)
+# Generate once and reuse — see ../README.md
+export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
 manifold gateway
 ```
 

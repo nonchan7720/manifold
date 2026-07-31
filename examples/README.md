@@ -11,10 +11,11 @@ Ready-to-run configuration examples for Manifold. Each directory contains a `con
 ## Prerequisites
 
 - A Manifold binary ([Releases](https://github.com/nonchan7720/manifold/releases)), Docker image (`ghcr.io/nonchan7720/manifold:latest`), or a local checkout (`go run main.go gateway`)
-- An encryption key:
+- An encryption key. Generate it **once** and store it securely (e.g. in a `.env` file) — stored sessions and tokens are encrypted with this key, so generating a new key invalidates everything previously stored:
 
 ```bash
 export ENCRYPT_KEY=$(openssl rand -base64 32)
+echo "ENCRYPT_KEY=$ENCRYPT_KEY" >> .env   # keep it for later runs
 ```
 
 All examples use SQLite for storage, so no Redis is required.
@@ -23,8 +24,19 @@ All examples use SQLite for storage, so no Redis is required.
 
 ```bash
 cd examples/openapi-backend
-export ENCRYPT_KEY=$(openssl rand -base64 32)
-manifold gateway   # reads ./config.yaml
+manifold gateway   # reads ./config.yaml; requires ENCRYPT_KEY to be set
+```
+
+Or with Docker (the working directory inside the container is `/home/nonroot`):
+
+```bash
+cd examples/openapi-backend
+mkdir -p tmp
+docker run -p 9999:9999 \
+  -e ENCRYPT_KEY \
+  -v $(pwd)/config.yaml:/home/nonroot/config.yaml \
+  -v $(pwd)/tmp:/home/nonroot/tmp \
+  ghcr.io/nonchan7720/manifold:latest
 ```
 
 ## Connecting a client

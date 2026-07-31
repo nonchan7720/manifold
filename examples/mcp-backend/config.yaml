@@ -11,7 +11,9 @@ mcpServers:
     command: npx
     args:
       - -y
-      - "@modelcontextprotocol/server-everything"
+      # Pinned so the example stays reproducible — bump deliberately after
+      # checking the release notes (npm view @modelcontextprotocol/server-everything version)
+      - "@modelcontextprotocol/server-everything@2026.7.4"
 
   # http transport: Manifold proxies to a remote Streamable HTTP MCP server
   # notion:

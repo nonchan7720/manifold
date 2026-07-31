@@ -4,15 +4,18 @@ Exposes the Google Calendar REST API as MCP tools, with Manifold handling the OA
 
 ## Prerequisites
 
-1. Create an OAuth client in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (type: Web application).
-2. Add `http://localhost:9999/google-calendar/auth/callback` as an authorized redirect URI.
-3. Enable the Google Calendar API for the project.
+1. Configure the [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent) for your Google Cloud project (required before creating an OAuth client). For an **External** app in *Testing* status, add the Google accounts you will sign in with as **test users**.
+2. Create an OAuth client in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (type: Web application).
+3. Add `http://localhost:9999/google-calendar/auth/callback` as an authorized redirect URI.
+4. Enable the Google Calendar API for the project.
 
 ## Run
 
 ```bash
 cd examples/oauth2-backend
-export ENCRYPT_KEY=$(openssl rand -base64 32)
+# Generate once and reuse — tokens stored in SQLite are encrypted with this
+# key, so a new key invalidates previously stored sessions (see ../README.md)
+export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
 export GOOGLE_CLIENT_ID=your-client-id
 export GOOGLE_CLIENT_SECRET=your-client-secret
 manifold gateway
@@ -32,6 +35,6 @@ On the first tool call, the client is redirected through Manifold's OAuth 2.1 fl
 
 Swap `spec`, `baseURL`, and the `oauth2` block for your provider. The redirect URI to register with the provider is always:
 
-```
+```text
 http(s)://<manifold-host>/<server_name>/auth/callback
 ```

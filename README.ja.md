@@ -25,7 +25,7 @@ Manifold は MCP サーバーとして振る舞いながら、バックエンド
 
 ## アーキテクチャ
 
-```
+```text
 MCP Client
     │
     ▼
@@ -146,7 +146,7 @@ mcpServers:
     baseURL: https://example.com
 ```
 
-### OAuth 2.1 認証付きの OpenAPI バックエンド
+### OAuth 2.0 認証付きの OpenAPI バックエンド
 
 ```yaml
 gateway:
@@ -207,13 +207,13 @@ redis:
 
 #### `mcpServers.<name>.oauth2`
 
-| フィールド     | 型       | 説明                     |
-| -------------- | -------- | ------------------------ |
-| `clientID`     | string   | クライアント ID          |
-| `clientSecret` | string   | クライアントシークレット |
-| `authURL`      | string   | Authorization Endpoint   |
-| `tokenURL`     | string   | Token Endpoint           |
-| `scopes`       | []string | リクエストするスコープ   |
+| フィールド     | 型       | 説明                                          |
+| -------------- | -------- | --------------------------------------------- |
+| `clientID`     | string   | クライアント ID（**必須**）                   |
+| `clientSecret` | string   | クライアントシークレット（**必須**）          |
+| `authURL`      | string   | Authorization Endpoint（**必須**。絶対 URL）  |
+| `tokenURL`     | string   | Token Endpoint（**必須**。絶対 URL）          |
+| `scopes`       | []string | リクエストするスコープ                        |
 
 #### `mcpServers.<name>.tokenExchange`
 

@@ -6,11 +6,12 @@ Turns the public [Swagger Petstore](https://petstore3.swagger.io/) OpenAPI 3.x s
 
 ```bash
 cd examples/openapi-backend
-export ENCRYPT_KEY=$(openssl rand -base64 32)
+# Generate once and reuse — see ../README.md
+export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
 manifold gateway
 ```
 
-Manifold fetches the OpenAPI spec lazily on the first request and generates one MCP tool per operation (`getPetById`, `findPetsByStatus`, ...).
+Manifold fetches the OpenAPI spec lazily on the first request and generates one MCP tool per operation. Tool names are the lowercased `operationId` (`getpetbyid`, `findpetsbystatus`, ...).
 
 ## Try it
 

@@ -9,7 +9,7 @@
 
 English | [日本語](README.ja.md)
 
-Manifold is a gateway that acts as an MCP server while connecting to multiple external MCP servers and OpenAPI / Swagger compliant REST APIs on the backend.
+Manifold is a gateway that acts as an MCP server while connecting to multiple external MCP servers and OpenAPI / Swagger-compliant REST APIs on the backend.
 
 ## Why "Manifold"?
 
@@ -25,7 +25,7 @@ An intake manifold is the component that distributes air and fuel evenly and eff
 
 ## Architecture
 
-```
+```text
 MCP Client
     │
     ▼
@@ -146,7 +146,7 @@ mcpServers:
     baseURL: https://example.com
 ```
 
-### OpenAPI backend with OAuth 2.1 authentication
+### OpenAPI backend with OAuth 2.0 authentication
 
 ```yaml
 gateway:
@@ -207,13 +207,13 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 
 #### `mcpServers.<name>.oauth2`
 
-| Field          | Type     | Description            |
-| -------------- | -------- | ---------------------- |
-| `clientID`     | string   | Client ID              |
-| `clientSecret` | string   | Client secret          |
-| `authURL`      | string   | Authorization endpoint |
-| `tokenURL`     | string   | Token endpoint         |
-| `scopes`       | []string | Scopes to request      |
+| Field          | Type     | Description                                          |
+| -------------- | -------- | ---------------------------------------------------- |
+| `clientID`     | string   | Client ID (**required**)                             |
+| `clientSecret` | string   | Client secret (**required**)                         |
+| `authURL`      | string   | Authorization endpoint (**required**; absolute URL)  |
+| `tokenURL`     | string   | Token endpoint (**required**; absolute URL)          |
+| `scopes`       | []string | Scopes to request                                    |
 
 #### `mcpServers.<name>.tokenExchange`
 

@@ -33,7 +33,9 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: Any relevant logs or error messages. This will be automatically formatted as code.
+      description: |
+        Any relevant logs or error messages. This will be automatically formatted as code.
+        **Redact Authorization headers, tokens, client secrets, cookies, and personal data before posting.**
       render: shell
   - type: input
     id: version

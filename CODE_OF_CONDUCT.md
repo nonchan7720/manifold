@@ -56,8 +56,10 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement by contacting the
-repository maintainer through GitHub.
+reported to the community leaders responsible for enforcement. **Please do not
+report conduct issues in public GitHub issues.** Instead, contact the
+maintainer ([@nonchan7720](https://github.com/nonchan7720)) privately through
+the contact details listed on their GitHub profile.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
