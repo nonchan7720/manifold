@@ -7,8 +7,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/stretchr/testify/require"
 )
+
+// withGlobalConfig は globalConfig を一時的に差し替え、テスト終了時に元に戻す。
+func withGlobalConfig(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	prev := globalConfig
+	globalConfig = cfg
+	t.Cleanup(func() { globalConfig = prev })
+}
+
+func TestNewStoreClient_SQLite(t *testing.T) {
+	withGlobalConfig(t, &config.Config{
+		SQLite: &config.SQLiteConfig{Path: ":memory:"},
+	})
+
+	c, err := newStoreClient(t.Context())
+	require.NoError(t, err)
+	defer c.Close()
+
+	require.IsType(t, &sqlite.Client{}, c)
+}
+
+func TestNewStoreClient_Memory(t *testing.T) {
+	withGlobalConfig(t, &config.Config{
+		Memory: &config.MemoryConfig{Enabled: true},
+	})
+
+	c, err := newStoreClient(t.Context())
+	require.NoError(t, err)
+	defer c.Close()
+
+	require.IsType(t, &memory.Client{}, c)
+}
+
+func TestNewStoreClient_SQLiteNil_DoesNotPanic(t *testing.T) {
+	// SQLite が nil の場合でもパニックせず、Memory 分岐にフォールバックできること
+	withGlobalConfig(t, &config.Config{
+		SQLite: nil,
+		Memory: &config.MemoryConfig{Enabled: true},
+	})
+
+	require.NotPanics(t, func() {
+		c, err := newStoreClient(t.Context())
+		require.NoError(t, err)
+		defer c.Close()
+	})
+}
 
 func TestNewGatewayCmd(t *testing.T) {
 	cmd := newGatewayCmd()
