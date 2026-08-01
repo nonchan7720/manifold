@@ -43,7 +43,7 @@ Server
 
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
-- **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵
+- **OAuth 2.1 サーバー**: PKCE (S256)・Dynamic Client Registration (RFC 7591)・Client ID Metadata Documents (CIMD, MCP 2025-11-25) 対応の認証サーバーを内蔵
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続**: バックエンドへの接続を初回リクエスト時に確立（ゲートウェイ起動時のバックエンド依存性を排除）
@@ -342,8 +342,11 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | `GET`    | `/{server_name}/auth/callback`                              | OAuth コールバック              |
 | `POST`   | `/{server_name}/auth/token`                                 | トークン発行                    |
 | `POST`   | `/{server_name}/auth/clients`                               | クライアント動的登録 (RFC 7591) |
+| `GET`    | `/{server_name}/auth/client-metadata.json`                  | 上流認可サーバーへ提示する Manifold 自身の CIMD ドキュメント |
 | `GET`    | `/authorize`, `/callback`                                   | サーバー名なしのエイリアス      |
 | `POST`   | `/token`, `/register`                                       | サーバー名なしのエイリアス      |
+
+内蔵認可サーバーは Dynamic Client Registration に加えて Client ID Metadata Documents (CIMD) を受け付けます。MCP クライアントは `client_id` として HTTPS URL を渡すことができ、Manifold はその URL からメタデータドキュメントを取得・検証します。また、上流 MCP サーバーへの接続時には、上流認可サーバーが `client_id_metadata_document_supported` を広告していれば CIMD を優先し（ゲートウェイの HTTPS 公開が必要）、未対応の場合は Dynamic Client Registration にフォールバックします。
 
 ### その他
 
