@@ -421,7 +421,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	srv = h.resolveLoginServer(srv, clientReg, resource)
+	srv = h.resolveLoginServer(srv, clientReg, resource, h.getBaseURL(r))
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
 		return
@@ -542,7 +542,7 @@ func (h *AuthHandler) resolveLoginClient(ctx context.Context, w http.ResponseWri
 // パスから解決済みの srv があればそれを優先し、なければ登録情報の
 // MCPServerName、最後に resource パラメータ（RFC 8707）から導出する。
 // CIMD クライアントは事前登録を持たないため resource による解決が必須となる。
-func (h *AuthHandler) resolveLoginServer(srv *config.Server, clientReg *StoreClientRegistration, resource string) *config.Server {
+func (h *AuthHandler) resolveLoginServer(srv *config.Server, clientReg *StoreClientRegistration, resource, gatewayBaseURL string) *config.Server {
 	if srv != nil {
 		return srv
 	}
@@ -552,7 +552,7 @@ func (h *AuthHandler) resolveLoginServer(srv *config.Server, clientReg *StoreCli
 		}
 	}
 	if resource != "" {
-		if name := serverNameFromResource(resource); name != "" {
+		if name := serverNameFromResource(resource, gatewayBaseURL); name != "" {
 			if v, ok := h.servers[name]; ok {
 				return v
 			}

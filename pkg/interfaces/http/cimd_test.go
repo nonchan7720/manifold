@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -38,6 +39,7 @@ func TestIsCIMDClientID(t *testing.T) {
 // --- serverNameFromResource ---
 
 func TestServerNameFromResource(t *testing.T) {
+	const baseURL = "https://gateway.example.com"
 	tests := []struct {
 		name     string
 		resource string
@@ -45,14 +47,18 @@ func TestServerNameFromResource(t *testing.T) {
 	}{
 		{"valid mcp resource", "https://gateway.example.com/mcp/myserver", "myserver"},
 		{"trailing slash", "https://gateway.example.com/mcp/myserver/", "myserver"},
+		{"host case insensitive", "https://Gateway.Example.COM/mcp/myserver", "myserver"},
 		{"no server name", "https://gateway.example.com/mcp", ""},
 		{"different path", "https://gateway.example.com/api/myserver", ""},
 		{"deep path", "https://gateway.example.com/mcp/a/b", ""},
+		// audience 検証: ゲートウェイ以外のホストは解決しない
+		{"different host", "https://evil.example.com/mcp/myserver", ""},
+		{"different port", "https://gateway.example.com:8443/mcp/myserver", ""},
 		{"empty", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, serverNameFromResource(tt.resource))
+			require.Equal(t, tt.want, serverNameFromResource(tt.resource, baseURL))
 		})
 	}
 }
@@ -216,6 +222,46 @@ func TestFetchClientIDMetadata_NonCIMDClientID(t *testing.T) {
 	h := &AuthHandler{store: newMockStore(map[string]string{}), servers: config.Servers{}}
 	_, err := h.fetchClientIDMetadata(t.Context(), "not-a-url")
 	require.Error(t, err)
+}
+
+func TestFetchClientIDMetadata_TooLarge(t *testing.T) {
+	h, clientID, _ := newCIMDTestServer(t, func(_ string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// cimdMaxBodySize (1MB) を超えるボディを返す
+			_, _ = w.Write([]byte(`{"client_id":"`))
+			filler := strings.Repeat("a", 64*1024)
+			for range 20 {
+				_, _ = w.Write([]byte(filler))
+			}
+			_, _ = w.Write([]byte(`"}`))
+		}
+	})
+
+	_, err := h.fetchClientIDMetadata(t.Context(), clientID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "size limit")
+}
+
+func TestFetchClientIDMetadata_RedirectRejected(t *testing.T) {
+	h, clientID, _ := newCIMDTestServer(t, func(clientID string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/redirected" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ClientIDMetadataDocument{
+					ClientID:     clientID,
+					RedirectURIs: []string{"https://client.example.com/callback"},
+				})
+				return
+			}
+			http.Redirect(w, r, "/redirected", http.StatusFound)
+		}
+	})
+
+	// リダイレクトは追従せずエラーになる
+	_, err := h.fetchClientIDMetadata(t.Context(), clientID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unexpected status")
 }
 
 // --- MetadataEndpoint: CIMD サポートの広告 ---

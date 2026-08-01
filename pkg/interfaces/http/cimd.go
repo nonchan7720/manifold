@@ -14,6 +14,7 @@ import (
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/util"
 )
 
@@ -28,6 +29,8 @@ const (
 	cimdCacheTTL = 5 * time.Minute
 	// cimdMaxBodySize は CIMD ドキュメント取得時のレスポンスボディ上限。
 	cimdMaxBodySize = 1 << 20 // 1MB
+	// cimdFetchTimeout は CIMD ドキュメント取得の最大待ち時間。
+	cimdFetchTimeout = 10 * time.Second
 	// cimdCachePrefix は store に保存する際のキープレフィックス。
 	cimdCachePrefix = "cimd_doc:"
 )
@@ -79,11 +82,14 @@ func (h *AuthHandler) fetchClientIDMetadata(ctx context.Context, clientID string
 		}
 	}
 
+	// h.httpClient が未設定の経路でも SSRF 対策（プライベート IP 拒否）を欠かさない
 	httpClient := h.httpClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = client.SafeHTTPClient()
 	}
-	doc, err := fetchCIMDDocument(ctx, httpClient, clientID)
+	fetchCtx, cancel := context.WithTimeout(ctx, cimdFetchTimeout)
+	defer cancel()
+	doc, err := fetchCIMDDocument(fetchCtx, httpClient, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +120,14 @@ func fetchCIMDDocument(ctx context.Context, httpClient *http.Client, clientID st
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req) //nolint: gosec // G704: see above
+	// リダイレクトは追従しない: 初回 URL が https でもリダイレクト先で
+	// http や別ホストへ移動し得るため、CIMD ドキュメントは client_id URL
+	// から直接取得できる場合のみ受け付ける（3xx は下のステータス検査で拒否）。
+	c := *httpClient
+	c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := c.Do(req) //nolint: gosec // G704: see above
 	if err != nil {
 		return nil, fmt.Errorf("fetch CIMD document: %w", err)
 	}
@@ -165,10 +178,15 @@ func validateCIMDDocument(doc *ClientIDMetadataDocument, clientID string) error 
 
 // serverNameFromResource は RFC 8707 の resource パラメータ
 // （例: https://host/mcp/{name}）から MCP サーバー名を導出する。
-// 解決できない場合は空文字を返す。
-func serverNameFromResource(resource string) string {
+// audience 検証として resource のホストがゲートウェイ自身のホストと
+// 一致することを要求し、解決できない場合は空文字を返す。
+func serverNameFromResource(resource, gatewayBaseURL string) string {
 	u, err := url.Parse(resource)
 	if err != nil {
+		return ""
+	}
+	base, err := url.Parse(gatewayBaseURL)
+	if err != nil || !strings.EqualFold(u.Host, base.Host) {
 		return ""
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
@@ -176,6 +194,15 @@ func serverNameFromResource(resource string) string {
 		return parts[1]
 	}
 	return ""
+}
+
+// buildClientMetadataDocumentURL は manifold 自身の CIMD ドキュメント URL を組み立てる。
+func buildClientMetadataDocumentURL(baseURL, serverName string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return u.JoinPath(serverName, "auth", "client-metadata.json").String()
 }
 
 // clientMetadataDocumentURL は manifold 自身が上流認可サーバーに提示する
@@ -186,7 +213,7 @@ func clientMetadataDocumentURL(gatewayBaseURL, serverName string) string {
 	if err != nil || u.Scheme != "https" {
 		return ""
 	}
-	return fmt.Sprintf("%s/%s/auth/client-metadata.json", gatewayBaseURL, serverName)
+	return buildClientMetadataDocumentURL(gatewayBaseURL, serverName)
 }
 
 // ClientMetadataDocument は GET /{server}/auth/client-metadata.json を処理し、
@@ -203,7 +230,7 @@ func (h *AuthHandler) ClientMetadataDocument(w http.ResponseWriter, r *http.Requ
 	}
 
 	baseURL := h.getBaseURL(r)
-	docURL := fmt.Sprintf("%s/%s/auth/client-metadata.json", baseURL, srv.Name)
+	docURL := buildClientMetadataDocumentURL(baseURL, srv.Name)
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 	doc := ClientIDMetadataDocument{
 		ClientID:                docURL,
