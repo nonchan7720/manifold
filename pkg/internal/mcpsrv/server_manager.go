@@ -143,7 +143,33 @@ func registerAPI(
 	return nil
 }
 
+// resourceLinkDescription は resource_link の説明文を組み立てる。
+//
+// mimeType フィールドは、受け手（Claude Code 等）が resource_link を
+// `[Resource link: {name}] {uri} ({description})` というテキストへ変換する過程で失われる。
+// 説明文は変換後も残るため、Content-Type をここにも書いておく。
+func resourceLinkDescription(contentType string) string {
+	return fmt.Sprintf("Content-Type: %s. When using the data, please use the accessible URL", contentType)
+}
+
+// newResourceLink は実体をアップロードし、その参照を表す resource_link を返す。
+func newResourceLink(ctx context.Context, data []byte, contentType string, mediaService storage.MediaService) (mcp.Content, error) {
+	id, url, err := mediaService.SaveContent(ctx, data, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return &mcp.ResourceLink{
+		URI:         url,
+		Name:        id,
+		MIMEType:    contentType,
+		Description: resourceLinkDescription(contentType),
+	}, nil
+}
+
 func generateContent(ctx context.Context, contentType string, data []byte, mediaService storage.MediaService) ([]mcp.Content, error) {
+	// 上流が octet-stream しか返さない場合に備え、実体から型を判定し直す。
+	// 判定できた型は振り分け（image/audio/その他）と resource_link の両方に使う。
+	contentType = storage.ResolveContentType(contentType, data)
 	baseType := strings.SplitN(contentType, ";", 2)[0]
 	baseType = strings.TrimSpace(baseType)
 	textContent := []string{
@@ -165,62 +191,30 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 			},
 		}, nil
 	case strings.HasPrefix(baseType, "image/"):
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.ImageContent{
-				Data:     data,
-				MIMEType: contentType,
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.ImageContent{Data: data, MIMEType: contentType}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	case strings.HasPrefix(baseType, "audio/"):
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.AudioContent{
-				Data:     data,
-				MIMEType: contentType,
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.AudioContent{Data: data, MIMEType: contentType}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	default:
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.TextContent{
-				Text: string(data),
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.TextContent{Text: string(data)}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	}
