@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/nonchan7720/manifold/compare/v1.5.0...v1.5.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **ci:** use a defined variable in the MCP Registry transport URL ([#64](https://github.com/nonchan7720/manifold/issues/64)) ([376ab1b](https://github.com/nonchan7720/manifold/commit/376ab1b98f27af64a820c9e66e7d196ee76fd732))
+
 ## [1.5.0](https://github.com/nonchan7720/manifold/compare/v1.4.0...v1.5.0) (2026-08-01)
 
 
