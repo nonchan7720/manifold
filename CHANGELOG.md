@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.0](https://github.com/nonchan7720/manifold/compare/v1.4.0...v1.5.0) (2026-08-01)
+
+
+### Features
+
+* **renovate:** auto-merge patch updates when CI passes ([#63](https://github.com/nonchan7720/manifold/issues/63)) ([a1495fa](https://github.com/nonchan7720/manifold/commit/a1495fafa9a8cdfce39c05077ed82b363dfce364))
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#47](https://github.com/nonchan7720/manifold/issues/47)) ([bf73cb8](https://github.com/nonchan7720/manifold/commit/bf73cb8a8c7028871ca0b08c4ddb551409a8535d))
+* **deps:** update go minor dependencies ([#60](https://github.com/nonchan7720/manifold/issues/60)) ([67ea4cc](https://github.com/nonchan7720/manifold/commit/67ea4cccb2403a4e898d800b195f9392cee3537c))
+* **deps:** update kin-openapi and grpc to patch security vulnerabilities ([#59](https://github.com/nonchan7720/manifold/issues/59)) ([d87eec1](https://github.com/nonchan7720/manifold/commit/d87eec158031f29e2ae22356a79b1963bfe60873))
+
+
+### Documentation
+
+* add English README, community health files, and runnable examples ([#57](https://github.com/nonchan7720/manifold/issues/57)) ([cab9292](https://github.com/nonchan7720/manifold/commit/cab9292b8f5a11170171301e942d7aa375992d03))
+
 ## [1.4.0](https://github.com/nonchan7720/manifold/compare/v1.3.0...v1.4.0) (2026-07-31)
 
 
