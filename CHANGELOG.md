@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/nonchan7720/manifold/compare/v1.5.1...v1.6.0) (2026-08-01)
+
+
+### Features
+
+* resource_link の Content-Type を実体から判定して載せる ([#68](https://github.com/nonchan7720/manifold/issues/68)) ([7a07899](https://github.com/nonchan7720/manifold/commit/7a078996c1910047f129d4dd7f7a64b7717d8cc3))
+
+
+### Bug Fixes
+
+* **deps:** update github.com/modelcontextprotocol/go-sdk to v1.7.0 ([#66](https://github.com/nonchan7720/manifold/issues/66)) ([0a64ef2](https://github.com/nonchan7720/manifold/commit/0a64ef2e5cefbbb43af0ef7f256cdfd17875300d))
+
 ## [1.5.1](https://github.com/nonchan7720/manifold/compare/v1.5.0...v1.5.1) (2026-08-01)
 
 
