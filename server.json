@@ -1,0 +1,60 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nonchan7720/manifold",
+  "title": "Manifold",
+  "description": "MCP gateway aggregating MCP servers and OpenAPI/Swagger REST APIs behind one MCP endpoint",
+  "repository": {
+    "url": "https://github.com/nonchan7720/manifold",
+    "source": "github"
+  },
+  "version": "1.5.1",
+  "websiteUrl": "https://github.com/nonchan7720/manifold",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/nonchan7720/manifold:v1.4.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:9999/mcp/{SERVER_NAME}"
+      },
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "-p",
+          "value": "9999:9999",
+          "description": "Expose the gateway port",
+          "isRequired": true
+        },
+        {
+          "type": "named",
+          "name": "-v",
+          "value": "{config_path}:/home/nonroot/config.yaml",
+          "description": "Mount the Manifold configuration file into the container",
+          "isRequired": true,
+          "variables": {
+            "config_path": {
+              "description": "Absolute path to your config.yaml on the host",
+              "format": "filepath",
+              "isRequired": true
+            }
+          }
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "ENCRYPT_KEY",
+          "description": "Base64-encoded 32-byte AES-256 key used to encrypt stored tokens (generate with: openssl rand -base64 32)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "SERVER_NAME",
+          "description": "Name of a backend server defined under mcpServers in config.yaml; forms the MCP endpoint path /mcp/{SERVER_NAME} (not read by the container itself)",
+          "isRequired": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

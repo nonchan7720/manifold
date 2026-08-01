@@ -1,0 +1,27 @@
+name: Auto approve
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event.pull_request.user.login == 'renovate[bot]' &&
+        contains(github.event.pull_request.labels.*.name, 'automerge-patch')) ||
+      github.event.pull_request.user.login == 'nonchan7720'
+    steps:
+      - name: Approve pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr review "${{ github.event.pull_request.html_url }}" --approve

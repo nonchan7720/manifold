@@ -1,0 +1,21 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+mcpServers:
+  google-calendar:
+    description: Google Calendar API
+    baseURL: https://www.googleapis.com/calendar/v3
+    spec: https://raw.githubusercontent.com/APIs-guru/openapi-directory/refs/heads/main/APIs/googleapis.com/calendar/v3/openapi.yaml
+    oauth2:
+      clientID: ${GOOGLE_CLIENT_ID}
+      clientSecret: ${GOOGLE_CLIENT_SECRET}
+      authURL: https://accounts.google.com/o/oauth2/auth
+      tokenURL: https://oauth2.googleapis.com/token
+      scopes:
+        - https://www.googleapis.com/auth/calendar.events
+        - https://www.googleapis.com/auth/calendar.readonly
+
+sqlite:
+  path: ./tmp/manifold.db

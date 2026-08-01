@@ -99,3 +99,28 @@ func TestConfig_ValidateWithContext_ToolSearch_Defaults_Valid(t *testing.T) {
 	err := cfg.ValidateWithContext(t.Context())
 	require.NoError(t, err)
 }
+
+// --- ストレージバックエンド（Redis / SQLite / Memory）の相互排他バリデーション ---
+
+func TestConfig_ValidateWithContext_Memory_Only_Valid(t *testing.T) {
+	cfg := &Config{
+		Gateway: Gateway{EncryptKey: validEncryptKey},
+		Memory:  &MemoryConfig{Enabled: true},
+	}
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err, "memoryのみの設定でも有効になるべき")
+}
+
+func TestConfig_ValidateWithContext_NoStorageBackend_Invalid(t *testing.T) {
+	cfg := &Config{
+		Gateway: Gateway{EncryptKey: validEncryptKey},
+	}
+	err := cfg.ValidateWithContext(t.Context())
+	require.Error(t, err, "Redis/SQLite/Memoryのいずれも未設定ならエラーになるべき")
+}
+
+func TestConfig_ValidateWithContext_SQLiteOnly_StillValid(t *testing.T) {
+	cfg := newValidConfigWithServers(Servers{})
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err, "既存のSQLiteのみの構成は引き続き有効であるべき")
+}

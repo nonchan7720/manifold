@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a problem with Manifold
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! 日本語での報告も歓迎します。
+
+        **Security issues**: please do NOT report vulnerabilities here — see [SECURITY.md](https://github.com/nonchan7720/manifold/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        A minimal `config.yaml` and the exact commands you ran help a lot.
+        **Remove all secrets (encryptKey, client secrets, tokens) before posting.**
+      placeholder: |
+        1. Configure Manifold with ...
+        2. Run `manifold gateway`
+        3. Send a request to ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Any relevant logs or error messages. This will be automatically formatted as code.
+        **Redact Authorization headers, tokens, client secrets, cookies, and personal data before posting.**
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Manifold version
+      placeholder: e.g. v1.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How do you run Manifold?
+      options:
+        - Binary (from Releases)
+        - Docker
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / Environment
+      placeholder: e.g. Ubuntu 24.04, macOS 15, Kubernetes 1.32

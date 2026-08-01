@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/aws"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
@@ -109,6 +110,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 
 	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
+	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService, mcpsrv.WithToolSearchConfig(globalConfig.Gateway.ToolSearch))
 	if err := mcpSrv.Init(ctx); err != nil {
@@ -145,6 +147,7 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
 	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
+	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
 	}
@@ -179,15 +182,24 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 }
 
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。
-// sqlite.path が設定されている場合はSQLiteを使用し、それ以外はRedisを使用する。
+// sqlite.path が設定されている場合はSQLiteを、memory.enabled が true の場合はインメモリを、
+// それ以外の場合はRedisを使用する。
+// Redisの設定が無い場合は、外部サービス不要で動作するインメモリにフォールバックする。
 func newStoreClient(ctx context.Context) (store.Client, error) {
-	if globalConfig.SQLite.Path != "" {
+	if globalConfig.SQLite != nil && globalConfig.SQLite.Path != "" {
 		c, err := sqlite.NewClient(ctx, globalConfig.SQLite.Path)
 		if err != nil {
 			return nil, err
 		}
 		c.StartCleanup(ctx, 5*time.Minute)
 		return c, nil
+	}
+	if globalConfig.Memory != nil && globalConfig.Memory.Enabled {
+		return memory.NewClient(ctx)
+	}
+	if globalConfig.Redis == nil {
+		slog.WarnContext(ctx, "no storage backend configured, falling back to the in-memory store")
+		return memory.NewClient(ctx)
 	}
 	return redis.NewClient(ctx, globalConfig.Redis)
 }
