@@ -53,14 +53,14 @@ func (u *s3Service) SaveContent(ctx context.Context, data []byte, contentType st
 		ContentType: aws.String(contentType),
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to s3 upload(%s)", id)
+		return "", "", fmt.Errorf("failed to s3 upload(%s): %w", id, err)
 	}
 	url, err := u.api.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: bucket,
 		Key:    key,
 	}, defaultURLExpiration)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate pre-sign url(%s)", id)
+		return "", "", fmt.Errorf("failed to generate pre-sign url(%s): %w", id, err)
 	}
 	return id, url, nil
 }
@@ -77,7 +77,7 @@ func (u *s3Service) DownloadContent(ctx context.Context, id string) (_ io.ReadCl
 		Key:    key,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get file content")
+		return nil, "", fmt.Errorf("failed to get file content: %w", err)
 	}
 	return resp.Body, aws.ToString(resp.ContentType), nil
 }
