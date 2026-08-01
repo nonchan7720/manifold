@@ -15,13 +15,7 @@
       "identifier": "ghcr.io/nonchan7720/manifold:v1.4.0",
       "transport": {
         "type": "streamable-http",
-        "url": "http://localhost:9999/mcp/{server_name}",
-        "variables": {
-          "server_name": {
-            "description": "Name of a backend server defined under mcpServers in config.yaml",
-            "isRequired": true
-          }
-        }
+        "url": "http://localhost:9999/mcp/{SERVER_NAME}"
       },
       "runtimeArguments": [
         {
@@ -52,6 +46,12 @@
           "description": "Base64-encoded 32-byte AES-256 key used to encrypt stored tokens (generate with: openssl rand -base64 32)",
           "isRequired": true,
           "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "SERVER_NAME",
+          "description": "Name of a backend server defined under mcpServers in config.yaml; forms the MCP endpoint path /mcp/{SERVER_NAME} (not read by the container itself)",
+          "isRequired": true,
           "format": "string"
         }
       ]
