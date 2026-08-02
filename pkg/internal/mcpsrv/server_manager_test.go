@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// petstoreOperationCount は fixtures/petstore_oas.json 内の operationId 数（手動でカウント済み）。
+const petstoreOperationCount = 19
+
 // fakeMediaService は Enabled() を true にした状態での Do() 呼び出し内容を検証するためのテスト用スタブ。
 type fakeMediaService struct {
 	enabled bool
@@ -268,6 +271,73 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 	require.NotPanics(t, func() {
 		s.Close()
 	})
+}
+
+// --- tool_search: catalog 連携 ---
+
+func TestMCPServer_Init_OpenAPIMode_PopulatesCatalog(t *testing.T) {
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	err := s.Init(context.Background())
+	require.NoError(t, err)
+
+	require.NotNil(t, s.catalog)
+	require.Equal(t, petstoreOperationCount, s.catalog.Total())
+}
+
+func TestMCPServer_Init_DefaultToolSearchThreshold_RealToolsVisible(t *testing.T) {
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	// デフォルト閾値（100）はフィクスチャのツール数（19）を上回るため実ツールがそのまま見える
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	err := s.Init(context.Background())
+	require.NoError(t, err)
+
+	srv, err := s.Server("petstore")
+	require.NoError(t, err)
+
+	session := connectInMemory(t, context.Background(), srv)
+	result, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, petstoreOperationCount)
+	require.NotContains(t, toolNames(result.Tools), toolSearchName)
+}
+
+func TestMCPServer_Init_LowToolSearchThreshold_OnlyToolSearchVisible(t *testing.T) {
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(
+		servers,
+		storage.NewContentManagementService(u, storage.NewNoopUploader()),
+		WithToolSearchConfig(config.ToolSearchConfig{Threshold: 1, DefaultLimit: 10}),
+	)
+	err := s.Init(context.Background())
+	require.NoError(t, err)
+
+	srv, err := s.Server("petstore")
+	require.NoError(t, err)
+
+	session := connectInMemory(t, context.Background(), srv)
+	result, err := session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+	require.Equal(t, toolSearchName, result.Tools[0].Name)
 }
 
 func TestMCPServer_Init_MultipleServers(t *testing.T) {

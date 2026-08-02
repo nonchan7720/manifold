@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/toolsearch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,6 +86,69 @@ func TestBuildTransport_Stdio_WithCommand(t *testing.T) {
 	transport, err := c.buildTransport(context.Background())
 	require.NoError(t, err)
 	require.NotNil(t, transport)
+}
+
+// --- MCPBackendClient.registerTools ---
+
+func TestMCPBackendClient_RegisterTools_AddsToCatalog(t *testing.T) {
+	ctx := t.Context()
+
+	backendSrv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "test"}, &mcp.ServerOptions{})
+	backendSrv.AddTool(&mcp.Tool{Name: "real_tool", Description: "a real tool", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+
+	session := connectInMemory(t, ctx, backendSrv)
+
+	gatewaySrv := mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "test"}, &mcp.ServerOptions{})
+	catalog := toolsearch.NewCatalog()
+	c := &MCPBackendClient{name: "test-backend", cfg: &config.Server{}, srv: gatewaySrv, catalog: catalog}
+
+	err := c.registerTools(ctx, session)
+	require.NoError(t, err)
+	require.Equal(t, 1, catalog.Total())
+
+	docs, err := catalog.Search("test-backend", "real_tool", toolsearch.MethodRegexp, 10)
+	require.NoError(t, err)
+	require.Len(t, docs, 1)
+	require.Equal(t, "real_tool", docs[0].Name)
+}
+
+func TestMCPBackendClient_RegisterTools_SkipsUpstreamToolSearchName(t *testing.T) {
+	ctx := t.Context()
+
+	backendSrv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "test"}, &mcp.ServerOptions{})
+	backendSrv.AddTool(&mcp.Tool{Name: "tool_search", Description: "upstream tool_search", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+	backendSrv.AddTool(&mcp.Tool{Name: "real_tool", Description: "a real tool", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{}, nil
+		})
+
+	session := connectInMemory(t, ctx, backendSrv)
+
+	gatewaySrv := mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "test"}, &mcp.ServerOptions{})
+	catalog := toolsearch.NewCatalog()
+	c := &MCPBackendClient{name: "test-backend", cfg: &config.Server{}, srv: gatewaySrv, catalog: catalog}
+
+	err := c.registerTools(ctx, session)
+	require.NoError(t, err)
+
+	// upstream の "tool_search" は合成ツールの上書きを防ぐため catalog にも srv にも登録されない
+	require.Equal(t, 1, catalog.Total())
+	docs, err := catalog.Search("test-backend", "tool_search", toolsearch.MethodRegexp, 10)
+	require.NoError(t, err)
+	require.Empty(t, docs)
+
+	// gatewaySrv 側にも登録されていないことを確認
+	gwSession := connectInMemory(t, ctx, gatewaySrv)
+	result, err := gwSession.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+	require.Equal(t, "real_tool", result.Tools[0].Name)
 }
 
 // --- MCPBackendClient.Close ---

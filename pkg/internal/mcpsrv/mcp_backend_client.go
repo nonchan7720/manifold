@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/toolsearch"
 	"github.com/nonchan7720/manifold/pkg/version"
 )
 
@@ -21,6 +23,8 @@ type MCPBackendClient struct {
 	cfg  *config.Server
 	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
 
+	catalog *toolsearch.Catalog
+
 	mu        sync.Mutex
 	session   *mcp.ClientSession
 	connected bool
@@ -28,16 +32,18 @@ type MCPBackendClient struct {
 
 // EnsureConnected は初回のみバックエンドへ接続してツールを登録する。
 // 接続失敗時は次のリクエストでリトライ可能（sync.Once は使わない）。
+// 接続処理全体（connect + registerTools + 状態更新）を c.mu で保持したまま行うことで、
+// 同時に来た初回リクエスト同士が並行して接続・二重登録するのを防ぐ。先に来た方が
+// 接続を完了させれば、後続はロック取得後に c.connected を見て即座に戻る。
 func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/EnsureConnected")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.connected {
-		c.mu.Unlock()
 		return nil
 	}
-	c.mu.Unlock()
 
 	session, err := c.connect(ctx)
 	if err != nil {
@@ -48,10 +54,8 @@ func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 		return fmt.Errorf("backend %s: register tools: %w", c.name, err)
 	}
 
-	c.mu.Lock()
 	c.session = session
 	c.connected = true
-	c.mu.Unlock()
 	return nil
 }
 
@@ -126,6 +130,17 @@ func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.Clien
 	}
 	for _, tool := range result.Tools {
 		t := tool
+		if isReservedToolName(t.Name) {
+			// 合成ツール tool_search の上書きを防ぐため、上流に同名のツールがあっても登録しない。
+			slog.WarnContext(ctx, "backend upstream tool name collides with synthetic tool_search; skipping registration",
+				slog.String("backend", c.name))
+			continue
+		}
+		c.catalog.Add(c.name, toolsearch.ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
 		c.srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return session.CallTool(ctx, &mcp.CallToolParams{
 				Name:      req.Params.Name,
