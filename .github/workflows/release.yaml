@@ -88,6 +88,15 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: AWS of Public ECR accounts
+        uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Log in to ECR of Public ECR account
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ secrets.ECR_REGISTRY }}
       - name: Login to GitHub Container Registry
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
@@ -101,6 +110,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.PLATFORM }}
+            ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}-${{ env.PLATFORM }}
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ env.PLATFORM }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}-${{ env.PLATFORM }}
   combine-multi-arch-image:
@@ -122,14 +132,36 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create and push multi-arch manifest to GHCR
-        shell: bash
-        run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
-          docker buildx imagetools create \
-            -t "$IMAGE" \
-            "$IMAGE-amd64" \
-            "$IMAGE-arm64"
+      - name: AWS of Public ECR accounts
+        uses: aws-actions/configure-aws-credentials@5fd3084fc36e372ff1fff382a39b10d03659f355 # v2.2.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Log in to ECR of Public ECR account
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ secrets.ECR_REGISTRY }}
+      - parallel:
+          - name: Create and push multi-arch manifest to GHCR
+            shell: bash
+            env:
+              REGISTRY: ghcr.io/${{ github.repository_owner }}
+            run: |
+              IMAGE="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+              docker buildx imagetools create \
+                -t "$IMAGE" \
+                "$IMAGE-amd64" \
+                "$IMAGE-arm64"
+          - name: Create and push multi-arch manifest to ECR
+            shell: bash
+            env:
+              REGISTRY: ${{ secrets.ECR_REGISTRY }}
+            run: |
+              IMAGE="${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+              docker buildx imagetools create \
+                -t "$IMAGE" \
+                "$IMAGE-amd64" \
+                "$IMAGE-arm64"
 
   publish-mcp-registry:
     needs:
