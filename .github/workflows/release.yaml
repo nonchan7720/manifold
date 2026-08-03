@@ -140,10 +140,11 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
-      - name: Log in to ECR of Public ECR account
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+      - name: Login to Amazon ECR Public
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
         with:
-          registry: ${{ secrets.ECR_REGISTRY }}
+          registry-type: public
       - parallel:
           - name: Create and push multi-arch manifest to GHCR
             shell: bash
