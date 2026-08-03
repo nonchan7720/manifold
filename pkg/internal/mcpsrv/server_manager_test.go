@@ -19,7 +19,11 @@ type fakeMediaService struct {
 	doFunc  func(ctx context.Context, data []byte, contentType string) (string, string, error)
 }
 
-func (f *fakeMediaService) SaveContent(ctx context.Context, data []byte, contentType string) (string, string, error) {
+func (f *fakeMediaService) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (string, string, error) {
 	return f.doFunc(ctx, data, contentType)
 }
 
@@ -27,7 +31,10 @@ func (f *fakeMediaService) AccessCheck(ctx context.Context) error { return nil }
 
 func (f *fakeMediaService) Enabled() bool { return f.enabled }
 
-func (f *fakeMediaService) DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error) {
+func (f *fakeMediaService) DownloadContent(
+	ctx context.Context,
+	id string,
+) (io.ReadCloser, string, error) {
 	return nil, "", nil
 }
 
@@ -37,7 +44,12 @@ func TestGenerateContent_BinaryImage_NoopUploader(t *testing.T) {
 
 	// mediaUploader が無効の場合、デコードはバックエンドサービス側の責務ではないため
 	// base64 のまま ImageContent.Data に格納される。
-	contents, err := generateContent(context.Background(), "image/png", encoded, storage.NewNoopUploader())
+	contents, err := generateContent(
+		context.Background(),
+		"image/png",
+		encoded,
+		storage.NewNoopUploader(),
+	)
 	require.NoError(t, err)
 	require.Len(t, contents, 1)
 
@@ -87,7 +99,12 @@ func TestGenerateContent_OctetStream_DetectsTypeFromBody(t *testing.T) {
 		},
 	}
 
-	contents, err := generateContent(context.Background(), "application/octet-stream", encoded, mediaService)
+	contents, err := generateContent(
+		context.Background(),
+		"application/octet-stream",
+		encoded,
+		mediaService,
+	)
 	require.NoError(t, err)
 	require.Len(t, contents, 1)
 
@@ -124,7 +141,12 @@ func TestGenerateContent_OctetStream_NoopUploader_RoutesByDetectedType(t *testin
 	png := []byte("\x89PNG\r\n\x1a\n0000000000000000")
 	encoded := []byte(base64.URLEncoding.EncodeToString(png))
 
-	contents, err := generateContent(context.Background(), "application/octet-stream", encoded, storage.NewNoopUploader())
+	contents, err := generateContent(
+		context.Background(),
+		"application/octet-stream",
+		encoded,
+		storage.NewNoopUploader(),
+	)
 	require.NoError(t, err)
 	require.Len(t, contents, 1)
 

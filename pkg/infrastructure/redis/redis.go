@@ -89,7 +89,12 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 }
 
 // Set stores a value with an expiration type
-func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) (rErr error) {
+func (c *Client) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) (rErr error) {
 	ctx = trace.StartSpan(ctx, "redis/Client/Set")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 

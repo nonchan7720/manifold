@@ -54,7 +54,12 @@ func NewClient(ctx context.Context, path string) (*Client, error) {
 }
 
 // Set はキーに値をTTL付きで保存する。
-func (c *Client) Set(ctx context.Context, key string, value any, expiration time.Duration) (rErr error) {
+func (c *Client) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) (rErr error) {
 	ctx = trace.StartSpan(ctx, "sqlite/Client/Set")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 

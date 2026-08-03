@@ -42,10 +42,18 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		&s,
 		validation.Field(&s.Description, validation.Required),
 		validation.Field(&s.BaseURL, validation.When(s.Spec != "", validation.Required)),
-		validation.Field(&s.Transport, validation.When(s.Spec == "", validation.In(MCPTransportHTTP, MCPTransportStdio))),
-		validation.Field(&s.URL, validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP, validation.Required)),
-		validation.Field(&s.Command, validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required)),
-
+		validation.Field(
+			&s.Transport,
+			validation.When(s.Spec == "", validation.In(MCPTransportHTTP, MCPTransportStdio)),
+		),
+		validation.Field(
+			&s.URL,
+			validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP, validation.Required),
+		),
+		validation.Field(
+			&s.Command,
+			validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required),
+		),
 		// ランタイムの transport 選択（httpClientRoundTripper）は AuthValue > OAuth2 >
 		// TokenExchange の優先順位で暗黙に1つだけを採用してしまうため、複数同時設定を
 		// 設定ロード時点でエラーにする。いずれか1つ、または設定無しのみを許可する。

@@ -53,7 +53,11 @@ func NewLoggerProvider(ctx context.Context, opt *Config) (log.LoggerProvider, fu
 	return loggerProvider, cleanup, nil
 }
 
-func newHTTPLogExporter(ctx context.Context, opt *LogsConfig, gzipCompression bool) (sdklog.Exporter, error) {
+func newHTTPLogExporter(
+	ctx context.Context,
+	opt *LogsConfig,
+	gzipCompression bool,
+) (sdklog.Exporter, error) {
 	opts := []otlploghttp.Option{}
 	endpoint := opt.HTTP.Endpoint
 	switch {
@@ -70,7 +74,11 @@ func newHTTPLogExporter(ctx context.Context, opt *LogsConfig, gzipCompression bo
 	return otlploghttp.New(ctx, opts...)
 }
 
-func newGRPCLogExporter(ctx context.Context, opt *LogsConfig, gzipCompression bool) (sdklog.Exporter, error) {
+func newGRPCLogExporter(
+	ctx context.Context,
+	opt *LogsConfig,
+	gzipCompression bool,
+) (sdklog.Exporter, error) {
 	opts := make([]otlploggrpc.Option, 0, 10)
 	grpc := opt.GRPC
 	if grpc.Insecure {

@@ -25,14 +25,21 @@ type stubS3API struct {
 	getObjectErr    error
 }
 
-func (s *stubS3API) UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput) (*transfermanager.UploadObjectOutput, error) {
+func (s *stubS3API) UploadObject(
+	ctx context.Context,
+	input *transfermanager.UploadObjectInput,
+) (*transfermanager.UploadObjectOutput, error) {
 	if s.uploadErr != nil {
 		return nil, s.uploadErr
 	}
 	return s.uploadOutput, nil
 }
 
-func (s *stubS3API) PresignGetObject(ctx context.Context, params *s3.GetObjectInput, expires time.Duration) (string, error) {
+func (s *stubS3API) PresignGetObject(
+	ctx context.Context,
+	params *s3.GetObjectInput,
+	expires time.Duration,
+) (string, error) {
 	if s.presignErr != nil {
 		return "", s.presignErr
 	}
@@ -43,7 +50,11 @@ func (s *stubS3API) AccessCheck(ctx context.Context, bucket string) error {
 	return s.accessCheckErr
 }
 
-func (s *stubS3API) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+func (s *stubS3API) GetObject(
+	ctx context.Context,
+	params *s3.GetObjectInput,
+	optFns ...func(*s3.Options),
+) (*s3.GetObjectOutput, error) {
 	if s.getObjectErr != nil {
 		return nil, s.getObjectErr
 	}
