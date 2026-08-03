@@ -56,7 +56,7 @@ func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
 	return parsedURL.JoinPath(path)
 }
 
-func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
+func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 

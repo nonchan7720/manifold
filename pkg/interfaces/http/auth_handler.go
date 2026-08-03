@@ -574,7 +574,7 @@ func (h *AuthHandler) CallbackEndpoint(
 	w http.ResponseWriter,
 	r *http.Request,
 	srv *config.Server,
-) { //nolint: gocyclo
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/CallbackEndpoint")
 	var err error
@@ -703,7 +703,7 @@ func (h *AuthHandler) TokenEndpoint(
 	w http.ResponseWriter,
 	r *http.Request,
 	srv *config.Server,
-) { //nolint: gocyclo
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/TokenEndpoint")
 	var err error

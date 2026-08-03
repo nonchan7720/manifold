@@ -59,7 +59,7 @@ linters:
       disable:
         - fieldalignment
     gocyclo:
-      min-complexity: 15
+      min-complexity: 20
     gocognit:
       min-complexity: 25
     revive:

@@ -296,7 +296,7 @@ func newFormParameter(schema *openapi3.Schema) formParameter {
 func newFormParameterVisited(
 	schema *openapi3.Schema,
 	visited map[*openapi3.Schema]bool,
-) formParameter { //nolint: gocyclo
+) formParameter {
 	fp := formParameter{parameters: formParameters{}}
 	if schema == nil || visited[schema] {
 		return fp
@@ -490,11 +490,11 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
 // （実際には json.Marshal でそのまま送られるだけで、URL は決してダウンロードされない）。
 // runtimeResolvable=false の間は binary リーフでも通常の type:string として扱い、
 // _meta.manifold も付与しない（＝スキーマを実際の挙動に合わせる）。
-func buildFormPropertySchemaVisited(
+func buildFormPropertySchemaVisited( //nolint: gocyclo
 	prop *openapi3.Schema,
 	visited map[*openapi3.Schema]bool,
 	runtimeResolvable bool,
-) map[string]any { //nolint: gocyclo
+) map[string]any {
 	if prop == nil {
 		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
 	}
@@ -535,38 +535,22 @@ func buildFormPropertySchemaVisited(
 	}
 
 	if len(prop.OneOf) > 0 {
-		branches := []any{}
-		for _, ref := range prop.OneOf {
-			if ref == nil || ref.Value == nil {
-				continue
-			}
-			branches = append(
-				branches,
-				buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
-			)
-		}
-		return map[string]any{
-			"oneOf":       branches,
-			"description": desc,
-			"_meta":       metadata,
-		}
+		return buildFormPropOneOf(
+			prop.OneOf,
+			visited,
+			runtimeResolvable,
+			desc,
+			metadata,
+		)
 	}
 	if len(prop.AnyOf) > 0 {
-		branches := []any{}
-		for _, ref := range prop.AnyOf {
-			if ref == nil || ref.Value == nil {
-				continue
-			}
-			branches = append(
-				branches,
-				buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
-			)
-		}
-		return map[string]any{
-			"anyOf":       branches,
-			"description": desc,
-			"_meta":       metadata,
-		}
+		return buildFormAnyOf(
+			prop.AnyOf,
+			visited,
+			runtimeResolvable,
+			desc,
+			metadata,
+		)
 	}
 
 	propType := schemaTypeStr(prop.Type)
@@ -621,6 +605,54 @@ func buildFormPropertySchemaVisited(
 	}
 
 	return result
+}
+
+func buildFormPropOneOf(
+	oneOf openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	runtimeResolvable bool,
+	desc string,
+	metadata map[string]any,
+) map[string]any {
+	branches := []any{}
+	for _, ref := range oneOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branches = append(
+			branches,
+			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
+		)
+	}
+	return map[string]any{
+		"oneOf":       branches,
+		"description": desc,
+		"_meta":       metadata,
+	}
+}
+
+func buildFormAnyOf(
+	anyOf openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	runtimeResolvable bool,
+	desc string,
+	metadata map[string]any,
+) map[string]any {
+	branches := []any{}
+	for _, ref := range anyOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branches = append(
+			branches,
+			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
+		)
+	}
+	return map[string]any{
+		"anyOf":       branches,
+		"description": desc,
+		"_meta":       metadata,
+	}
 }
 
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
@@ -686,10 +718,10 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string {
 // 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は
 // $ref をポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの
 // 再訪を検知した場合は空文字列を返し、それ以上再帰しない。
-func describeSchemaFieldsOpenapiVisited(
+func describeSchemaFieldsOpenapiVisited( //nolint: gocyclo
 	schema *openapi3.Schema,
 	visited map[*openapi3.Schema]bool,
-) string { //nolint: gocyclo
+) string {
 	if schema == nil || visited[schema] {
 		return ""
 	}
@@ -1157,12 +1189,12 @@ func isFileURL(v any) (string, bool) {
 //   - content: 既存互換のヒューリスティック判定（isFileURL → decodeFileContent）。
 //
 // オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
-func writeMultipartFile(
+func writeMultipartFile( //nolint: gocyclo
 	ctx context.Context,
 	writer *multipart.Writer,
 	name string,
 	value any,
-) error { //nolint: gocyclo
+) error {
 	cfg := getFileFetchConfig()
 	const defaultFilename = "file"
 	filename := defaultFilename

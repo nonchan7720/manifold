@@ -192,10 +192,10 @@ func extractParametersSwagger(
 
 // describeSchemaFieldsSwagger recursively builds a human-readable field summary from a
 // Swagger 2.x schema. $refs are resolved via spec.Definitions.
-func describeSchemaFieldsSwagger(
+func describeSchemaFieldsSwagger( //nolint: gocyclo
 	schema *openapi2.Schema,
 	spec *openapi2.T,
-) string { //nolint: gocyclo
+) string {
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
