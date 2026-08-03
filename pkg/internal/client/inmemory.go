@@ -31,7 +31,10 @@ func (r *InMemoryRegistry) Set(apiKey string, ts oauth2.TokenSource) error {
 // 同一 apiKey に対して複数の goroutine が同時に初回アクセスした場合でも、最終的に
 // 全ての呼び出し元が同じ TokenSource インスタンスを共有することを保証する
 // （create が複数回呼ばれること自体はあり得るが、実際に保存・返却されるのは常に1つだけ）。
-func (r *InMemoryRegistry) GetOrCreate(apiKey string, create func() oauth2.TokenSource) oauth2.TokenSource {
+func (r *InMemoryRegistry) GetOrCreate(
+	apiKey string,
+	create func() oauth2.TokenSource,
+) oauth2.TokenSource {
 	if v, ok := r.sources.Load(apiKey); ok {
 		if ts, ok := v.(oauth2.TokenSource); ok {
 			return ts

@@ -30,7 +30,11 @@ type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, cont
 
 // MCPToolRegistry defines the interface for the global MCP tool registry
 type MCPToolRegistry interface {
-	RegisterTool(name, description string, input_schema map[string]any, handler func(context.Context, map[string]any) (string, error))
+	RegisterTool(
+		name, description string,
+		input_schema map[string]any,
+		handler func(context.Context, map[string]any) (string, error),
+	)
 }
 
 func sanitize_path_parameter_value(param_value any, param_name string) (string, error) {
@@ -51,7 +55,10 @@ func sanitize_path_parameter_value(param_value any, param_name string) (string, 
 	// Simulates: any(part in {".", ".."} for part in PurePosixPath(normalized_value).parts)
 	for part := range strings.SplitSeq(normalized_value, "/") {
 		if part == "." || part == ".." {
-			return "", fmt.Errorf("path parameter '%s' cannot include '.' or '..' segments", param_name)
+			return "", fmt.Errorf(
+				"path parameter '%s' cannot include '.' or '..' segments",
+				param_name,
+			)
 		}
 	}
 
@@ -101,7 +108,9 @@ func LoadOpenapiSpec(ctx context.Context, filepath string) (map[string]any, erro
 // LoadOpenAPI3Spec loads an OpenAPI 3.x spec with automatic $ref resolution.
 func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 	loader := openapi3.NewLoader()
-	loader.ReadFromURIFunc = openapi3.URIMapCache(openapi3.ReadFromURIs(openapi3.ReadFromHTTP(client.HTTPClient()), openapi3.ReadFromFile))
+	loader.ReadFromURIFunc = openapi3.URIMapCache(
+		openapi3.ReadFromURIs(openapi3.ReadFromHTTP(client.HTTPClient()), openapi3.ReadFromFile),
+	)
 	loader.IsExternalRefsAllowed = true
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
 		u, err := url.Parse(specPath)
@@ -120,14 +129,16 @@ func GetBaseUrl(ctx context.Context, spec map[string]any, spec_path string) stri
 		if server, ok := servers[0].(map[string]any); ok {
 			if server_url, ok := server["url"].(string); ok {
 				if strings.HasPrefix(server_url, "/") && spec_path != "" {
-					if strings.HasPrefix(spec_path, "http://") || strings.HasPrefix(spec_path, "https://") {
+					if strings.HasPrefix(spec_path, "http://") ||
+						strings.HasPrefix(spec_path, "https://") {
 						parsed, err := url.Parse(spec_path)
 						if err == nil {
 							base_domain := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 							full_base_url := base_domain + server_url
 							slog.InfoContext(ctx, fmt.Sprintf(
 								"OpenAPI spec has relative server URL '%s'. Deriving base from spec_path: %s",
-								server_url, full_base_url,
+								server_url,
+								full_base_url,
 							))
 							return full_base_url
 						}
@@ -166,7 +177,8 @@ func GetBaseUrlFromOpenAPI3(ctx context.Context, spec *openapi3.T, specPath stri
 					fullBaseURL := baseDomain + serverURL
 					slog.InfoContext(ctx, fmt.Sprintf(
 						"OpenAPI spec has relative server URL '%s'. Deriving base from spec_path: %s",
-						serverURL, fullBaseURL,
+						serverURL,
+						fullBaseURL,
 					))
 					return fullBaseURL
 				}
@@ -187,15 +199,22 @@ func deriveBaseUrlFromSpecPath(ctx context.Context, spec_path string) string {
 	for _, suffix := range []string{"/openapi.json", "/openapi.yaml", "/swagger.json", "/swagger.yaml"} {
 		if strings.HasSuffix(spec_path, suffix) {
 			base_url := spec_path[:len(spec_path)-len(suffix)]
-			slog.InfoContext(ctx, fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
+			slog.InfoContext(
+				ctx,
+				fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url),
+			)
 			return base_url
 		}
 	}
 	parts := strings.Split(spec_path, "/")
 	last := parts[len(parts)-1]
-	if strings.HasSuffix(last, ".json") || strings.HasSuffix(last, ".yaml") || strings.HasSuffix(last, ".yml") {
+	if strings.HasSuffix(last, ".json") || strings.HasSuffix(last, ".yaml") ||
+		strings.HasSuffix(last, ".yml") {
 		base_url := strings.Join(parts[:len(parts)-1], "/")
-		slog.InfoContext(ctx, fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url))
+		slog.InfoContext(
+			ctx,
+			fmt.Sprintf("No server info in OpenAPI spec. Using derived base URL: %s", base_url),
+		)
 		return base_url
 	}
 	return ""
@@ -274,7 +293,10 @@ func newFormParameter(schema *openapi3.Schema) formParameter {
 // ポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref をポインタ循環と
 // して解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を検知した場合は
 // 空の formParameter を返す（それ以上再帰しない）。
-func newFormParameterVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) formParameter { //nolint: gocyclo
+func newFormParameterVisited(
+	schema *openapi3.Schema,
+	visited map[*openapi3.Schema]bool,
+) formParameter {
 	fp := formParameter{parameters: formParameters{}}
 	if schema == nil || visited[schema] {
 		return fp
@@ -411,12 +433,30 @@ func binaryFieldMCPSchema(description string, metadata map[string]any) map[strin
 				"type":        "object",
 				"description": "Explicit file source; provide exactly one of url/base64/text/content.",
 				"properties": map[string]any{
-					"url":         map[string]any{"type": "string", "description": "URL to download the file content from."},
-					"base64":      map[string]any{"type": "string", "description": "Base64-encoded file content."},
-					"text":        map[string]any{"type": "string", "description": "Raw (non-base64-encoded) text file content."},
-					"content":     map[string]any{"type": "string", "description": "Legacy auto-detected base64 or URL content."},
-					"filename":    map[string]any{"type": "string", "description": "Filename to use for the upload."},
-					"contentType": map[string]any{"type": "string", "description": "MIME content type to use for the upload."},
+					"url": map[string]any{
+						"type":        "string",
+						"description": "URL to download the file content from.",
+					},
+					"base64": map[string]any{
+						"type":        "string",
+						"description": "Base64-encoded file content.",
+					},
+					"text": map[string]any{
+						"type":        "string",
+						"description": "Raw (non-base64-encoded) text file content.",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Legacy auto-detected base64 or URL content.",
+					},
+					"filename": map[string]any{
+						"type":        "string",
+						"description": "Filename to use for the upload.",
+					},
+					"contentType": map[string]any{
+						"type":        "string",
+						"description": "MIME content type to use for the upload.",
+					},
 				},
 			},
 		},
@@ -450,13 +490,21 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
 // （実際には json.Marshal でそのまま送られるだけで、URL は決してダウンロードされない）。
 // runtimeResolvable=false の間は binary リーフでも通常の type:string として扱い、
 // _meta.manifold も付与しない（＝スキーマを実際の挙動に合わせる）。
-func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3.Schema]bool, runtimeResolvable bool) map[string]any { //nolint: gocyclo
+func buildFormPropertySchemaVisited( //nolint: gocyclo
+	prop *openapi3.Schema,
+	visited map[*openapi3.Schema]bool,
+	runtimeResolvable bool,
+) map[string]any {
 	if prop == nil {
 		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
 	}
 	if visited[prop] {
 		// 循環参照: これ以上再帰しない
-		return map[string]any{"type": "object", "description": prop.Description, "_meta": map[string]any{}}
+		return map[string]any{
+			"type":        "object",
+			"description": prop.Description,
+			"_meta":       map[string]any{},
+		}
 	}
 	visited[prop] = true
 	defer delete(visited, prop)
@@ -487,32 +535,22 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 	}
 
 	if len(prop.OneOf) > 0 {
-		branches := []any{}
-		for _, ref := range prop.OneOf {
-			if ref == nil || ref.Value == nil {
-				continue
-			}
-			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
-		}
-		return map[string]any{
-			"oneOf":       branches,
-			"description": desc,
-			"_meta":       metadata,
-		}
+		return buildFormPropOneOf(
+			prop.OneOf,
+			visited,
+			runtimeResolvable,
+			desc,
+			metadata,
+		)
 	}
 	if len(prop.AnyOf) > 0 {
-		branches := []any{}
-		for _, ref := range prop.AnyOf {
-			if ref == nil || ref.Value == nil {
-				continue
-			}
-			branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable))
-		}
-		return map[string]any{
-			"anyOf":       branches,
-			"description": desc,
-			"_meta":       metadata,
-		}
+		return buildFormAnyOf(
+			prop.AnyOf,
+			visited,
+			runtimeResolvable,
+			desc,
+			metadata,
+		)
 	}
 
 	propType := schemaTypeStr(prop.Type)
@@ -541,7 +579,11 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 			// 上安全な名前に変換する（トップレベルのフォームパラメータと同じ規約）。
 			// 元の名前への復元は writeMultipartValue が formParameter.parameters
 			// （newFormParameterVisited が同じ規則で構築する originalName）を使って行う。
-			properties[sanitizeParamName(propName)] = buildFormPropertySchemaVisited(propRef.Value, visited, false)
+			properties[sanitizeParamName(propName)] = buildFormPropertySchemaVisited(
+				propRef.Value,
+				visited,
+				false,
+			)
 		}
 		result["properties"] = properties
 
@@ -555,10 +597,62 @@ func buildFormPropertySchemaVisited(prop *openapi3.Schema, visited map[*openapi3
 	}
 
 	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
-		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited, runtimeResolvable)
+		result["items"] = buildFormPropertySchemaVisited(
+			prop.Items.Value,
+			visited,
+			runtimeResolvable,
+		)
 	}
 
 	return result
+}
+
+func buildFormPropOneOf(
+	oneOf openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	runtimeResolvable bool,
+	desc string,
+	metadata map[string]any,
+) map[string]any {
+	branches := []any{}
+	for _, ref := range oneOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branches = append(
+			branches,
+			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
+		)
+	}
+	return map[string]any{
+		"oneOf":       branches,
+		"description": desc,
+		"_meta":       metadata,
+	}
+}
+
+func buildFormAnyOf(
+	anyOf openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	runtimeResolvable bool,
+	desc string,
+	metadata map[string]any,
+) map[string]any {
+	branches := []any{}
+	for _, ref := range anyOf {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branches = append(
+			branches,
+			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
+		)
+	}
+	return map[string]any{
+		"anyOf":       branches,
+		"description": desc,
+		"_meta":       metadata,
+	}
 }
 
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
@@ -624,7 +718,10 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string {
 // 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は
 // $ref をポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの
 // 再訪を検知した場合は空文字列を返し、それ以上再帰しない。
-func describeSchemaFieldsOpenapiVisited(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) string { //nolint: gocyclo
+func describeSchemaFieldsOpenapiVisited( //nolint: gocyclo
+	schema *openapi3.Schema,
+	visited map[*openapi3.Schema]bool,
+) string {
 	if schema == nil || visited[schema] {
 		return ""
 	}
@@ -685,7 +782,10 @@ func describeSchemaFieldsOpenapiVisited(schema *openapi3.Schema, visited map[*op
 
 		if typ == "object" {
 			if nested := describeSchemaFieldsOpenapiVisited(prop, visited); nested != "" {
-				parts = append(parts, fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested))
+				parts = append(
+					parts,
+					fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested),
+				)
 				continue
 			}
 		}
@@ -705,7 +805,10 @@ func describeSchemaFieldsOpenapiVisited(schema *openapi3.Schema, visited map[*op
 					if localRequired[name] {
 						arrayMeta += ", required"
 					}
-					parts = append(parts, fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested))
+					parts = append(
+						parts,
+						fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested),
+					)
 					continue
 				}
 			}
@@ -764,7 +867,8 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 		}
 		content := rb.Content
 
-		if mt := content["application/json"]; mt != nil && mt.Schema != nil && mt.Schema.Value != nil {
+		if mt := content["application/json"]; mt != nil && mt.Schema != nil &&
+			mt.Schema.Value != nil {
 			schema := mt.Schema.Value
 			if len(schema.AllOf) > 0 {
 				schema = mergeAllOf(schema)
@@ -798,9 +902,11 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 		} else {
 			// Form content types: each schema property becomes a top-level input field.
 			var formSchema *openapi3.Schema
-			if mt := content["application/x-www-form-urlencoded"]; mt != nil && mt.Schema != nil && mt.Schema.Value != nil {
+			if mt := content["application/x-www-form-urlencoded"]; mt != nil && mt.Schema != nil &&
+				mt.Schema.Value != nil {
 				formSchema = mt.Schema.Value
-			} else if mt := content["multipart/form-data"]; mt != nil && mt.Schema != nil && mt.Schema.Value != nil {
+			} else if mt := content["multipart/form-data"]; mt != nil && mt.Schema != nil &&
+				mt.Schema.Value != nil {
 				formSchema = mt.Schema.Value
 			}
 			if formSchema != nil {
@@ -873,21 +979,37 @@ func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 	switch value := v.(type) {
 	case []byte:
 		if int64(len(value)) > maxSize {
-			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+			return nil, fmt.Errorf(
+				"file size %d bytes exceeds the maximum allowed size of %d bytes",
+				len(value),
+				maxSize,
+			)
 		}
 		return value, nil
 	case string:
 		if maxBase64Len := maxSize*4/3 + 4; int64(len(value)) > maxBase64Len {
-			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+			return nil, fmt.Errorf(
+				"file size %d bytes exceeds the maximum allowed size of %d bytes",
+				len(value),
+				maxSize,
+			)
 		}
 		if decoded, err := base64.StdEncoding.DecodeString(value); err == nil {
 			if int64(len(decoded)) > maxSize {
-				return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(decoded), maxSize)
+				return nil, fmt.Errorf(
+					"file size %d bytes exceeds the maximum allowed size of %d bytes",
+					len(decoded),
+					maxSize,
+				)
 			}
 			return decoded, nil
 		}
 		if int64(len(value)) > maxSize {
-			return nil, fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", len(value), maxSize)
+			return nil, fmt.Errorf(
+				"file size %d bytes exceeds the maximum allowed size of %d bytes",
+				len(value),
+				maxSize,
+			)
 		}
 		return []byte(value), nil
 	default:
@@ -907,7 +1029,9 @@ func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
 		// 常に許可
 	case "http":
 		if !cfg.AllowLocal {
-			return fmt.Errorf("http:// URLs are not allowed (enable fileFetch.allowLocal for local testing)")
+			return fmt.Errorf(
+				"http:// URLs are not allowed (enable fileFetch.allowLocal for local testing)",
+			)
 		}
 	default:
 		return fmt.Errorf("unsupported URL scheme %q: only http/https are allowed", u.Scheme)
@@ -1013,11 +1137,19 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close() //nolint: errcheck
-		return nil, "", "", fmt.Errorf("failed to download file from URL: %d %s", resp.StatusCode, resp.Status)
+		return nil, "", "", fmt.Errorf(
+			"failed to download file from URL: %d %s",
+			resp.StatusCode,
+			resp.Status,
+		)
 	}
 	if resp.ContentLength > 0 && resp.ContentLength > cfg.MaxSize {
 		resp.Body.Close() //nolint: errcheck
-		return nil, "", "", fmt.Errorf("file size %d bytes exceeds the maximum allowed size of %d bytes", resp.ContentLength, cfg.MaxSize)
+		return nil, "", "", fmt.Errorf(
+			"file size %d bytes exceeds the maximum allowed size of %d bytes",
+			resp.ContentLength,
+			cfg.MaxSize,
+		)
 	}
 
 	filename := ""
@@ -1025,7 +1157,12 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		filename = base
 	}
 
-	return newLimitedReadCloser(resp.Body, cfg.MaxSize), filename, resp.Header.Get("Content-Type"), nil
+	return newLimitedReadCloser(
+			resp.Body,
+			cfg.MaxSize,
+		), filename, resp.Header.Get(
+			"Content-Type",
+		), nil
 }
 
 // isFileURL は値が http(s) から始まる URL 文字列かどうかを返す。
@@ -1052,7 +1189,12 @@ func isFileURL(v any) (string, bool) {
 //   - content: 既存互換のヒューリスティック判定（isFileURL → decodeFileContent）。
 //
 // オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
-func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name string, value any) error { //nolint: gocyclo
+func writeMultipartFile( //nolint: gocyclo
+	ctx context.Context,
+	writer *multipart.Writer,
+	name string,
+	value any,
+) error {
 	cfg := getFileFetchConfig()
 	const defaultFilename = "file"
 	filename := defaultFilename
@@ -1094,7 +1236,8 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 	var body io.ReadCloser
 	switch {
 	case hasURL:
-		if !strings.HasPrefix(explicitURL, "http://") && !strings.HasPrefix(explicitURL, "https://") {
+		if !strings.HasPrefix(explicitURL, "http://") &&
+			!strings.HasPrefix(explicitURL, "https://") {
 			return fmt.Errorf("%q: url must start with http:// or https://", name)
 		}
 		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, explicitURL)
@@ -1114,12 +1257,22 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 			return fmt.Errorf("%q: invalid base64 content: %w", name, err)
 		}
 		if int64(len(decoded)) > cfg.MaxSize {
-			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(decoded), cfg.MaxSize)
+			return fmt.Errorf(
+				"%q: file size %d bytes exceeds the maximum allowed size of %d bytes",
+				name,
+				len(decoded),
+				cfg.MaxSize,
+			)
 		}
 		body = io.NopCloser(bytes.NewBuffer(decoded))
 	case hasText:
 		if int64(len(explicitText)) > cfg.MaxSize {
-			return fmt.Errorf("%q: file size %d bytes exceeds the maximum allowed size of %d bytes", name, len(explicitText), cfg.MaxSize)
+			return fmt.Errorf(
+				"%q: file size %d bytes exceeds the maximum allowed size of %d bytes",
+				name,
+				len(explicitText),
+				cfg.MaxSize,
+			)
 		}
 		body = io.NopCloser(bytes.NewBuffer([]byte(explicitText)))
 	default:
@@ -1160,7 +1313,14 @@ func writeMultipartFile(ctx context.Context, writer *multipart.Writer, name stri
 		}
 	} else {
 		h := textproto.MIMEHeader{}
-		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteEscaper.Replace(name), quoteEscaper.Replace(filename)))
+		h.Set(
+			"Content-Disposition",
+			fmt.Sprintf(
+				`form-data; name="%s"; filename="%s"`,
+				quoteEscaper.Replace(name),
+				quoteEscaper.Replace(filename),
+			),
+		)
 		h.Set("Content-Type", contentType)
 		part, err = writer.CreatePart(h)
 		if err != nil {
@@ -1208,7 +1368,13 @@ func restoreOriginalParamNames(value any, param formParameter) any {
 }
 
 // writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。
-func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name string, value any, param formParameter) error {
+func writeMultipartValue(
+	ctx context.Context,
+	writer *multipart.Writer,
+	name string,
+	value any,
+	param formParameter,
+) error {
 	if param.isFile {
 		if items, ok := value.([]any); ok {
 			for _, item := range items {
@@ -1228,7 +1394,10 @@ func writeMultipartValue(ctx context.Context, writer *multipart.Writer, name str
 			return err
 		}
 		h := textproto.MIMEHeader{}
-		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"`, quoteEscaper.Replace(name)))
+		h.Set(
+			"Content-Disposition",
+			fmt.Sprintf(`form-data; name="%s"`, quoteEscaper.Replace(name)),
+		)
 		h.Set("Content-Type", "application/json")
 		part, err := writer.CreatePart(h)
 		if err != nil {
@@ -1318,7 +1487,11 @@ func CreateToolFunction( //nolint: gocyclo
 						}
 						field_name := param.originalName
 						if err := writeMultipartValue(ctx, mw, field_name, v, param); err != nil {
-							return fmt.Errorf("error writing multipart field %s: %w", field_name, err)
+							return fmt.Errorf(
+								"error writing multipart field %s: %w",
+								field_name,
+								err,
+							)
 						}
 					}
 					return nil
@@ -1346,7 +1519,11 @@ func CreateToolFunction( //nolint: gocyclo
 					case map[string]any, []any:
 						data, err := json.Marshal(v)
 						if err != nil {
-							return nil, "", fmt.Errorf("error marshaling form field %s: %w", field_name, err)
+							return nil, "", fmt.Errorf(
+								"error marshaling form field %s: %w",
+								field_name,
+								err,
+							)
 						}
 						formValues.Set(field_name, string(data))
 					default:
@@ -1407,15 +1584,60 @@ func CreateToolFunction( //nolint: gocyclo
 		var response *http.Response
 		switch original_method {
 		case "get":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "get", false, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"get",
+				false,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "post":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "post", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"post",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "put":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "put", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"put",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "delete":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "delete", false, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"delete",
+				false,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "patch":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"patch",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		default:
 			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}

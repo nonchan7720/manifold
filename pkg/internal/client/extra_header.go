@@ -9,7 +9,10 @@ type extraHeaderRoundTripper struct {
 	headers map[string]string
 }
 
-func NewExtraHeaderRoundTripper(base http.RoundTripper, headers map[string]string) http.RoundTripper {
+func NewExtraHeaderRoundTripper(
+	base http.RoundTripper,
+	headers map[string]string,
+) http.RoundTripper {
 	if base == nil {
 		base = Transport()
 	}

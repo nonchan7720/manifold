@@ -116,7 +116,10 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 	}
 }
 
-func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.ClientSession) (rErr error) {
+func (c *MCPBackendClient) registerTools(
+	ctx context.Context,
+	session *mcp.ClientSession,
+) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/registerTools")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -126,12 +129,15 @@ func (c *MCPBackendClient) registerTools(ctx context.Context, session *mcp.Clien
 	}
 	for _, tool := range result.Tools {
 		t := tool
-		c.srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return session.CallTool(ctx, &mcp.CallToolParams{
-				Name:      req.Params.Name,
-				Arguments: req.Params.Arguments,
-			})
-		})
+		c.srv.AddTool(
+			t,
+			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return session.CallTool(ctx, &mcp.CallToolParams{
+					Name:      req.Params.Name,
+					Arguments: req.Params.Arguments,
+				})
+			},
+		)
 	}
 	return nil
 }

@@ -146,7 +146,9 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 func TestRunServer_ServerError(t *testing.T) {
 	// すでに使用中のポートでサーバーを起動しようとするとエラー
 	// まず既存サーバーでポートを使用
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	listener := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+	)
 	defer listener.Close()
 
 	addr := listener.Listener.Addr().String()

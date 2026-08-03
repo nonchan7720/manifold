@@ -113,10 +113,18 @@ func (s *baseTokenSource) Token() (*oauth2.Token, error) {
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		// API キー自体が拒否された（トークン交換エンドポイントの資格情報エラー）。
-		return nil, fmt.Errorf("%w: exchange failed: status: %d", errCredentialRejected, resp.StatusCode)
+		return nil, fmt.Errorf(
+			"%w: exchange failed: status: %d",
+			errCredentialRejected,
+			resp.StatusCode,
+		)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: exchange failed: status: %d", errUpstreamUnavailable, resp.StatusCode)
+		return nil, fmt.Errorf(
+			"%w: exchange failed: status: %d",
+			errUpstreamUnavailable,
+			resp.StatusCode,
+		)
 	}
 	var token oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {

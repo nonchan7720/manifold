@@ -577,7 +577,15 @@ func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
 		},
 	}
 
-	fn := CreateToolFunction(http.DefaultClient, "/items/{id}", "get", op, "http://example.com", nil, false)
+	fn := CreateToolFunction(
+		http.DefaultClient,
+		"/items/{id}",
+		"get",
+		op,
+		"http://example.com",
+		nil,
+		false,
+	)
 	// パスパラメータに "/" を含む場合エラー
 	_, _, err := fn(context.Background(), map[string]any{"id": "a/b"})
 	require.Error(t, err)
@@ -586,7 +594,15 @@ func TestCreateToolFunction_InvalidPathParam(t *testing.T) {
 
 func TestCreateToolFunction_UnsupportedMethod(t *testing.T) {
 	op := &openapi3.Operation{}
-	fn := CreateToolFunction(http.DefaultClient, "/resource", "UNKNOWN", op, "http://example.com", nil, false)
+	fn := CreateToolFunction(
+		http.DefaultClient,
+		"/resource",
+		"UNKNOWN",
+		op,
+		"http://example.com",
+		nil,
+		false,
+	)
 
 	_, _, err := fn(context.Background(), map[string]any{})
 	require.Error(t, err)
@@ -663,10 +679,14 @@ func TestBuildInputSchema_JSONBody_NestedObject(t *testing.T) {
 											Description: "User address",
 											Properties: openapi3.Schemas{
 												"street": &openapi3.SchemaRef{
-													Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+													Value: &openapi3.Schema{
+														Type: &openapi3.Types{"string"},
+													},
 												},
 												"city": &openapi3.SchemaRef{
-													Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+													Value: &openapi3.Schema{
+														Type: &openapi3.Types{"string"},
+													},
 												},
 											},
 										},
@@ -675,7 +695,9 @@ func TestBuildInputSchema_JSONBody_NestedObject(t *testing.T) {
 										Value: &openapi3.Schema{
 											Type: &openapi3.Types{"array"},
 											Items: &openapi3.SchemaRef{
-												Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+												Value: &openapi3.Schema{
+													Type: &openapi3.Types{"string"},
+												},
 											},
 										},
 									},
@@ -713,7 +735,9 @@ func TestBuildInputSchema_JSONBody_ArrayOfObjects(t *testing.T) {
 												Value: &openapi3.Schema{
 													Properties: openapi3.Schemas{
 														"id": &openapi3.SchemaRef{
-															Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+															Value: &openapi3.Schema{
+																Type: &openapi3.Types{"integer"},
+															},
 														},
 													},
 												},
@@ -777,14 +801,18 @@ func TestBuildInputSchema_JSONBody_AllOfRoot(t *testing.T) {
 										Required: []string{"name"},
 										Properties: openapi3.Schemas{
 											"name": &openapi3.SchemaRef{
-												Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+												Value: &openapi3.Schema{
+													Type: &openapi3.Types{"string"},
+												},
 											},
 										},
 									}},
 									{Value: &openapi3.Schema{
 										Properties: openapi3.Schemas{
 											"age": &openapi3.SchemaRef{
-												Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+												Value: &openapi3.Schema{
+													Type: &openapi3.Types{"integer"},
+												},
 											},
 										},
 									}},
@@ -836,14 +864,18 @@ func TestBuildInputSchema_JSONBody_PropertyAllOf(t *testing.T) {
 													Description: "Composite address",
 													Properties: openapi3.Schemas{
 														"street": &openapi3.SchemaRef{
-															Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+															Value: &openapi3.Schema{
+																Type: &openapi3.Types{"string"},
+															},
 														},
 													},
 												}},
 												{Value: &openapi3.Schema{
 													Properties: openapi3.Schemas{
 														"city": &openapi3.SchemaRef{
-															Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+															Value: &openapi3.Schema{
+																Type: &openapi3.Types{"string"},
+															},
 														},
 													},
 												}},
@@ -897,14 +929,22 @@ func TestBuildInputSchema_JSONBody_ArrayItemAllOf_DescribedInBodyDescription(t *
 														{Value: &openapi3.Schema{
 															Properties: openapi3.Schemas{
 																"id": &openapi3.SchemaRef{
-																	Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+																	Value: &openapi3.Schema{
+																		Type: &openapi3.Types{
+																			"integer",
+																		},
+																	},
 																},
 															},
 														}},
 														{Value: &openapi3.Schema{
 															Properties: openapi3.Schemas{
 																"label": &openapi3.SchemaRef{
-																	Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+																	Value: &openapi3.Schema{
+																		Type: &openapi3.Types{
+																			"string",
+																		},
+																	},
 																},
 															},
 														}},
@@ -939,12 +979,16 @@ func TestDescribeSchemaFieldsOpenapi_TopLevelAllOf(t *testing.T) {
 			{Value: &openapi3.Schema{
 				Required: []string{"name"},
 				Properties: openapi3.Schemas{
-					"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"name": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+					},
 				},
 			}},
 			{Value: &openapi3.Schema{
 				Properties: openapi3.Schemas{
-					"age": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+					"age": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+					},
 				},
 			}},
 		},
@@ -965,12 +1009,16 @@ func TestDescribeSchemaFieldsOpenapi_PropertyAllOf(t *testing.T) {
 							Type:        &openapi3.Types{"object"},
 							Description: "Composite address",
 							Properties: openapi3.Schemas{
-								"street": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+								"street": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+								},
 							},
 						}},
 						{Value: &openapi3.Schema{
 							Properties: openapi3.Schemas{
-								"city": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+								"city": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+								},
 							},
 						}},
 					},
@@ -997,12 +1045,20 @@ func TestDescribeSchemaFieldsOpenapi_ArrayItemAllOf(t *testing.T) {
 							AllOf: openapi3.SchemaRefs{
 								{Value: &openapi3.Schema{
 									Properties: openapi3.Schemas{
-										"id": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+										"id": &openapi3.SchemaRef{
+											Value: &openapi3.Schema{
+												Type: &openapi3.Types{"integer"},
+											},
+										},
 									},
 								}},
 								{Value: &openapi3.Schema{
 									Properties: openapi3.Schemas{
-										"label": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+										"label": &openapi3.SchemaRef{
+											Value: &openapi3.Schema{
+												Type: &openapi3.Types{"string"},
+											},
+										},
 									},
 								}},
 							},
@@ -1352,7 +1408,10 @@ func TestBuildInputSchema_Multipart_NestedForm(t *testing.T) {
 							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
 						},
 						"thumbnail": &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
 						},
 					},
 				},
@@ -1461,12 +1520,16 @@ func TestBuildInputSchema_Multipart_AllOf(t *testing.T) {
 							Type:     &openapi3.Types{"object"},
 							Required: []string{"a"},
 							Properties: openapi3.Schemas{
-								"a": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+								"a": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+								},
 							},
 						}},
 						{Value: &openapi3.Schema{
 							Properties: openapi3.Schemas{
-								"b": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+								"b": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}},
+								},
 							},
 						}},
 					},
@@ -1495,12 +1558,16 @@ func TestBuildInputSchema_Multipart_AllOfRoot(t *testing.T) {
 			{Value: &openapi3.Schema{
 				Required: []string{"name"},
 				Properties: openapi3.Schemas{
-					"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+					"name": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+					},
 				},
 			}},
 			{Value: &openapi3.Schema{
 				Properties: openapi3.Schemas{
-					"file": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"}},
+					"file": &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
 				},
 			}},
 		},
@@ -1525,7 +1592,9 @@ func TestBuildInputSchema_Multipart_OneOf(t *testing.T) {
 						{Value: &openapi3.Schema{
 							Type: &openapi3.Types{"object"},
 							Properties: openapi3.Schemas{
-								"url": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+								"url": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+								},
 							},
 						}},
 					},
@@ -1568,7 +1637,10 @@ func TestExtractParameters_Multipart_NestedFileAndAllOf(t *testing.T) {
 					Type: &openapi3.Types{"object"},
 					Properties: openapi3.Schemas{
 						"thumbnail": &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
 						},
 					},
 				},
@@ -1579,7 +1651,10 @@ func TestExtractParameters_Multipart_NestedFileAndAllOf(t *testing.T) {
 						{Value: &openapi3.Schema{
 							Properties: openapi3.Schemas{
 								"attachment": &openapi3.SchemaRef{
-									Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+									Value: &openapi3.Schema{
+										Type:   &openapi3.Types{"string"},
+										Format: "binary",
+									},
 								},
 							},
 						}},
@@ -1759,7 +1834,9 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
 				Value: &openapi3.Schema{
 					Type: &openapi3.Types{"object"},
 					Properties: openapi3.Schemas{
-						"name": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+						"name": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+						},
 					},
 				},
 			},
@@ -1777,7 +1854,9 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON(t *testing.T) {
 	require.Equal(t, "foo", decoded["name"])
 }
 
-func TestCreateToolFunction_Multipart_NestedObjectAsJSON_RestoresBracketedPropertyNames(t *testing.T) {
+func TestCreateToolFunction_Multipart_NestedObjectAsJSON_RestoresBracketedPropertyNames(
+	t *testing.T,
+) {
 	// metadata.filter[status] は MCP スキーマ上 "filter_status" として公開される
 	// (TestBuildInputSchema_Multipart_NestedForm_BracketedPropertyNamesAreSanitized 参照)。
 	// クライアントはこの sanitize 済みキーで値を渡すが、バックエンドへ送る JSON では元の
@@ -1797,7 +1876,9 @@ func TestCreateToolFunction_Multipart_NestedObjectAsJSON_RestoresBracketedProper
 				Value: &openapi3.Schema{
 					Type: &openapi3.Types{"object"},
 					Properties: openapi3.Schemas{
-						"filter[status]": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+						"filter[status]": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+						},
 					},
 				},
 			},
@@ -1845,7 +1926,10 @@ func TestCreateToolFunction_Multipart_NestedBinaryField_NotResolved(t *testing.T
 					Type: &openapi3.Types{"object"},
 					Properties: openapi3.Schemas{
 						"thumbnail": &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
 						},
 					},
 				},
@@ -2098,7 +2182,10 @@ func TestFetchFileFromURL_AllowedHosts_AllowsMatchingHost(t *testing.T) {
 	fileSrvURL, err := url.Parse(fileSrv.URL)
 	require.NoError(t, err)
 
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{fileSrvURL.Host}})
+	setFileFetchConfigForTest(
+		t,
+		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{fileSrvURL.Host}},
+	)
 
 	body, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
 	require.NoError(t, err)
@@ -2111,7 +2198,10 @@ func TestFetchFileFromURL_AllowedHosts_DeniesNonMatchingHost(t *testing.T) {
 	}))
 	defer fileSrv.Close()
 
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{"example.com"}})
+	setFileFetchConfigForTest(
+		t,
+		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{"example.com"}},
+	)
 
 	_, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
 	require.Error(t, err)
@@ -2126,16 +2216,21 @@ func TestFetchFileFromURL_AllowedHosts_DeniesRedirectTarget(t *testing.T) {
 	}))
 	defer targetSrv.Close()
 
-	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, targetSrv.URL+"/final", http.StatusFound)
-	}))
+	redirectSrv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, targetSrv.URL+"/final", http.StatusFound)
+		}),
+	)
 	defer redirectSrv.Close()
 
 	redirectSrvURL, err := url.Parse(redirectSrv.URL)
 	require.NoError(t, err)
 
 	// リダイレクト元のホストのみを許可し、リダイレクト先（targetSrv）は許可リストに含めない
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, AllowedHosts: []string{redirectSrvURL.Host}})
+	setFileFetchConfigForTest(
+		t,
+		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{redirectSrvURL.Host}},
+	)
 
 	_, _, _, err = fetchFileFromURL(context.Background(), redirectSrv.URL+"/start")
 	require.Error(t, err)
@@ -2323,7 +2418,11 @@ func TestCreateToolFunction_Multipart_FileExplicitBase64Key_MaxSizeExceeded(t *t
 
 	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
 	_, _, err := fn(context.Background(), map[string]any{
-		"file": map[string]any{"base64": base64.StdEncoding.EncodeToString([]byte("this is definitely more than five bytes"))},
+		"file": map[string]any{
+			"base64": base64.StdEncoding.EncodeToString(
+				[]byte("this is definitely more than five bytes"),
+			),
+		},
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds the maximum allowed size of 5 bytes")
@@ -2523,7 +2622,9 @@ func selfReferentialNodeSchema() *openapi3.Schema {
 		Type:       &openapi3.Types{"object"},
 		Properties: openapi3.Schemas{},
 	}
-	node.Properties["name"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	node.Properties["name"] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+	}
 	node.Properties["children"] = &openapi3.SchemaRef{
 		Value: &openapi3.Schema{
 			Type:  &openapi3.Types{"array"},
@@ -2538,9 +2639,13 @@ func selfReferentialNodeSchema() *openapi3.Schema {
 func mutuallyReferentialSchemas() (a, b *openapi3.Schema) {
 	a = &openapi3.Schema{Type: &openapi3.Types{"object"}, Properties: openapi3.Schemas{}}
 	b = &openapi3.Schema{Type: &openapi3.Types{"object"}, Properties: openapi3.Schemas{}}
-	a.Properties["name"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	a.Properties["name"] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+	}
 	a.Properties["b"] = &openapi3.SchemaRef{Value: b}
-	b.Properties["label"] = &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	b.Properties["label"] = &openapi3.SchemaRef{
+		Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+	}
 	b.Properties["a"] = &openapi3.SchemaRef{Value: a}
 	return a, b
 }
@@ -2693,8 +2798,10 @@ func TestBuildInputSchema_MutuallyReferentialSchema_ViaJSONBody(t *testing.T) {
 
 func TestMergeAllOf_SelfReferentialAllOf(t *testing.T) {
 	self := &openapi3.Schema{
-		Type:       &openapi3.Types{"object"},
-		Properties: openapi3.Schemas{"a": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}},
+		Type: &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{
+			"a": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+		},
 	}
 	self.AllOf = openapi3.SchemaRefs{{Value: self}}
 
@@ -2706,8 +2813,16 @@ func TestMergeAllOf_SelfReferentialAllOf(t *testing.T) {
 }
 
 func TestMergeAllOf_MutuallyReferentialAllOf(t *testing.T) {
-	a := &openapi3.Schema{Properties: openapi3.Schemas{"x": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}}}
-	b := &openapi3.Schema{Properties: openapi3.Schemas{"y": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}}}
+	a := &openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"x": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+		},
+	}
+	b := &openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"y": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+		},
+	}
 	a.AllOf = openapi3.SchemaRefs{{Value: b}}
 	b.AllOf = openapi3.SchemaRefs{{Value: a}}
 
@@ -2852,7 +2967,15 @@ func TestCreateToolFunction_PathParamWithBrackets_UsesOriginalNameOnWire(t *test
 		},
 	}
 
-	fn := CreateToolFunction(http.DefaultClient, "/pets/{filter[id]}", "get", op, srv.URL, nil, false)
+	fn := CreateToolFunction(
+		http.DefaultClient,
+		"/pets/{filter[id]}",
+		"get",
+		op,
+		srv.URL,
+		nil,
+		false,
+	)
 	result, _, err := fn(context.Background(), map[string]any{"filter_id": "42"})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)

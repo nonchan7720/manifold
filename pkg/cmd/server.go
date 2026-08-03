@@ -56,7 +56,7 @@ func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
 	return parsedURL.JoinPath(path)
 }
 
-func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
+func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
@@ -80,7 +80,11 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 			return err
 		}
 		s3Client := aws.NewS3Client(awsCfg)
-		mediaService = storage.NewS3Uploader(s3Client, globalConfig.Storage.S3.Bucket, globalConfig.Storage.S3.KeyPrefix)
+		mediaService = storage.NewS3Uploader(
+			s3Client,
+			globalConfig.Storage.S3.Bucket,
+			globalConfig.Storage.S3.KeyPrefix,
+		)
 		if err := mediaService.AccessCheck(ctx); err != nil {
 			return err
 		}
@@ -96,7 +100,10 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	}
 	defer cleanup()
 
-	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(ctx, &globalConfig.Telemetry)
+	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
+		ctx,
+		&globalConfig.Telemetry,
+	)
 	if err != nil {
 		return err
 	}
@@ -108,7 +115,11 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	}
 	defer logsCleanup()
 
-	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
+	authHandler := httphandler.NewAuthHandler(
+		storeClient,
+		globalConfig.MCPServer,
+		httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey),
+	)
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
@@ -135,7 +146,11 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 		}
 
 		if srv, err := mcpSrv.Server(pathValue); err != nil {
-			slog.ErrorContext(r.Context(), fmt.Sprintf("failed to not found mcp server: %s", pathValue), slog.String("error", err.Error()))
+			slog.ErrorContext(
+				r.Context(),
+				fmt.Sprintf("failed to not found mcp server: %s", pathValue),
+				slog.String("error", err.Error()),
+			)
 			return nil
 		} else {
 			return srv
@@ -144,8 +159,15 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 		Stateless: true,
 	})
 	mux := http.NewServeMux()
-	authHandler.RegisterRoutes(mux, pathServerName, middleware.MCPServerApp(globalConfig.MCPServer, pathServerName))
-	mux.Handle(fmt.Sprintf("/mcp/{%s}", pathServerName), middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv))
+	authHandler.RegisterRoutes(
+		mux,
+		pathServerName,
+		middleware.MCPServerApp(globalConfig.MCPServer, pathServerName),
+	)
+	mux.Handle(
+		fmt.Sprintf("/mcp/{%s}", pathServerName),
+		middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv),
+	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
 	if metricsHandler != nil {
@@ -156,7 +178,10 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 		mediaHandler := &httphandler.MediaHandler{
 			ContentManager: contentManagementService,
 		}
-		mux.Handle(fmt.Sprintf("%s/{id}", mediaDownloadPath), http.HandlerFunc(mediaHandler.DownloadContent))
+		mux.Handle(
+			fmt.Sprintf("%s/{id}", mediaDownloadPath),
+			http.HandlerFunc(mediaHandler.DownloadContent),
+		)
 	}
 
 	slogHandler := slog.NewMultiHandler(
@@ -205,12 +230,22 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 }
 
 // runServer starts an HTTP server and handles graceful shutdown.
-func runServer(ctx context.Context, srv *http.Server, name string, port int, certFile, keyFile string) error {
+func runServer(
+	ctx context.Context,
+	srv *http.Server,
+	name string,
+	port int,
+	certFile, keyFile string,
+) error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.InfoContext(ctx, "starting server", slog.String("name", name), slog.Int("port", port))
 		if certFile != "" && keyFile != "" {
-			if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := srv.ListenAndServeTLS(
+				certFile,
+				keyFile,
+			); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s error: %w", name, err)
 			}
 		} else {

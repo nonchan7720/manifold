@@ -115,7 +115,11 @@ func resolveSwaggerSchemaRef(ref *openapi2.SchemaRef, spec *openapi2.T) *openapi
 
 // mergeSwaggerParams merges path-level and operation-level parameters.
 // Operation-level parameters win when the same (in, name) combination appears in both.
-func mergeSwaggerParams(operation *openapi2.Operation, pathItemParams []*openapi2.Parameter, spec *openapi2.T) []*openapi2.Parameter {
+func mergeSwaggerParams(
+	operation *openapi2.Operation,
+	pathItemParams []*openapi2.Parameter,
+	spec *openapi2.T,
+) []*openapi2.Parameter {
 	type paramKey struct{ in, name string }
 	opKeys := map[paramKey]bool{}
 	for _, p := range operation.Parameters {
@@ -146,7 +150,11 @@ func mergeSwaggerParams(operation *openapi2.Operation, pathItemParams []*openapi
 
 // extractParametersSwagger extracts parameter names from a Swagger 2.x operation.
 // Path-level parameters are merged with operation-level (operation wins on conflict).
-func extractParametersSwagger(operation *openapi2.Operation, pathItemParams []*openapi2.Parameter, spec *openapi2.T) extractParameter {
+func extractParametersSwagger(
+	operation *openapi2.Operation,
+	pathItemParams []*openapi2.Parameter,
+	spec *openapi2.T,
+) extractParameter {
 	var (
 		pathParams  = []string{}
 		queryParams = []string{}
@@ -184,7 +192,10 @@ func extractParametersSwagger(operation *openapi2.Operation, pathItemParams []*o
 
 // describeSchemaFieldsSwagger recursively builds a human-readable field summary from a
 // Swagger 2.x schema. $refs are resolved via spec.Definitions.
-func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) string { //nolint: gocyclo
+func describeSchemaFieldsSwagger( //nolint: gocyclo
+	schema *openapi2.Schema,
+	spec *openapi2.T,
+) string {
 	bodyProps := schema.Properties
 	if len(bodyProps) == 0 {
 		return ""
@@ -233,7 +244,10 @@ func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) stri
 
 		if typ == "object" {
 			if nested := describeSchemaFieldsSwagger(prop, spec); nested != "" {
-				parts = append(parts, fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested))
+				parts = append(
+					parts,
+					fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested),
+				)
 				continue
 			}
 		}
@@ -251,7 +265,10 @@ func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) stri
 						if localRequired[name] {
 							arrayMeta += ", required"
 						}
-						parts = append(parts, fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested))
+						parts = append(
+							parts,
+							fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested),
+						)
 						continue
 					}
 				}
@@ -269,7 +286,11 @@ func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) stri
 }
 
 // buildBodyDescriptionSwagger constructs a detailed description for a Swagger 2.x body parameter.
-func buildBodyDescriptionSwagger(base_desc string, schema *openapi2.Schema, spec *openapi2.T) string {
+func buildBodyDescriptionSwagger(
+	base_desc string,
+	schema *openapi2.Schema,
+	spec *openapi2.T,
+) string {
 	if base_desc == "" {
 		base_desc = "Request body"
 	}
@@ -281,7 +302,11 @@ func buildBodyDescriptionSwagger(base_desc string, schema *openapi2.Schema, spec
 }
 
 // BuildInputSchemaSwagger builds MCP input schema from a Swagger 2.x operation.
-func BuildInputSchemaSwagger(operation *openapi2.Operation, pathItemParams []*openapi2.Parameter, spec *openapi2.T) map[string]any {
+func BuildInputSchemaSwagger(
+	operation *openapi2.Operation,
+	pathItemParams []*openapi2.Parameter,
+	spec *openapi2.T,
+) map[string]any {
 	properties := map[string]any{}
 	required := []string{}
 
@@ -430,7 +455,11 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 							continue
 						}
 						if err := writeMultipartValue(ctx, mw, param_name, v, param); err != nil {
-							return fmt.Errorf("error writing multipart field %s: %w", param_name, err)
+							return fmt.Errorf(
+								"error writing multipart field %s: %w",
+								param_name,
+								err,
+							)
 						}
 					}
 					return nil
@@ -501,15 +530,60 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		var response *http.Response
 		switch original_method {
 		case "get":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "get", false, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"get",
+				false,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "post":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "post", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"post",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "put":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "put", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"put",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "delete":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "delete", false, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"delete",
+				false,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		case "patch":
-			response, err = api.DoRequestWithBody(ctx, client, finalURL, "patch", true, bodyReader, bodyContentType, effective_headers)
+			response, err = api.DoRequestWithBody(
+				ctx,
+				client,
+				finalURL,
+				"patch",
+				true,
+				bodyReader,
+				bodyContentType,
+				effective_headers,
+			)
 		default:
 			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}

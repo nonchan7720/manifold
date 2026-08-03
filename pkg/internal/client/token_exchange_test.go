@@ -54,7 +54,11 @@ func TestBaseTokenSource_Token_KeepsExplicitExpiry(t *testing.T) {
 	src := &baseTokenSource{apiKey: "key", client: srv.Client(), url: srv.URL}
 	token, err := src.Token()
 	require.NoError(t, err)
-	require.True(t, token.Expiry.Equal(explicitExpiry), "explicit expiry from response should not be overridden")
+	require.True(
+		t,
+		token.Expiry.Equal(explicitExpiry),
+		"explicit expiry from response should not be overridden",
+	)
 }
 
 func TestBaseTokenSource_Token_NoExpiresIn_NoExpirySet(t *testing.T) {
@@ -99,7 +103,12 @@ func TestBaseTokenSource_Token_429_RetryAfterSeconds_SuppressesImmediateRetry(t 
 	// レート制限ウィンドウ内: サーバーに新規リクエストを発行せず、キャッシュしたエラーを即座に返す
 	_, err2 := src.Token()
 	require.Error(t, err2)
-	require.EqualValues(t, 1, requestCount.Load(), "second call within the rate-limit window must not hit the server")
+	require.EqualValues(
+		t,
+		1,
+		requestCount.Load(),
+		"second call within the rate-limit window must not hit the server",
+	)
 	require.Equal(t, err.Error(), err2.Error())
 }
 
@@ -133,7 +142,12 @@ func TestBaseTokenSource_Token_429_WindowExpires_IssuesNewRequest(t *testing.T) 
 	now = now.Add(6 * time.Second)
 	_, err = src.Token()
 	require.Error(t, err)
-	require.EqualValues(t, 2, requestCount.Load(), "after the window passes a new request should be issued")
+	require.EqualValues(
+		t,
+		2,
+		requestCount.Load(),
+		"after the window passes a new request should be issued",
+	)
 }
 
 func TestBaseTokenSource_Token_Success_NoRateLimit(t *testing.T) {

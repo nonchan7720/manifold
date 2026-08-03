@@ -19,7 +19,10 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-func NewMeterProvider(ctx context.Context, opt *Config) (metric.MeterProvider, http.Handler, func(), error) {
+func NewMeterProvider(
+	ctx context.Context,
+	opt *Config,
+) (metric.MeterProvider, http.Handler, func(), error) {
 	m := &opt.Metrics
 	if !m.Enabled {
 		return noop.NewMeterProvider(), nil, func() {}, nil
@@ -36,7 +39,10 @@ func NewMeterProvider(ctx context.Context, opt *Config) (metric.MeterProvider, h
 	}
 }
 
-func newPullMeterProvider(_ context.Context, opt *Config) (metric.MeterProvider, http.Handler, func(), error) {
+func newPullMeterProvider(
+	_ context.Context,
+	opt *Config,
+) (metric.MeterProvider, http.Handler, func(), error) {
 	exporter, err := promexporter.New()
 	if err != nil {
 		return nil, nil, nil, err
@@ -59,7 +65,10 @@ func newPullMeterProvider(_ context.Context, opt *Config) (metric.MeterProvider,
 	return meterProvider, promhttp.Handler(), cleanup, nil
 }
 
-func newPushMeterProvider(ctx context.Context, opt *Config) (metric.MeterProvider, http.Handler, func(), error) {
+func newPushMeterProvider(
+	ctx context.Context,
+	opt *Config,
+) (metric.MeterProvider, http.Handler, func(), error) {
 	m := &opt.Metrics
 	var (
 		exporter sdkmetric.Exporter
@@ -71,7 +80,9 @@ func newPushMeterProvider(ctx context.Context, opt *Config) (metric.MeterProvide
 	case m.GRPC != nil:
 		exporter, err = newGRPCMetricExporter(ctx, &opt.Metrics, opt.GzipCompression)
 	default:
-		slog.Warn("metrics push enabled but HTTP/gRPC endpoint is not configured, disabling metrics")
+		slog.Warn(
+			"metrics push enabled but HTTP/gRPC endpoint is not configured, disabling metrics",
+		)
 		return noop.NewMeterProvider(), nil, func() {}, nil
 	}
 	if err != nil {
@@ -96,7 +107,11 @@ func newPushMeterProvider(ctx context.Context, opt *Config) (metric.MeterProvide
 	return meterProvider, nil, cleanup, nil
 }
 
-func newHTTPMetricExporter(ctx context.Context, opt *MetricsConfig, gzipCompression bool) (sdkmetric.Exporter, error) {
+func newHTTPMetricExporter(
+	ctx context.Context,
+	opt *MetricsConfig,
+	gzipCompression bool,
+) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{}
 	endpoint := opt.HTTP.Endpoint
 	switch {
@@ -113,7 +128,11 @@ func newHTTPMetricExporter(ctx context.Context, opt *MetricsConfig, gzipCompress
 	return otlpmetrichttp.New(ctx, opts...)
 }
 
-func newGRPCMetricExporter(ctx context.Context, opt *MetricsConfig, gzipCompression bool) (sdkmetric.Exporter, error) {
+func newGRPCMetricExporter(
+	ctx context.Context,
+	opt *MetricsConfig,
+	gzipCompression bool,
+) (sdkmetric.Exporter, error) {
 	opts := make([]otlpmetricgrpc.Option, 0, 10)
 	grpc := opt.GRPC
 	if grpc.Insecure {

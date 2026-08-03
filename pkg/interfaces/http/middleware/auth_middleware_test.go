@@ -20,7 +20,11 @@ func TestExtractBearerToken(t *testing.T) {
 		{"empty header", "", ""},
 		{"basic auth", "Basic dXNlcjpwYXNz", ""},
 		{"no space after Bearer", "Bearertoken", ""},
-		{"bearer with complex token", "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig", "eyJhbGciOiJSUzI1NiJ9.payload.sig"},
+		{
+			"bearer with complex token",
+			"Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig",
+			"eyJhbGciOiJSUzI1NiJ9.payload.sig",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

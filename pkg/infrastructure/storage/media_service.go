@@ -8,7 +8,11 @@ import (
 )
 
 type MediaService interface {
-	SaveContent(ctx context.Context, data []byte, contentType string) (id string, url string, _ error)
+	SaveContent(
+		ctx context.Context,
+		data []byte,
+		contentType string,
+	) (id string, url string, _ error)
 	DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error)
 	AccessCheck(ctx context.Context) error
 	Enabled() bool
@@ -27,7 +31,11 @@ func NewContentManagementService(hostURL *url.URL, service MediaService) *Conten
 	}
 }
 
-func (u *ContentManagementService) SaveContent(ctx context.Context, data []byte, contentType string) (id string, url string, _ error) {
+func (u *ContentManagementService) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (id string, url string, _ error) {
 	data = decodeBase64(data)
 	id, url, err := u.MediaService.SaveContent(ctx, data, contentType)
 	if err != nil {

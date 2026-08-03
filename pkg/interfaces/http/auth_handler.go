@@ -110,7 +110,11 @@ func WithEncryptKeyByBase64(key string) AuthHandlerOption {
 	return WithEncryptKey(v)
 }
 
-func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...AuthHandlerOption) *AuthHandler {
+func NewAuthHandler(
+	storeClient store.Client,
+	servers config.Servers,
+	opts ...AuthHandlerOption,
+) *AuthHandler {
 	h := &AuthHandler{
 		store:      storeClient,
 		servers:    servers,
@@ -128,21 +132,45 @@ func NewAuthHandler(storeClient store.Client, servers config.Servers, opts ...Au
 	return h
 }
 
-func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, pathServerName string, middleware func(h http.HandlerFunc) http.HandlerFunc) {
-	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-protected-resource/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.OauthProtectedResource)))
-	mux.HandleFunc(fmt.Sprintf("GET /.well-known/oauth-authorization-server/mcp/{%s}", pathServerName), middleware(wrapMCPServer(h.MetadataEndpoint)))
-	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/login", pathServerName), middleware(wrapMCPServer(h.LoginEndpoint)))
+func (h *AuthHandler) RegisterRoutes(
+	mux *http.ServeMux,
+	pathServerName string,
+	middleware func(h http.HandlerFunc) http.HandlerFunc,
+) {
+	mux.HandleFunc(
+		fmt.Sprintf("GET /.well-known/oauth-protected-resource/mcp/{%s}", pathServerName),
+		middleware(wrapMCPServer(h.OauthProtectedResource)),
+	)
+	mux.HandleFunc(
+		fmt.Sprintf("GET /.well-known/oauth-authorization-server/mcp/{%s}", pathServerName),
+		middleware(wrapMCPServer(h.MetadataEndpoint)),
+	)
+	mux.HandleFunc(
+		fmt.Sprintf("GET /{%s}/auth/login", pathServerName),
+		middleware(wrapMCPServer(h.LoginEndpoint)),
+	)
 	mux.HandleFunc("GET /authorize", wrapMCPServer(h.LoginEndpoint))
-	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/callback", pathServerName), middleware(wrapMCPServer(h.CallbackEndpoint)))
+	mux.HandleFunc(
+		fmt.Sprintf("GET /{%s}/auth/callback", pathServerName),
+		middleware(wrapMCPServer(h.CallbackEndpoint)),
+	)
 	mux.HandleFunc("GET /callback", wrapMCPServer(h.CallbackEndpoint))
-	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/token", pathServerName), middleware(wrapMCPServer(h.TokenEndpoint)))
+	mux.HandleFunc(
+		fmt.Sprintf("POST /{%s}/auth/token", pathServerName),
+		middleware(wrapMCPServer(h.TokenEndpoint)),
+	)
 	mux.HandleFunc("POST /token", wrapMCPServer(h.TokenEndpoint))
 	// // Dynamic Client Registration (RFC 7591)
-	mux.HandleFunc(fmt.Sprintf("POST /{%s}/auth/clients", pathServerName), middleware(wrapMCPServer(h.RegisterClientEndpoint)))
+	mux.HandleFunc(
+		fmt.Sprintf("POST /{%s}/auth/clients", pathServerName),
+		middleware(wrapMCPServer(h.RegisterClientEndpoint)),
+	)
 	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
 }
 
-func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config.Server)) http.HandlerFunc {
+func wrapMCPServer(
+	next func(w http.ResponseWriter, r *http.Request, srv *config.Server),
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/Middleware/WrapMCPServer")
@@ -153,7 +181,11 @@ func wrapMCPServer(next func(w http.ResponseWriter, r *http.Request, srv *config
 	}
 }
 
-func (h *AuthHandler) OauthProtectedResource(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) OauthProtectedResource(
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/OauthProtectedResource")
 	defer func() { trace.EndSpan(ctx, nil) }()
@@ -188,15 +220,23 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 	// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
 	issuerURL := fmt.Sprintf("%s/mcp/%s", baseURL, srv.Name)
 	metadata := map[string]any{
-		"issuer":                                issuerURL,
-		"authorization_endpoint":                fmt.Sprintf("%s/%s/auth/login", baseURL, srv.Name),
-		"token_endpoint":                        fmt.Sprintf("%s/%s/auth/token", baseURL, srv.Name),
-		"registration_endpoint":                 fmt.Sprintf("%s/%s/auth/clients", baseURL, srv.Name),
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
-		"resource_indicators_supported":         true,
+		"issuer":                 issuerURL,
+		"authorization_endpoint": fmt.Sprintf("%s/%s/auth/login", baseURL, srv.Name),
+		"token_endpoint":         fmt.Sprintf("%s/%s/auth/token", baseURL, srv.Name),
+		"registration_endpoint": fmt.Sprintf(
+			"%s/%s/auth/clients",
+			baseURL,
+			srv.Name,
+		),
+		"response_types_supported":         []string{"code"},
+		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
+		"code_challenge_methods_supported": []string{"S256"},
+		"token_endpoint_auth_methods_supported": []string{
+			"none",
+			"client_secret_post",
+			"client_secret_basic",
+		},
+		"resource_indicators_supported": true,
 	}
 	if srv.OAuth2 != nil && len(srv.OAuth2.Scopes) > 0 {
 		metadata["scopes_supported"] = srv.OAuth2.Scopes
@@ -206,7 +246,11 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 }
 
 // RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
-func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) RegisterClientEndpoint(
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/RegisterClientEndpoint")
 	var err error
@@ -237,7 +281,11 @@ func (h *AuthHandler) RegisterClientEndpoint(w http.ResponseWriter, r *http.Requ
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
 		if err = validateRedirectURI(uri); err != nil {
-			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			slog.WarnContext(
+				ctx,
+				"invalid redirect_uri in client registration",
+				slog.String("uri", util.SanitizeLog(uri)),
+			)
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -331,7 +379,11 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
 		if err = validateRedirectURI(uri); err != nil {
-			slog.WarnContext(ctx, "invalid redirect_uri in client registration", slog.String("uri", util.SanitizeLog(uri)))
+			slog.WarnContext(
+				ctx,
+				"invalid redirect_uri in client registration",
+				slog.String("uri", util.SanitizeLog(uri)),
+			)
 			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
 			return
 		}
@@ -367,7 +419,12 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	if err = h.store.Set(r.Context(), "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+	if err = h.store.Set(
+		r.Context(),
+		"oauth_client:"+clientID,
+		regJSON,
+		90*24*time.Hour,
+	); err != nil {
 		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
@@ -401,7 +458,11 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	if codeChallenge == "" || codeChallengeMethod != "S256" {
 		slog.WarnContext(ctx, "invalid login request", slog.String("reason", "missing_pkce"))
-		http.Error(w, "invalid_request: code_challenge or code_challenge_method missing/invalid", http.StatusBadRequest)
+		http.Error(
+			w,
+			"invalid_request: code_challenge or code_challenge_method missing/invalid",
+			http.StatusBadRequest,
+		)
 		return
 	}
 
@@ -410,12 +471,20 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	if clientID != "" {
 		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
 		if err != nil {
-			slog.WarnContext(ctx, "unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
+			slog.WarnContext(
+				ctx,
+				"unknown client_id in login request",
+				slog.String("client_id", util.SanitizeLog(clientID)),
+			)
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return
 		}
 		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
-			slog.ErrorContext(ctx, "failed to unmarshal client registration", slog.Any("error", err))
+			slog.ErrorContext(
+				ctx,
+				"failed to unmarshal client registration",
+				slog.Any("error", err),
+			)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -501,7 +570,11 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
+func (h *AuthHandler) CallbackEndpoint(
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/CallbackEndpoint")
 	var err error
@@ -524,7 +597,11 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 
 	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
 	if err != nil {
-		slog.WarnContext(ctx, "session not found in redis", slog.String("session_id", util.SanitizeLog(sessionID)))
+		slog.WarnContext(
+			ctx,
+			"session not found in redis",
+			slog.String("session_id", util.SanitizeLog(sessionID)),
+		)
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
 		return
 	}
@@ -622,7 +699,11 @@ func (h *AuthHandler) CallbackEndpoint(w http.ResponseWriter, r *http.Request, s
 	http.Redirect(w, r, redirectURI, http.StatusFound)
 }
 
-func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) { //nolint: gocyclo
+func (h *AuthHandler) TokenEndpoint(
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/TokenEndpoint")
 	var err error
@@ -651,7 +732,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	if grantType != "authorization_code" {
-		slog.WarnContext(ctx, "unsupported grant type", slog.String("grant_type", util.SanitizeLog(grantType)))
+		slog.WarnContext(
+			ctx,
+			"unsupported grant type",
+			slog.String("grant_type", util.SanitizeLog(grantType)),
+		)
 		http.Error(w, "unsupported_grant_type", http.StatusBadRequest)
 		return
 	}
@@ -664,7 +749,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 
 	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
 	if err != nil {
-		slog.WarnContext(ctx, "auth code not found in redis", slog.String("code", util.SanitizeLog(code)))
+		slog.WarnContext(
+			ctx,
+			"auth code not found in redis",
+			slog.String("code", util.SanitizeLog(code)),
+		)
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
 		return
 	}
@@ -738,7 +827,11 @@ func (h *AuthHandler) TokenEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *AuthHandler) exchangeUpstreamToken(ctx context.Context, session AuthSession, code, callbackURL string) (_ *oauth2.Token, rErr error) {
+func (h *AuthHandler) exchangeUpstreamToken(
+	ctx context.Context,
+	session AuthSession,
+	code, callbackURL string,
+) (_ *oauth2.Token, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/exchangeUpstreamToken")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -771,7 +864,11 @@ var (
 // discoverOAuth2 は HTTP MCP バックエンドに対して OAuth2 エンドポイントを自動発見し、
 // Dynamic Client Registration で ClientID を取得して config.OAuth2 を返す。
 // 結果は h.servers にキャッシュされる。
-func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, gatewayBaseURL string) (_ *config.OAuth2, rErr error) {
+func (h *AuthHandler) discoverOAuth2(
+	ctx context.Context,
+	srv *config.Server,
+	gatewayBaseURL string,
+) (_ *config.OAuth2, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/discoverOAuth2")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 	// キャッシュを確認
@@ -795,13 +892,22 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 		if parseErr != nil {
 			return nil, err
 		}
-		resourceMetaURL = fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", u.Scheme, u.Host)
+		resourceMetaURL = fmt.Sprintf(
+			"%s://%s/.well-known/oauth-protected-resource",
+			u.Scheme,
+			u.Host,
+		)
 	}
 
 	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
 	// resource フィールドの検証に使う URL は RFC 9728 の逆変換で resourceMetaURL から導出する。
 	// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
-	authorizationServers, err := getAuthorizationServers(ctx, resourceMetaURL, resourceURLFromMetaURL(resourceMetaURL), h.httpClient)
+	authorizationServers, err := getAuthorizationServers(
+		ctx,
+		resourceMetaURL,
+		resourceURLFromMetaURL(resourceMetaURL),
+		h.httpClient,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -895,7 +1001,12 @@ func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) 
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/sendProbeRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	probeReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(initializeJSON))
+	probeReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		url,
+		strings.NewReader(initializeJSON),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("probe request build failed: %w", err)
 	}
@@ -909,7 +1020,10 @@ func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) 
 	defer probeResp.Body.Close()
 
 	if probeResp.StatusCode != http.StatusUnauthorized {
-		return nil, fmt.Errorf("backend did not return 401 (got %d); cannot discover OAuth2", probeResp.StatusCode)
+		return nil, fmt.Errorf(
+			"backend did not return 401 (got %d); cannot discover OAuth2",
+			probeResp.StatusCode,
+		)
 	}
 	return probeResp.Header["Www-Authenticate"], nil
 }
@@ -946,7 +1060,11 @@ func resourceURLFromMetaURL(metaURL string) string {
 	return u.String()
 }
 
-func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c *http.Client) (_ []string, rErr error) {
+func getAuthorizationServers(
+	ctx context.Context,
+	resourceMetaURL, url string,
+	c *http.Client,
+) (_ []string, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/getAuthorizationServers")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -960,7 +1078,11 @@ func getAuthorizationServers(ctx context.Context, resourceMetaURL, url string, c
 	return prm.AuthorizationServers, nil
 }
 
-func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Client) (_ *oauthex.AuthServerMeta, rErr error) {
+func getAuthMetadata(
+	ctx context.Context,
+	authorizationServer string,
+	c *http.Client,
+) (_ *oauthex.AuthServerMeta, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/getAuthMetadata")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -976,7 +1098,11 @@ func getAuthMetadata(ctx context.Context, authorizationServer string, c *http.Cl
 
 // handleRefreshTokenGrant は grant_type=refresh_token のリクエストを処理する。
 // 上流 OAuth2 サーバーに対してトークンリフレッシュを委譲し、新しいアクセストークンを返す。
-func (h *AuthHandler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientID string) {
+func (h *AuthHandler) handleRefreshTokenGrant(
+	w http.ResponseWriter,
+	r *http.Request,
+	clientID string,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/handleRefreshTokenGrant")
 	var err error

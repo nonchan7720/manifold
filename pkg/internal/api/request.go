@@ -11,7 +11,15 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
-func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod string, withBody bool, bodyBytes []byte, bodyContentType string, effective_headers map[string]string) (_ *http.Response, rErr error) {
+func DoRequest(
+	ctx context.Context,
+	client *http.Client,
+	finalURL, httpMethod string,
+	withBody bool,
+	bodyBytes []byte,
+	bodyContentType string,
+	effective_headers map[string]string,
+) (_ *http.Response, rErr error) {
 	ctx = trace.StartSpan(ctx, "api/DoRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -19,7 +27,12 @@ func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod st
 	if withBody && len(bodyBytes) > 0 {
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
-	req, reqErr := http.NewRequestWithContext(ctx, strings.ToUpper(httpMethod), finalURL, bodyReader)
+	req, reqErr := http.NewRequestWithContext(
+		ctx,
+		strings.ToUpper(httpMethod),
+		finalURL,
+		bodyReader,
+	)
 	if reqErr != nil {
 		return nil, reqErr
 	}
@@ -51,7 +64,15 @@ func DoRequest(ctx context.Context, client *http.Client, finalURL, httpMethod st
 // Transfer-Encoding. This also means Request.GetBody stays nil, so the Client cannot
 // transparently retry the request body on redirects the way it can for the []byte-backed
 // DoRequest — an inherent trade-off of streaming an unbuffered source.
-func DoRequestWithBody(ctx context.Context, client *http.Client, finalURL, httpMethod string, withBody bool, body io.Reader, bodyContentType string, effective_headers map[string]string) (_ *http.Response, rErr error) {
+func DoRequestWithBody(
+	ctx context.Context,
+	client *http.Client,
+	finalURL, httpMethod string,
+	withBody bool,
+	body io.Reader,
+	bodyContentType string,
+	effective_headers map[string]string,
+) (_ *http.Response, rErr error) {
 	ctx = trace.StartSpan(ctx, "api/DoRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -59,7 +80,12 @@ func DoRequestWithBody(ctx context.Context, client *http.Client, finalURL, httpM
 	if withBody && body != nil {
 		bodyReader = body
 	}
-	req, reqErr := http.NewRequestWithContext(ctx, strings.ToUpper(httpMethod), finalURL, bodyReader)
+	req, reqErr := http.NewRequestWithContext(
+		ctx,
+		strings.ToUpper(httpMethod),
+		finalURL,
+		bodyReader,
+	)
 	if reqErr != nil {
 		return nil, reqErr
 	}
