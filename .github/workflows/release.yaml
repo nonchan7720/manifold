@@ -12,6 +12,7 @@ permissions:
   pull-requests: write
   actions: write
   packages: write
+  id-token: write
 
 env:
   IMAGE_NAME: manifold
@@ -73,7 +74,7 @@ jobs:
     needs:
       - release-please
       - set-tag-name
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       matrix:
         platform:
