@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/nonchan7720/manifold/compare/v1.6.0...v1.6.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* gofmt and golines ([#71](https://github.com/nonchan7720/manifold/issues/71)) ([e24ad63](https://github.com/nonchan7720/manifold/commit/e24ad63658c7f8eb09caa827a62347f7fc25dffc))
+
 ## [1.6.0](https://github.com/nonchan7720/manifold/compare/v1.5.1...v1.6.0) (2026-08-01)
 
 
