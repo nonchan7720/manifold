@@ -38,18 +38,25 @@ func Transport() http.RoundTripper {
 	return OTELTransport()
 }
 
+func httpClient() *http.Client {
+	c := &http.Client{
+		Transport: Transport(),
+		Timeout:   10 * time.Second,
+	}
+	return c
+}
+
 func HTTPClient() *http.Client {
 	if env.IsLocalOrCIOrTest() {
-		c := &http.Client{
-			Transport: Transport(),
-			Timeout:   10 * time.Second,
-		}
-		return c
+		return httpClient()
 	}
 	return SafeHTTPClient()
 }
 
 func SafeHTTPClient() *http.Client {
+	if env.SkipSecureClient() {
+		return httpClient()
+	}
 	dialer := &net.Dialer{
 		ControlContext: func(ctx context.Context, network, address string, _ syscall.RawConn) error {
 			host, _, err := net.SplitHostPort(address)
