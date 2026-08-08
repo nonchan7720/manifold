@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.32
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.6
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.1
-	github.com/compose-spec/compose-go/v2 v2.13.0
+	github.com/compose-spec/compose-go/v2 v2.14.0
 	github.com/gabriel-vasile/mimetype v1.4.15
 	github.com/getkin/kin-openapi v0.145.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0
