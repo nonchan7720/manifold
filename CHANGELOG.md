@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.6.2](https://github.com/nonchan7720/manifold/compare/v1.6.1...v1.6.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#76](https://github.com/nonchan7720/manifold/issues/76)) ([59f94af](https://github.com/nonchan7720/manifold/commit/59f94affb4d431244fd20e0322690cf13d4ee596))
+* **deps:** update all patch updates ([#78](https://github.com/nonchan7720/manifold/issues/78)) ([3062899](https://github.com/nonchan7720/manifold/commit/3062899e05bc3d1299930dff2bb49b70a72ec287))
+* **deps:** update module github.com/compose-spec/compose-go/v2 to v2.14.0 ([#79](https://github.com/nonchan7720/manifold/issues/79)) ([d4906aa](https://github.com/nonchan7720/manifold/commit/d4906aa98020f8e92072bd80497d2b625d71b080))
+* **deps:** update module github.com/getkin/kin-openapi to v0.145.0 ([#69](https://github.com/nonchan7720/manifold/issues/69)) ([4214527](https://github.com/nonchan7720/manifold/commit/421452750d5250f989d651ee374bb685c5fe51c3))
+* secure http client ([#73](https://github.com/nonchan7720/manifold/issues/73)) ([426912b](https://github.com/nonchan7720/manifold/commit/426912b13ffea9d58e15a1caeabe6d6f9cb60ebb))
+
+
+### Miscellaneous
+
+* **deps:** update docker/login-action action to v4.5.2 ([#75](https://github.com/nonchan7720/manifold/issues/75)) ([cb89b19](https://github.com/nonchan7720/manifold/commit/cb89b19c81bb9e1aefe2baefd3f58d3f0d919bdb))
+* **deps:** update docker/login-action action to v4.6.0 ([#77](https://github.com/nonchan7720/manifold/issues/77)) ([c10997c](https://github.com/nonchan7720/manifold/commit/c10997c610cf3ef06856991686f164e19a9fbec6))
+* **deps:** update github-actions (major) ([#45](https://github.com/nonchan7720/manifold/issues/45)) ([6a2b244](https://github.com/nonchan7720/manifold/commit/6a2b244300e58dde7e1c486e56623435deb8ea89))
+* **deps:** update grafana/otel-lgtm docker tag to v0.29.2 ([#26](https://github.com/nonchan7720/manifold/issues/26)) ([db71580](https://github.com/nonchan7720/manifold/commit/db71580c220282decc86b368ccaffabfd39cb89e))
+* **deps:** update grafana/otel-lgtm docker tag to v0.30.0 ([#80](https://github.com/nonchan7720/manifold/issues/80)) ([d09f857](https://github.com/nonchan7720/manifold/commit/d09f8574b61c2d779bf036976714f31772f9b43c))
+
 ## [1.6.1](https://github.com/nonchan7720/manifold/compare/v1.6.0...v1.6.1) (2026-08-03)
 
 
