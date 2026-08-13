@@ -72,7 +72,10 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer storeClient.Close()
 
-	var mediaService storage.MediaService
+	var (
+		mediaService           storage.MediaService
+		enabledDownloadContent bool
+	)
 	switch globalConfig.Storage.Type {
 	case "s3":
 		awsCfg, err := aws.NewConfig(ctx)
@@ -88,6 +91,7 @@ func runGatewayServer(ctx context.Context) error {
 		if err := mediaService.AccessCheck(ctx); err != nil {
 			return err
 		}
+		enabledDownloadContent = true
 	default:
 		mediaService = storage.NewNoopUploader()
 	}
@@ -174,7 +178,7 @@ func runGatewayServer(ctx context.Context) error {
 		mux.Handle("/metrics", metricsHandler)
 	}
 
-	if hostURL != nil {
+	if enabledDownloadContent {
 		mediaHandler := &httphandler.MediaHandler{
 			ContentManager: contentManagementService,
 		}
