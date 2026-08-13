@@ -5,8 +5,8 @@ go 1.26
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.4
 	github.com/aws/aws-sdk-go-v2/config v1.32.35
-	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.10
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.5
+	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.3.11
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.0
 	github.com/compose-spec/compose-go/v2 v2.14.0
 	github.com/gabriel-vasile/mimetype v1.4.15
 	github.com/getkin/kin-openapi v0.146.0
