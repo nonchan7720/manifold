@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.6.3](https://github.com/nonchan7720/manifold/compare/v1.6.2...v1.6.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#83](https://github.com/nonchan7720/manifold/issues/83)) ([c6493f3](https://github.com/nonchan7720/manifold/commit/c6493f36527f624ac12a89fdad60bcfa0ac2cda5))
+* **deps:** update all patch updates ([#87](https://github.com/nonchan7720/manifold/issues/87)) ([5dab075](https://github.com/nonchan7720/manifold/commit/5dab0752844f982545b844d7f42891f9f02ce40a))
+* **deps:** update go minor dependencies ([#81](https://github.com/nonchan7720/manifold/issues/81)) ([8f681cf](https://github.com/nonchan7720/manifold/commit/8f681cfda1635964f1f6f2cd8a4fd72106ce747d))
+* **deps:** update go-redis to v9.22.0 ([#82](https://github.com/nonchan7720/manifold/issues/82)) ([d13478e](https://github.com/nonchan7720/manifold/commit/d13478e181e28447dc1f26c0ba07e1369eea6676))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.3.11 ([#89](https://github.com/nonchan7720/manifold/issues/89)) ([98a2bdd](https://github.com/nonchan7720/manifold/commit/98a2bdde15fcf061a7abf8537681fccc104db0c0))
+* **deps:** update module github.com/go-ozzo/ozzo-validation/v4 to v4.4.1 ([#86](https://github.com/nonchan7720/manifold/issues/86)) ([f0b0e62](https://github.com/nonchan7720/manifold/commit/f0b0e622a3698c4c28d7579b7d51ba17a1c293bf))
+* **deps:** update opentelemetry ([#84](https://github.com/nonchan7720/manifold/issues/84)) ([aa6fa39](https://github.com/nonchan7720/manifold/commit/aa6fa39d6f33c04643adce233e23b83dd0cf9f21))
+
+
+### Code Refactoring
+
+* download content handler ([#88](https://github.com/nonchan7720/manifold/issues/88)) ([a522d8b](https://github.com/nonchan7720/manifold/commit/a522d8bc04d5cb373ea0dbc73ef33bb0d868429a))
+
 ## [1.6.2](https://github.com/nonchan7720/manifold/compare/v1.6.1...v1.6.2) (2026-08-08)
 
 
