@@ -57,6 +57,14 @@ func SafeHTTPClient() *http.Client {
 	if env.SkipSecureClient() {
 		return httpClient()
 	}
+	return StrictSafeHTTPClient()
+}
+
+// StrictSafeHTTPClient は SKIP_SECURE_CLIENT の設定にかかわらず、常にプライベート IP への
+// 接続を拒否するクライアントを返す。SKIP_SECURE_CLIENT は k8s クラスター内の
+// バックエンド通信向けの逃げ道であり、クライアント提示の URL を取得する経路
+// （CIMD ドキュメント取得など）には適用すべきでないため、そうした経路ではこちらを使う。
+func StrictSafeHTTPClient() *http.Client {
 	dialer := &net.Dialer{
 		ControlContext: func(ctx context.Context, network, address string, _ syscall.RawConn) error {
 			host, _, err := net.SplitHostPort(address)

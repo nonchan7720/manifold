@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"regexp"
+	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
@@ -65,12 +67,38 @@ type Gateway struct {
 	Cert string `mapstructure:"cert"`
 
 	EncryptKey string `mapstructure:"encryptKey"`
+
+	// BaseURL は外部公開時の正規ベース URL（例: https://gateway.example.com）。
+	// 設定すると OAuth の audience 検証やメタデータ生成にこの値が使われ、
+	// クライアント制御の Host ヘッダーに依存しなくなる。
+	BaseURL string `mapstructure:"baseURL"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
 		&c,
+		validation.Field(&c.BaseURL,
+			validation.When(c.BaseURL != "",
+				validation.By(func(value any) error {
+					v, ok := value.(string)
+					if !ok {
+						return fmt.Errorf("must be string type")
+					}
+					u, err := url.Parse(v)
+					if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+						return fmt.Errorf("must be an absolute http(s) URL")
+					}
+					// resource の audience 検証は /mcp/{name} のパス構造を前提と
+					// するため、パスプレフィックス付きの公開はサポートしない
+					if strings.Trim(u.Path, "/") != "" || u.ForceQuery || u.RawQuery != "" ||
+						u.Fragment != "" {
+						return fmt.Errorf("must not contain a path, query, or fragment")
+					}
+					return nil
+				}),
+			),
+		),
 		validation.Field(&c.EncryptKey,
 			validation.Required,
 			validation.When(c.EncryptKey != "",
