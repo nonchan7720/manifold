@@ -108,7 +108,10 @@ func runGatewayServer(ctx context.Context) error { //nolint: gocyclo
 	}
 	defer logsCleanup()
 
-	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer, httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey))
+	authHandler := httphandler.NewAuthHandler(storeClient, globalConfig.MCPServer,
+		httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey),
+		httphandler.WithGatewayBaseURL(globalConfig.Gateway.BaseURL),
+	)
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"

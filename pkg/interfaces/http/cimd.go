@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -176,17 +177,38 @@ func validateCIMDDocument(doc *ClientIDMetadataDocument, clientID string) error 
 	return nil
 }
 
+// hostWithoutDefaultPort はスキームのデフォルトポート（https:443 / http:80）が
+// 明示されている場合にそれを取り除いたホストを返す。RFC 3986 上は
+// デフォルトポートの有無で同一オリジンとなるため、比較前に正規化する。
+func hostWithoutDefaultPort(scheme, host string) string {
+	h, port, err := net.SplitHostPort(host)
+	if err != nil {
+		return host
+	}
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		return h
+	}
+	return host
+}
+
 // serverNameFromResource は RFC 8707 の resource パラメータ
 // （例: https://host/mcp/{name}）から MCP サーバー名を導出する。
-// audience 検証として resource のホストがゲートウェイ自身のホストと
-// 一致することを要求し、解決できない場合は空文字を返す。
+// audience 検証として resource のスキームとホストがゲートウェイ自身の
+// ものと一致することを要求し、解決できない場合は空文字を返す。
 func serverNameFromResource(resource, gatewayBaseURL string) string {
 	u, err := url.Parse(resource)
 	if err != nil {
 		return ""
 	}
 	base, err := url.Parse(gatewayBaseURL)
-	if err != nil || !strings.EqualFold(u.Host, base.Host) {
+	if err != nil {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != strings.ToLower(base.Scheme) {
+		return ""
+	}
+	if !strings.EqualFold(hostWithoutDefaultPort(scheme, u.Host), hostWithoutDefaultPort(scheme, base.Host)) {
 		return ""
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
@@ -197,12 +219,8 @@ func serverNameFromResource(resource, gatewayBaseURL string) string {
 }
 
 // buildClientMetadataDocumentURL は manifold 自身の CIMD ドキュメント URL を組み立てる。
-func buildClientMetadataDocumentURL(baseURL, serverName string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return ""
-	}
-	return u.JoinPath(serverName, "auth", "client-metadata.json").String()
+func buildClientMetadataDocumentURL(base *url.URL, serverName string) string {
+	return base.JoinPath(serverName, "auth", "client-metadata.json").String()
 }
 
 // clientMetadataDocumentURL は manifold 自身が上流認可サーバーに提示する
@@ -213,7 +231,7 @@ func clientMetadataDocumentURL(gatewayBaseURL, serverName string) string {
 	if err != nil || u.Scheme != "https" {
 		return ""
 	}
-	return buildClientMetadataDocumentURL(gatewayBaseURL, serverName)
+	return buildClientMetadataDocumentURL(u, serverName)
 }
 
 // ClientMetadataDocument は GET /{server}/auth/client-metadata.json を処理し、
@@ -230,7 +248,12 @@ func (h *AuthHandler) ClientMetadataDocument(w http.ResponseWriter, r *http.Requ
 	}
 
 	baseURL := h.getBaseURL(r)
-	docURL := buildClientMetadataDocumentURL(baseURL, srv.Name)
+	base, parseErr := url.Parse(baseURL)
+	if parseErr != nil {
+		http.Error(w, "invalid gateway base URL", http.StatusInternalServerError)
+		return
+	}
+	docURL := buildClientMetadataDocumentURL(base, srv.Name)
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 	doc := ClientIDMetadataDocument{
 		ClientID:                docURL,

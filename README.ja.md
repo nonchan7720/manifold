@@ -183,6 +183,7 @@ redis:
 | `key`        | string | TLS 秘密鍵ファイルパス（オプション）                                              |
 | `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
 | `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
+| `baseURL`    | string | ゲートウェイの外部公開時の正規ベース URL（例: `https://gateway.example.com`、オプション）。設定すると OAuth メタデータや RFC 8707 `resource` の audience 検証にクライアント制御の `Host` ヘッダーではなくこの値が使われる。リバースプロキシ配下では設定を強く推奨 |
 
 #### `mcpServers.<name>`
 

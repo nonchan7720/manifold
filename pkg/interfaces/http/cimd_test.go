@@ -54,6 +54,11 @@ func TestServerNameFromResource(t *testing.T) {
 		// audience 検証: ゲートウェイ以外のホストは解決しない
 		{"different host", "https://evil.example.com/mcp/myserver", ""},
 		{"different port", "https://gateway.example.com:8443/mcp/myserver", ""},
+		// デフォルトポートは明示されていても同一オリジンとして扱う
+		{"explicit default port", "https://gateway.example.com:443/mcp/myserver", "myserver"},
+		// audience 検証: スキームが一致しない resource は解決しない
+		{"http scheme", "http://gateway.example.com/mcp/myserver", ""},
+		{"scheme relative", "//gateway.example.com/mcp/myserver", ""},
 		{"empty", "", ""},
 	}
 	for _, tt := range tests {
@@ -310,6 +315,41 @@ func TestClientMetadataDocument(t *testing.T) {
 	require.Contains(t, doc.GrantTypes, "refresh_token")
 }
 
+func TestClientMetadataDocument_ConfiguredBaseURL(t *testing.T) {
+	// gateway.baseURL が設定されている場合は Host ヘッダーではなく設定値を使う
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{},
+		WithGatewayBaseURL("https://canonical.example.com/"))
+	srv := &config.Server{Name: "mysrv"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/mysrv/auth/client-metadata.json", nil)
+	req.Host = "attacker.example.com"
+	rw := httptest.NewRecorder()
+
+	h.ClientMetadataDocument(rw, req, srv)
+
+	require.Equal(t, http.StatusOK, rw.Code)
+	var doc ClientIDMetadataDocument
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &doc))
+	require.Equal(t, "https://canonical.example.com/mysrv/auth/client-metadata.json", doc.ClientID)
+	require.Equal(t, []string{"https://canonical.example.com/mysrv/auth/callback"}, doc.RedirectURIs)
+}
+
+func TestClientMetadataDocument_InvalidBaseURL(t *testing.T) {
+	// ベース URL がパースできない場合は空の client_id を配信せずエラーにする
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{},
+		WithGatewayBaseURL("://bad"))
+	srv := &config.Server{Name: "mysrv"}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/mysrv/auth/client-metadata.json", nil)
+	rw := httptest.NewRecorder()
+
+	h.ClientMetadataDocument(rw, req, srv)
+
+	require.Equal(t, http.StatusInternalServerError, rw.Code)
+}
+
 func TestClientMetadataDocument_NilServer(t *testing.T) {
 	h := &AuthHandler{}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
@@ -450,6 +490,7 @@ func TestLoginEndpoint_CIMDClient_ResolvesServerFromResource(t *testing.T) {
 		clientID, "https://gateway.example.com/mcp/resolved")
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, uri, nil)
 	req.Host = "gateway.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, nil)

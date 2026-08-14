@@ -92,6 +92,9 @@ type AuthHandler struct {
 	mu          sync.RWMutex
 	tokenEncKey []byte
 	httpClient  *http.Client
+	// gatewayBaseURL は設定で固定されたゲートウェイの正規ベース URL。
+	// 空の場合はリクエストの Host ヘッダーから導出する。
+	gatewayBaseURL string
 }
 
 type AuthHandlerOption func(h *AuthHandler)
@@ -99,6 +102,16 @@ type AuthHandlerOption func(h *AuthHandler)
 func WithEncryptKey(key []byte) AuthHandlerOption {
 	return func(h *AuthHandler) {
 		h.tokenEncKey = slices.Clone(key)
+	}
+}
+
+// WithGatewayBaseURL はゲートウェイの正規ベース URL（例: https://gateway.example.com）を
+// 固定する。設定すると getBaseURL がクライアント制御の Host ヘッダーではなく
+// この値を返すため、resource パラメータの audience 検証やメタデータ生成が
+// Host ヘッダー偽装の影響を受けなくなる。
+func WithGatewayBaseURL(baseURL string) AuthHandlerOption {
+	return func(h *AuthHandler) {
+		h.gatewayBaseURL = strings.TrimRight(baseURL, "/")
 	}
 }
 
@@ -938,6 +951,9 @@ func (h *AuthHandler) discoverOAuth2(ctx context.Context, srv *config.Server, ga
 }
 
 func (h *AuthHandler) getBaseURL(r *http.Request) string {
+	if h.gatewayBaseURL != "" {
+		return h.gatewayBaseURL
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"

@@ -183,6 +183,7 @@ redis:
 | `key`        | string | TLS private key file path (optional)                                              |
 | `cert`       | string | TLS certificate file path (optional)                                              |
 | `encryptKey` | string | Token encryption key (**required**). Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32` |
+| `baseURL`    | string | Canonical external base URL of the gateway, e.g. `https://gateway.example.com` (optional). When set, OAuth metadata and RFC 8707 `resource` audience validation use this value instead of the client-controlled `Host` header. Strongly recommended for deployments behind a reverse proxy |
 
 #### `mcpServers.<name>`
 
