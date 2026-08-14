@@ -92,6 +92,10 @@ type AuthHandler struct {
 	mu          sync.RWMutex
 	tokenEncKey []byte
 	httpClient  *http.Client
+	// cimdHTTPClient はクライアント提示の CIMD ドキュメント URL の取得に使う。
+	// バックエンド通信用の httpClient と異なり、SKIP_SECURE_CLIENT の設定に
+	// かかわらず常にプライベート IP への接続を拒否する（SSRF 対策）。
+	cimdHTTPClient *http.Client
 	// gatewayBaseURL は設定で固定されたゲートウェイの正規ベース URL。
 	// 空の場合はリクエストの Host ヘッダーから導出する。
 	gatewayBaseURL string
@@ -129,9 +133,10 @@ func NewAuthHandler(
 	opts ...AuthHandlerOption,
 ) *AuthHandler {
 	h := &AuthHandler{
-		store:      storeClient,
-		servers:    servers,
-		httpClient: client.SafeHTTPClient(),
+		store:          storeClient,
+		servers:        servers,
+		httpClient:     client.SafeHTTPClient(),
+		cimdHTTPClient: client.StrictSafeHTTPClient(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -501,6 +506,16 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	srv = h.resolveLoginServer(srv, clientReg, resource, h.getBaseURL(r))
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
+		return
+	}
+
+	// RFC 8707: resource が指定されている場合は、パスや登録情報から解決した
+	// サーバーとも一致することを要求する（audience 検証）
+	if resource != "" && serverNameFromResource(resource, h.getBaseURL(r)) != srv.Name {
+		slog.WarnContext(ctx, "resource does not match requested server",
+			slog.String("server", srv.Name),
+			slog.String("resource", util.SanitizeLog(resource)))
+		http.Error(w, "invalid_target", http.StatusBadRequest)
 		return
 	}
 
@@ -1020,10 +1035,13 @@ func (h *AuthHandler) discoverOAuth2(
 	// 上流認可サーバーが CIMD (SEP-991) に対応していれば manifold 自身の
 	// クライアントメタデータドキュメント URL を client_id として使用し、
 	// 未対応の場合は従来どおり Dynamic Client Registration にフォールバックする。
+	// CIMD の client_id は設定で固定された gateway.baseURL からのみ組み立てる:
+	// Host ヘッダー由来のベース URL を使うと、偽装 Host で最初の discovery を
+	// 発生させた攻撃者の URL が client_id としてキャッシュされ得るため。
 	clientID := ""
 	clientSecret := ""
 	if cimdURL := clientMetadataDocumentURL(
-		gatewayBaseURL,
+		h.gatewayBaseURL,
 		srv.Name,
 	); authMeta.ClientIDMetadataDocumentSupported &&
 		cimdURL != "" {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
@@ -87,6 +88,11 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 					u, err := url.Parse(v)
 					if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 						return fmt.Errorf("must be an absolute http(s) URL")
+					}
+					// resource の audience 検証は /mcp/{name} のパス構造を前提と
+					// するため、パスプレフィックス付きの公開はサポートしない
+					if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+						return fmt.Errorf("must not contain a path, query, or fragment")
 					}
 					return nil
 				}),

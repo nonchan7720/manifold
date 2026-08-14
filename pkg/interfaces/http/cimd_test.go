@@ -145,7 +145,7 @@ func newCIMDTestServer(
 	t.Cleanup(srv.Close)
 	clientID = srv.URL + "/oauth/client-metadata.json"
 	st := newMockStore(map[string]string{})
-	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: srv.Client()}
+	h := &AuthHandler{store: st, servers: config.Servers{}, cimdHTTPClient: srv.Client()}
 	return h, clientID, st
 }
 
@@ -387,7 +387,7 @@ func TestLoginEndpoint_CIMDClient(t *testing.T) {
 	})
 
 	st := newMockStore(map[string]string{})
-	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
+	h := &AuthHandler{store: st, servers: config.Servers{}, cimdHTTPClient: docSrv.Client()}
 	srv := &config.Server{
 		Name: "testserver",
 		OAuth2: &config.OAuth2{
@@ -413,7 +413,7 @@ func TestLoginEndpoint_CIMDClient(t *testing.T) {
 	// セッションに CIMD の client_id (URL) がそのまま保存されている
 	var session AuthSession
 	for k, v := range st.data {
-		if len(k) > len("auth_session:") && k[:len("auth_session:")] == "auth_session:" {
+		if strings.HasPrefix(k, "auth_session:") {
 			require.NoError(t, json.Unmarshal([]byte(v), &session))
 			break
 		}
@@ -434,7 +434,7 @@ func TestLoginEndpoint_CIMDClient_MismatchedRedirectURI(t *testing.T) {
 	})
 
 	st := newMockStore(map[string]string{})
-	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
+	h := &AuthHandler{store: st, servers: config.Servers{}, cimdHTTPClient: docSrv.Client()}
 	srv := &config.Server{
 		Name: "testserver",
 		OAuth2: &config.OAuth2{
@@ -465,7 +465,7 @@ func TestLoginEndpoint_CIMDClient_FetchFails(t *testing.T) {
 	clientID := docSrv.URL + "/oauth/client-metadata.json"
 
 	st := newMockStore(map[string]string{})
-	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
+	h := &AuthHandler{store: st, servers: config.Servers{}, cimdHTTPClient: docSrv.Client()}
 	srv := &config.Server{
 		Name: "testserver",
 		OAuth2: &config.OAuth2{
@@ -509,9 +509,9 @@ func TestLoginEndpoint_CIMDClient_ResolvesServerFromResource(t *testing.T) {
 		},
 	}
 	h := &AuthHandler{
-		store:      st,
-		servers:    config.Servers{"resolved": target},
-		httpClient: docSrv.Client(),
+		store:          st,
+		servers:        config.Servers{"resolved": target},
+		cimdHTTPClient: docSrv.Client(),
 	}
 
 	// グローバル /authorize 相当: srv=nil, resource パラメータでサーバーを指定
@@ -531,12 +531,90 @@ func TestLoginEndpoint_CIMDClient_ResolvesServerFromResource(t *testing.T) {
 
 	var session AuthSession
 	for k, v := range st.data {
-		if len(k) > len("auth_session:") && k[:len("auth_session:")] == "auth_session:" {
+		if strings.HasPrefix(k, "auth_session:") {
 			require.NoError(t, json.Unmarshal([]byte(v), &session))
 			break
 		}
 	}
 	require.Equal(t, "resolved", session.MCPServerName)
+}
+
+// --- LoginEndpoint: resource とサーバーの一致検証（RFC 8707） ---
+
+// newResourceBindingTestHandler はパス経由ログインの resource 検証テスト用に、
+// CIMD クライアントと testserver を持つ AuthHandler を返す。
+func newResourceBindingTestHandler(t *testing.T) (*AuthHandler, string, *config.Server) {
+	t.Helper()
+	docSrv := httptest.NewTLSServer(nil)
+	t.Cleanup(docSrv.Close)
+	clientID := docSrv.URL + "/oauth/client-metadata.json"
+	docSrv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ClientIDMetadataDocument{
+			ClientID:     clientID,
+			RedirectURIs: []string{"https://app.example.com/callback"},
+		})
+	})
+
+	h := &AuthHandler{
+		store:          newMockStore(map[string]string{}),
+		servers:        config.Servers{},
+		cimdHTTPClient: docSrv.Client(),
+	}
+	srv := &config.Server{
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
+	}
+	return h, clientID, srv
+}
+
+func loginRequestWithResource(t *testing.T, clientID, resource string) *http.Request {
+	t.Helper()
+	uri := fmt.Sprintf(
+		"/testserver/auth/login?client_id=%s&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st&resource=%s",
+		clientID,
+		resource,
+	)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, uri, nil)
+	req.Host = "gateway.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	return req
+}
+
+func TestLoginEndpoint_ResourceMatchingPathServer(t *testing.T) {
+	h, clientID, srv := newResourceBindingTestHandler(t)
+
+	rw := httptest.NewRecorder()
+	h.LoginEndpoint(rw, loginRequestWithResource(
+		t, clientID, "https://gateway.example.com/mcp/testserver"), srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+}
+
+func TestLoginEndpoint_ResourceMismatchRejected(t *testing.T) {
+	h, clientID, srv := newResourceBindingTestHandler(t)
+
+	// パスで解決したサーバーと異なるサーバーを指す resource は拒否する
+	rw := httptest.NewRecorder()
+	h.LoginEndpoint(rw, loginRequestWithResource(
+		t, clientID, "https://gateway.example.com/mcp/otherserver"), srv)
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
+func TestLoginEndpoint_ResourceForeignHostRejected(t *testing.T) {
+	h, clientID, srv := newResourceBindingTestHandler(t)
+
+	// ゲートウェイ以外のホストを指す resource は拒否する
+	rw := httptest.NewRecorder()
+	h.LoginEndpoint(rw, loginRequestWithResource(
+		t, clientID, "https://evil.example.com/mcp/testserver"), srv)
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
 }
 
 // --- discoverOAuth2: CIMD 対応の上流には CIMD を優先 ---
@@ -605,7 +683,8 @@ func TestDiscoverOAuth2_CIMD_PreferredOverDCR(t *testing.T) {
 	mcpURL := newDiscoveryTestEnv(t, true, &dcrCalled)
 
 	h := &AuthHandler{
-		servers: config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+		servers:        config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+		gatewayBaseURL: "https://gateway.example.com",
 	}
 	srv := &config.Server{
 		Name:      "testsrv",
@@ -613,7 +692,7 @@ func TestDiscoverOAuth2_CIMD_PreferredOverDCR(t *testing.T) {
 		URL:       mcpURL,
 	}
 
-	// https ゲートウェイ → CIMD が使われる
+	// 設定済みの https ゲートウェイ → CIMD が使われる
 	result, err := h.discoverOAuth2(t.Context(), srv, "https://gateway.example.com")
 	require.NoError(t, err)
 	require.Equal(
@@ -623,6 +702,26 @@ func TestDiscoverOAuth2_CIMD_PreferredOverDCR(t *testing.T) {
 	)
 	require.Empty(t, result.ClientSecret)
 	require.False(t, dcrCalled, "DCR should not be called when CIMD is supported")
+}
+
+func TestDiscoverOAuth2_CIMD_NoConfiguredBaseURLFallsBackToDCR(t *testing.T) {
+	dcrCalled := false
+	mcpURL := newDiscoveryTestEnv(t, true, &dcrCalled)
+
+	// gateway.baseURL 未設定 → Host ヘッダー由来のベース URL では CIMD を使わない
+	h := &AuthHandler{
+		servers: config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+	}
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       mcpURL,
+	}
+
+	result, err := h.discoverOAuth2(t.Context(), srv, "https://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "dcr-client-id", result.ClientID)
+	require.True(t, dcrCalled)
 }
 
 func TestDiscoverOAuth2_CIMD_HTTPGatewayFallsBackToDCR(t *testing.T) {

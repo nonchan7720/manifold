@@ -86,10 +86,11 @@ func (h *AuthHandler) fetchClientIDMetadata(
 		}
 	}
 
-	// h.httpClient が未設定の経路でも SSRF 対策（プライベート IP 拒否）を欠かさない
-	httpClient := h.httpClient
+	// クライアント提示の URL を取得するため、SKIP_SECURE_CLIENT の設定に
+	// かかわらず常にプライベート IP への接続を拒否するクライアントを使う
+	httpClient := h.cimdHTTPClient
 	if httpClient == nil {
-		httpClient = client.SafeHTTPClient()
+		httpClient = client.StrictSafeHTTPClient()
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, cimdFetchTimeout)
 	defer cancel()
