@@ -92,13 +92,6 @@ type AuthHandler struct {
 	mu          sync.RWMutex
 	tokenEncKey []byte
 	httpClient  *http.Client
-	// cimdHTTPClient はクライアント提示の CIMD ドキュメント URL の取得に使う。
-	// バックエンド通信用の httpClient と異なり、SKIP_SECURE_CLIENT の設定に
-	// かかわらず常にプライベート IP への接続を拒否する（SSRF 対策）。
-	cimdHTTPClient *http.Client
-	// gatewayBaseURL は設定で固定されたゲートウェイの正規ベース URL。
-	// 空の場合はリクエストの Host ヘッダーから導出する。
-	gatewayBaseURL string
 }
 
 type AuthHandlerOption func(h *AuthHandler)
@@ -106,16 +99,6 @@ type AuthHandlerOption func(h *AuthHandler)
 func WithEncryptKey(key []byte) AuthHandlerOption {
 	return func(h *AuthHandler) {
 		h.tokenEncKey = slices.Clone(key)
-	}
-}
-
-// WithGatewayBaseURL はゲートウェイの正規ベース URL（例: https://gateway.example.com）を
-// 固定する。設定すると getBaseURL がクライアント制御の Host ヘッダーではなく
-// この値を返すため、resource パラメータの audience 検証やメタデータ生成が
-// Host ヘッダー偽装の影響を受けなくなる。
-func WithGatewayBaseURL(baseURL string) AuthHandlerOption {
-	return func(h *AuthHandler) {
-		h.gatewayBaseURL = strings.TrimRight(baseURL, "/")
 	}
 }
 
@@ -133,10 +116,9 @@ func NewAuthHandler(
 	opts ...AuthHandlerOption,
 ) *AuthHandler {
 	h := &AuthHandler{
-		store:          storeClient,
-		servers:        servers,
-		httpClient:     client.SafeHTTPClient(),
-		cimdHTTPClient: client.StrictSafeHTTPClient(),
+		store:      storeClient,
+		servers:    servers,
+		httpClient: client.SafeHTTPClient(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -184,12 +166,6 @@ func (h *AuthHandler) RegisterRoutes(
 		middleware(wrapMCPServer(h.RegisterClientEndpoint)),
 	)
 	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
-	// Client ID Metadata Document (CIMD, SEP-991): manifold 自身が MCP クライアントとして
-	// 上流認可サーバーに提示するメタデータドキュメント
-	mux.HandleFunc(
-		fmt.Sprintf("GET /{%s}/auth/client-metadata.json", pathServerName),
-		middleware(wrapMCPServer(h.ClientMetadataDocument)),
-	)
 }
 
 func wrapMCPServer(
@@ -261,8 +237,6 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 			"client_secret_basic",
 		},
 		"resource_indicators_supported": true,
-		// CIMD (SEP-991): client_id として HTTPS URL を受け付ける
-		"client_id_metadata_document_supported": true,
 	}
 	if srv.OAuth2 != nil && len(srv.OAuth2.Scopes) > 0 {
 		metadata["scopes_supported"] = srv.OAuth2.Scopes
@@ -492,30 +466,48 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	if clientID == "" {
+	// client_id が提供された場合、登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ
+	var clientReg StoreClientRegistration
+	if clientID != "" {
+		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
+		if err != nil {
+			slog.WarnContext(
+				ctx,
+				"unknown client_id in login request",
+				slog.String("client_id", util.SanitizeLog(clientID)),
+			)
+			http.Error(w, "invalid_client", http.StatusUnauthorized)
+			return
+		}
+		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
+			slog.ErrorContext(
+				ctx,
+				"failed to unmarshal client registration",
+				slog.Any("error", err),
+			)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
+			slog.WarnContext(ctx, "redirect_uri not registered for client",
+				slog.String("client_id", util.SanitizeLog(clientID)),
+				slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
+			http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
+			return
+		}
+	} else {
 		slog.ErrorContext(ctx, "failed to client_id is empty")
 		http.Error(w, "invalid_client_id", http.StatusBadRequest)
 		return
 	}
 
-	clientReg := h.resolveLoginClient(ctx, w, clientID, redirectURI)
-	if clientReg == nil {
-		return
+	if srv == nil {
+		if v, ok := h.servers[clientReg.MCPServerName]; ok {
+			srv = v
+		}
 	}
-
-	srv = h.resolveLoginServer(srv, clientReg, resource, h.getBaseURL(r))
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
-		return
-	}
-
-	// RFC 8707: resource が指定されている場合は、パスや登録情報から解決した
-	// サーバーとも一致することを要求する（audience 検証）
-	if resource != "" && serverNameFromResource(resource, h.getBaseURL(r)) != srv.Name {
-		slog.WarnContext(ctx, "resource does not match requested server",
-			slog.String("server", srv.Name),
-			slog.String("resource", util.SanitizeLog(resource)))
-		http.Error(w, "invalid_target", http.StatusBadRequest)
 		return
 	}
 
@@ -576,97 +568,6 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 	redirectURL := oauthCfg.AuthCodeURL(sessionID, oauth2.S256ChallengeOption(upstreamVerifier))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
-}
-
-// resolveLoginClient は client_id に応じてクライアント登録情報を解決し、
-// 登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ。
-//   - CIMD (SEP-991): client_id が HTTPS URL の場合、その URL からメタデータ
-//     ドキュメントを取得して検証する
-//   - DCR (RFC 7591): それ以外は store に保存された登録情報を参照する
-//
-// エラー時はレスポンスを書き込み nil を返す。
-func (h *AuthHandler) resolveLoginClient(
-	ctx context.Context,
-	w http.ResponseWriter,
-	clientID, redirectURI string,
-) *StoreClientRegistration {
-	var clientReg StoreClientRegistration
-	if isCIMDClientID(clientID) {
-		doc, err := h.fetchClientIDMetadata(ctx, clientID)
-		if err != nil {
-			slog.WarnContext(ctx, "failed to resolve CIMD client",
-				slog.String("client_id", util.SanitizeLog(clientID)), slog.Any("error", err))
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
-			return nil
-		}
-		clientReg = StoreClientRegistration{
-			ClientRegistration: ClientRegistration{
-				ClientID:                clientID,
-				RedirectURIs:            doc.RedirectURIs,
-				GrantTypes:              doc.GrantTypes,
-				ResponseTypes:           doc.ResponseTypes,
-				ClientName:              doc.ClientName,
-				TokenEndpointAuthMethod: "none",
-			},
-			// CIMD クライアントは事前登録を持たないため MCPServerName は
-			// resource パラメータから解決する（resolveLoginServer 参照）
-		}
-	} else {
-		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
-		if err != nil {
-			slog.WarnContext(
-				ctx,
-				"unknown client_id in login request",
-				slog.String("client_id", util.SanitizeLog(clientID)),
-			)
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
-			return nil
-		}
-		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
-			slog.ErrorContext(
-				ctx,
-				"failed to unmarshal client registration",
-				slog.Any("error", err),
-			)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return nil
-		}
-	}
-	if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
-		slog.WarnContext(ctx, "redirect_uri not registered for client",
-			slog.String("client_id", util.SanitizeLog(clientID)),
-			slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
-		http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
-		return nil
-	}
-	return &clientReg
-}
-
-// resolveLoginServer は認可対象の MCP サーバーを解決する。
-// パスから解決済みの srv があればそれを優先し、なければ登録情報の
-// MCPServerName、最後に resource パラメータ（RFC 8707）から導出する。
-// CIMD クライアントは事前登録を持たないため resource による解決が必須となる。
-func (h *AuthHandler) resolveLoginServer(
-	srv *config.Server,
-	clientReg *StoreClientRegistration,
-	resource, gatewayBaseURL string,
-) *config.Server {
-	if srv != nil {
-		return srv
-	}
-	if clientReg.MCPServerName != "" {
-		if v, ok := h.servers[clientReg.MCPServerName]; ok {
-			return v
-		}
-	}
-	if resource != "" {
-		if name := serverNameFromResource(resource, gatewayBaseURL); name != "" {
-			if v, ok := h.servers[name]; ok {
-				return v
-			}
-		}
-	}
-	return nil
 }
 
 func (h *AuthHandler) CallbackEndpoint(
@@ -1027,33 +928,14 @@ func (h *AuthHandler) discoverOAuth2(
 		}
 	}
 
-	// 途中の認可サーバーで失敗しても後続で成功していれば続行する。
-	// すべて失敗した場合のみ最後のエラーを返す（外側の err は成功済みの
-	// getAuthorizationServers のものなので返してはならない）。
-	if authMeta == nil {
-		return nil, fmt.Errorf("fetch authorization server metadata: %w", lastErr)
+	if lastErr != nil {
+		return nil, err
 	}
 
-	// Step 5: クライアント登録。
-	// 上流認可サーバーが CIMD (SEP-991) に対応していれば manifold 自身の
-	// クライアントメタデータドキュメント URL を client_id として使用し、
-	// 未対応の場合は従来どおり Dynamic Client Registration にフォールバックする。
-	// CIMD の client_id は設定で固定された gateway.baseURL からのみ組み立てる:
-	// Host ヘッダー由来のベース URL を使うと、偽装 Host で最初の discovery を
-	// 発生させた攻撃者の URL が client_id としてキャッシュされ得るため。
+	// Step 5: Dynamic Client Registration で ClientID/ClientSecret を取得
 	clientID := ""
 	clientSecret := ""
-	if cimdURL := clientMetadataDocumentURL(
-		h.gatewayBaseURL,
-		srv.Name,
-	); authMeta.ClientIDMetadataDocumentSupported &&
-		cimdURL != "" {
-		clientID = cimdURL
-		slog.InfoContext(ctx, "using client ID metadata document for upstream registration",
-			slog.String("server", srv.Name),
-			slog.String("client_id", clientID),
-		)
-	} else if authMeta.RegistrationEndpoint != "" {
+	if authMeta.RegistrationEndpoint != "" {
 		callbackURL := fmt.Sprintf("%s/%s/auth/callback", gatewayBaseURL, srv.Name)
 		regResp, err := oauthex.RegisterClient(ctx, authMeta.RegistrationEndpoint,
 			&oauthex.ClientRegistrationMetadata{
@@ -1066,13 +948,6 @@ func (h *AuthHandler) discoverOAuth2(
 		}
 		clientID = regResp.ClientID
 		clientSecret = regResp.ClientSecret
-	}
-	// CIMD も DCR も使えない場合、空の client_id をキャッシュすると
-	// 後続のログインが不正な認可リクエストを生成するためエラーにする
-	if clientID == "" {
-		return nil, fmt.Errorf(
-			"authorization server supports neither usable CIMD nor dynamic client registration",
-		)
 	}
 
 	oauth2cfg := &config.OAuth2{
@@ -1100,9 +975,6 @@ func (h *AuthHandler) discoverOAuth2(
 }
 
 func (h *AuthHandler) getBaseURL(r *http.Request) string {
-	if h.gatewayBaseURL != "" {
-		return h.gatewayBaseURL
-	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
