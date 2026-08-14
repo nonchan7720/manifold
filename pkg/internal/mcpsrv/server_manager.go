@@ -27,10 +27,16 @@ type MCPServer struct {
 	mediaUploader *storage.ContentManagementService
 }
 
-func NewMCPServer(servers config.Servers, mediaUploader *storage.ContentManagementService) *MCPServer {
+func NewMCPServer(
+	servers config.Servers,
+	mediaUploader *storage.ContentManagementService,
+) *MCPServer {
 	return &MCPServer{
-		servers:        servers,
-		srv:            mcp.NewServer(&mcp.Implementation{Name: "manifold", Version: version.MarkVersion}, &mcp.ServerOptions{}),
+		servers: servers,
+		srv: mcp.NewServer(
+			&mcp.Implementation{Name: "manifold", Version: version.MarkVersion},
+			&mcp.ServerOptions{},
+		),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
 		mediaUploader:  mediaUploader,
@@ -42,7 +48,10 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	for name, server := range s.servers {
-		srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: version.MarkVersion}, &mcp.ServerOptions{})
+		srv := mcp.NewServer(
+			&mcp.Implementation{Name: name, Version: version.MarkVersion},
+			&mcp.ServerOptions{},
+		)
 
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続のためクライアントを登録するのみ
@@ -58,7 +67,14 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				WithOAuth2(server.OAuth2),
 				WithTokenExchange(server.TokenExchange),
 			}
-			err := registerAPI(ctx, server.Spec, server.BaseURL, server.ExtraHeaders, srv, s.mediaUploader, opts...)
+			err := registerAPI(
+				ctx,
+				server.Spec,
+				server.BaseURL,
+				server.ExtraHeaders,
+				srv,
+				s.mediaUploader,
+				opts...)
 			if err != nil {
 				return err
 			}
@@ -105,45 +121,87 @@ func registerAPI(
 	}
 	tools := register.ListTools()
 	for _, tool := range tools {
-		srv.AddTool(&tool.tool, func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
-			spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
-			ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))
-			defer func() {
-				if res.IsError {
-					rErr = errors.Join(rErr, res.GetError())
-				}
-				trace.EndSpan(ctx, rErr)
-			}()
-			slog.InfoContext(ctx, "call tool", slog.String("tool-name", ctr.Params.Name))
+		srv.AddTool(
+			&tool.tool,
+			func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
+				spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
+				ctx = trace.StartSpan(ctx, spanName, attribute.String("tool-name", ctr.Params.Name))
+				defer func() {
+					if res.IsError {
+						rErr = errors.Join(rErr, res.GetError())
+					}
+					trace.EndSpan(ctx, rErr)
+				}()
+				slog.InfoContext(ctx, "call tool", slog.String("tool-name", ctr.Params.Name))
 
-			var input map[string]any
-			if err := json.Unmarshal(ctr.Params.Arguments, &input); err != nil {
-				resp := &mcp.CallToolResult{}
-				resp.SetError(err)
-				return resp, nil
-			}
-			var result mcp.CallToolResult
-			resp, contentType, err := tool.handler(ctx, input)
-			if err != nil {
-				result.SetError(err)
-				return &result, nil
-			}
-			content, err := generateContent(ctx, contentType, resp, mediaUploader)
-			if err != nil {
-				result.SetError(err)
-			} else {
-				result.Content = content
-				if json.Valid(resp) {
-					result.StructuredContent = json.RawMessage(resp)
+				var input map[string]any
+				if err := json.Unmarshal(ctr.Params.Arguments, &input); err != nil {
+					resp := &mcp.CallToolResult{}
+					resp.SetError(err)
+					return resp, nil
 				}
-			}
-			return &result, nil
-		})
+				var result mcp.CallToolResult
+				resp, contentType, err := tool.handler(ctx, input)
+				if err != nil {
+					result.SetError(err)
+					return &result, nil
+				}
+				content, err := generateContent(ctx, contentType, resp, mediaUploader)
+				if err != nil {
+					result.SetError(err)
+				} else {
+					result.Content = content
+					if json.Valid(resp) {
+						result.StructuredContent = json.RawMessage(resp)
+					}
+				}
+				return &result, nil
+			},
+		)
 	}
 	return nil
 }
 
-func generateContent(ctx context.Context, contentType string, data []byte, mediaService storage.MediaService) ([]mcp.Content, error) {
+// resourceLinkDescription は resource_link の説明文を組み立てる。
+//
+// mimeType フィールドは、受け手（Claude Code 等）が resource_link を
+// `[Resource link: {name}] {uri} ({description})` というテキストへ変換する過程で失われる。
+// 説明文は変換後も残るため、Content-Type をここにも書いておく。
+func resourceLinkDescription(contentType string) string {
+	return fmt.Sprintf(
+		"Content-Type: %s. When using the data, please use the accessible URL",
+		contentType,
+	)
+}
+
+// newResourceLink は実体をアップロードし、その参照を表す resource_link を返す。
+func newResourceLink(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+	mediaService storage.MediaService,
+) (mcp.Content, error) {
+	id, url, err := mediaService.SaveContent(ctx, data, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return &mcp.ResourceLink{
+		URI:         url,
+		Name:        id,
+		MIMEType:    contentType,
+		Description: resourceLinkDescription(contentType),
+	}, nil
+}
+
+func generateContent(
+	ctx context.Context,
+	contentType string,
+	data []byte,
+	mediaService storage.MediaService,
+) ([]mcp.Content, error) {
+	// 上流が octet-stream しか返さない場合に備え、実体から型を判定し直す。
+	// 判定できた型は振り分け（image/audio/その他）と resource_link の両方に使う。
+	contentType = storage.ResolveContentType(contentType, data)
 	baseType := strings.SplitN(contentType, ";", 2)[0]
 	baseType = strings.TrimSpace(baseType)
 	textContent := []string{
@@ -165,62 +223,30 @@ func generateContent(ctx context.Context, contentType string, data []byte, media
 			},
 		}, nil
 	case strings.HasPrefix(baseType, "image/"):
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.ImageContent{
-				Data:     data,
-				MIMEType: contentType,
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.ImageContent{Data: data, MIMEType: contentType}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	case strings.HasPrefix(baseType, "audio/"):
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.AudioContent{
-				Data:     data,
-				MIMEType: contentType,
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.AudioContent{Data: data, MIMEType: contentType}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	default:
-		var content mcp.Content
-		if isEnabled {
-			id, url, err := mediaService.SaveContent(ctx, data, contentType)
-			if err != nil {
-				return nil, err
-			}
-			content = &mcp.ResourceLink{
-				URI:         url,
-				Name:        id,
-				MIMEType:    contentType,
-				Description: "When using the data, please use the accessible URL",
-			}
-		} else {
-			content = &mcp.TextContent{
-				Text: string(data),
-			}
+		if !isEnabled {
+			return []mcp.Content{&mcp.TextContent{Text: string(data)}}, nil
+		}
+		content, err := newResourceLink(ctx, data, contentType, mediaService)
+		if err != nil {
+			return nil, err
 		}
 		return []mcp.Content{content}, nil
 	}

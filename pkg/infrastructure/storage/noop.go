@@ -16,7 +16,11 @@ func NewNoopUploader() MediaService {
 	return &noopUploader{}
 }
 
-func (u *noopUploader) SaveContent(ctx context.Context, data []byte, contentType string) (_ string, _ string, rErr error) {
+func (u *noopUploader) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (_ string, _ string, rErr error) {
 	return "", "", ErrNotImplement
 }
 
@@ -26,6 +30,9 @@ func (u *noopUploader) AccessCheck(ctx context.Context) error {
 
 func (u *noopUploader) Enabled() bool { return false }
 
-func (u *noopUploader) DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error) {
+func (u *noopUploader) DownloadContent(
+	ctx context.Context,
+	id string,
+) (io.ReadCloser, string, error) {
 	return nil, "", ErrNotImplement
 }

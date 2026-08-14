@@ -38,7 +38,12 @@ func WithRegisterToolMeta(meta map[string]any) RegisterToolOptions {
 	}
 }
 
-func (r *MCPToolRegistry) RegisterTool(name, description string, inputSchema map[string]any, handler ToolFunc, opts ...RegisterToolOptions) {
+func (r *MCPToolRegistry) RegisterTool(
+	name, description string,
+	inputSchema map[string]any,
+	handler ToolFunc,
+	opts ...RegisterToolOptions,
+) {
 	tool := Tool{
 		tool: mcp.Tool{
 			Name:        name,

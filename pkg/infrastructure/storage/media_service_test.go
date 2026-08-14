@@ -15,7 +15,11 @@ type fakeMediaService struct {
 	doFunc  func(ctx context.Context, data []byte, contentType string) (string, string, error)
 }
 
-func (f *fakeMediaService) SaveContent(ctx context.Context, data []byte, contentType string) (string, string, error) {
+func (f *fakeMediaService) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (string, string, error) {
 	return f.doFunc(ctx, data, contentType)
 }
 
@@ -23,7 +27,10 @@ func (f *fakeMediaService) AccessCheck(ctx context.Context) error { return nil }
 
 func (f *fakeMediaService) Enabled() bool { return f.enabled }
 
-func (f *fakeMediaService) DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error) {
+func (f *fakeMediaService) DownloadContent(
+	ctx context.Context,
+	id string,
+) (io.ReadCloser, string, error) {
 	return nil, "", nil
 }
 

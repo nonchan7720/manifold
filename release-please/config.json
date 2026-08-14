@@ -42,7 +42,12 @@
       "prerelease": false,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [
-        "pkg/version/version.go"
+        "pkg/version/version.go",
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.version"
+        }
       ]
     }
   }

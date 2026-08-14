@@ -102,9 +102,14 @@ func TestMCPToolRegistry_InputSchema(t *testing.T) {
 		},
 	}
 
-	r.RegisterTool("fetch", "Fetch resource", schema, func(ctx context.Context, input map[string]any) ([]byte, string, error) {
-		return nil, "", nil
-	})
+	r.RegisterTool(
+		"fetch",
+		"Fetch resource",
+		schema,
+		func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+			return nil, "", nil
+		},
+	)
 
 	tool := r.GetTool("fetch")
 	require.NotNil(t, tool)

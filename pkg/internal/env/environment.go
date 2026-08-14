@@ -25,3 +25,7 @@ func IsTest() bool {
 func IsLocalOrCIOrTest() bool {
 	return IsLocal() || IsCI() || IsTest()
 }
+
+func SkipSecureClient() bool {
+	return envBool("SKIP_SECURE_CLIENT")
+}

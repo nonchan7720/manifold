@@ -18,10 +18,21 @@ import (
 const defaultURLExpiration = 1 * time.Hour
 
 type S3API interface {
-	UploadObject(ctx context.Context, input *transfermanager.UploadObjectInput) (*transfermanager.UploadObjectOutput, error)
-	PresignGetObject(ctx context.Context, params *s3.GetObjectInput, expires time.Duration) (string, error)
+	UploadObject(
+		ctx context.Context,
+		input *transfermanager.UploadObjectInput,
+	) (*transfermanager.UploadObjectOutput, error)
+	PresignGetObject(
+		ctx context.Context,
+		params *s3.GetObjectInput,
+		expires time.Duration,
+	) (string, error)
 	AccessCheck(ctx context.Context, bucket string) error
-	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	GetObject(
+		ctx context.Context,
+		params *s3.GetObjectInput,
+		optFns ...func(*s3.Options),
+	) (*s3.GetObjectOutput, error)
 }
 
 type s3Service struct {
@@ -38,7 +49,11 @@ func NewS3Uploader(api S3API, bucketName, keyPrefix string) MediaService {
 	}
 }
 
-func (u *s3Service) SaveContent(ctx context.Context, data []byte, contentType string) (_ string, _ string, rErr error) {
+func (u *s3Service) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (_ string, _ string, rErr error) {
 	id := uuid.Must(uuid.NewV7()).String()
 
 	bucket := aws.String(u.bucket)
@@ -53,19 +68,22 @@ func (u *s3Service) SaveContent(ctx context.Context, data []byte, contentType st
 		ContentType: aws.String(contentType),
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to s3 upload(%s)", id)
+		return "", "", fmt.Errorf("failed to s3 upload(%s): %w", id, err)
 	}
 	url, err := u.api.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: bucket,
 		Key:    key,
 	}, defaultURLExpiration)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate pre-sign url(%s)", id)
+		return "", "", fmt.Errorf("failed to generate pre-sign url(%s): %w", id, err)
 	}
 	return id, url, nil
 }
 
-func (u *s3Service) DownloadContent(ctx context.Context, id string) (_ io.ReadCloser, _ string, rErr error) {
+func (u *s3Service) DownloadContent(
+	ctx context.Context,
+	id string,
+) (_ io.ReadCloser, _ string, rErr error) {
 	bucket := aws.String(u.bucket)
 	key := aws.String(fmt.Sprintf("%s/%s", u.keyPrefix, id))
 
@@ -77,7 +95,7 @@ func (u *s3Service) DownloadContent(ctx context.Context, id string) (_ io.ReadCl
 		Key:    key,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get file content")
+		return nil, "", fmt.Errorf("failed to get file content: %w", err)
 	}
 	return resp.Body, aws.ToString(resp.ContentType), nil
 }

@@ -19,7 +19,11 @@ type fakeMediaService struct {
 	doFunc  func(ctx context.Context, data []byte, contentType string) (string, string, error)
 }
 
-func (f *fakeMediaService) SaveContent(ctx context.Context, data []byte, contentType string) (string, string, error) {
+func (f *fakeMediaService) SaveContent(
+	ctx context.Context,
+	data []byte,
+	contentType string,
+) (string, string, error) {
 	return f.doFunc(ctx, data, contentType)
 }
 
@@ -27,7 +31,10 @@ func (f *fakeMediaService) AccessCheck(ctx context.Context) error { return nil }
 
 func (f *fakeMediaService) Enabled() bool { return f.enabled }
 
-func (f *fakeMediaService) DownloadContent(ctx context.Context, id string) (io.ReadCloser, string, error) {
+func (f *fakeMediaService) DownloadContent(
+	ctx context.Context,
+	id string,
+) (io.ReadCloser, string, error) {
 	return nil, "", nil
 }
 
@@ -37,7 +44,12 @@ func TestGenerateContent_BinaryImage_NoopUploader(t *testing.T) {
 
 	// mediaUploader が無効の場合、デコードはバックエンドサービス側の責務ではないため
 	// base64 のまま ImageContent.Data に格納される。
-	contents, err := generateContent(context.Background(), "image/png", encoded, storage.NewNoopUploader())
+	contents, err := generateContent(
+		context.Background(),
+		"image/png",
+		encoded,
+		storage.NewNoopUploader(),
+	)
 	require.NoError(t, err)
 	require.Len(t, contents, 1)
 
@@ -69,6 +81,78 @@ func TestGenerateContent_BinaryImage_EnabledUploader(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "media-id", link.Name)
 	require.Equal(t, encoded, gotData)
+}
+
+// 上流 API が application/octet-stream しか返さない場合でも、実体から型を判定して
+// resource_link に載せる。受け手（Claude Code）は mimeType が octet-stream のままだと
+// 画像なのか文書なのかを判別できない。
+func TestGenerateContent_OctetStream_DetectsTypeFromBody(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n0000000000000000")
+	encoded := []byte(base64.URLEncoding.EncodeToString(png))
+
+	var gotContentType string
+	mediaService := &fakeMediaService{
+		enabled: true,
+		doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
+			gotContentType = contentType
+			return "media-id", "https://example.com/media-id", nil
+		},
+	}
+
+	contents, err := generateContent(
+		context.Background(),
+		"application/octet-stream",
+		encoded,
+		mediaService,
+	)
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+
+	link, ok := contents[0].(*mcp.ResourceLink)
+	require.True(t, ok)
+	require.Equal(t, "image/png", link.MIMEType)
+	require.Equal(t, "image/png", gotContentType)
+}
+
+// mimeType フィールドは受け手がテキストへ変換する過程で落ちるため、説明文にも
+// Content-Type を書いておく。説明文は変換後も残る。
+func TestGenerateContent_ResourceLinkDescriptionCarriesContentType(t *testing.T) {
+	encoded := []byte(base64.URLEncoding.EncodeToString([]byte("raw-image-bytes")))
+
+	mediaService := &fakeMediaService{
+		enabled: true,
+		doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
+			return "media-id", "https://example.com/media-id", nil
+		},
+	}
+
+	contents, err := generateContent(context.Background(), "image/png", encoded, mediaService)
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+
+	link, ok := contents[0].(*mcp.ResourceLink)
+	require.True(t, ok)
+	require.Contains(t, link.Description, "Content-Type: image/png")
+}
+
+// アップロード先が無効な場合も、判定した型で ImageContent に振り分ける
+// （octet-stream のままだと default 分岐に落ちて TextContent になってしまう）。
+func TestGenerateContent_OctetStream_NoopUploader_RoutesByDetectedType(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n0000000000000000")
+	encoded := []byte(base64.URLEncoding.EncodeToString(png))
+
+	contents, err := generateContent(
+		context.Background(),
+		"application/octet-stream",
+		encoded,
+		storage.NewNoopUploader(),
+	)
+	require.NoError(t, err)
+	require.Len(t, contents, 1)
+
+	img, ok := contents[0].(*mcp.ImageContent)
+	require.True(t, ok)
+	require.Equal(t, "image/png", img.MIMEType)
 }
 
 func TestNewMCPServer(t *testing.T) {

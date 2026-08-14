@@ -1,5 +1,88 @@
 # Changelog
 
+## [1.6.3](https://github.com/nonchan7720/manifold/compare/v1.6.2...v1.6.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#83](https://github.com/nonchan7720/manifold/issues/83)) ([c6493f3](https://github.com/nonchan7720/manifold/commit/c6493f36527f624ac12a89fdad60bcfa0ac2cda5))
+* **deps:** update all patch updates ([#87](https://github.com/nonchan7720/manifold/issues/87)) ([5dab075](https://github.com/nonchan7720/manifold/commit/5dab0752844f982545b844d7f42891f9f02ce40a))
+* **deps:** update go minor dependencies ([#81](https://github.com/nonchan7720/manifold/issues/81)) ([8f681cf](https://github.com/nonchan7720/manifold/commit/8f681cfda1635964f1f6f2cd8a4fd72106ce747d))
+* **deps:** update go-redis to v9.22.0 ([#82](https://github.com/nonchan7720/manifold/issues/82)) ([d13478e](https://github.com/nonchan7720/manifold/commit/d13478e181e28447dc1f26c0ba07e1369eea6676))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.3.11 ([#89](https://github.com/nonchan7720/manifold/issues/89)) ([98a2bdd](https://github.com/nonchan7720/manifold/commit/98a2bdde15fcf061a7abf8537681fccc104db0c0))
+* **deps:** update module github.com/go-ozzo/ozzo-validation/v4 to v4.4.1 ([#86](https://github.com/nonchan7720/manifold/issues/86)) ([f0b0e62](https://github.com/nonchan7720/manifold/commit/f0b0e622a3698c4c28d7579b7d51ba17a1c293bf))
+* **deps:** update opentelemetry ([#84](https://github.com/nonchan7720/manifold/issues/84)) ([aa6fa39](https://github.com/nonchan7720/manifold/commit/aa6fa39d6f33c04643adce233e23b83dd0cf9f21))
+
+
+### Code Refactoring
+
+* download content handler ([#88](https://github.com/nonchan7720/manifold/issues/88)) ([a522d8b](https://github.com/nonchan7720/manifold/commit/a522d8bc04d5cb373ea0dbc73ef33bb0d868429a))
+
+## [1.6.2](https://github.com/nonchan7720/manifold/compare/v1.6.1...v1.6.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#76](https://github.com/nonchan7720/manifold/issues/76)) ([59f94af](https://github.com/nonchan7720/manifold/commit/59f94affb4d431244fd20e0322690cf13d4ee596))
+* **deps:** update all patch updates ([#78](https://github.com/nonchan7720/manifold/issues/78)) ([3062899](https://github.com/nonchan7720/manifold/commit/3062899e05bc3d1299930dff2bb49b70a72ec287))
+* **deps:** update module github.com/compose-spec/compose-go/v2 to v2.14.0 ([#79](https://github.com/nonchan7720/manifold/issues/79)) ([d4906aa](https://github.com/nonchan7720/manifold/commit/d4906aa98020f8e92072bd80497d2b625d71b080))
+* **deps:** update module github.com/getkin/kin-openapi to v0.145.0 ([#69](https://github.com/nonchan7720/manifold/issues/69)) ([4214527](https://github.com/nonchan7720/manifold/commit/421452750d5250f989d651ee374bb685c5fe51c3))
+* secure http client ([#73](https://github.com/nonchan7720/manifold/issues/73)) ([426912b](https://github.com/nonchan7720/manifold/commit/426912b13ffea9d58e15a1caeabe6d6f9cb60ebb))
+
+
+### Miscellaneous
+
+* **deps:** update docker/login-action action to v4.5.2 ([#75](https://github.com/nonchan7720/manifold/issues/75)) ([cb89b19](https://github.com/nonchan7720/manifold/commit/cb89b19c81bb9e1aefe2baefd3f58d3f0d919bdb))
+* **deps:** update docker/login-action action to v4.6.0 ([#77](https://github.com/nonchan7720/manifold/issues/77)) ([c10997c](https://github.com/nonchan7720/manifold/commit/c10997c610cf3ef06856991686f164e19a9fbec6))
+* **deps:** update github-actions (major) ([#45](https://github.com/nonchan7720/manifold/issues/45)) ([6a2b244](https://github.com/nonchan7720/manifold/commit/6a2b244300e58dde7e1c486e56623435deb8ea89))
+* **deps:** update grafana/otel-lgtm docker tag to v0.29.2 ([#26](https://github.com/nonchan7720/manifold/issues/26)) ([db71580](https://github.com/nonchan7720/manifold/commit/db71580c220282decc86b368ccaffabfd39cb89e))
+* **deps:** update grafana/otel-lgtm docker tag to v0.30.0 ([#80](https://github.com/nonchan7720/manifold/issues/80)) ([d09f857](https://github.com/nonchan7720/manifold/commit/d09f8574b61c2d779bf036976714f31772f9b43c))
+
+## [1.6.1](https://github.com/nonchan7720/manifold/compare/v1.6.0...v1.6.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* gofmt and golines ([#71](https://github.com/nonchan7720/manifold/issues/71)) ([e24ad63](https://github.com/nonchan7720/manifold/commit/e24ad63658c7f8eb09caa827a62347f7fc25dffc))
+
+## [1.6.0](https://github.com/nonchan7720/manifold/compare/v1.5.1...v1.6.0) (2026-08-01)
+
+
+### Features
+
+* resource_link の Content-Type を実体から判定して載せる ([#68](https://github.com/nonchan7720/manifold/issues/68)) ([7a07899](https://github.com/nonchan7720/manifold/commit/7a078996c1910047f129d4dd7f7a64b7717d8cc3))
+
+
+### Bug Fixes
+
+* **deps:** update github.com/modelcontextprotocol/go-sdk to v1.7.0 ([#66](https://github.com/nonchan7720/manifold/issues/66)) ([0a64ef2](https://github.com/nonchan7720/manifold/commit/0a64ef2e5cefbbb43af0ef7f256cdfd17875300d))
+
+## [1.5.1](https://github.com/nonchan7720/manifold/compare/v1.5.0...v1.5.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **ci:** use a defined variable in the MCP Registry transport URL ([#64](https://github.com/nonchan7720/manifold/issues/64)) ([376ab1b](https://github.com/nonchan7720/manifold/commit/376ab1b98f27af64a820c9e66e7d196ee76fd732))
+
+## [1.5.0](https://github.com/nonchan7720/manifold/compare/v1.4.0...v1.5.0) (2026-08-01)
+
+
+### Features
+
+* **renovate:** auto-merge patch updates when CI passes ([#63](https://github.com/nonchan7720/manifold/issues/63)) ([a1495fa](https://github.com/nonchan7720/manifold/commit/a1495fafa9a8cdfce39c05077ed82b363dfce364))
+
+
+### Bug Fixes
+
+* **deps:** update all patch updates ([#47](https://github.com/nonchan7720/manifold/issues/47)) ([bf73cb8](https://github.com/nonchan7720/manifold/commit/bf73cb8a8c7028871ca0b08c4ddb551409a8535d))
+* **deps:** update go minor dependencies ([#60](https://github.com/nonchan7720/manifold/issues/60)) ([67ea4cc](https://github.com/nonchan7720/manifold/commit/67ea4cccb2403a4e898d800b195f9392cee3537c))
+* **deps:** update kin-openapi and grpc to patch security vulnerabilities ([#59](https://github.com/nonchan7720/manifold/issues/59)) ([d87eec1](https://github.com/nonchan7720/manifold/commit/d87eec158031f29e2ae22356a79b1963bfe60873))
+
+
+### Documentation
+
+* add English README, community health files, and runnable examples ([#57](https://github.com/nonchan7720/manifold/issues/57)) ([cab9292](https://github.com/nonchan7720/manifold/commit/cab9292b8f5a11170171301e942d7aa375992d03))
+
 ## [1.4.0](https://github.com/nonchan7720/manifold/compare/v1.3.0...v1.4.0) (2026-07-31)
 
 

@@ -10,7 +10,10 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
-func MCPServerApp(servers config.Servers, pathValueName string) func(next http.HandlerFunc) http.HandlerFunc {
+func MCPServerApp(
+	servers config.Servers,
+	pathValueName string,
+) func(next http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()

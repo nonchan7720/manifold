@@ -63,7 +63,12 @@ func TestGenerateS256Challenge_Different(t *testing.T) {
 
 func TestGetBaseURL_HTTP(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/path", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"http://example.com/path",
+		nil,
+	)
 	req.Host = "example.com"
 	got := h.getBaseURL(req)
 	require.Equal(t, "http://example.com", got)
@@ -87,7 +92,12 @@ func TestOauthProtectedResource(t *testing.T) {
 		OAuth2: &config.OAuth2{Scopes: []string{"read", "write"}},
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-protected-resource/mcp/myserver",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	ctx := contexts.ToServerContext(req.Context(), srv)
 	req = req.WithContext(ctx)
@@ -113,7 +123,12 @@ func TestOauthProtectedResource_NoOAuth2(t *testing.T) {
 		OAuth2: nil,
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-protected-resource/mcp/myserver", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-protected-resource/mcp/myserver",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -136,7 +151,12 @@ func TestMetadataEndpoint(t *testing.T) {
 		OAuth2: &config.OAuth2{Scopes: []string{"openid"}},
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-authorization-server/mcp/testserver",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -163,7 +183,12 @@ func TestMetadataEndpoint_NoOAuth2(t *testing.T) {
 		OAuth2: nil,
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-authorization-server/mcp/testserver", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-authorization-server/mcp/testserver",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -227,7 +252,12 @@ func TestNewAuthHandler(t *testing.T) {
 
 func TestRegisterClientEndpoint_InvalidJSON(t *testing.T) {
 	h := &AuthHandler{}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader("invalid json"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader("invalid json"),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{
@@ -244,7 +274,12 @@ func TestRegisterClientEndpoint_InvalidJSON(t *testing.T) {
 func TestRegisterClientEndpoint_NoRedirectURIs(t *testing.T) {
 	h := &AuthHandler{}
 	reqBody := `{"grant_types": ["authorization_code"]}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(reqBody),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{
@@ -277,7 +312,12 @@ func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
 		OAuth2: nil,
 		Spec:   "local/spec.json", // OpenAPI mode, not MCP backend
 	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/login", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/login",
+		nil,
+	)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -288,10 +328,19 @@ func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
 func TestLoginEndpoint_MissingPKCE(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "client1", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "client1",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/login?client_id=client1", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/login?client_id=client1",
+		nil,
+	)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -304,7 +353,12 @@ func TestLoginEndpoint_MissingPKCE(t *testing.T) {
 func TestCallbackEndpoint_MissingParams(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{Name: "testserver"}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/testserver/auth/callback", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/callback",
+		nil,
+	)
 	rw := httptest.NewRecorder()
 
 	h.CallbackEndpoint(rw, req, srv)
@@ -346,7 +400,8 @@ func TestSendProbeRequest_Returns401(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
-		w.Header().Set("Www-Authenticate", `Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`)
+		w.Header().
+			Set("Www-Authenticate", `Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
@@ -429,7 +484,12 @@ func TestGetAuthorizationServers_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	servers, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
+	servers, err := getAuthorizationServers(
+		context.Background(),
+		srv.URL,
+		"http://example.com/resource",
+		http.DefaultClient,
+	)
 	require.NoError(t, err)
 	require.Contains(t, servers, "https://auth.example.com")
 }
@@ -446,7 +506,12 @@ func TestGetAuthorizationServers_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
+	_, err := getAuthorizationServers(
+		context.Background(),
+		srv.URL,
+		"http://example.com/resource",
+		http.DefaultClient,
+	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no authorization_servers")
 }
@@ -691,7 +756,12 @@ func TestValidateRedirectURI(t *testing.T) {
 func TestRegisterClientEndpoint_InvalidRedirectURIScheme(t *testing.T) {
 	h := &AuthHandler{}
 	reqBody := `{"redirect_uris": ["http://evil.com/callback"]}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(reqBody),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{
@@ -709,7 +779,12 @@ func TestRegisterClientEndpoint_LocalhostAllowed(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := NewAuthHandler(st, config.Servers{})
 	reqBody := `{"redirect_uris": ["http://localhost:3000/callback"]}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(reqBody),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{
@@ -725,11 +800,19 @@ func TestLoginEndpoint_UnknownClientID(t *testing.T) {
 	st := newMockStore(map[string]string{}) // 登録済みクライアントなし
 	h := &AuthHandler{store: st, servers: config.Servers{}}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		"/testserver/auth/login?client_id=unknown&redirect_uri=https://example.com/cb&code_challenge=abc&code_challenge_method=S256", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/login?client_id=unknown&redirect_uri=https://example.com/cb&code_challenge=abc&code_challenge_method=S256",
+		nil,
+	)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -748,12 +831,20 @@ func TestLoginEndpoint_MismatchedRedirectURI(t *testing.T) {
 	})
 	h := &AuthHandler{store: st, servers: config.Servers{}}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 	// 登録されていない redirect_uri を指定
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		"/testserver/auth/login?client_id=client1&redirect_uri=https://evil.example.com/cb&code_challenge=abc&code_challenge_method=S256", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/login?client_id=client1&redirect_uri=https://evil.example.com/cb&code_challenge=abc&code_challenge_method=S256",
+		nil,
+	)
 	rw := httptest.NewRecorder()
 
 	h.LoginEndpoint(rw, req, srv)
@@ -772,11 +863,19 @@ func TestLoginEndpoint_ValidClientAndRedirectURI(t *testing.T) {
 	})
 	h := &AuthHandler{store: st, servers: config.Servers{}}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		"/testserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -805,7 +904,8 @@ func TestTokenEndpoint_ClientIDMismatch(t *testing.T) {
 	srv := &config.Server{Name: "testserver"}
 
 	body := fmt.Sprintf(
-		"grant_type=authorization_code&code=testcode&code_verifier=%s&client_id=wrong_client", verifier,
+		"grant_type=authorization_code&code=testcode&code_verifier=%s&client_id=wrong_client",
+		verifier,
 	)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 		"/testserver/auth/token", strings.NewReader(body))
@@ -860,12 +960,20 @@ func TestLoginEndpoint_SessionStoresMCPServerName(t *testing.T) {
 	})
 	h := &AuthHandler{store: st, servers: config.Servers{}}
 	srv := &config.Server{
-		Name:   "myserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "myserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
-		"/myserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/myserver/auth/login?client_id=client1&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st",
+		nil,
+	)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
 
@@ -1047,8 +1155,12 @@ func TestTokenEndpoint_RefreshToken_SessionNotFound(t *testing.T) {
 	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
 	srv := &config.Server{Name: "testserver"}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
-		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token&refresh_token=unknown"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token=unknown"),
+	)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
 
@@ -1064,8 +1176,12 @@ func TestTokenEndpoint_RefreshToken_InvalidSessionData(t *testing.T) {
 	h := NewAuthHandler(st, config.Servers{})
 	srv := &config.Server{Name: "testserver"}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
-		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token&refresh_token=bad-token"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token=bad-token"),
+	)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
 
@@ -1100,11 +1216,13 @@ func TestTokenEndpoint_RefreshToken_ClientIDMismatch(t *testing.T) {
 }
 
 func TestTokenEndpoint_RefreshToken_UpstreamFails(t *testing.T) {
-	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
-	}))
+	upstreamSrv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+		}),
+	)
 	defer upstreamSrv.Close()
 
 	encKey := make([]byte, 32)
@@ -1133,18 +1251,20 @@ func TestTokenEndpoint_RefreshToken_UpstreamFails(t *testing.T) {
 }
 
 func TestTokenEndpoint_RefreshToken_Success(t *testing.T) {
-	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, r.ParseForm())
-		require.Equal(t, "refresh_token", r.FormValue("grant_type"))
-		require.Equal(t, "old-refresh-token", r.FormValue("refresh_token"))
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":  "new-access-token",
-			"token_type":    "Bearer",
-			"expires_in":    3600,
-			"refresh_token": "new-refresh-token",
-		})
-	}))
+	upstreamSrv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, "refresh_token", r.FormValue("grant_type"))
+			require.Equal(t, "old-refresh-token", r.FormValue("refresh_token"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "new-access-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+				"refresh_token": "new-refresh-token",
+			})
+		}),
+	)
 	defer upstreamSrv.Close()
 
 	encKey := make([]byte, 32)
@@ -1332,7 +1452,12 @@ func TestRegisterClientEndpoint_InvalidJSON_SpanRecordsError(t *testing.T) {
 	exporter := setupTracerProvider(t)
 
 	h := &AuthHandler{}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader("invalid json"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader("invalid json"),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{Name: "test"})
@@ -1349,7 +1474,12 @@ func TestRegisterClientEndpoint_InvalidRedirectURIScheme_SpanRecordsError(t *tes
 
 	h := &AuthHandler{}
 	reqBody := `{"redirect_uris": ["http://evil.com/callback"]}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(reqBody),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{Name: "test"})
@@ -1367,7 +1497,12 @@ func TestRegisterClientEndpoint_Success_SpanNoError(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := NewAuthHandler(st, config.Servers{})
 	reqBody := `{"redirect_uris": ["http://localhost:3000/callback"]}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test/auth/clients", strings.NewReader(reqBody))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(reqBody),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpoint(rw, req, &config.Server{Name: "test"})
@@ -1385,14 +1520,22 @@ func TestRegisterClientEndpointByClaudeCode_InvalidJSON_SpanRecordsError(t *test
 	exporter := setupTracerProvider(t)
 
 	h := &AuthHandler{}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/register", strings.NewReader("invalid json"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/register",
+		strings.NewReader("invalid json"),
+	)
 	rw := httptest.NewRecorder()
 
 	h.RegisterClientEndpointByClaudeCode(rw, req)
 
 	require.Equal(t, http.StatusBadRequest, rw.Code)
 	spans := exporter.GetSpans()
-	span, found := spanByNameSuffix(spans, "httphandler/AuthHandler/RegisterClientEndpointByClaudeCode")
+	span, found := spanByNameSuffix(
+		spans,
+		"httphandler/AuthHandler/RegisterClientEndpointByClaudeCode",
+	)
 	require.True(t, found, "span not found")
 	require.Equal(t, codes.Error, span.Status.Code)
 }
@@ -1455,8 +1598,12 @@ func TestTokenEndpoint_RefreshToken_SessionNotFound_SpanRecordsError(t *testing.
 	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
 	srv := &config.Server{Name: "testserver"}
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
-		"/testserver/auth/token", strings.NewReader("grant_type=refresh_token&refresh_token=unknown"))
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token=unknown"),
+	)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
 
@@ -1493,7 +1640,8 @@ func TestSendProbeRequest_Returns401_SpanNoError(t *testing.T) {
 	exporter := setupTracerProvider(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Www-Authenticate", `Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`)
+		w.Header().
+			Set("Www-Authenticate", `Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"`)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
@@ -1521,7 +1669,12 @@ func TestGetAuthorizationServers_Empty_SpanRecordsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
+	_, err := getAuthorizationServers(
+		context.Background(),
+		srv.URL,
+		"http://example.com/resource",
+		http.DefaultClient,
+	)
 	require.Error(t, err)
 
 	spans := exporter.GetSpans()
@@ -1542,7 +1695,12 @@ func TestGetAuthorizationServers_Success_SpanNoError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := getAuthorizationServers(context.Background(), srv.URL, "http://example.com/resource", http.DefaultClient)
+	_, err := getAuthorizationServers(
+		context.Background(),
+		srv.URL,
+		"http://example.com/resource",
+		http.DefaultClient,
+	)
 	require.NoError(t, err)
 
 	spans := exporter.GetSpans()

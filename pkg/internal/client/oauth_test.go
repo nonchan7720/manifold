@@ -13,7 +13,12 @@ import (
 func TestOAuth2RoundTripper_NoToken(t *testing.T) {
 	rt := NewOAuth2RoundTripper(http.DefaultTransport)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodGet,
+		"http://example.com",
+		nil,
+	)
 	require.NoError(t, err)
 
 	resp, err := rt.RoundTrip(req)
