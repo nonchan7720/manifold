@@ -181,7 +181,10 @@ func (h *AuthHandler) RegisterRoutes(
 	mux.HandleFunc("POST /register", h.RegisterClientEndpointByClaudeCode)
 	// Client ID Metadata Document (CIMD, SEP-991): manifold 自身が MCP クライアントとして
 	// 上流認可サーバーに提示するメタデータドキュメント
-	mux.HandleFunc(fmt.Sprintf("GET /{%s}/auth/client-metadata.json", pathServerName), middleware(wrapMCPServer(h.ClientMetadataDocument)))
+	mux.HandleFunc(
+		fmt.Sprintf("GET /{%s}/auth/client-metadata.json", pathServerName),
+		middleware(wrapMCPServer(h.ClientMetadataDocument)),
+	)
 }
 
 func wrapMCPServer(
@@ -567,7 +570,11 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 //   - DCR (RFC 7591): それ以外は store に保存された登録情報を参照する
 //
 // エラー時はレスポンスを書き込み nil を返す。
-func (h *AuthHandler) resolveLoginClient(ctx context.Context, w http.ResponseWriter, clientID, redirectURI string) *StoreClientRegistration {
+func (h *AuthHandler) resolveLoginClient(
+	ctx context.Context,
+	w http.ResponseWriter,
+	clientID, redirectURI string,
+) *StoreClientRegistration {
 	var clientReg StoreClientRegistration
 	if isCIMDClientID(clientID) {
 		doc, err := h.fetchClientIDMetadata(ctx, clientID)
@@ -592,12 +599,20 @@ func (h *AuthHandler) resolveLoginClient(ctx context.Context, w http.ResponseWri
 	} else {
 		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
 		if err != nil {
-			slog.WarnContext(ctx, "unknown client_id in login request", slog.String("client_id", util.SanitizeLog(clientID)))
+			slog.WarnContext(
+				ctx,
+				"unknown client_id in login request",
+				slog.String("client_id", util.SanitizeLog(clientID)),
+			)
 			http.Error(w, "invalid_client", http.StatusUnauthorized)
 			return nil
 		}
 		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
-			slog.ErrorContext(ctx, "failed to unmarshal client registration", slog.Any("error", err))
+			slog.ErrorContext(
+				ctx,
+				"failed to unmarshal client registration",
+				slog.Any("error", err),
+			)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return nil
 		}
@@ -616,7 +631,11 @@ func (h *AuthHandler) resolveLoginClient(ctx context.Context, w http.ResponseWri
 // パスから解決済みの srv があればそれを優先し、なければ登録情報の
 // MCPServerName、最後に resource パラメータ（RFC 8707）から導出する。
 // CIMD クライアントは事前登録を持たないため resource による解決が必須となる。
-func (h *AuthHandler) resolveLoginServer(srv *config.Server, clientReg *StoreClientRegistration, resource, gatewayBaseURL string) *config.Server {
+func (h *AuthHandler) resolveLoginServer(
+	srv *config.Server,
+	clientReg *StoreClientRegistration,
+	resource, gatewayBaseURL string,
+) *config.Server {
 	if srv != nil {
 		return srv
 	}
@@ -635,7 +654,6 @@ func (h *AuthHandler) resolveLoginServer(srv *config.Server, clientReg *StoreCli
 	return nil
 }
 
-// nolint: gocyclo
 func (h *AuthHandler) CallbackEndpoint(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -1004,7 +1022,11 @@ func (h *AuthHandler) discoverOAuth2(
 	// 未対応の場合は従来どおり Dynamic Client Registration にフォールバックする。
 	clientID := ""
 	clientSecret := ""
-	if cimdURL := clientMetadataDocumentURL(gatewayBaseURL, srv.Name); authMeta.ClientIDMetadataDocumentSupported && cimdURL != "" {
+	if cimdURL := clientMetadataDocumentURL(
+		gatewayBaseURL,
+		srv.Name,
+	); authMeta.ClientIDMetadataDocumentSupported &&
+		cimdURL != "" {
 		clientID = cimdURL
 		slog.InfoContext(ctx, "using client ID metadata document for upstream registration",
 			slog.String("server", srv.Name),

@@ -20,7 +20,11 @@ func TestIsCIMDClientID(t *testing.T) {
 		clientID string
 		want     bool
 	}{
-		{"valid https URL with path", "https://client.example.com/oauth/client-metadata.json", true},
+		{
+			"valid https URL with path",
+			"https://client.example.com/oauth/client-metadata.json",
+			true,
+		},
 		{"http scheme", "http://client.example.com/metadata.json", false},
 		{"https root path", "https://client.example.com/", false},
 		{"https no path", "https://client.example.com", false},
@@ -129,7 +133,10 @@ func TestValidateCIMDDocument(t *testing.T) {
 
 // newCIMDTestServer は指定ハンドラで TLS サーバーを起動し、
 // そのサーバーを信頼する httpClient を持つ AuthHandler を返す。
-func newCIMDTestServer(t *testing.T, handler func(clientID string) http.HandlerFunc) (*AuthHandler, string, *mockStore) {
+func newCIMDTestServer(
+	t *testing.T,
+	handler func(clientID string) http.HandlerFunc,
+) (*AuthHandler, string, *mockStore) {
 	t.Helper()
 	var clientID string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -332,7 +339,11 @@ func TestClientMetadataDocument_ConfiguredBaseURL(t *testing.T) {
 	var doc ClientIDMetadataDocument
 	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &doc))
 	require.Equal(t, "https://canonical.example.com/mysrv/auth/client-metadata.json", doc.ClientID)
-	require.Equal(t, []string{"https://canonical.example.com/mysrv/auth/callback"}, doc.RedirectURIs)
+	require.Equal(
+		t,
+		[]string{"https://canonical.example.com/mysrv/auth/callback"},
+		doc.RedirectURIs,
+	)
 }
 
 func TestClientMetadataDocument_InvalidBaseURL(t *testing.T) {
@@ -378,13 +389,18 @@ func TestLoginEndpoint_CIMDClient(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 
 	target := fmt.Sprintf(
 		"/testserver/auth/login?client_id=%s&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st",
-		clientID)
+		clientID,
+	)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	req.Host = "gateway.example.com"
 	rw := httptest.NewRecorder()
@@ -420,14 +436,19 @@ func TestLoginEndpoint_CIMDClient_MismatchedRedirectURI(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 
 	// ドキュメントに登録されていない redirect_uri を指定
 	target := fmt.Sprintf(
 		"/testserver/auth/login?client_id=%s&redirect_uri=https://evil.example.com/cb&code_challenge=abc&code_challenge_method=S256",
-		clientID)
+		clientID,
+	)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	rw := httptest.NewRecorder()
 
@@ -446,13 +467,18 @@ func TestLoginEndpoint_CIMDClient_FetchFails(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := &AuthHandler{store: st, servers: config.Servers{}, httpClient: docSrv.Client()}
 	srv := &config.Server{
-		Name:   "testserver",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "testserver",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 
 	target := fmt.Sprintf(
 		"/testserver/auth/login?client_id=%s&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256",
-		clientID)
+		clientID,
+	)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	rw := httptest.NewRecorder()
 
@@ -475,8 +501,12 @@ func TestLoginEndpoint_CIMDClient_ResolvesServerFromResource(t *testing.T) {
 
 	st := newMockStore(map[string]string{})
 	target := &config.Server{
-		Name:   "resolved",
-		OAuth2: &config.OAuth2{ClientID: "upstream", AuthURL: "https://auth.example.com/auth", TokenURL: "https://auth.example.com/token"},
+		Name: "resolved",
+		OAuth2: &config.OAuth2{
+			ClientID: "upstream",
+			AuthURL:  "https://auth.example.com/auth",
+			TokenURL: "https://auth.example.com/token",
+		},
 	}
 	h := &AuthHandler{
 		store:      st,
@@ -487,7 +517,9 @@ func TestLoginEndpoint_CIMDClient_ResolvesServerFromResource(t *testing.T) {
 	// グローバル /authorize 相当: srv=nil, resource パラメータでサーバーを指定
 	uri := fmt.Sprintf(
 		"/authorize?client_id=%s&redirect_uri=https://app.example.com/callback&code_challenge=abc&code_challenge_method=S256&state=st&resource=%s",
-		clientID, "https://gateway.example.com/mcp/resolved")
+		clientID,
+		"https://gateway.example.com/mcp/resolved",
+	)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, uri, nil)
 	req.Host = "gateway.example.com"
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -584,7 +616,11 @@ func TestDiscoverOAuth2_CIMD_PreferredOverDCR(t *testing.T) {
 	// https ゲートウェイ → CIMD が使われる
 	result, err := h.discoverOAuth2(t.Context(), srv, "https://gateway.example.com")
 	require.NoError(t, err)
-	require.Equal(t, "https://gateway.example.com/testsrv/auth/client-metadata.json", result.ClientID)
+	require.Equal(
+		t,
+		"https://gateway.example.com/testsrv/auth/client-metadata.json",
+		result.ClientID,
+	)
 	require.Empty(t, result.ClientSecret)
 	require.False(t, dcrCalled, "DCR should not be called when CIMD is supported")
 }

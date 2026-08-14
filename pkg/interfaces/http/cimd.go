@@ -67,7 +67,10 @@ func isCIMDClientID(clientID string) bool {
 
 // fetchClientIDMetadata は client_id URL から CIMD ドキュメントを取得・検証して返す。
 // 検証済みドキュメントは store にキャッシュされる。
-func (h *AuthHandler) fetchClientIDMetadata(ctx context.Context, clientID string) (_ *ClientIDMetadataDocument, rErr error) {
+func (h *AuthHandler) fetchClientIDMetadata(
+	ctx context.Context,
+	clientID string,
+) (_ *ClientIDMetadataDocument, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/fetchClientIDMetadata")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -114,8 +117,17 @@ func (h *AuthHandler) fetchClientIDMetadata(ctx context.Context, clientID string
 // CIMD は仕様上クライアントが提示した URL の取得が必須となる。SSRF 対策として
 // isCIMDClientID で https スキームを強制し、本番では SafeHTTPClient
 // （プライベート IP への接続拒否）を使用、さらにサイズ上限と Content-Type 検証を課す。
-func fetchCIMDDocument(ctx context.Context, httpClient *http.Client, clientID string) (*ClientIDMetadataDocument, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientID, nil) //nolint: gosec // G704: CIMD requires fetching the client-supplied URL; mitigated above
+func fetchCIMDDocument(
+	ctx context.Context,
+	httpClient *http.Client,
+	clientID string,
+) (*ClientIDMetadataDocument, error) {
+	req, err := http.NewRequestWithContext( //nolint:gosec // G704: CIMD requires fetching the client-supplied URL; mitigated above
+		ctx,
+		http.MethodGet,
+		clientID,
+		nil,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("build CIMD request: %w", err)
 	}
@@ -137,7 +149,10 @@ func fetchCIMDDocument(ctx context.Context, httpClient *http.Client, clientID st
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch CIMD document: unexpected status %d", resp.StatusCode)
 	}
-	if mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+	if mediaType, _, err := mime.ParseMediaType(
+		resp.Header.Get("Content-Type"),
+	); err != nil ||
+		mediaType != "application/json" {
 		return nil, fmt.Errorf("fetch CIMD document: content-type must be application/json")
 	}
 
@@ -208,7 +223,10 @@ func serverNameFromResource(resource, gatewayBaseURL string) string {
 	if scheme != strings.ToLower(base.Scheme) {
 		return ""
 	}
-	if !strings.EqualFold(hostWithoutDefaultPort(scheme, u.Host), hostWithoutDefaultPort(scheme, base.Host)) {
+	if !strings.EqualFold(
+		hostWithoutDefaultPort(scheme, u.Host),
+		hostWithoutDefaultPort(scheme, base.Host),
+	) {
 		return ""
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
@@ -237,7 +255,11 @@ func clientMetadataDocumentURL(gatewayBaseURL, serverName string) string {
 // ClientMetadataDocument は GET /{server}/auth/client-metadata.json を処理し、
 // manifold 自身の CIMD ドキュメントを配信する。上流認可サーバーが CIMD に
 // 対応している場合、manifold はこの URL を client_id として使用する。
-func (h *AuthHandler) ClientMetadataDocument(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+func (h *AuthHandler) ClientMetadataDocument(
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/ClientMetadataDocument")
 	defer func() { trace.EndSpan(ctx, nil) }()
