@@ -633,10 +633,13 @@ func newDiscoveryTestEnv(t *testing.T, cimdSupported bool, dcrCalled *bool) (mcp
 				"issuer":                           issuer,
 				"authorization_endpoint":           issuer + "/auth",
 				"token_endpoint":                   issuer + "/token",
-				"registration_endpoint":            issuer + "/register",
 				"response_types_supported":         []string{"code"},
 				"grant_types_supported":            []string{"authorization_code"},
 				"code_challenge_methods_supported": []string{"S256"},
+			}
+			// dcrCalled が nil の場合は DCR 非対応の認可サーバーを模す
+			if dcrCalled != nil {
+				meta["registration_endpoint"] = issuer + "/register"
 			}
 			if cimdSupported {
 				meta["client_id_metadata_document_supported"] = true
@@ -743,6 +746,24 @@ func TestDiscoverOAuth2_CIMD_HTTPGatewayFallsBackToDCR(t *testing.T) {
 	require.Equal(t, "dcr-client-id", result.ClientID)
 	require.Equal(t, "dcr-client-secret", result.ClientSecret)
 	require.True(t, dcrCalled)
+}
+
+func TestDiscoverOAuth2_NoRegistrationMethodFails(t *testing.T) {
+	// CIMD も DCR も使えない場合は空の client_id をキャッシュせずエラーになる
+	mcpURL := newDiscoveryTestEnv(t, false, nil)
+
+	h := &AuthHandler{
+		servers: config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+	}
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       mcpURL,
+	}
+
+	_, err := h.discoverOAuth2(t.Context(), srv, "https://gateway.example.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "neither usable CIMD nor dynamic client registration")
 }
 
 func TestDiscoverOAuth2_CIMD_NotSupportedUsesDCR(t *testing.T) {

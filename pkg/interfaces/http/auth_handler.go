@@ -1027,8 +1027,11 @@ func (h *AuthHandler) discoverOAuth2(
 		}
 	}
 
-	if lastErr != nil {
-		return nil, err
+	// 途中の認可サーバーで失敗しても後続で成功していれば続行する。
+	// すべて失敗した場合のみ最後のエラーを返す（外側の err は成功済みの
+	// getAuthorizationServers のものなので返してはならない）。
+	if authMeta == nil {
+		return nil, fmt.Errorf("fetch authorization server metadata: %w", lastErr)
 	}
 
 	// Step 5: クライアント登録。
@@ -1063,6 +1066,13 @@ func (h *AuthHandler) discoverOAuth2(
 		}
 		clientID = regResp.ClientID
 		clientSecret = regResp.ClientSecret
+	}
+	// CIMD も DCR も使えない場合、空の client_id をキャッシュすると
+	// 後続のログインが不正な認可リクエストを生成するためエラーにする
+	if clientID == "" {
+		return nil, fmt.Errorf(
+			"authorization server supports neither usable CIMD nor dynamic client registration",
+		)
 	}
 
 	oauth2cfg := &config.OAuth2{

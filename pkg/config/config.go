@@ -91,7 +91,8 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 					}
 					// resource の audience 検証は /mcp/{name} のパス構造を前提と
 					// するため、パスプレフィックス付きの公開はサポートしない
-					if strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
+					if strings.Trim(u.Path, "/") != "" || u.ForceQuery || u.RawQuery != "" ||
+						u.Fragment != "" {
 						return fmt.Errorf("must not contain a path, query, or fragment")
 					}
 					return nil

@@ -105,3 +105,35 @@ func TestConfig_ValidateWithContext_SQLiteOnly_StillValid(t *testing.T) {
 	err := cfg.ValidateWithContext(t.Context())
 	require.NoError(t, err, "既存のSQLiteのみの構成は引き続き有効であるべき")
 }
+
+// --- gateway.baseURL のバリデーション ---
+
+func TestGateway_ValidateWithContext_BaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		wantErr bool
+	}{
+		{"empty (optional)", "", false},
+		{"valid https", "https://gateway.example.com", false},
+		{"valid http", "http://gateway.example.com", false},
+		{"trailing slash", "https://gateway.example.com/", false},
+		{"with path", "https://gateway.example.com/prefix", true},
+		{"with query", "https://gateway.example.com?x=1", true},
+		{"bare query delimiter", "https://gateway.example.com?", true},
+		{"with fragment", "https://gateway.example.com#frag", true},
+		{"no scheme", "gateway.example.com", true},
+		{"non-http scheme", "ftp://gateway.example.com", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := Gateway{EncryptKey: validEncryptKey, BaseURL: tt.baseURL}
+			err := g.ValidateWithContext(t.Context())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
