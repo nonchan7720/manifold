@@ -123,7 +123,6 @@ func runGatewayServer(ctx context.Context) error {
 		storeClient,
 		globalConfig.MCPServer,
 		httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey),
-		httphandler.WithGatewayBaseURL(globalConfig.Gateway.BaseURL),
 	)
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
