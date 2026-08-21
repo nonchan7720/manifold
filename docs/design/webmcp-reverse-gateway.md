@@ -158,6 +158,7 @@ For local setups where CLI agents such as Claude Code / Codex use Manifold. Thei
 - The `identity` reference on reverse servers is not required (and is ignored if present)
 - The JWT middleware is not applied to `/mcp/{name}` requests for reverse servers (there is no pass-through target; CLI agents can connect without an auth header)
 - Being single-user, multiple paired extensions are last-wins. Documentation must state this mode must not be used in multi-user environments
+- static is local-only: never expose the edge endpoints to a public network. Manifold adds no bind-address warning or validation (listening on 0.0.0.0 is normal inside containers / k8s, so a blanket warning would be a false positive; restricting reachability is the deployment's responsibility)
 
 ### forwardAuth mode
 
