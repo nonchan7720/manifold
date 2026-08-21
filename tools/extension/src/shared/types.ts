@@ -74,3 +74,11 @@ export interface TransportLike {
   onclose: (() => void) | null;
   onerror: ((error: unknown) => void) | null;
 }
+
+/**
+ * A TransportLike whose handshake readiness can be observed. TabClientTransport
+ * exposes this so callers can detect a page's WebMCP server starting up.
+ */
+export interface ReadyAwareTransport extends TransportLike {
+  readonly serverReadyPromise: Promise<void>;
+}

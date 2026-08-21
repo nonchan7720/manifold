@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { CONTENT_SCRIPT_ID, CONTENT_SCRIPT_PATH, syncBridgeContentScript } from "./contentScriptSync";
+import {
+  CONTENT_SCRIPT_ID,
+  CONTENT_SCRIPT_PATH,
+  NATIVE_ADAPTER_SCRIPT_ID,
+  NATIVE_ADAPTER_SCRIPT_PATH,
+  syncBridgeContentScript,
+  syncNativeAdapterContentScript,
+} from "./contentScriptSync";
 import type { ScriptingApi } from "./contentScriptSync";
 
 function createScriptingMock(registeredIds: string[] = []): ScriptingApi {
@@ -60,5 +67,48 @@ describe("syncBridgeContentScript", () => {
     await syncBridgeContentScript([], scripting);
 
     expect(scripting.unregisterContentScripts).not.toHaveBeenCalled();
+  });
+});
+
+describe("syncNativeAdapterContentScript", () => {
+  it("registers the native adapter script in the MAIN world for the given origins", async () => {
+    const scripting = createScriptingMock([]);
+
+    await syncNativeAdapterContentScript(["https://app1.example.com"], scripting);
+
+    expect(scripting.registerContentScripts).toHaveBeenCalledWith([
+      {
+        id: NATIVE_ADAPTER_SCRIPT_ID,
+        matches: ["https://app1.example.com/*"],
+        js: [NATIVE_ADAPTER_SCRIPT_PATH],
+        runAt: "document_idle",
+        world: "MAIN",
+      },
+    ]);
+  });
+
+  it("updates the existing registration when already registered", async () => {
+    const scripting = createScriptingMock([NATIVE_ADAPTER_SCRIPT_ID]);
+
+    await syncNativeAdapterContentScript(["https://app1.example.com"], scripting);
+
+    expect(scripting.updateContentScripts).toHaveBeenCalledWith([
+      {
+        id: NATIVE_ADAPTER_SCRIPT_ID,
+        matches: ["https://app1.example.com/*"],
+        js: [NATIVE_ADAPTER_SCRIPT_PATH],
+        runAt: "document_idle",
+        world: "MAIN",
+      },
+    ]);
+    expect(scripting.registerContentScripts).not.toHaveBeenCalled();
+  });
+
+  it("unregisters the native adapter script when there are no allowed origins", async () => {
+    const scripting = createScriptingMock([NATIVE_ADAPTER_SCRIPT_ID]);
+
+    await syncNativeAdapterContentScript([], scripting);
+
+    expect(scripting.unregisterContentScripts).toHaveBeenCalledWith({ ids: [NATIVE_ADAPTER_SCRIPT_ID] });
   });
 });

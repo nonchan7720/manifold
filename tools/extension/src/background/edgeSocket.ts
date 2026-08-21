@@ -7,7 +7,7 @@ import {
   parseIncomingFrame,
 } from "../shared/envelope";
 import type { AppSessionRegistry } from "./appSessionRegistry";
-import { computeReconnectDelayMs } from "./backoff";
+import { computeReconnectDelayMs } from "../shared/backoff";
 
 const WS_OPEN = 1;
 /** close(4401): edge token rejected or missing — retrying with the same token cannot help. */

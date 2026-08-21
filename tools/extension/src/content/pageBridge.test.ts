@@ -14,14 +14,14 @@ function createFakeTransport(): TransportLike {
 }
 
 describe("createPageBridge", () => {
-  it("starts both the page and extension transports", async () => {
+  it("starts the extension transport, but not the page transport (already started by the caller's handshake retry)", async () => {
     const pageTransport = createFakeTransport();
     const extensionTransport = createFakeTransport();
     const bridge = createPageBridge({ pageTransport, extensionTransport });
 
     await bridge.start();
 
-    expect(pageTransport.start).toHaveBeenCalled();
+    expect(pageTransport.start).not.toHaveBeenCalled();
     expect(extensionTransport.start).toHaveBeenCalled();
   });
 

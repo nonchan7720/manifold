@@ -1,7 +1,11 @@
 import type { TransportLike } from "../shared/types";
 
 export interface PageBridgeDeps {
-  /** Client side of a TabClientTransport connected to the page's WebMCP bridge. */
+  /**
+   * Client side of a TabClientTransport connected to the page's WebMCP bridge.
+   * Must already be started (see connectWithRetry.ts) — the bridge only wires
+   * message relaying and close propagation for it.
+   */
   pageTransport: TransportLike;
   /** Client side of an ExtensionClientTransport connected to the background service worker. */
   extensionTransport: TransportLike;
@@ -35,7 +39,7 @@ export function createPageBridge(deps: PageBridgeDeps): PageBridge {
 
   return {
     async start() {
-      await Promise.all([pageTransport.start(), extensionTransport.start()]);
+      await extensionTransport.start();
     },
     async close() {
       await Promise.all([pageTransport.close(), extensionTransport.close()]);
