@@ -92,6 +92,34 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
 	require.Equal(t, []string{"files.example.com", "cdn.example.com"}, cfg.FileFetch.AllowedHosts)
 }
 
+// --- reverse origin 正規化 ---
+
+func TestNormalizeReverseOrigins_LowercasesAndTrimsSlash(t *testing.T) {
+	servers := Servers{
+		"app1": {Transport: MCPTransportReverse, Origin: "HTTPS://App1.Example.COM/"},
+	}
+	normalizeReverseOrigins(servers)
+	require.Equal(t, "https://app1.example.com", servers["app1"].Origin)
+}
+
+func TestNormalizeReverseOrigins_LeavesInvalidOriginUntouched(t *testing.T) {
+	// 不正な値の報告は Server.ValidateWithContext の責務なので、正規化に失敗しても
+	// 元の値をそのまま残す。
+	servers := Servers{
+		"app1": {Transport: MCPTransportReverse, Origin: "not a url"},
+	}
+	normalizeReverseOrigins(servers)
+	require.Equal(t, "not a url", servers["app1"].Origin)
+}
+
+func TestNormalizeReverseOrigins_IgnoresNonReverseServers(t *testing.T) {
+	servers := Servers{
+		"http-backend": {Transport: MCPTransportHTTP, URL: "http://example.com"},
+	}
+	normalizeReverseOrigins(servers)
+	require.Equal(t, "http://example.com", servers["http-backend"].URL)
+}
+
 func TestFileFetchConfig_WithDefaults(t *testing.T) {
 	tests := []struct {
 		name string

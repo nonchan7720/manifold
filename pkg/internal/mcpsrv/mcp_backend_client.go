@@ -111,6 +111,12 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 		}
 		return &mcp.CommandTransport{Command: cmd}, nil
 
+	case config.MCPTransportReverse:
+		return nil, fmt.Errorf(
+			"backend %s: reverse transport is not connected via MCPBackendClient",
+			c.name,
+		)
+
 	default:
 		return nil, fmt.Errorf("backend %s: unknown transport %q", c.name, c.cfg.Transport)
 	}
@@ -127,17 +133,8 @@ func (c *MCPBackendClient) registerTools(
 	if err != nil {
 		return err
 	}
-	for _, tool := range result.Tools {
-		t := tool
-		c.srv.AddTool(
-			t,
-			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return session.CallTool(ctx, &mcp.CallToolParams{
-					Name:      req.Params.Name,
-					Arguments: req.Params.Arguments,
-				})
-			},
-		)
-	}
+	RegisterSessionTools(c.srv, result.Tools, func(context.Context) (*mcp.ClientSession, error) {
+		return session, nil
+	})
 	return nil
 }

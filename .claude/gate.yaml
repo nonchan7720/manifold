@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=/Users/nishinohara.nozomi/.claude/hooks/gate.schema.json
+rules:
+  - match: "pkg/**/*.go"
+    per_file_dir: true
+    run:
+      - parallel:
+          - cmd: go test ./...
+            timeout: 240
+          - cmd: golangci-lint run ./...
+            timeout: 240
+    run_checks:
+      - all
+  - match: "tools/extension/src/**/*.ts"
+    dir: tools/extension
+    run:
+      - parallel:
+          - cmd: pnpm test
+            timeout: 180
+          - cmd: pnpm typecheck
+            timeout: 180
+  - match: "examples/webmcp-demo/src/**/*.ts"
+    dir: examples/webmcp-demo
+    run:
+      - cmd: pnpm typecheck
+        timeout: 180
+consistency_checks:
+  - name: all
+    run:
+      - parallel:
+          - cmd: TEST=true make test
+            timeout: 600
+          - cmd: golangci-lint run ./...
+            timeout: 600

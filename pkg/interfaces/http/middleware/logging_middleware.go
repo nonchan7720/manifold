@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"bufio"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -10,7 +12,13 @@ import (
 	"github.com/nonchan7720/manifold/pkg/util"
 )
 
-// responseWriter is a wrapper to capture status code
+// responseWriter is a wrapper to capture status code.
+//
+// Interface embedding only promotes http.ResponseWriter's own methods, not
+// http.Flusher or http.Hijacker, even when the wrapped writer implements
+// them. Flush, Hijack and Unwrap are implemented explicitly below so that
+// long-lived streaming responses (SSE) and protocol upgrades (WebSocket)
+// keep working when routed through this middleware.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -19,6 +27,24 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 // clientIP is the shared remoteaddr parser for extracting real client IPs

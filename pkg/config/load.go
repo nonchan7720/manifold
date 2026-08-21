@@ -99,9 +99,26 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	for name, srv := range conf.MCPServer {
 		srv.Name = name
 	}
+	normalizeReverseOrigins(conf.MCPServer)
 
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
 	}
 	return &conf, nil
+}
+
+// normalizeReverseOrigins rewrites each reverse Server's Origin to its
+// normalized form (see NormalizeOrigin) so downstream origin comparisons
+// (config uniqueness, app.up matching) don't need to re-normalize. Servers
+// with an origin that fails to normalize are left untouched; validation
+// reports the bad value.
+func normalizeReverseOrigins(servers Servers) {
+	for _, srv := range servers {
+		if srv.Transport != MCPTransportReverse {
+			continue
+		}
+		if normalized, err := NormalizeOrigin(srv.Origin); err == nil {
+			srv.Origin = normalized
+		}
+	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/aws"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
@@ -25,6 +26,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
+	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -54,6 +56,84 @@ func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
 		return nil
 	}
 	return parsedURL.JoinPath(path)
+}
+
+// newHTTPHandler composes the shared middleware chain around mux.
+func newHTTPHandler(mux http.Handler) http.Handler {
+	return middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux)))
+}
+
+// resolveMCPServer resolves the *mcp.Server to serve pathValue: a reverse
+// server (per-identityKey server from the edge registry), an MCP backend
+// (lazy-connect), or an OpenAPI-backed server. Returns nil (causing the
+// caller to answer as "not found") when pathValue is empty, unknown, or its
+// backend/reverse connection cannot be established.
+func resolveMCPServer(
+	ctx context.Context,
+	mcpSrv *mcpsrv.MCPServer,
+	reverseGateway *mcpsrv.ReverseGateway,
+	pathValue string,
+) *mcp.Server {
+	if pathValue == "" {
+		return nil
+	}
+
+	if reverseGateway != nil && reverseGateway.HasServer(pathValue) {
+		srv, err := reverseGateway.ResolveServer(ctx, pathValue)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to resolve reverse mcp server",
+				slog.String("server", pathValue), slog.String("error", err.Error()))
+			return nil
+		}
+		return srv
+	}
+
+	// MCP バックエンドの場合は遅延接続を行う
+	if bc, ok := mcpSrv.BackendClient(pathValue); ok {
+		if err := bc.EnsureConnected(ctx); err != nil {
+			slog.ErrorContext(ctx, "failed to connect mcp backend",
+				slog.String("backend", pathValue),
+				slog.String("error", err.Error()))
+			return nil
+		}
+	}
+
+	srv, err := mcpSrv.Server(pathValue)
+	if err != nil {
+		slog.ErrorContext(
+			ctx,
+			fmt.Sprintf("failed to not found mcp server: %s", pathValue),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	return srv
+}
+
+// mcpAuthMiddleware wraps middleware.JWT for the /mcp/{server_name} route,
+// skipping it entirely when pathValue names a reverse-transport server and
+// edgeCfg uses static pairing: reverse transport has no backend to forward
+// the Bearer token to, and static pairing already binds to a fixed
+// identityKey, so the pass-through Bearer check has nothing left to gate
+// (docs/design/webmcp-reverse-gateway.ja.md「type: static」).
+func mcpAuthMiddleware(
+	servers config.Servers,
+	reverseGateway *mcpsrv.ReverseGateway,
+	edgeCfg config.EdgeConfig,
+	pathValueName string,
+) func(http.Handler) http.Handler {
+	jwt := middleware.JWT(servers, pathValueName)
+	skipForReverseStatic := reverseGateway != nil && edgeCfg.IsStaticPairing()
+	return func(next http.Handler) http.Handler {
+		withJWT := jwt(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if skipForReverseStatic && reverseGateway.HasServer(r.PathValue(pathValueName)) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			withJWT.ServeHTTP(w, r)
+		})
+	}
 }
 
 func runGatewayServer(ctx context.Context) error {
@@ -133,32 +213,21 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer mcpSrv.Close()
 
+	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()
+	pairingService := edgeservices.NewPairingService(storeClient)
+	edgeRegistry := edgeservices.NewInMemoryRegistry()
+	reverseGateway := mcpsrv.NewReverseGateway(
+		edgeRegistry,
+		pairingService,
+		edgeCfg,
+		globalConfig.MCPServer,
+	)
+	reverseGateway.Init(ctx)
+	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
+	edgePairHandler := httphandler.NewEdgePairHandler(pairingService)
+
 	mcpHTTPSrv := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		pathValue := r.PathValue(pathServerName)
-		if pathValue == "" {
-			return nil
-		}
-
-		// MCP バックエンドの場合は遅延接続を行う
-		if bc, ok := mcpSrv.BackendClient(pathValue); ok {
-			if err := bc.EnsureConnected(r.Context()); err != nil {
-				slog.ErrorContext(r.Context(), "failed to connect mcp backend",
-					slog.String("backend", pathValue),
-					slog.String("error", err.Error()))
-				return nil
-			}
-		}
-
-		if srv, err := mcpSrv.Server(pathValue); err != nil {
-			slog.ErrorContext(
-				r.Context(),
-				fmt.Sprintf("failed to not found mcp server: %s", pathValue),
-				slog.String("error", err.Error()),
-			)
-			return nil
-		} else {
-			return srv
-		}
+		return resolveMCPServer(r.Context(), mcpSrv, reverseGateway, r.PathValue(pathServerName))
 	}, &mcp.StreamableHTTPOptions{
 		Stateless: true,
 	})
@@ -170,10 +239,14 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	mux.Handle(
 		fmt.Sprintf("/mcp/{%s}", pathServerName),
-		middleware.JWT(globalConfig.MCPServer, pathServerName)(mcpHTTPSrv),
+		mcpAuthMiddleware(
+			globalConfig.MCPServer, reverseGateway, edgeCfg, pathServerName,
+		)(mcpHTTPSrv),
 	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
+	mux.Handle("GET /edge/ws", edgeWSHandler)
+	mux.HandleFunc("POST /edge/pair", edgePairHandler.Pair)
 	if metricsHandler != nil {
 		mux.Handle("/metrics", metricsHandler)
 	}
@@ -203,7 +276,7 @@ func runGatewayServer(ctx context.Context) error {
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", servePort),
 		Handler: otelhttp.NewHandler(
-			middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux))),
+			newHTTPHandler(mux),
 			fmt.Sprintf("%s/%s", trace.OpenTelemetryTracerName, "gateway"),
 		),
 	}
