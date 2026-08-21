@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.7.0](https://github.com/nonchan7720/manifold/compare/v1.6.3...v1.7.0) (2026-08-21)
+
+
+### Features
+
+* WebMCP reverse connection gateway (pairing + static mode) ([#100](https://github.com/nonchan7720/manifold/issues/100)) ([807bc5b](https://github.com/nonchan7720/manifold/commit/807bc5b9785e061096534a6db9139373f1d65666))
+
+
+### Bug Fixes
+
+* address code review findings in CIMD resource validation ([#91](https://github.com/nonchan7720/manifold/issues/91)) ([ddd0afc](https://github.com/nonchan7720/manifold/commit/ddd0afc412f6b90793b361db8aec02edbcdf9507))
+* **deps:** update go patch dependencies ([#98](https://github.com/nonchan7720/manifold/issues/98)) ([f553073](https://github.com/nonchan7720/manifold/commit/f5530737a83bcf9ab9fc495af94c906eb1ca1552))
+
+
+### Miscellaneous
+
+* **deps:** pin dependencies ([#96](https://github.com/nonchan7720/manifold/issues/96)) ([d2e4092](https://github.com/nonchan7720/manifold/commit/d2e4092dca1dffaf2422102fdead8258fef88b80))
+* **deps:** pin golang docker tag to 116d58c ([#97](https://github.com/nonchan7720/manifold/issues/97)) ([3de9b98](https://github.com/nonchan7720/manifold/commit/3de9b983e503e43b11832598c180258f69a18619))
+* **deps:** update grafana/otel-lgtm docker tag to v0.30.1 ([#94](https://github.com/nonchan7720/manifold/issues/94)) ([b3d6113](https://github.com/nonchan7720/manifold/commit/b3d6113204efaaeb622afe6ec6331b5966f5dbe8))
+
 ## [1.6.3](https://github.com/nonchan7720/manifold/compare/v1.6.2...v1.6.3) (2026-08-13)
 
 
