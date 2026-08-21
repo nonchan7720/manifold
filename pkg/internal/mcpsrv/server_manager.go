@@ -48,6 +48,13 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	for name, server := range s.servers {
+		if server.IsReverseBackend() {
+			// reverse サーバーは mcpsrv.ReverseGateway が別途、identityKey ごとの
+			// per-user mcp.Server を解決する。MCPServer 自身は appSrv/backendClients
+			// のどちらにも登録しない。
+			continue
+		}
+
 		srv := mcp.NewServer(
 			&mcp.Implementation{Name: name, Version: version.MarkVersion},
 			&mcp.ServerOptions{},

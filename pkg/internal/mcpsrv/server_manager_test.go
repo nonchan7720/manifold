@@ -292,6 +292,27 @@ func TestMCPServer_Close_WithBackend(t *testing.T) {
 	})
 }
 
+func TestMCPServer_Init_ReverseServer_NotManagedByMCPServer(t *testing.T) {
+	// reverse サーバーは ReverseGateway が別途処理するため、MCPServer 自身は
+	// appSrv/backendClients のどちらにも登録しない。
+	servers := config.Servers{
+		"app1": &config.Server{
+			Transport: config.MCPTransportReverse,
+			Origin:    "https://app1.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	err := s.Init(context.Background())
+	require.NoError(t, err)
+
+	_, err = s.Server("app1")
+	require.Error(t, err)
+
+	_, ok := s.BackendClient("app1")
+	require.False(t, ok)
+}
+
 func TestMCPServer_Init_MultipleServers(t *testing.T) {
 	servers := config.Servers{
 		"oas": &config.Server{
