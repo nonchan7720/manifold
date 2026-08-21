@@ -23,6 +23,8 @@ type Config struct {
 	FileFetch FileFetchConfig `mapstructure:"fileFetch"`
 
 	Storage Storage `mapstructure:"storage"`
+
+	Identities map[string]*IdentityProfile `mapstructure:"identities"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -36,10 +38,12 @@ type edgeContextKey struct{}
 
 func (c *Config) ValidateWithContext(ctx context.Context) error {
 	ctx = context.WithValue(ctx, edgeContextKey{}, c.Gateway.Edge.WithDefaults())
+	ctx = context.WithValue(ctx, identitiesContextKey{}, c.Identities)
 	return validation.ValidateStructWithContext(
 		ctx,
 		c,
 		validation.Field(&c.Gateway),
+		validation.Field(&c.Identities),
 		validation.Field(&c.MCPServer, validation.By(func(value any) error {
 			mp, ok := value.(Servers)
 			if !ok {

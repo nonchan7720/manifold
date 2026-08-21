@@ -172,6 +172,37 @@ func TestServer_ValidateWithContext_Reverse_RemotePairing_RequiresIdentity(t *te
 	require.Error(t, err)
 }
 
+func TestServer_ValidateWithContext_Reverse_RemotePairing_UnknownIdentity_Invalid(t *testing.T) {
+	s := baseValidReverseServer()
+	ctx := context.WithValue(
+		t.Context(),
+		edgeContextKey{},
+		EdgeConfig{Pairing: PairingConfig{Type: PairingTypeRemote}},
+	)
+	// identitiesContextKey が未設定（identities なし）の場合も、"oauth" は存在しない
+	// プロファイルとして扱われエラーになる。
+	err := s.ValidateWithContext(ctx)
+	require.Error(t, err)
+}
+
+func TestServer_ValidateWithContext_Reverse_RemotePairing_KnownIdentity_Valid(t *testing.T) {
+	s := baseValidReverseServer()
+	ctx := context.WithValue(
+		t.Context(),
+		edgeContextKey{},
+		EdgeConfig{Pairing: PairingConfig{Type: PairingTypeRemote}},
+	)
+	ctx = context.WithValue(ctx, identitiesContextKey{}, map[string]*IdentityProfile{
+		"oauth": {
+			Source:  IdentitySourceJWT,
+			Issuer:  "https://idp.example.com",
+			JWKSURL: "https://idp.example.com/.well-known/jwks.json",
+		},
+	})
+	err := s.ValidateWithContext(ctx)
+	require.NoError(t, err)
+}
+
 func TestServer_ValidateWithContext_Reverse_RejectsAuthValue(t *testing.T) {
 	s := baseValidReverseServer()
 	s.AuthValue = &AuthValue{Header: "X-Api-Key", Value: "secret"}
