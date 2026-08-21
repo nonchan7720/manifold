@@ -11,7 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mcp-b/transports": "4.0.0"
+    "@mcp-b/transports": "4.0.0",
+    "@mcp-b/webmcp-ts-sdk": "4.0.0",
+    "uuid": "11.1.1"
   },
   "devDependencies": {
     "@types/chrome": "0.2.6",
