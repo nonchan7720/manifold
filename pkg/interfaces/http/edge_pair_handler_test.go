@@ -46,6 +46,49 @@ func TestEdgePairHandler_Pair_ValidCode_ReturnsToken(t *testing.T) {
 	require.NotEmpty(t, resp.Token)
 }
 
+func TestEdgePairHandler_Pair_WithExistingToken_AppendsBinding(t *testing.T) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	firstCode, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("oauth:user-a"))
+	require.NoError(t, err)
+	firstBody, _ := json.Marshal(map[string]string{"code": firstCode})
+	firstReq := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/edge/pair",
+		bytes.NewReader(firstBody),
+	)
+	firstRec := httptest.NewRecorder()
+	handler.Pair(firstRec, firstReq)
+	require.Equal(t, http.StatusOK, firstRec.Code)
+	var firstResp struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.NewDecoder(firstRec.Body).Decode(&firstResp))
+
+	secondCode, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("saml:user-a"))
+	require.NoError(t, err)
+	secondBody, _ := json.Marshal(map[string]string{"code": secondCode, "token": firstResp.Token})
+	secondReq := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/edge/pair",
+		bytes.NewReader(secondBody),
+	)
+	secondRec := httptest.NewRecorder()
+	handler.Pair(secondRec, secondReq)
+	require.Equal(t, http.StatusOK, secondRec.Code)
+	var secondResp struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.NewDecoder(secondRec.Body).Decode(&secondResp))
+	require.Equal(t, firstResp.Token, secondResp.Token, "appending must return the same edge token")
+
+	keys, err := pairing.Authenticate(t.Context(), firstResp.Token)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}, keys)
+}
+
 func TestEdgePairHandler_Pair_InvalidCode_BadRequest(t *testing.T) {
 	handler, _ := newTestEdgePairHandler(t)
 

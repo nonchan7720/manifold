@@ -68,7 +68,7 @@ func (h *EdgeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow() //nolint: errcheck
 
-	identityKey, ok := h.authenticate(ctx, conn)
+	identityKeys, ok := h.authenticate(ctx, conn)
 	if !ok {
 		return
 	}
@@ -82,41 +82,46 @@ func (h *EdgeWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := newEdgeConnSession(uuid.NewString(), conn, identityKey, h.gateway)
+	session := newEdgeConnSession(uuid.NewString(), conn, identityKeys, h.gateway)
 	session.run(ctx)
 }
 
 // authenticate reads the first frame (must arrive within edgeAuthTimeout) and
-// validates it as an auth frame carrying a valid edge token.
+// validates it as an auth frame carrying a valid edge token. A token with no
+// identityKey binding (edgeservices.ErrNotPaired) is rejected the same way
+// as an unknown/expired one.
 func (h *EdgeWSHandler) authenticate(
 	ctx context.Context,
 	conn *websocket.Conn,
-) (domainedge.IdentityKey, bool) {
+) ([]domainedge.IdentityKey, bool) {
 	authCtx, cancel := context.WithTimeout(ctx, edgeAuthTimeout)
 	defer cancel()
 
 	var frame mcpsrv.EdgeEnvelope
 	if err := wsjson.Read(authCtx, conn, &frame); err != nil || frame.Type != mcpsrv.EdgeFrameAuth {
 		_ = conn.Close(closeStatusUnauthorized, "auth required")
-		return "", false
+		return nil, false
 	}
 
 	identityKeys, err := h.pairing.Authenticate(ctx, frame.Token)
-	if err != nil || len(identityKeys) == 0 {
+	if err != nil {
 		_ = conn.Close(closeStatusUnauthorized, "invalid edge token")
-		return "", false
+		return nil, false
 	}
-	return identityKeys[0], true
+	return identityKeys, true
 }
 
 // edgeConnSession demultiplexes one physical edge WebSocket connection's
-// envelope frames across its live (origin, appSession) bindings.
+// envelope frames across its live (origin, appSession) bindings. A connection
+// authenticated with a multi-profile edge token carries every bound
+// identityKey, so the same tab becomes reachable from each of them (see
+// "ペアリングのプロファイル対応" in docs/design/webmcp-reverse-gateway-phase2.ja.md).
 type edgeConnSession struct {
-	connID      string
-	conn        *websocket.Conn
-	identityKey domainedge.IdentityKey
-	gateway     *mcpsrv.ReverseGateway
-	sender      mcpsrv.EdgeFrameSender
+	connID       string
+	conn         *websocket.Conn
+	identityKeys []domainedge.IdentityKey
+	gateway      *mcpsrv.ReverseGateway
+	sender       mcpsrv.EdgeFrameSender
 
 	mu       sync.Mutex
 	channels map[string]chan json.RawMessage
@@ -125,16 +130,16 @@ type edgeConnSession struct {
 func newEdgeConnSession(
 	connID string,
 	conn *websocket.Conn,
-	identityKey domainedge.IdentityKey,
+	identityKeys []domainedge.IdentityKey,
 	gateway *mcpsrv.ReverseGateway,
 ) *edgeConnSession {
 	return &edgeConnSession{
-		connID:      connID,
-		conn:        conn,
-		identityKey: identityKey,
-		gateway:     gateway,
-		sender:      &wsFrameSender{conn: conn},
-		channels:    map[string]chan json.RawMessage{},
+		connID:       connID,
+		conn:         conn,
+		identityKeys: identityKeys,
+		gateway:      gateway,
+		sender:       &wsFrameSender{conn: conn},
+		channels:     map[string]chan json.RawMessage{},
 	}
 }
 
@@ -217,16 +222,19 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 	s.channels[key] = incoming
 	s.mu.Unlock()
 
-	binding := domainedge.Binding{
-		IdentityKey: s.identityKey,
-		Origin:      frame.Origin,
-		AppSession:  frame.AppSession,
-		ConnID:      s.connID,
-	}
 	// HandleAppUp が initialize/tools-list のために往復通信を行うため、読み取りループを
 	// 塞がないよう非同期に実行する。
 	go func() {
-		if err := s.gateway.HandleAppUp(ctx, binding, s.sender, incoming); err != nil {
+		err := s.gateway.HandleAppUp(
+			ctx,
+			s.identityKeys,
+			frame.Origin,
+			frame.AppSession,
+			s.connID,
+			s.sender,
+			incoming,
+		)
+		if err != nil {
 			slog.ErrorContext(ctx, "edge app.up failed",
 				slog.String("origin", frame.Origin), slog.Any("error", err))
 			_ = wsjson.Write(ctx, s.conn, mcpsrv.EdgeEnvelope{
@@ -253,7 +261,7 @@ func (s *edgeConnSession) handleAppDown(ctx context.Context, frame mcpsrv.EdgeEn
 	}
 	s.mu.Unlock()
 
-	s.gateway.HandleAppDown(ctx, s.identityKey, frame.Origin, frame.AppSession)
+	s.gateway.HandleAppDown(ctx, s.identityKeys, frame.Origin, frame.AppSession)
 }
 
 // routeMCPFrame sends under s.mu so it can never race with the close calls in
