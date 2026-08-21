@@ -75,6 +75,30 @@ func TestNormalizeOrigin_KeepsNonDefaultPortForScheme(t *testing.T) {
 	require.Equal(t, "https://app1.example.com:8443", got)
 }
 
+func TestNormalizeOrigin_StripsZeroPaddedDefaultHTTPSPort(t *testing.T) {
+	got, err := NormalizeOrigin("https://app1.example.com:0443")
+	require.NoError(t, err)
+	require.Equal(t, "https://app1.example.com", got)
+}
+
+func TestNormalizeOrigin_StripsZeroPaddedDefaultHTTPPort(t *testing.T) {
+	got, err := NormalizeOrigin("http://app1.example.com:00080")
+	require.NoError(t, err)
+	require.Equal(t, "http://app1.example.com", got)
+}
+
+func TestNormalizeOrigin_KeepsIPv6HostBrackets(t *testing.T) {
+	got, err := NormalizeOrigin("https://[2001:db8::1]:443")
+	require.NoError(t, err)
+	require.Equal(t, "https://[2001:db8::1]", got)
+}
+
+func TestNormalizeOrigin_KeepsIPv6HostWithNonDefaultPort(t *testing.T) {
+	got, err := NormalizeOrigin("https://[2001:db8::1]:8443")
+	require.NoError(t, err)
+	require.Equal(t, "https://[2001:db8::1]:8443", got)
+}
+
 // --- EdgeConfig.WithDefaults ---
 
 func TestEdgeConfig_WithDefaults_FillsPairingStatic(t *testing.T) {

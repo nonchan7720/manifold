@@ -3,7 +3,9 @@ package config
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
@@ -104,13 +106,25 @@ func NormalizeOrigin(raw string) (string, error) {
 	return scheme + "://" + strings.ToLower(stripDefaultPort(scheme, u.Host)), nil
 }
 
-// stripDefaultPort removes ":80" from an http host and ":443" from an https
-// host, matching how browsers serialize location.origin (the extension's
-// app.up/ready origin comparisons rely on this to line up).
+// stripDefaultPort removes the port from host when it numerically equals the
+// scheme's default (80 for http, 443 for https), matching how browsers
+// serialize location.origin — including zero-padded forms such as ":0443"
+// (the extension's app.up/ready origin comparisons rely on this to line up).
 func stripDefaultPort(scheme, host string) string {
-	defaultPort := map[string]string{"http": ":80", "https": ":443"}[scheme]
-	if defaultPort != "" && strings.HasSuffix(host, defaultPort) {
-		return strings.TrimSuffix(host, defaultPort)
+	defaultPort, ok := map[string]int{"http": 80, "https": 443}[scheme]
+	if !ok {
+		return host
 	}
-	return host
+	h, portStr, err := net.SplitHostPort(host)
+	if err != nil {
+		return host
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port != defaultPort {
+		return host
+	}
+	if strings.Contains(h, ":") {
+		return "[" + h + "]"
+	}
+	return h
 }
