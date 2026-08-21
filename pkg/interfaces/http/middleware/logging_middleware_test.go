@@ -130,7 +130,6 @@ func TestResponseWriter_Unwrap_ReturnsUnderlying(t *testing.T) {
 func TestLogging_SSEStreaming_FlushesBeforeHandlerReturns(t *testing.T) {
 	const chunk = "data: hello\n\n"
 	release := make(chan struct{})
-	defer close(release)
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -139,11 +138,17 @@ func TestLogging_SSEStreaming_FlushesBeforeHandlerReturns(t *testing.T) {
 		f, ok := w.(http.Flusher)
 		require.True(t, ok, "responseWriter must forward http.Flusher")
 		f.Flush()
-		<-release
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
 	})
 
 	srv := httptest.NewServer(Logging(next))
-	defer srv.Close()
+	// t.Cleanup runs last-added-first, so release is closed before srv.Close
+	// waits for the handler goroutine to return.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
 
 	// bodyclose linter false positive: the goroutine below reading resp.Body
 	// defeats its escape analysis, but the defer on the next line does close
