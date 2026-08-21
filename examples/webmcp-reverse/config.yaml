@@ -1,0 +1,28 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+  # Local, single-user setup (e.g. a CLI agent running alongside your
+  # browser): the browser extension pairs once via create_pairing_code /
+  # POST /edge/pair, and every reverse mcpServers entry shares the same
+  # fixed identityKey. Do not use edge.pairing.type: static in a
+  # multi-user deployment.
+  edge:
+    auth: pairing
+    pairing:
+      type: static
+
+mcpServers:
+  # reverse transport: tools live in the browser tab itself (WebMCP /
+  # document.modelContext), reached through the Manifold browser extension's
+  # outbound WebSocket connection to /edge/ws. Keep https://localhost:5173
+  # open in a tab for this server's tools to be callable.
+  app1:
+    description: WebMCP tools exposed by the local dev app at localhost:5173
+    transport: reverse
+    origin: http://localhost:5173
+    # callTimeout: 60s  # optional, defaults to 60s
+
+sqlite:
+  path: ./tmp/manifold.db

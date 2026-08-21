@@ -1,0 +1,21 @@
+{
+  "name": "webmcp-demo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Minimal page registering WebMCP tools (document.modelContext) for exercising the Manifold reverse connection gateway extension end-to-end",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcp-b/global": "4.0.0"
+  },
+  "devDependencies": {
+    "@mcp-b/webmcp-types": "4.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
+  }
+}

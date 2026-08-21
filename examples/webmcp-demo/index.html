@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WebMCP demo — Manifold reverse gateway</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 32rem;
+        margin: 3rem auto;
+        line-height: 1.5;
+      }
+      code {
+        background: #f0f0f0;
+        padding: 0.1rem 0.3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>WebMCP demo page</h1>
+    <p>
+      This page registers three tools on <code>document.modelContext</code>: <code>echo</code>,
+      <code>get_current_time</code>, and a page counter (<code>increment_counter</code> /
+      <code>decrement_counter</code>). Keep this tab open and paired with the Manifold browser
+      extension to call these tools from an agent through the reverse connection gateway.
+    </p>
+    <p>Counter: <strong id="counter-value">0</strong></p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
