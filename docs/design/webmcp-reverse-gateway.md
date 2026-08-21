@@ -54,7 +54,7 @@ The direction in which the connection is established (browser → Manifold) is i
 
 ## User identification (identity profiles)
 
-Because agent → Manifold auth differs per deployment and per server, "how to derive who this request belongs to" is defined as named profiles, referenced by each reverse server.
+Because agent → Manifold auth differs per deployment and per server, "how to derive who this request belongs to" is defined as named profiles, referenced by each reverse server. Implementing identities profiles is Phase 2a scope (see the [next-phase plan](webmcp-reverse-gateway-phase2.ja.md), Japanese only); Phase 1 (static) does not use them.
 
 The identityKey is the tuple **(profile name, derived value)**. It must satisfy two properties:
 

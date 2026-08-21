@@ -54,7 +54,7 @@ flowchart TB
 
 ## ユーザー識別（identity プロファイル）
 
-エージェント → Manifold の認証はデプロイやサーバーごとに異なるため、「リクエストから誰かを割り出す方法」を名前付きプロファイルとして定義し、reverse サーバーごとに参照する。
+エージェント → Manifold の認証はデプロイやサーバーごとに異なるため、「リクエストから誰かを割り出す方法」を名前付きプロファイルとして定義し、reverse サーバーごとに参照する。identities プロファイルの実装は Phase 2a（[次フェーズ計画](webmcp-reverse-gateway-phase2.ja.md)）のスコープであり、Phase 1（static）では使用しない。
 
 identityKey は **(プロファイル名, 導出値)** のタプル。identityKey に要求される性質は次の 2 つ:
 
