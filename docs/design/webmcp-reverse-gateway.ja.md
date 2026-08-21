@@ -108,6 +108,8 @@ flowchart LR
 
 `source: header`（`X-User-Id` 型）は「共有 API Key を持つ者は任意のユーザー ID を名乗れる」ところで信頼が止まる。Manifold 側では検証できず、エージェント基盤がヘッダーを正しく付与することを信頼する。この制約は利用者向けドキュメントに明記する。
 
+- `jwksURL`（`source: jwt`）と introspection の `url`（`source: introspection`）は `http` も許容する。Manifold はスキームのバリデーションを行わない（コンテナ間の内部通信で `http://service:port` を指すのは正当な構成のため）。信頼できないネットワークを跨ぐ場合に `https` を使うことは利用者の責務とする。
+
 ## 拡張と identity の紐づけ（edge 認証モード）
 
 拡張の接続を identityKey に紐づける方法は 2 モードあり、デプロイごとに config で選択する。

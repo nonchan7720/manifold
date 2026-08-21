@@ -29,9 +29,9 @@ flowchart LR
 | --- | --- | --- |
 | `jwt` | Bearer JWT の署名検証（issuer / JWKS / audience）→ claim 抽出 | reverse ではトークンを転送するバックエンドが無く **Manifold が検証の終端**。既存 `/mcp` JWT ミドルウェア（パススルー）とは役割が別物であることをコードでも分離して表現する |
 | `header` | ヘッダー値の抽出（`hash: true` で HMAC） | HMAC 鍵は `gateway.encryptKey` から導出。ローテーションするキーへの `hash: true` はドキュメントで禁止 |
-| `introspection` | 外部 endpoint への問い合わせ + TTL キャッシュ | singleflight で同一クレデンシャルの問い合わせを併合。endpoint 障害時は「キャッシュがあれば継続、無ければ 503」 |
+| `introspection` | 外部 endpoint への問い合わせ + TTL キャッシュ | singleflight で同一クレデンシャルの問い合わせを併合。endpoint 障害時は「キャッシュがあれば継続、無ければ 503」。**見送り**: introspection endpoint 自体へのクライアント認証（RFC 7662 の Basic / Bearer）は未対応 |
 
-ライブラリ: JWT 検証は `github.com/golang-jwt/jwt/v5`（既に依存グラフに間接依存として存在）を第一候補、JWKS 取得・キャッシュは `github.com/MicahParks/keyfunc` を候補とする。`lestrrat-go/jwx` に一本化する案もあり、実装着手時にどちらかへ確定する（自作はしない）。
+ライブラリ: JWT 検証に `github.com/golang-jwt/jwt/v5 v5.3.1`、JWKS 取得・キャッシュに `github.com/MicahParks/keyfunc/v3 v3.8.1` を直接依存として採用済み（自作はしない）。採用理由: `golang-jwt/jwt/v5` は本 PR 以前から依存グラフ（go.sum）に存在済みで新規の信頼追加が小さく、`keyfunc` は JWKS 取得・自動更新・キャッシュに機能を絞った小さい追加依存で必要十分。`lestrrat-go/jwx` への一本化案は不採用。
 
 ### ペアリングのプロファイル対応
 
@@ -66,7 +66,7 @@ sequenceDiagram
 
 ### テスト戦略
 
-- 単体: 各 source の導出（正常 / 検証失敗 / ローテーション跨ぎの安定性）、バインディング追記、プロファイル間の分離（他人の identityKey に到達できないこと）
+- 単体: 各 source の導出（正常 / 検証失敗）。ローテーション跨ぎの安定性は `jwt`（トークン再発行）と `introspection`（クレデンシャル入れ替え）に適用する。`header` はローテーションしない固定値専用（`hash: true` はローテーションしないキーにのみ使う設計のため）で、安定した値からの導出を確認する。加えてバインディング追記、プロファイル間の分離（他人の identityKey に到達できないこと）
 - 結合: httptest + 自前 JWKS サーバーで「2 ユーザー × 2 プロファイル」のルーティング分離を検証
 - E2E: webmcp-e2e スキルに remote モードのシナリオを追加（Manifold の内蔵 OAuth をトークン発行元に使う）
 
