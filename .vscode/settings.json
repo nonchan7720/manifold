@@ -1,4 +1,12 @@
 {
+  "cSpell.words": [
+    "autonumber",
+    "HMAC",
+    "keepalive",
+    "mcpsrv",
+    "Streamable",
+    "webmcp"
+  ],
   "go.diagnostic.vulncheck": "Imports",
   "go.lintTool": "golangci-lint-v2",
   "go.lintFlags": [

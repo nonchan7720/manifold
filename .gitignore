@@ -36,3 +36,6 @@ go.work.sum
 swagger*.json
 config-test.yaml
 /tmp/manifold.db
+/tools/ngrok/
+.claude/hooks
+examples/webmcp-reverse/tmp/
