@@ -69,3 +69,9 @@ pnpm dev         # vite の watch ビルド（自動リロードはしないの�
 - [`vite-plugin-web-extension`](https://www.npmjs.com/package/vite-plugin-web-extension) — MV3
   ビルド（manifest 起点のマルチエントリバンドル）。
 - [`vitest`](https://vitest.dev/) + `jsdom` — ユニットテスト。
+
+## 参考リンク
+
+- [WebMCP 仕様](https://webmachinelearning.github.io/webmcp/) — W3C Web Machine Learning Community Group（Draft Community Group Report）
+- [WebMCP | AI on Chrome](https://developer.chrome.com/docs/ai/webmcp) — Chrome の実装ドキュメント（フラグ・オリジントライアル・実装例）
+- [Join the WebMCP origin trial](https://developer.chrome.com/blog/ai-webmcp-origin-trial) — Chrome オリジントライアルの案内

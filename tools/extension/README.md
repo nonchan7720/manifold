@@ -69,3 +69,9 @@ pnpm dev         # vite watch build (no auto-reload; reload the unpacked extensi
 - [`vite-plugin-web-extension`](https://www.npmjs.com/package/vite-plugin-web-extension) — MV3
   build (manifest-driven multi-entry bundling).
 - [`vitest`](https://vitest.dev/) + `jsdom` — unit tests.
+
+## References
+
+- [WebMCP specification](https://webmachinelearning.github.io/webmcp/) — W3C Web Machine Learning Community Group (Draft Community Group Report)
+- [WebMCP | AI on Chrome](https://developer.chrome.com/docs/ai/webmcp) — Chrome's implementation docs (flags, origin trial, examples)
+- [Join the WebMCP origin trial](https://developer.chrome.com/blog/ai-webmcp-origin-trial) — Chrome origin trial announcement
