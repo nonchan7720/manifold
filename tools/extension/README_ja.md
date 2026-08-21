@@ -18,7 +18,14 @@ Web ページが登録する [WebMCP](https://webmachinelearning.github.io/webmc
 - **content/**（`manifest.json` には静的宣言せず動的登録）は、ページ内の WebMCP サーバーへ
   [`@mcp-b/transports`](https://github.com/WebMCP-org/npm-packages) の `TabClientTransport` で、
   background service worker へは `ExtensionClientTransport` で接続します。両者の間で素の MCP
-  JSON-RPC メッセージを中継するだけで、内容を解釈・加工しません。
+  JSON-RPC メッセージを中継するだけで、内容を解釈・加工しません。ページ側の WebMCP サーバーは
+  content script より後（遅延読み込みされたチャンクの中など）に起動することがあるため、
+  `TabClientTransport` のハンドシェイクはトランスポート自身の一回限りの check-ready に頼らず、
+  バックオフ付きでリトライします（`connectWithRetry.ts`）。
+- **content/nativeAdapter.ts**（ページの MAIN world に動的登録）は、`@mcp-b/global` のような
+  postMessage サーバーを伴わない、ネイティブの `document.modelContext` だけを持つページに対応
+  します。詳細は下記の [ネイティブ WebMCP ページ対応](#ネイティブ-webmcp-ページ対応) を参照して
+  ください。
 - **popup/** では edge URL の設定、ペアリングコード→edge token の交換
   （`POST {edge origin}/edge/pair`）、接続状態と接続中タブの origin 一覧の表示、ログアウト
   （保存済み edge token の破棄）ができます。
@@ -51,21 +58,54 @@ pnpm dev         # vite の watch ビルド（自動リロードはしないの�
 4. ペアリング後、サーバーが許可した origin のタブを開いたままにしておけば、拡張が自動的に
    ブリッジします。ポップアップの「Log out」で保存済みトークンを破棄できます。
 
+## ネイティブ WebMCP ページ対応
+
+一部のページは、`@mcp-b/global` のような `postMessage` サーバーを介さず、Chromium のネイティブ
+producer API（`document.modelContext.getTools()` / `executeTool()`、
+[WebMCP 仕様](https://webmachinelearning.github.io/webmcp/) 準拠）をそのまま公開しています。
+`content/nativeAdapter.ts` はこのケースに対応するため、isolated world のブリッジスクリプトと
+同じ許可 origin に対して、ページの **MAIN world**（`chrome.scripting` の `world: "MAIN"`）へ
+動的登録されます。
+
+- `document.modelContext` を [`@mcp-b/webmcp-ts-sdk`](https://www.npmjs.com/package/@mcp-b/webmcp-ts-sdk)
+  の `BrowserMcpServer`（`{ native: document.modelContext }`）でラップします。既存の
+  native/polyfill な `modelContext` を MCP サーバーとしてミラーする、SDK 自身がサポートする方法
+  であり、`getTools`/`executeTool` の橋渡しを自前で書く必要はありませんでした。
+- ラップしたサーバーは、`@mcp-b/global` 自身が使うのと同じ `mcp-default` チャンネルの
+  `TabServerTransport` で公開するため、`content/index.ts` 側の `TabClientTransport` は
+  isolated world のプロトコルを変更せずに到達できます。
+- `document.modelContext` が既に `BrowserMcpServer` インスタンスである場合（SDK の
+  `SERVER_MARKER_PROPERTY` マーカーで検知）は何もしません。これは `@mcp-b/global` が存在する
+  ケースに該当し、同じチャンネルに競合する2つ目の `TabServerTransport` が立つのを防ぎます。
+- **制約**: 初回の一覧と、その後 *追加* されたツールのみ反映されます（ネイティブの
+  `toolchange` イベントで `syncNativeTools()` を再実行）。アダプタの初回同期後に
+  `document.modelContext` から *削除* されたツールは、ブリッジ先のサーバーからは削除されません
+  ——これはこの拡張が上乗せした制約ではなく、`BrowserMcpServer.syncNativeTools()` 自体の制約です
+  （不足分の backfill のみを行うため）。
+
 ## 既知の制約（MVP スコープ）
 
 - `host_permissions` は `<all_urls>` です。許可 origin の集合はサーバーの `ready` フレームでしか
   分からず実行時に決まるため、事前に狭い静的パーミッションを宣言できません。origin が判明した
   時点で `chrome.permissions.request` 等を使って絞り込むのは今後の課題とします。
-- ペアリング前から開いていたタブは、動的登録されたコンテンツスクリプトを反映するためにリロード
-  が必要です。`ready` 受信後に開かれた／遷移したタブのみ自動的にブリッジされます。
+- ペアリング前から開いていたタブも、次の遷移（フルナビゲーションまたは SPA のルート変更）か
+  popup の Reconnect ボタンで自動的に再ブリッジされます。手動でのリロードは不要です。
 - `forwardAuth` の edge モードはこの拡張では未実装です（pairing モードのみ）。
+- ページの WebMCP サーバー（polyfill・ネイティブいずれも）が 30 秒経っても準備できない場合、
+  `connectWithRetry` は諦めます。そのタブは単純にブリッジされません。
+- ネイティブアダプタ固有の制約（初回同期後のツール削除が反映されない件）は上記
+  [ネイティブ WebMCP ページ対応](#ネイティブ-webmcp-ページ対応) を参照してください。
 
 ## 使用パッケージ
 
 - [`@mcp-b/transports`](https://www.npmjs.com/package/@mcp-b/transports) — `TabClientTransport`
-  （content script ↔ ページ）と `ExtensionClientTransport`/`ExtensionServerTransport`
-  （content script ↔ background）。どちらの境界も自前の `postMessage` / `chrome.runtime.Port`
-  プロトコルを書く必要がありませんでした。
+  （content script ↔ ページ）、`TabServerTransport`（ネイティブアダプタ ↔ ページ）、
+  `ExtensionClientTransport`/`ExtensionServerTransport`（content script ↔ background）。
+  いずれの境界も自前の `postMessage` / `chrome.runtime.Port` プロトコルを書く必要が
+  ありませんでした。
+- [`@mcp-b/webmcp-ts-sdk`](https://www.npmjs.com/package/@mcp-b/webmcp-ts-sdk) — `BrowserMcpServer`。
+  ネイティブアダプタが、ツール一覧・実行の橋渡しを自前で書かずにネイティブの
+  `document.modelContext` を MCP サーバーへミラーするために使用しています。
 - [`vite-plugin-web-extension`](https://www.npmjs.com/package/vite-plugin-web-extension) — MV3
   ビルド（manifest 起点のマルチエントリバンドル）。
 - [`vitest`](https://vitest.dev/) + `jsdom` — ユニットテスト。
