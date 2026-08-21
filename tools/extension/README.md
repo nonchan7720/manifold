@@ -47,7 +47,8 @@ pnpm dev         # vite watch build (no auto-reload; reload the unpacked extensi
 
 1. Start Manifold with a `gateway.edge` config (see
    [docs/design/webmcp-reverse-gateway.md](../../docs/design/webmcp-reverse-gateway.md#configuration) —
-   for local/single-user use, set `gateway.edge.pairing.type: static`).
+   for local/single-user use, set `gateway.edge.pairing.type: static`; static is local-only —
+   never expose the edge endpoints to a public network).
 2. Call the reverse server's `create_pairing_code` tool (e.g. from an MCP client connected through
    Manifold) to get a short-lived code.
 3. Open the extension popup, enter the edge WebSocket URL (e.g. `ws://localhost:8081/edge/ws`) and

@@ -54,7 +54,7 @@ The direction in which the connection is established (browser → Manifold) is i
 
 ## User identification (identity profiles)
 
-Because agent → Manifold auth differs per deployment and per server, "how to derive who this request belongs to" is defined as named profiles, referenced by each reverse server.
+Because agent → Manifold auth differs per deployment and per server, "how to derive who this request belongs to" is defined as named profiles, referenced by each reverse server. Implementing identities profiles is Phase 2a scope (see the [next-phase plan](webmcp-reverse-gateway-phase2.ja.md), Japanese only); Phase 1 (static) does not use them.
 
 The identityKey is the tuple **(profile name, derived value)**. It must satisfy two properties:
 
@@ -108,6 +108,8 @@ If the only credential is a rotating opaque key, no stable identifier exists any
 
 With `source: header` (the `X-User-Id` pattern), trust stops at "anyone holding the shared API key can claim any user ID." Manifold cannot verify this; it trusts the agent platform to set the header correctly. This constraint is documented for operators.
 
+- `jwksURL` (`source: jwt`) and the introspection `url` (`source: introspection`) also accept `http`. Manifold does not validate the scheme, since `http://service:port` pointing at an internal container-to-container hop is a legitimate configuration. Using `https` when the request crosses an untrusted network is the operator's responsibility.
+
 ## Binding the extension to an identity (edge auth modes)
 
 There are two modes for binding an extension connection to an identityKey, selected per deployment in config.
@@ -158,6 +160,7 @@ For local setups where CLI agents such as Claude Code / Codex use Manifold. Thei
 - The `identity` reference on reverse servers is not required (and is ignored if present)
 - The JWT middleware is not applied to `/mcp/{name}` requests for reverse servers (there is no pass-through target; CLI agents can connect without an auth header)
 - Being single-user, multiple paired extensions are last-wins. Documentation must state this mode must not be used in multi-user environments
+- static is local-only: never expose the edge endpoints to a public network. Manifold adds no bind-address warning or validation (listening on 0.0.0.0 is normal inside containers / k8s, so a blanket warning would be a false positive; restricting reachability is the deployment's responsibility)
 
 ### forwardAuth mode
 

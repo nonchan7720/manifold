@@ -54,7 +54,7 @@ flowchart TB
 
 ## ユーザー識別（identity プロファイル）
 
-エージェント → Manifold の認証はデプロイやサーバーごとに異なるため、「リクエストから誰かを割り出す方法」を名前付きプロファイルとして定義し、reverse サーバーごとに参照する。
+エージェント → Manifold の認証はデプロイやサーバーごとに異なるため、「リクエストから誰かを割り出す方法」を名前付きプロファイルとして定義し、reverse サーバーごとに参照する。identities プロファイルの実装は Phase 2a（[次フェーズ計画](webmcp-reverse-gateway-phase2.ja.md)）のスコープであり、Phase 1（static）では使用しない。
 
 identityKey は **(プロファイル名, 導出値)** のタプル。identityKey に要求される性質は次の 2 つ:
 
@@ -108,6 +108,8 @@ flowchart LR
 
 `source: header`（`X-User-Id` 型）は「共有 API Key を持つ者は任意のユーザー ID を名乗れる」ところで信頼が止まる。Manifold 側では検証できず、エージェント基盤がヘッダーを正しく付与することを信頼する。この制約は利用者向けドキュメントに明記する。
 
+- `jwksURL`（`source: jwt`）と introspection の `url`（`source: introspection`）は `http` も許容する。Manifold はスキームのバリデーションを行わない（コンテナ間の内部通信で `http://service:port` を指すのは正当な構成のため）。信頼できないネットワークを跨ぐ場合に `https` を使うことは利用者の責務とする。
+
 ## 拡張と identity の紐づけ（edge 認証モード）
 
 拡張の接続を identityKey に紐づける方法は 2 モードあり、デプロイごとに config で選択する。
@@ -158,6 +160,7 @@ sequenceDiagram
 - reverse サーバーの `identity` 参照は不要（指定されていても使われない）
 - reverse サーバーへの `/mcp/{name}` リクエストには JWT ミドルウェアを適用しない（パススルー転送先が存在しないため。CLI エージェントは認証ヘッダーなしで接続できる）
 - 単一ユーザー前提のため、複数の拡張がペアリングした場合は後勝ち。マルチユーザー環境で使ってはならない旨をドキュメントに明記する
+- static はローカル専用であり、edge エンドポイントを公開ネットワークに晒さないこと。Manifold は bind アドレスの警告・バリデーションを行わない（コンテナ / k8s では 0.0.0.0 での待ち受けが正常で、画一的な警告は誤検知になるため。到達範囲の制限はデプロイ側の責務）
 
 ### forwardAuth モード
 

@@ -49,7 +49,8 @@ pnpm dev         # vite の watch ビルド（自動リロードはしないの�
 
 1. `gateway.edge` を設定した状態で Manifold を起動します（設定例は
    [docs/design/webmcp-reverse-gateway.ja.md](../../docs/design/webmcp-reverse-gateway.ja.md#設定)
-   を参照。ローカル・単一ユーザー用途では `gateway.edge.pairing.type: static` を指定します）。
+   を参照。ローカル・単一ユーザー用途では `gateway.edge.pairing.type: static` を指定します。
+   static はローカル専用です — edge エンドポイントを公開ネットワークに晒さないでください）。
 2. reverse サーバーの `create_pairing_code` ツールを呼び出し（Manifold 経由で接続した MCP
    クライアントなどから）、短命のコードを取得します。
 3. 拡張のポップアップを開き、edge の WebSocket URL（例: `ws://localhost:8081/edge/ws`）とペア

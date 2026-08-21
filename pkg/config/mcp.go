@@ -122,6 +122,10 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 						"identity is required for reverse transport unless edge.pairing.type is static",
 					)
 				}
+				identities, _ := ctx.Value(identitiesContextKey{}).(map[string]*IdentityProfile)
+				if _, ok := identities[v]; !ok {
+					return fmt.Errorf("identity %q is not defined in identities", v)
+				}
 				return nil
 			}),
 		),
