@@ -71,4 +71,42 @@ describe("createPageBridge", () => {
 
     expect(pageTransport.close).toHaveBeenCalled();
   });
+
+  it("closes the extension transport when the page transport closes", async () => {
+    const pageTransport = createFakeTransport();
+    const extensionTransport = createFakeTransport();
+    const bridge = createPageBridge({ pageTransport, extensionTransport });
+    await bridge.start();
+
+    pageTransport.onclose?.();
+
+    expect(extensionTransport.close).toHaveBeenCalled();
+  });
+
+  it("notifies onClose once when either transport closes", async () => {
+    const pageTransport = createFakeTransport();
+    const extensionTransport = createFakeTransport();
+    const onClose = vi.fn();
+    const bridge = createPageBridge({ pageTransport, extensionTransport, onClose });
+    await bridge.start();
+
+    extensionTransport.onclose?.();
+    // A real transport's close() may itself invoke the other side's onclose;
+    // the bridge must not notify or forward the close a second time.
+    pageTransport.onclose?.();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call onClose for an explicit close()", async () => {
+    const pageTransport = createFakeTransport();
+    const extensionTransport = createFakeTransport();
+    const onClose = vi.fn();
+    const bridge = createPageBridge({ pageTransport, extensionTransport, onClose });
+    await bridge.start();
+
+    await bridge.close();
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

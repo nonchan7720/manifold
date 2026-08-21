@@ -73,4 +73,37 @@ describe("connectWithRetry", () => {
     expect(createTransport).toHaveBeenCalledTimes(1);
     expect(staleTransport.close).toHaveBeenCalledTimes(1);
   });
+
+  it("caps the backoff wait to the remaining time before the deadline", async () => {
+    const staleTransport = createFakeTransport(neverResolves());
+    const createTransport = vi.fn(() => staleTransport);
+    const wait = vi.fn(async () => undefined);
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(0) // deadline = 0 + 1000
+      .mockReturnValueOnce(0) // 1st remaining check: 1000 left
+      .mockReturnValueOnce(500) // 2nd remaining check: 500 left, but attempt 1's backoff is 1000
+      .mockReturnValueOnce(1000); // 3rd remaining check: deadline reached
+
+    await expect(
+      connectWithRetry({ createTransport, wait, maxWaitMs: 1000, now, random: () => 0 }),
+    ).rejects.toThrow(/timed out/i);
+
+    expect(wait).toHaveBeenNthCalledWith(1, 500);
+    expect(wait).toHaveBeenNthCalledWith(2, 500);
+  });
+
+  it("does not hang past maxWaitMs when transport.start() itself never resolves", async () => {
+    const staleTransport = createFakeTransport(neverResolves());
+    staleTransport.start = vi.fn(() => neverResolves<void>());
+    const createTransport = vi.fn(() => staleTransport);
+    const wait = vi.fn(async () => undefined);
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValueOnce(1500);
+
+    await expect(connectWithRetry({ createTransport, wait, maxWaitMs: 1000, now })).rejects.toThrow(
+      /timed out/i,
+    );
+
+    expect(staleTransport.close).toHaveBeenCalledTimes(1);
+  });
 });

@@ -24,6 +24,9 @@ export function createBridgeSession(deps: BridgeSessionDeps): BridgeSession {
       const bridge = createPageBridge({
         pageTransport,
         extensionTransport: deps.createExtensionTransport(),
+        onClose: () => {
+          bridged = false;
+        },
       });
       await bridge.start();
       bridged = true;

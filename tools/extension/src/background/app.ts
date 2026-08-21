@@ -144,8 +144,12 @@ export function createBackgroundApp(deps: BackgroundAppDeps): BackgroundApp {
     }
     if (isReconnectRequestMessage(message)) {
       void (async () => {
-        if (status === "closed") await connection.start();
-        await reconnectUnbridgedTabs();
+        try {
+          if (status === "closed") await connection.start();
+          await reconnectUnbridgedTabs();
+        } catch {
+          // getStatus() below still reports the outcome to the caller.
+        }
         sendResponse(getStatus());
       })();
       return true;

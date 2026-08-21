@@ -351,4 +351,18 @@ describe("createBackgroundApp", () => {
 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(before);
   });
+
+  it("still reports status on a reconnect-request when reconnecting unbridged tabs fails", async () => {
+    const { app, sendMessage, tabs } = setup({
+      tabsById: { 42: { id: 42, url: "https://app1.example.com/reports" } },
+    });
+    await app.start();
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.receive({ type: "ready", heartbeatSec: 20, origins: ["https://app1.example.com"] });
+    vi.mocked(tabs.query).mockRejectedValueOnce(new Error("boom"));
+
+    const response = await sendMessage({ type: "reconnect-request" });
+
+    expect(response).toEqual(app.getStatus());
+  });
 });

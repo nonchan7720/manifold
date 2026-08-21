@@ -9,6 +9,8 @@ export interface PageBridgeDeps {
   pageTransport: TransportLike;
   /** Client side of an ExtensionClientTransport connected to the background service worker. */
   extensionTransport: TransportLike;
+  /** Fires once when either side closes on its own (not via an explicit close()), so the caller can re-bridge. */
+  onClose?: () => void;
 }
 
 export interface PageBridge {
@@ -23,7 +25,8 @@ export interface PageBridge {
  * docs/design/webmcp-reverse-gateway.ja.md ("フレーム定義").
  */
 export function createPageBridge(deps: PageBridgeDeps): PageBridge {
-  const { pageTransport, extensionTransport } = deps;
+  const { pageTransport, extensionTransport, onClose } = deps;
+  let closed = false;
 
   pageTransport.onmessage = (message) => {
     void extensionTransport.send(message);
@@ -31,10 +34,21 @@ export function createPageBridge(deps: PageBridgeDeps): PageBridge {
   extensionTransport.onmessage = (message) => {
     void pageTransport.send(message);
   };
-  // If the background connection is lost, the page-side transport is also
-  // torn down so a fresh content script injection (new appSession) can retry.
+  // If either transport is lost, tear down the other side too and notify the
+  // caller so a fresh content script injection or bridge attempt can retry.
+  // Guarded by `closed` because closing one side may in turn fire the other
+  // side's onclose.
   extensionTransport.onclose = () => {
+    if (closed) return;
+    closed = true;
     void pageTransport.close();
+    onClose?.();
+  };
+  pageTransport.onclose = () => {
+    if (closed) return;
+    closed = true;
+    void extensionTransport.close();
+    onClose?.();
   };
 
   return {
@@ -42,6 +56,7 @@ export function createPageBridge(deps: PageBridgeDeps): PageBridge {
       await extensionTransport.start();
     },
     async close() {
+      closed = true;
       await Promise.all([pageTransport.close(), extensionTransport.close()]);
     },
   };

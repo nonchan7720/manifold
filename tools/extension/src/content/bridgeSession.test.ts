@@ -95,4 +95,28 @@ describe("createBridgeSession", () => {
     expect(session.isBridged()).toBe(true);
     expect(connectPageTransport).toHaveBeenCalledTimes(2);
   });
+
+  it("re-bridges with a fresh transport after the extension connection is lost", async () => {
+    const firstExtensionTransport = createFakeTransport();
+    const secondExtensionTransport = createFakeTransport();
+    const connectPageTransport = vi
+      .fn()
+      .mockResolvedValueOnce(createFakeTransport())
+      .mockResolvedValueOnce(createFakeTransport());
+    const createExtensionTransport = vi
+      .fn()
+      .mockReturnValueOnce(firstExtensionTransport)
+      .mockReturnValueOnce(secondExtensionTransport);
+    const session = createBridgeSession({ connectPageTransport, createExtensionTransport });
+    await session.attempt();
+    expect(session.isBridged()).toBe(true);
+
+    firstExtensionTransport.onclose?.();
+    expect(session.isBridged()).toBe(false);
+
+    await session.attempt();
+
+    expect(session.isBridged()).toBe(true);
+    expect(connectPageTransport).toHaveBeenCalledTimes(2);
+  });
 });

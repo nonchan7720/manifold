@@ -35,16 +35,22 @@ export async function connectWithRetry<T extends ReadyAwareTransport>(
   let attempt = 0;
 
   for (;;) {
-    if (now() >= deadline) {
+    const remaining = deadline - now();
+    if (remaining <= 0) {
       throw new Error("Timed out waiting for the page's WebMCP server to become ready");
     }
 
     const transport = createTransport();
-    await transport.start();
-
+    // serverReadyPromise already exists once the transport is constructed
+    // (it settles once start()'s handshake completes), so it's raced against
+    // the backoff wait directly instead of awaiting start() first — a
+    // transport whose start() never resolves can't block past this attempt's
+    // capped wait.
+    void transport.start().catch(() => undefined);
+    const backoffMs = Math.min(computeReconnectDelayMs(attempt, random), remaining);
     const ready = await Promise.race([
       transport.serverReadyPromise.then(() => true as const),
-      wait(computeReconnectDelayMs(attempt, random)).then(() => false as const),
+      wait(backoffMs).then(() => false as const),
     ]);
     if (ready) return transport;
 
