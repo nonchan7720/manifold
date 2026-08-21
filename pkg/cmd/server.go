@@ -58,33 +58,9 @@ func storageHostURL(ctx context.Context, rawURL, path string) *url.URL {
 	return parsedURL.JoinPath(path)
 }
 
-// edgeWSPath is excluded from middleware.Logging by newHTTPHandler:
-// middleware.Logging's http.ResponseWriter wrapper only embeds
-// http.ResponseWriter, which does not forward http.Hijacker, so any request
-// passed through it can never hijack the connection to upgrade to
-// WebSocket (coder/websocket.Accept requires http.Hijacker).
-const edgeWSPath = "/edge/ws"
-
-// newHTTPHandler composes the shared middleware chain around mux, except
-// that requests whose path is in bypassLoggingPaths skip middleware.Logging
-// (see edgeWSPath's doc comment) while still going through
-// middleware.Recover and middleware.CorsMiddleware.
-func newHTTPHandler(mux http.Handler, bypassLoggingPaths ...string) http.Handler {
-	withLogging := middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux)))
-	withoutLogging := middleware.Recover(middleware.CorsMiddleware(mux))
-
-	bypass := make(map[string]bool, len(bypassLoggingPaths))
-	for _, path := range bypassLoggingPaths {
-		bypass[path] = true
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if bypass[r.URL.Path] {
-			withoutLogging.ServeHTTP(w, r)
-			return
-		}
-		withLogging.ServeHTTP(w, r)
-	})
+// newHTTPHandler composes the shared middleware chain around mux.
+func newHTTPHandler(mux http.Handler) http.Handler {
+	return middleware.Logging(middleware.Recover(middleware.CorsMiddleware(mux)))
 }
 
 // resolveMCPServer resolves the *mcp.Server to serve pathValue: a reverse
@@ -300,7 +276,7 @@ func runGatewayServer(ctx context.Context) error {
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", servePort),
 		Handler: otelhttp.NewHandler(
-			newHTTPHandler(mux, edgeWSPath),
+			newHTTPHandler(mux),
 			fmt.Sprintf("%s/%s", trace.OpenTelemetryTracerName, "gateway"),
 		),
 	}

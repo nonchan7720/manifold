@@ -338,13 +338,13 @@ func TestMCPAuthMiddleware_RemotePairing_ReverseServer_RequiresBearer(t *testing
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
-// TestNewHTTPHandler_BypassPathKeepsHijackerForWebSocketUpgrade documents and
-// guards against a regression found during the WebMCP reverse gateway's
-// manual E2E pass: middleware.Logging wraps http.ResponseWriter in a struct
-// that only embeds the http.ResponseWriter interface, which does not forward
-// http.Hijacker. Any route behind it (e.g. /edge/ws) can never hijack the
-// connection to upgrade to WebSocket, regardless of the edge auth config.
-func TestNewHTTPHandler_BypassPathKeepsHijackerForWebSocketUpgrade(t *testing.T) {
+// TestNewHTTPHandler_WebSocketUpgradeSucceedsThroughLogging guards against a
+// regression found during the WebMCP reverse gateway's manual E2E pass:
+// middleware.Logging's responseWriter used to only embed http.ResponseWriter,
+// which does not forward http.Hijacker, so /edge/ws could never hijack the
+// connection to upgrade to WebSocket. All routes, including /edge/ws, now go
+// through the same middleware chain (Logging included).
+func TestNewHTTPHandler_WebSocketUpgradeSucceedsThroughLogging(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /edge/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -352,7 +352,7 @@ func TestNewHTTPHandler_BypassPathKeepsHijackerForWebSocketUpgrade(t *testing.T)
 		conn.Close(websocket.StatusNormalClosure, "")
 	})
 
-	handler := newHTTPHandler(mux, "/edge/ws")
+	handler := newHTTPHandler(mux)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
@@ -361,13 +361,13 @@ func TestNewHTTPHandler_BypassPathKeepsHijackerForWebSocketUpgrade(t *testing.T)
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close() //nolint: errcheck
 	}
-	require.NoError(t, err, "bypass path should still be able to hijack the connection")
+	require.NoError(t, err, "/edge/ws should be able to hijack the connection through Logging")
 	conn.CloseNow()
 }
 
-// TestNewHTTPHandler_NonBypassPathStillLogs verifies that routes other than
-// the bypass path(s) keep going through middleware.Logging as before.
-func TestNewHTTPHandler_NonBypassPathStillLogs(t *testing.T) {
+// TestNewHTTPHandler_Logs verifies that requests going through the shared
+// middleware chain still produce the request/response log lines.
+func TestNewHTTPHandler_Logs(t *testing.T) {
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -378,7 +378,7 @@ func TestNewHTTPHandler_NonBypassPathStillLogs(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := newHTTPHandler(mux, "/edge/ws")
+	handler := newHTTPHandler(mux)
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
