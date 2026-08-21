@@ -70,7 +70,7 @@ node .claude/skills/webmcp-e2e/scripts/e2e.mjs
 
 ## 既知のハマりどころ
 
-- **`/edge/ws` が 501 になる場合**: `middleware.Logging` の ResponseWriter ラップが `Hijack()` を隠すため WebSocket が確立できない。`pkg/cmd/server.go` の `newHTTPHandler` が `/edge/ws` を Logging バイパスで配線しているのが正。この配線を崩さないこと
+- **`/edge/ws` が 501 になる場合**: `middleware.Logging` の `responseWriter` は `http.Hijacker`（WebSocket のアップグレード）と `http.Flusher`（SSE）を常に下層へ委譲する。`/edge/ws` は他のルートと同じ `newHTTPHandler` チェーンを通るので、Logging をバイパスする配線を追加しないこと
 - **ペアリング後に WS 接続が始まらない場合**: background が `chrome.storage.onChanged` を購読して token 保存を検知する実装（`tools/extension/src/background/app.ts`）に依存。popup での保存後、自動で接続が始まるのが正常
 - **MV3 service worker の suspend**: heartbeat は 20 秒間隔（30 秒未満必須）
 - 拡張のテスト・型チェックは `.claude/gate.yaml` の hook（`pnpm test` / `pnpm typecheck`）が Edit 時に自動実行される

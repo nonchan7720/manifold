@@ -58,9 +58,10 @@ pnpm dev         # vite watch build (no auto-reload; reload the unpacked extensi
 
 ## Native WebMCP pages
 
-Some pages expose Chromium's native producer API (`document.modelContext.getTools()` /
-`executeTool()`, per the [WebMCP spec](https://webmachinelearning.github.io/webmcp/)) directly,
-without a `@mcp-b/global`-style `postMessage` server behind it. `content/nativeAdapter.ts` is
+Some pages expose Chromium's native producer API — `document.modelContext.getTools()` (per the
+[WebMCP spec](https://webmachinelearning.github.io/webmcp/)) plus `executeTool()`, a Chrome-specific
+extension not in the spec draft (feature-detect before calling it) — directly, without a
+`@mcp-b/global`-style `postMessage` server behind it. `content/nativeAdapter.ts` is
 registered in the page's **MAIN world** (`chrome.scripting`'s `world: "MAIN"`, alongside the
 isolated-world bridge script, for the same allowed origins) to cover this case:
 

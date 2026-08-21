@@ -61,8 +61,9 @@ pnpm dev         # vite の watch ビルド（自動リロードはしないの�
 ## ネイティブ WebMCP ページ対応
 
 一部のページは、`@mcp-b/global` のような `postMessage` サーバーを介さず、Chromium のネイティブ
-producer API（`document.modelContext.getTools()` / `executeTool()`、
-[WebMCP 仕様](https://webmachinelearning.github.io/webmcp/) 準拠）をそのまま公開しています。
+producer API ——[WebMCP 仕様](https://webmachinelearning.github.io/webmcp/)準拠の
+`document.modelContext.getTools()` と、仕様外の Chrome 固有拡張である `executeTool()`
+（呼び出し前に feature detection が必要）—— をそのまま公開しています。
 `content/nativeAdapter.ts` はこのケースに対応するため、isolated world のブリッジスクリプトと
 同じ許可 origin に対して、ページの **MAIN world**（`chrome.scripting` の `world: "MAIN"`）へ
 動的登録されます。
