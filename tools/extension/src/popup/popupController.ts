@@ -1,5 +1,6 @@
 import { GET_STATUS_MESSAGE } from "../background/app";
 import type { EdgeStatusSnapshot } from "../background/app";
+import { RECONNECT_REQUEST_MESSAGE } from "../shared/messages";
 import { clearEdgeToken, getEdgeSettings, saveEdgeToken, saveEdgeUrl } from "../shared/storage";
 import { exchangePairingCode } from "./pairing";
 
@@ -21,6 +22,7 @@ export interface PopupController {
   loadState: () => Promise<PopupState>;
   pair: (edgeUrl: string, code: string) => Promise<PopupState>;
   logout: () => Promise<PopupState>;
+  reconnect: () => Promise<PopupState>;
 }
 
 export function createPopupController(deps: PopupControllerDeps): PopupController {
@@ -64,6 +66,14 @@ export function createPopupController(deps: PopupControllerDeps): PopupControlle
     },
     async logout() {
       await clearEdgeToken(deps.storageArea);
+      return loadState();
+    },
+    async reconnect() {
+      try {
+        await deps.sendRuntimeMessage(RECONNECT_REQUEST_MESSAGE);
+      } catch {
+        // Background may be unreachable; loadState() reflects what it can.
+      }
       return loadState();
     },
   };

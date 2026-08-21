@@ -1,24 +1,36 @@
 import { ExtensionClientTransport, TabClientTransport } from "@mcp-b/transports";
-import type { TransportLike } from "../shared/types";
-import { createPageBridge } from "./pageBridge";
+import { generateAppSession } from "../shared/appSession";
+import { isReconnectBridgeMessage } from "../shared/messages";
+import type { ReadyAwareTransport, TransportLike } from "../shared/types";
+import { createBridgeSession } from "./bridgeSession";
+import { connectWithRetry } from "./connectWithRetry";
 
-// One appSession per content script injection: a page reload re-runs this
-// module and gets a new UUID, matching "appSession はタブ接続1世代ごとの UUID"
-// in docs/design/webmcp-reverse-gateway.ja.md.
-const appSession = crypto.randomUUID();
+// One appSession per content script injection (a page reload gets a new one).
+const appSession = generateAppSession();
 
-// @mcp-b/transports types onmessage/send around JSONRPCMessage; this bridge
-// intentionally treats the payload as opaque (see pageBridge.ts), so the
-// wider TransportLike shape is asserted at this boundary.
-const bridge = createPageBridge({
-  pageTransport: new TabClientTransport({
-    targetOrigin: location.origin,
-  }) as unknown as TransportLike,
-  extensionTransport: new ExtensionClientTransport({
-    portName: appSession,
-  }) as unknown as TransportLike,
+// bridgeSession re-arms connectWithRetry on a `reconnect-webmcp-bridge`
+// message (background/navigationReconnect.ts, popup's Reconnect button).
+const session = createBridgeSession({
+  connectPageTransport: async () =>
+    (await connectWithRetry({
+      createTransport: () =>
+        new TabClientTransport({
+          targetOrigin: location.origin,
+        }) as unknown as ReadyAwareTransport,
+    })) as unknown as TransportLike,
+  createExtensionTransport: () =>
+    new ExtensionClientTransport({
+      portName: appSession,
+    }) as unknown as TransportLike,
+  onError: (message, error) => {
+    console.error(`[manifold-webmcp] ${message}`, error);
+  },
 });
 
-bridge.start().catch((error: unknown) => {
-  console.error("[manifold-webmcp] failed to bridge WebMCP tools to the extension", error);
+void session.attempt();
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!isReconnectBridgeMessage(message)) return undefined;
+  void session.attempt();
+  return undefined;
 });

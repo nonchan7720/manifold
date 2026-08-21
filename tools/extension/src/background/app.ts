@@ -1,10 +1,13 @@
+import { RECONNECT_BRIDGE_MESSAGE, isReconnectRequestMessage } from "../shared/messages";
 import { EDGE_TOKEN_KEY, EDGE_URL_KEY, getEdgeSettings } from "../shared/storage";
 import type { TransportLike } from "../shared/types";
 import { createAppSessionRegistry } from "./appSessionRegistry";
 import type { ScriptingApi } from "./contentScriptSync";
-import { syncBridgeContentScript } from "./contentScriptSync";
+import { syncBridgeContentScript, syncNativeAdapterContentScript } from "./contentScriptSync";
 import type { EdgeConnectionStatus, WebSocketLike } from "./edgeSocket";
 import { createEdgeConnection } from "./edgeSocket";
+import { wireNavigationReconnect } from "./navigationReconnect";
+import type { TabMessagingApi, WebNavigationApi } from "./navigationReconnect";
 
 export const GET_STATUS_MESSAGE = { type: "get-status" } as const;
 
@@ -37,6 +40,10 @@ export interface StorageOnChangedApi {
   ) => void;
 }
 
+export interface TabsApi extends TabMessagingApi {
+  query: (queryInfo: { url: string[] }) => Promise<Array<{ id?: number }>>;
+}
+
 export interface BackgroundAppDeps {
   runtime: RuntimeApi;
   scripting: ScriptingApi;
@@ -46,6 +53,8 @@ export interface BackgroundAppDeps {
   connectSocket: (url: string) => WebSocketLike;
   /** Wraps an incoming port as a JSON-RPC Transport (real: ExtensionServerTransport). */
   wrapPort: (port: chrome.runtime.Port) => TransportLike;
+  tabs: TabsApi;
+  webNavigation: WebNavigationApi;
 }
 
 export interface BackgroundApp {
@@ -77,6 +86,19 @@ export function createBackgroundApp(deps: BackgroundAppDeps): BackgroundApp {
     };
   }
 
+  function isTabBridged(tabId: number): boolean {
+    return registry.list().some((entry) => entry.tabId === tabId);
+  }
+
+  async function reconnectUnbridgedTabs(): Promise<void> {
+    if (allowedOrigins.length === 0) return;
+    const tabs = await deps.tabs.query({ url: allowedOrigins.map((origin) => `${origin}/*`) });
+    for (const tab of tabs) {
+      if (tab.id === undefined || isTabBridged(tab.id)) continue;
+      void deps.tabs.sendMessage(tab.id, RECONNECT_BRIDGE_MESSAGE).catch(() => undefined);
+    }
+  }
+
   const connection = createEdgeConnection({
     connectSocket: deps.connectSocket,
     registry,
@@ -91,7 +113,15 @@ export function createBackgroundApp(deps: BackgroundAppDeps): BackgroundApp {
     onReady: (origins) => {
       allowedOrigins = origins;
       void syncBridgeContentScript(origins, deps.scripting);
+      void syncNativeAdapterContentScript(origins, deps.scripting);
     },
+  });
+
+  wireNavigationReconnect({
+    webNavigation: deps.webNavigation,
+    tabs: deps.tabs,
+    getAllowedOrigins: () => allowedOrigins,
+    isTabBridged,
   });
 
   // The popup saves edgeUrl/edgeToken to storage after a successful pairing,
@@ -108,8 +138,18 @@ export function createBackgroundApp(deps: BackgroundAppDeps): BackgroundApp {
   });
 
   deps.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!isGetStatusMessage(message)) return undefined;
-    sendResponse(getStatus());
+    if (isGetStatusMessage(message)) {
+      sendResponse(getStatus());
+      return undefined;
+    }
+    if (isReconnectRequestMessage(message)) {
+      void (async () => {
+        if (status === "closed") await connection.start();
+        await reconnectUnbridgedTabs();
+        sendResponse(getStatus());
+      })();
+      return true;
+    }
     return undefined;
   });
 
@@ -124,17 +164,18 @@ export function createBackgroundApp(deps: BackgroundAppDeps): BackgroundApp {
 
     const transport = deps.wrapPort(port);
     void transport.start().then(() => {
-      registry.register({
+      const entry = {
         origin,
         appSession,
         tabId,
-        send: (payload) => {
+        send: (payload: unknown) => {
           void transport.send(payload);
         },
-      });
+      };
+      registry.register(entry);
       transport.onmessage = (message) => connection.sendMcpFrame(origin, appSession, message);
       transport.onclose = () => {
-        registry.unregister(appSession);
+        registry.unregister(entry);
         connection.sendAppDown(origin, appSession);
       };
       connection.sendAppUp(origin, appSession);

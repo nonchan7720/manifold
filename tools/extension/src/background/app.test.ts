@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { RECONNECT_BRIDGE_MESSAGE } from "../shared/messages";
 import type { TransportLike } from "../shared/types";
 import { createBackgroundApp } from "./app";
+import type { TabsApi } from "./app";
 import type { WebSocketLike } from "./edgeSocket";
 import type { ScriptingApi } from "./contentScriptSync";
+import type { WebNavigationApi, WebNavigationDetails } from "./navigationReconnect";
 
 class FakeWebSocket implements WebSocketLike {
   static instances: FakeWebSocket[] = [];
@@ -62,9 +65,27 @@ function createFakeScripting(): ScriptingApi {
   };
 }
 
+function createFakeTabs(tabsById: Record<number, { id: number; url: string }> = {}): TabsApi {
+  return {
+    query: vi.fn(async () => Object.values(tabsById)),
+    sendMessage: vi.fn(async () => undefined),
+  };
+}
+
+function createFakeWebNavigation() {
+  const listeners: Array<(details: WebNavigationDetails) => void> = [];
+  const api: WebNavigationApi = {
+    onCompleted: { addListener: (cb) => listeners.push(cb) },
+    onHistoryStateUpdated: { addListener: (cb) => listeners.push(cb) },
+    onReferenceFragmentUpdated: { addListener: (cb) => listeners.push(cb) },
+  };
+  return { api, fire: (details: WebNavigationDetails) => listeners.forEach((cb) => cb(details)) };
+}
+
 function setup(
   options: {
     storedSettings?: { edgeUrl?: string; edgeToken?: string };
+    tabsById?: Record<number, { id: number; url: string }>;
   } = {},
 ) {
   let onConnectListener: ((port: chrome.runtime.Port) => void) | undefined;
@@ -75,6 +96,8 @@ function setup(
     | ((changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void)
     | undefined;
   const scripting = createFakeScripting();
+  const tabs = createFakeTabs(options.tabsById);
+  const webNavigation = createFakeWebNavigation();
   const storedSettings = options.storedSettings ?? {
     edgeUrl: "ws://localhost:8081/edge/ws",
     edgeToken: "edge-token",
@@ -108,11 +131,15 @@ function setup(
     storageArea,
     connectSocket: () => new FakeWebSocket(),
     wrapPort: () => transport,
+    tabs,
+    webNavigation: webNavigation.api,
   });
 
   return {
     app,
     scripting,
+    tabs,
+    fireNavigation: webNavigation.fire,
     transport,
     storedSettings,
     connect: () => onConnectListener,
@@ -256,5 +283,72 @@ describe("createBackgroundApp", () => {
     changeStorage({ edgeToken: { newValue: "edge-token" } }, "sync");
 
     expect(FakeWebSocket.instances.length).toBe(before);
+  });
+
+  it("asks an unbridged tab's content script to reconnect on a navigation within an allowed origin", async () => {
+    const { app, fireNavigation, tabs } = setup();
+    await app.start();
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.receive({ type: "ready", heartbeatSec: 20, origins: ["https://app1.example.com"] });
+
+    fireNavigation({ tabId: 42, url: "https://app1.example.com/reports", frameId: 0 });
+
+    expect(tabs.sendMessage).toHaveBeenCalledWith(42, RECONNECT_BRIDGE_MESSAGE);
+  });
+
+  it("does not ask an already-bridged tab to reconnect on navigation", async () => {
+    const { app, connect, fireNavigation, tabs } = setup();
+    await app.start();
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.receive({ type: "ready", heartbeatSec: 20, origins: ["https://app1.example.com"] });
+    connect()?.(createFakePort({ sender: { origin: "https://app1.example.com", tab: { id: 42 } } as chrome.runtime.MessageSender }));
+    await vi.waitUntil(() => app.getStatus().connectedOrigins.length > 0);
+
+    fireNavigation({ tabId: 42, url: "https://app1.example.com/reports", frameId: 0 });
+
+    expect(tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("on a reconnect-request message, reconnects unbridged allowed tabs and reports the resulting status", async () => {
+    const { app, sendMessage, tabs } = setup({
+      tabsById: { 42: { id: 42, url: "https://app1.example.com/reports" }, 43: { id: 43, url: "https://other.example.com/" } },
+    });
+    await app.start();
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.receive({ type: "ready", heartbeatSec: 20, origins: ["https://app1.example.com"] });
+
+    const response = await sendMessage({ type: "reconnect-request" });
+
+    expect(tabs.query).toHaveBeenCalledWith({ url: ["https://app1.example.com/*"] });
+    expect(tabs.sendMessage).toHaveBeenCalledWith(42, RECONNECT_BRIDGE_MESSAGE);
+    expect(response).toEqual(app.getStatus());
+  });
+
+  it("skips an already-bridged tab when handling a reconnect-request", async () => {
+    const { app, connect, sendMessage, tabs } = setup({
+      tabsById: { 42: { id: 42, url: "https://app1.example.com/reports" } },
+    });
+    await app.start();
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.receive({ type: "ready", heartbeatSec: 20, origins: ["https://app1.example.com"] });
+    connect()?.(createFakePort({ sender: { origin: "https://app1.example.com", tab: { id: 42 } } as chrome.runtime.MessageSender }));
+    await vi.waitUntil(() => app.getStatus().connectedOrigins.length > 0);
+
+    await sendMessage({ type: "reconnect-request" });
+
+    expect(tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("reconnects the edge connection on a reconnect-request when it was closed", async () => {
+    const { app, sendMessage, storedSettings } = setup({ storedSettings: {} });
+    const before = FakeWebSocket.instances.length;
+    await app.start();
+    expect(app.getStatus().status).toBe("closed");
+    storedSettings.edgeUrl = "ws://localhost:8081/edge/ws";
+    storedSettings.edgeToken = "edge-token";
+
+    await sendMessage({ type: "reconnect-request" });
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(before);
   });
 });

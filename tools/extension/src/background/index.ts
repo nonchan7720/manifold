@@ -12,6 +12,8 @@ const app = createBackgroundApp({
   // cast only bridges the onmessage/onerror payload typing (see content/index.ts).
   connectSocket: (url) => new WebSocket(url) as unknown as WebSocketLike,
   wrapPort: (port) => new ExtensionServerTransport(port) as unknown as TransportLike,
+  tabs: chrome.tabs,
+  webNavigation: chrome.webNavigation,
 });
 
 app.start().catch((error: unknown) => {

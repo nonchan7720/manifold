@@ -7,6 +7,7 @@ describe("renderState", () => {
       edgeUrlValue: "",
       showForm: true,
       showLogout: false,
+      showReconnect: false,
       statusText: "",
       errorText: "",
     });
@@ -34,6 +35,7 @@ describe("renderState", () => {
       edgeUrlValue: "ws://localhost:8081/edge/ws",
       showForm: false,
       showLogout: true,
+      showReconnect: true,
       statusText: "Status: ready — connected: https://app1.example.com",
       errorText: "",
     });

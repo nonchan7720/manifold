@@ -4,6 +4,7 @@ export interface PopupView {
   edgeUrlValue: string;
   showForm: boolean;
   showLogout: boolean;
+  showReconnect: boolean;
   statusText: string;
   errorText: string;
 }
@@ -14,6 +15,7 @@ export function renderState(state: PopupState): PopupView {
     edgeUrlValue: state.edgeUrl,
     showForm: !state.paired,
     showLogout: state.paired,
+    showReconnect: state.paired,
     statusText: state.paired ? statusText(state) : "",
     errorText: state.error ?? "",
   };

@@ -34,17 +34,34 @@ describe("createAppSessionRegistry", () => {
 
   it("removes an entry on unregister", () => {
     const registry = createAppSessionRegistry();
-    registry.register({ origin: "https://app1.example.com", appSession: "session-1", tabId: 1, send: vi.fn() });
+    const entry = { origin: "https://app1.example.com", appSession: "session-1", tabId: 1, send: vi.fn() };
+    registry.register(entry);
 
-    registry.unregister("session-1");
-
+    expect(registry.unregister(entry)).toBe(true);
     expect(registry.get("session-1")).toBeUndefined();
     expect(registry.list()).toEqual([]);
   });
 
-  it("unregistering an unknown appSession is a no-op", () => {
+  it("unregistering an entry that was never registered is a no-op", () => {
     const registry = createAppSessionRegistry();
-    expect(() => registry.unregister("does-not-exist")).not.toThrow();
+    const entry = { origin: "https://app1.example.com", appSession: "does-not-exist", tabId: 1, send: vi.fn() };
+    expect(() => registry.unregister(entry)).not.toThrow();
+    expect(registry.unregister(entry)).toBe(false);
+  });
+
+  it("does not remove a newer entry when an old, already-replaced entry unregisters", () => {
+    // A reconnect can reuse the same appSession (port name) before the old
+    // transport's close callback runs; unregister must only ever remove the
+    // exact entry it was given, not whatever is currently stored under that
+    // key.
+    const registry = createAppSessionRegistry();
+    const oldEntry = { origin: "https://app1.example.com", appSession: "session-1", tabId: 1, send: vi.fn() };
+    const newEntry = { origin: "https://app1.example.com", appSession: "session-1", tabId: 1, send: vi.fn() };
+    registry.register(oldEntry);
+    registry.register(newEntry);
+
+    expect(registry.unregister(oldEntry)).toBe(false);
+    expect(registry.get("session-1")).toBe(newEntry);
   });
 
   it("lists multiple entries across different tabs", () => {

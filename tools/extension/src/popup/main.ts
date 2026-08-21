@@ -11,6 +11,7 @@ const form = document.querySelector<HTMLFormElement>("#pair-form");
 const edgeUrlInput = document.querySelector<HTMLInputElement>("#edge-url");
 const codeInput = document.querySelector<HTMLInputElement>("#pairing-code");
 const logoutButton = document.querySelector<HTMLButtonElement>("#logout-button");
+const reconnectButton = document.querySelector<HTMLButtonElement>("#reconnect-button");
 const statusParagraph = document.querySelector<HTMLElement>("#status");
 const errorParagraph = document.querySelector<HTMLElement>("#error");
 
@@ -19,6 +20,7 @@ function render(state: Awaited<ReturnType<typeof controller.loadState>>) {
   if (edgeUrlInput) edgeUrlInput.value = view.edgeUrlValue;
   if (form) form.hidden = !view.showForm;
   if (logoutButton) logoutButton.hidden = !view.showLogout;
+  if (reconnectButton) reconnectButton.hidden = !view.showReconnect;
   if (statusParagraph) statusParagraph.textContent = view.statusText;
   if (errorParagraph) errorParagraph.textContent = view.errorText;
 }
@@ -34,4 +36,14 @@ form?.addEventListener("submit", (event) => {
 
 logoutButton?.addEventListener("click", () => {
   void controller.logout().then(render);
+});
+
+reconnectButton?.addEventListener("click", () => {
+  reconnectButton.disabled = true;
+  reconnectButton.textContent = "Reconnecting...";
+  void controller.reconnect().then((state) => {
+    render(state);
+    reconnectButton.disabled = false;
+    reconnectButton.textContent = "Reconnect";
+  });
 });

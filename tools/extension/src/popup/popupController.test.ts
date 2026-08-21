@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPopupController } from "./popupController";
 import { GET_STATUS_MESSAGE } from "../background/app";
+import { RECONNECT_REQUEST_MESSAGE } from "../shared/messages";
 
 function createFakeStorageArea(): chrome.storage.StorageArea {
   let store: Record<string, unknown> = {};
@@ -92,6 +93,38 @@ describe("createPopupController", () => {
       status: undefined,
       error: undefined,
     });
+  });
+
+  it("reconnects by asking the background to reconnect and reloading state", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ token: "edge-token-1" }),
+    })) as unknown as typeof fetch;
+    const sendRuntimeMessage = vi.fn(async () => ({
+      status: "ready",
+      allowedOrigins: ["https://app1.example.com"],
+      connectedOrigins: ["https://app1.example.com"],
+    }));
+    const controller = createPopupController({ storageArea, fetchImpl, sendRuntimeMessage });
+    await controller.pair("ws://localhost:8081/edge/ws", "12345678");
+
+    const state = await controller.reconnect();
+
+    expect(sendRuntimeMessage).toHaveBeenCalledWith(RECONNECT_REQUEST_MESSAGE);
+    expect(state.status?.connectedOrigins).toEqual(["https://app1.example.com"]);
+  });
+
+  it("still reloads state if the background is unreachable when reconnecting", async () => {
+    const sendRuntimeMessage = vi.fn(async () => {
+      throw new Error("no receiver");
+    });
+    const controller = createPopupController({ storageArea, sendRuntimeMessage });
+
+    const state = await controller.reconnect();
+
+    expect(state.status).toBeUndefined();
+    expect(state.paired).toBe(false);
   });
 
   it("leaves status undefined when the background does not respond", async () => {
