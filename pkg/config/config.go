@@ -29,7 +29,13 @@ type Config struct {
 // ドットは除外しつつ、既存設定で使われてきたハイフン区切りの名前を壊さないようハイフンを許可する。
 var pathRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// edgeContextKey carries the effective Gateway.Edge config into Server
+// validation, so a reverse Server's identity requirement can depend on
+// whether pairing.type is static without Server needing a Gateway reference.
+type edgeContextKey struct{}
+
 func (c *Config) ValidateWithContext(ctx context.Context) error {
+	ctx = context.WithValue(ctx, edgeContextKey{}, c.Gateway.Edge.WithDefaults())
 	return validation.ValidateStructWithContext(
 		ctx,
 		c,
@@ -39,10 +45,25 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("type error: %T", value)
 			}
-			for key := range mp {
+			origins := map[string]string{}
+			for key, srv := range mp {
 				if !pathRegex.MatchString(key) {
 					return fmt.Errorf("key '%s' contains invalid characters", key)
 				}
+				if srv.Transport != MCPTransportReverse {
+					continue
+				}
+				normalized, err := NormalizeOrigin(srv.Origin)
+				if err != nil {
+					continue // Server.ValidateWithContext がこの不正値自体を報告する
+				}
+				if other, dup := origins[normalized]; dup {
+					return fmt.Errorf(
+						"origin %q is used by both server '%s' and '%s'; origins must be unique",
+						normalized, other, key,
+					)
+				}
+				origins[normalized] = key
 			}
 			return nil
 		})),
@@ -65,6 +86,8 @@ type Gateway struct {
 	Cert string `mapstructure:"cert"`
 
 	EncryptKey string `mapstructure:"encryptKey"`
+
+	Edge EdgeConfig `mapstructure:"edge"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -88,5 +111,6 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 				}),
 			),
 		),
+		validation.Field(&c.Edge),
 	)
 }
