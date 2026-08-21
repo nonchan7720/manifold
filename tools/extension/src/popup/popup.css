@@ -1,0 +1,39 @@
+body {
+  width: 280px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+}
+
+h1 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#error {
+  color: #b00020;
+}
+
+#error:empty,
+#status:empty {
+  display: none;
+}
+
+/* Author `display` rules (e.g. the `form` rule above) beat the UA
+ * stylesheet's `[hidden] { display: none }` regardless of specificity, so
+ * the `hidden` property set by view.ts would otherwise have no visual
+ * effect. */
+[hidden] {
+  display: none !important;
+}

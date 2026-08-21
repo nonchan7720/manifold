@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Manifold WebMCP Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Manifold WebMCP Bridge</h1>
+      <form id="pair-form">
+        <label>
+          Edge URL
+          <input id="edge-url" type="text" placeholder="ws://localhost:8081/edge/ws" required />
+        </label>
+        <label>
+          Pairing code
+          <input id="pairing-code" type="text" inputmode="numeric" autocomplete="off" required />
+        </label>
+        <button type="submit">Pair</button>
+      </form>
+      <button id="logout-button" type="button" hidden>Log out</button>
+      <p id="status"></p>
+      <p id="error" role="alert"></p>
+    </main>
+    <script type="module" src="main.ts"></script>
+  </body>
+</html>
