@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "../../..");
+const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const EXT_DIST = path.join(REPO_ROOT, "tools/extension/dist");
 const USER_DATA_DIR = path.join(__dirname, "chrome-profile");
 const SHOT_DIR = path.join(REPO_ROOT, ".claude/scratchpad/webmcp-e2e");
@@ -19,6 +19,12 @@ fs.rmSync(USER_DATA_DIR, { recursive: true, force: true });
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+// See the 検証項目/期待結果 table in SKILL.md — a mismatch here means the
+// reverse gateway itself is broken, not just this script's happy path.
+function assertExpected(condition, message) {
+  if (!condition) throw new Error(`expectation failed: ${message}`);
 }
 
 async function newMcpClient() {
@@ -117,47 +123,62 @@ async function main() {
     log(`tools/list (retry ${i + 2}):`, toolNames);
   }
   results.toolsListFinal = toolNames;
+  for (const name of ["echo", "get_current_time", "increment_counter", "decrement_counter"]) {
+    assertExpected(toolNames.includes(name), `tools/list should include "${name}", got: ${toolNames}`);
+  }
 
   // --- Step: call echo and increment_counter ---
-  if (toolNames.includes("echo")) {
-    const client = await newMcpClient();
-    const echoResult = await client.callTool({
-      name: "echo",
-      arguments: { message: "hello from e2e" },
-    });
-    log("echo result:", JSON.stringify(echoResult));
-    results.echoResult = echoResult;
+  const client = await newMcpClient();
+  const echoResult = await client.callTool({
+    name: "echo",
+    arguments: { message: "hello from e2e" },
+  });
+  log("echo result:", JSON.stringify(echoResult));
+  results.echoResult = echoResult;
+  const echoText = echoResult.content?.[0]?.text;
+  assertExpected(echoText === "hello from e2e", `echo should return the input string, got: ${echoText}`);
 
-    const incResult = await client.callTool({
-      name: "increment_counter",
-      arguments: { by: 3 },
-    });
-    log("increment_counter result:", JSON.stringify(incResult));
-    results.incrementResult = incResult;
-    await client.close();
+  const incResult = await client.callTool({
+    name: "increment_counter",
+    arguments: { by: 3 },
+  });
+  log("increment_counter result:", JSON.stringify(incResult));
+  results.incrementResult = incResult;
+  const incText = incResult.content?.[0]?.text;
+  assertExpected(incText === "3", `increment_counter(by: 3) should return "3", got: ${incText}`);
+  await client.close();
 
-    await demoPage.waitForTimeout(500);
-    await demoPage.screenshot({ path: path.join(SHOT_DIR, "05-demo-page-after-increment.png") });
-    results.counterTextAfterIncrement = await demoPage.textContent("#counter-value");
-    log("counter text on page:", results.counterTextAfterIncrement);
-  } else {
-    log("echo tool never appeared; skipping call step");
-  }
+  await demoPage.waitForTimeout(500);
+  await demoPage.screenshot({ path: path.join(SHOT_DIR, "05-demo-page-after-increment.png") });
+  results.counterTextAfterIncrement = await demoPage.textContent("#counter-value");
+  log("counter text on page:", results.counterTextAfterIncrement);
+  assertExpected(
+    results.counterTextAfterIncrement === "3",
+    `page counter display should match the tool result, got: ${results.counterTextAfterIncrement}`,
+  );
 
   // --- Step: close the tab, then call increment_counter again ---
   await demoPage.close();
   await sleep(1000);
   {
     const client = await newMcpClient();
+    let threw = false;
     try {
       const result = await client.callTool({ name: "increment_counter", arguments: {} });
       log("increment_counter after tab close:", JSON.stringify(result));
       results.afterCloseResult = result;
+      assertExpected(
+        result.isError && result.content?.[0]?.text?.includes("対象アプリのタブが開かれていません。"),
+        `tool call after tab close should report isError with the tab-not-connected guidance, got: ${JSON.stringify(result)}`,
+      );
     } catch (error) {
+      threw = true;
       log("increment_counter after tab close threw:", error.message);
       results.afterCloseError = error.message;
+    } finally {
+      await client.close();
     }
-    await client.close();
+    assertExpected(!threw, "increment_counter after tab close should return isError, not throw");
   }
 
   await popup.screenshot({ path: path.join(SHOT_DIR, "06-popup-final.png") });

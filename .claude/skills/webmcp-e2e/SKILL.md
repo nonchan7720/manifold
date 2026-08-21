@@ -9,7 +9,7 @@ description: WebMCP reverse connection gateway（pairing + static モード）�
 
 ## 前提
 
-- `tools/extension/` と `examples/webmcp-demo/` は pnpm パッケージ（`pnpm install` 済みであること）
+- `tools/extension/`、`examples/webmcp-demo/`、`.claude/skills/webmcp-e2e/scripts/` はいずれも pnpm パッケージ（`pnpm install` 済みであること。`scripts/` は `@modelcontextprotocol/sdk` と `playwright` の実行用依存を持つ）
 - ポート: Manifold = 9999、デモページ = 5173（変更したら以降のコマンド・config を合わせる）
 
 ## 手順
@@ -18,6 +18,7 @@ description: WebMCP reverse connection gateway（pairing + static モード）�
 
 ```bash
 cd tools/extension && pnpm install && pnpm build   # dist/ が生成される
+cd .claude/skills/webmcp-e2e/scripts && pnpm install   # e2e.mjs / create-pairing-code.mjs 用
 ```
 
 ### 2. Manifold を起動
