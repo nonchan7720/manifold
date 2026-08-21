@@ -2,6 +2,7 @@ package httphandler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -207,6 +208,36 @@ func TestEdgeWSHandler_ForwardAuth_NotImplemented(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, resp)
 	require.Equal(t, 501, resp.StatusCode)
+}
+
+func TestEdgeConnSession_CloseAllChannels_ClosesAndClearsEveryEntry(t *testing.T) {
+	sess := &edgeConnSession{
+		channels: map[string]chan json.RawMessage{
+			"a": make(chan json.RawMessage, 1),
+			"b": make(chan json.RawMessage, 1),
+		},
+	}
+	sess.closeAllChannels()
+	require.Empty(t, sess.channels)
+}
+
+func TestEdgeConnSession_RouteMCPFrame_DropsWhenChannelFull(t *testing.T) {
+	// Sending must never block the read loop that drives every dispatch; a
+	// full buffer drops the frame instead.
+	sess := &edgeConnSession{channels: map[string]chan json.RawMessage{}}
+	key := bindingChanKey("https://app1.example.com", "session-1")
+	ch := make(chan json.RawMessage, 1)
+	ch <- json.RawMessage(`{"already":"buffered"}`)
+	sess.channels[key] = ch
+
+	require.NotPanics(t, func() {
+		sess.routeMCPFrame(mcpsrv.EdgeEnvelope{
+			Origin:     "https://app1.example.com",
+			AppSession: "session-1",
+			Payload:    json.RawMessage(`{"dropped":true}`),
+		})
+	})
+	require.Len(t, ch, 1, "the full buffer's existing message should be left in place")
 }
 
 func staticEdgeConfigForWS() config.EdgeConfig {

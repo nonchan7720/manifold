@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -150,12 +151,24 @@ func TestServer_ValidateWithContext_Reverse_RejectsOriginWithPath(t *testing.T) 
 	require.Error(t, err)
 }
 
-func TestServer_ValidateWithContext_Reverse_RequiresIdentityByDefault(t *testing.T) {
-	// エッジ設定なしの ctx はデフォルト (pairing/remote) 相当として扱われるため、
-	// identity 未指定はエラーになるべき。
+func TestServer_ValidateWithContext_Reverse_NoIdentityRequired_NoEdgeConfig(t *testing.T) {
+	// エッジ設定なしの ctx はデフォルト (pairing/static) 相当として扱われるため、
+	// identity 未指定でもエラーにならない。
 	s := baseValidReverseServer()
 	s.Identity = ""
 	err := s.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestServer_ValidateWithContext_Reverse_RemotePairing_RequiresIdentity(t *testing.T) {
+	s := baseValidReverseServer()
+	s.Identity = ""
+	ctx := context.WithValue(
+		t.Context(),
+		edgeContextKey{},
+		EdgeConfig{Pairing: PairingConfig{Type: PairingTypeRemote}},
+	)
+	err := s.ValidateWithContext(ctx)
 	require.Error(t, err)
 }
 
@@ -195,6 +208,16 @@ func TestServer_ValidateWithContext_Reverse_RejectsCommand(t *testing.T) {
 func TestServer_ValidateWithContext_Reverse_RejectsURL(t *testing.T) {
 	s := baseValidReverseServer()
 	s.URL = "http://example.com"
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+}
+
+func TestServer_ValidateWithContext_Reverse_RejectsSpec(t *testing.T) {
+	// spec (OpenAPI mode) and transport: reverse must not both be set — the
+	// server would otherwise be ambiguous between the two backend kinds.
+	s := baseValidReverseServer()
+	s.Spec = "openapi.yaml"
+	s.BaseURL = "https://api.example.com"
 	err := s.ValidateWithContext(t.Context())
 	require.Error(t, err)
 }

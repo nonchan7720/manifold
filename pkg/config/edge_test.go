@@ -57,12 +57,30 @@ func TestNormalizeOrigin_RejectsEmpty(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNormalizeOrigin_StripsDefaultHTTPSPort(t *testing.T) {
+	got, err := NormalizeOrigin("https://app1.example.com:443")
+	require.NoError(t, err)
+	require.Equal(t, "https://app1.example.com", got)
+}
+
+func TestNormalizeOrigin_StripsDefaultHTTPPort(t *testing.T) {
+	got, err := NormalizeOrigin("http://app1.example.com:80")
+	require.NoError(t, err)
+	require.Equal(t, "http://app1.example.com", got)
+}
+
+func TestNormalizeOrigin_KeepsNonDefaultPortForScheme(t *testing.T) {
+	got, err := NormalizeOrigin("https://app1.example.com:8443")
+	require.NoError(t, err)
+	require.Equal(t, "https://app1.example.com:8443", got)
+}
+
 // --- EdgeConfig.WithDefaults ---
 
-func TestEdgeConfig_WithDefaults_FillsPairingRemote(t *testing.T) {
+func TestEdgeConfig_WithDefaults_FillsPairingStatic(t *testing.T) {
 	got := EdgeConfig{}.WithDefaults()
 	require.Equal(t, EdgeAuthPairing, got.Auth)
-	require.Equal(t, PairingTypeRemote, got.Pairing.Type)
+	require.Equal(t, PairingTypeStatic, got.Pairing.Type)
 }
 
 func TestEdgeConfig_WithDefaults_KeepsExplicitValues(t *testing.T) {
@@ -88,5 +106,21 @@ func TestEdgeConfig_ValidateWithContext_RejectsUnknownAuth(t *testing.T) {
 
 func TestEdgeConfig_ValidateWithContext_RejectsUnknownPairingType(t *testing.T) {
 	c := EdgeConfig{Auth: EdgeAuthPairing, Pairing: PairingConfig{Type: "bogus"}}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestEdgeConfig_ValidateWithContext_RejectsForwardAuth(t *testing.T) {
+	// forwardAuth is config structure only (not implemented yet); see the
+	// PR's "Known limitations". Accepting it here would let
+	// mcpAuthMiddleware's static-pairing JWT skip apply to a deployment that
+	// believes it's protected by a front-door auth proxy.
+	c := EdgeConfig{Auth: EdgeAuthForwardAuth, Pairing: PairingConfig{Type: PairingTypeStatic}}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestEdgeConfig_ValidateWithContext_RejectsRemotePairing(t *testing.T) {
+	// remote pairing is config structure only (not implemented yet); see the
+	// PR's "Known limitations".
+	c := EdgeConfig{Auth: EdgeAuthPairing, Pairing: PairingConfig{Type: PairingTypeRemote}}
 	require.Error(t, c.ValidateWithContext(t.Context()))
 }

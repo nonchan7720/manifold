@@ -156,6 +156,20 @@ func (s *edgeConnSession) run(ctx context.Context) {
 		s.dispatch(ctx, frame)
 	}
 	s.gateway.DropConnection(context.WithoutCancel(ctx), s.connID)
+	s.closeAllChannels()
+}
+
+// closeAllChannels closes and forgets every channel this connection still
+// owns. s is the sole closer of any channel it holds (handleAppUp closes a
+// replaced entry itself, handleAppDown closes on app.down), so this cannot
+// double-close.
+func (s *edgeConnSession) closeAllChannels() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, ch := range s.channels {
+		close(ch)
+		delete(s.channels, key)
+	}
 }
 
 func (s *edgeConnSession) dispatch(ctx context.Context, frame mcpsrv.EdgeEnvelope) {
@@ -193,6 +207,13 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 	key := bindingChanKey(frame.Origin, frame.AppSession)
 	incoming := make(chan json.RawMessage, 32)
 	s.mu.Lock()
+	// A second app.up for the same (origin, appSession) replaces the
+	// binding; close the entry it displaces so its HandleAppUp goroutine
+	// doesn't leak (see routeMCPFrame/closeAllChannels for the rest of this
+	// channel's ownership contract: s is always the one that closes it).
+	if previous, ok := s.channels[key]; ok {
+		close(previous)
+	}
 	s.channels[key] = incoming
 	s.mu.Unlock()
 
@@ -213,7 +234,11 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 				Message: err.Error(),
 			})
 			s.mu.Lock()
-			delete(s.channels, key)
+			// Only remove this binding's own entry: a later app.up for the
+			// same key may have already replaced (and closed) it.
+			if current, ok := s.channels[key]; ok && current == incoming {
+				delete(s.channels, key)
+			}
 			s.mu.Unlock()
 		}
 	}()
@@ -231,15 +256,23 @@ func (s *edgeConnSession) handleAppDown(ctx context.Context, frame mcpsrv.EdgeEn
 	s.gateway.HandleAppDown(ctx, s.identityKey, frame.Origin, frame.AppSession)
 }
 
+// routeMCPFrame sends under s.mu so it can never race with the close calls in
+// handleAppUp/handleAppDown/closeAllChannels; a full buffer drops the frame
+// rather than blocking the read loop that every dispatch runs on.
 func (s *edgeConnSession) routeMCPFrame(frame mcpsrv.EdgeEnvelope) {
 	key := bindingChanKey(frame.Origin, frame.AppSession)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	ch, ok := s.channels[key]
-	s.mu.Unlock()
 	if !ok {
 		return // 対応する app.up の無い遅延/不正フレームは無視する
 	}
-	ch <- frame.Payload
+	select {
+	case ch <- frame.Payload:
+	default:
+		slog.Warn("dropping edge mcp frame: incoming channel is full",
+			slog.String("origin", frame.Origin), slog.String("appSession", frame.AppSession))
+	}
 }
 
 // wsFrameSender adapts a *websocket.Conn to mcpsrv.EdgeFrameSender.

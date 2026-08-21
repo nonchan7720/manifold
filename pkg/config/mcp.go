@@ -73,6 +73,8 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 					return nil
 				}
 				switch {
+				case s.Spec != "":
+					return fmt.Errorf("reverse transport does not support spec (OpenAPI mode)")
 				case s.AuthValue != nil, s.OAuth2 != nil, s.TokenExchange != nil:
 					return fmt.Errorf(
 						"reverse transport does not support authValue/oauth2/tokenExchange " +

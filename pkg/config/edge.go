@@ -35,13 +35,14 @@ type EdgeConfig struct {
 }
 
 // WithDefaults returns a copy of c with zero-value fields replaced by the
-// documented defaults (pairing/remote).
+// documented defaults (pairing/static — remote pairing and forwardAuth are
+// config structure only in Phase 1, see docs/design/webmcp-reverse-gateway.ja.md).
 func (c EdgeConfig) WithDefaults() EdgeConfig {
 	if c.Auth == "" {
 		c.Auth = EdgeAuthPairing
 	}
 	if c.Pairing.Type == "" {
-		c.Pairing.Type = PairingTypeRemote
+		c.Pairing.Type = PairingTypeStatic
 	}
 	return c
 }
@@ -55,14 +56,18 @@ func (c EdgeConfig) IsStaticPairing() bool {
 func (c EdgeConfig) ValidateWithContext(ctx context.Context) error {
 	c = c.WithDefaults()
 	return validation.ValidateStructWithContext(ctx, &c,
-		validation.Field(&c.Auth, validation.In(EdgeAuthPairing, EdgeAuthForwardAuth)),
+		// forwardAuth is not implemented yet (config structure only); see
+		// docs/design/webmcp-reverse-gateway.ja.md.
+		validation.Field(&c.Auth, validation.In(EdgeAuthPairing)),
 		validation.Field(&c.Pairing),
 	)
 }
 
 func (c PairingConfig) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, &c,
-		validation.Field(&c.Type, validation.In(PairingTypeRemote, PairingTypeStatic)),
+		// remote pairing is not implemented yet (config structure only); see
+		// docs/design/webmcp-reverse-gateway.ja.md.
+		validation.Field(&c.Type, validation.In(PairingTypeStatic)),
 	)
 }
 
@@ -96,5 +101,16 @@ func NormalizeOrigin(raw string) (string, error) {
 	if u.Fragment != "" {
 		return "", fmt.Errorf("origin %q must not contain a fragment", raw)
 	}
-	return scheme + "://" + strings.ToLower(u.Host), nil
+	return scheme + "://" + strings.ToLower(stripDefaultPort(scheme, u.Host)), nil
+}
+
+// stripDefaultPort removes ":80" from an http host and ":443" from an https
+// host, matching how browsers serialize location.origin (the extension's
+// app.up/ready origin comparisons rely on this to line up).
+func stripDefaultPort(scheme, host string) string {
+	defaultPort := map[string]string{"http": ":80", "https": ":443"}[scheme]
+	if defaultPort != "" && strings.HasSuffix(host, defaultPort) {
+		return strings.TrimSuffix(host, defaultPort)
+	}
+	return host
 }

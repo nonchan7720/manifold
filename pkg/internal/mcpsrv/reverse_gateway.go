@@ -173,12 +173,28 @@ func (g *ReverseGateway) HandleAppUp(
 		Incoming:   incoming,
 	}
 
-	var session *mcp.ClientSession
+	// ToolListChangedHandler runs on the SDK's read goroutine and can fire
+	// before client.Connect below returns (e.g. the page sends
+	// notifications/tools/list_changed right after initialize); guard session
+	// with a mutex instead of relying on happens-before across goroutines.
+	var (
+		sessionMu sync.Mutex
+		session   *mcp.ClientSession
+	)
+	currentSession := func() *mcp.ClientSession {
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
+		return session
+	}
 	client := mcp.NewClient(
 		&mcp.Implementation{Name: "manifold", Version: version.Version},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
-				if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, session); err != nil {
+				live := currentSession()
+				if live == nil {
+					return
+				}
+				if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, live); err != nil {
 					slog.ErrorContext(ctx, "failed to rebuild reverse tool server",
 						slog.String("origin", binding.Origin), slog.Any("error", err))
 				}
@@ -189,10 +205,12 @@ func (g *ReverseGateway) HandleAppUp(
 	if err != nil {
 		return fmt.Errorf("connect to app %s: %w", binding.Origin, err)
 	}
+	sessionMu.Lock()
 	session = connected
+	sessionMu.Unlock()
 
-	if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, session); err != nil {
-		session.Close()
+	if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, connected); err != nil {
+		connected.Close()
 		return fmt.Errorf("initialize tool server for app %s: %w", binding.Origin, err)
 	}
 

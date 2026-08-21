@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -264,6 +265,52 @@ func TestReverseGateway_DropConnection_DropsAllBoundOrigins(t *testing.T) {
 	}
 }
 
+func TestReverseGateway_HandleAppUp_ToolListChanged_ExposesNewTool(t *testing.T) {
+	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
+	binding := domainedge.Binding{
+		IdentityKey: domainedge.StaticIdentityKey,
+		Origin:      "https://app1.example.com",
+		AppSession:  "session-1",
+		ConnID:      "conn-1",
+	}
+	page := connectFakeTab(t, gateway, binding)
+
+	// Adding a tool after HandleAppUp has returned exercises
+	// ToolListChangedHandler with the session already assigned; it must not
+	// use a stale/nil session captured before client.Connect returned.
+	page.AddTool(
+		&mcp.Tool{
+			Name:        "new_tool",
+			Description: "added after connect",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "new-tool-result"}},
+			}, nil
+		},
+	)
+
+	require.Eventually(t, func() bool {
+		srv, err := gateway.ResolveServer(t.Context(), "app1")
+		if err != nil {
+			return false
+		}
+		callerTransport, serverTransport := mcp.NewInMemoryTransports()
+		if _, err := srv.Connect(t.Context(), serverTransport, nil); err != nil {
+			return false
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0.0.1"}, nil)
+		session, err := client.Connect(t.Context(), callerTransport, nil)
+		if err != nil {
+			return false
+		}
+		defer session.Close()
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "new_tool"})
+		return err == nil && !result.IsError
+	}, 2*time.Second, 10*time.Millisecond, "new_tool should become callable once list_changed rebuilds the server")
+}
+
 func TestIdentityKeyForRequest_Static_ReturnsStaticKey(t *testing.T) {
 	key, err := IdentityKeyForRequest(staticEdgeConfig().WithDefaults())
 	require.NoError(t, err)
@@ -271,6 +318,11 @@ func TestIdentityKeyForRequest_Static_ReturnsStaticKey(t *testing.T) {
 }
 
 func TestIdentityKeyForRequest_Remote_NotImplemented(t *testing.T) {
-	_, err := IdentityKeyForRequest(config.EdgeConfig{}.WithDefaults())
+	// Remote pairing is rejected by config validation (see edge_test.go), but
+	// IdentityKeyForRequest itself must still refuse to derive identityKey
+	// for it in case a config bypasses validation.
+	pairing := config.PairingConfig{Type: config.PairingTypeRemote}
+	cfg := config.EdgeConfig{Pairing: pairing}.WithDefaults()
+	_, err := IdentityKeyForRequest(cfg)
 	require.Error(t, err)
 }

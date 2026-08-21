@@ -145,7 +145,10 @@ func TestLogging_SSEStreaming_FlushesBeforeHandlerReturns(t *testing.T) {
 	srv := httptest.NewServer(Logging(next))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL) //nolint:noctx
+	// bodyclose linter false positive: the goroutine below reading resp.Body
+	// defeats its escape analysis, but the defer on the next line does close
+	// it on every path, including t.Fatal (which still runs deferred calls).
+	resp, err := http.Get(srv.URL) //nolint:noctx,bodyclose
 	require.NoError(t, err)
 	defer resp.Body.Close() //nolint:errcheck
 
