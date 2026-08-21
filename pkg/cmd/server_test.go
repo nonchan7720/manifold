@@ -299,7 +299,12 @@ func TestMCPAuthMiddleware_StaticPairing_NonReverseServer_RequiresBearer(t *test
 	}.WithDefaults()
 	srv := newTestMCPAuthMux(t, servers, gateway, edgeCfg)
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/mcp/petstore", nil)
+	req, err := http.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		srv.URL+"/mcp/petstore",
+		nil,
+	)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
