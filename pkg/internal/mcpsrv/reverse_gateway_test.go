@@ -348,7 +348,11 @@ func TestReverseGateway_HandleAppUp_ToolListChanged_ExposesNewTool(t *testing.T)
 }
 
 func TestReverseGateway_HandleAppUp_MultipleIdentityKeys_BindsEachKey(t *testing.T) {
-	gateway, registry := newTestReverseGatewayWithRegistry(t, staticReverseServers(), staticEdgeConfig())
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
 	binding := domainedge.Binding{
 		Origin:     "https://app1.example.com",
 		AppSession: "session-1",
@@ -369,7 +373,11 @@ func TestReverseGateway_HandleAppUp_MultipleIdentityKeys_BindsEachKey(t *testing
 }
 
 func TestReverseGateway_HandleAppDown_MultipleIdentityKeys_UnbindsAllKeys(t *testing.T) {
-	gateway, registry := newTestReverseGatewayWithRegistry(t, staticReverseServers(), staticEdgeConfig())
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
 	binding := domainedge.Binding{
 		Origin:     "https://app1.example.com",
 		AppSession: "session-1",
@@ -387,7 +395,11 @@ func TestReverseGateway_HandleAppDown_MultipleIdentityKeys_UnbindsAllKeys(t *tes
 }
 
 func TestReverseGateway_DropConnection_MultipleIdentityKeys_DropsAllKeys(t *testing.T) {
-	gateway, registry := newTestReverseGatewayWithRegistry(t, staticReverseServers(), staticEdgeConfig())
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
 	binding := domainedge.Binding{
 		Origin:     "https://app1.example.com",
 		AppSession: "session-1",
