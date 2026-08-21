@@ -3,8 +3,10 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -52,7 +54,13 @@ func newIntrospectionTestServer(t *testing.T) *introspectionTestServer {
 			time.Sleep(delay)
 		}
 
-		require.NoError(t, r.ParseForm())
+		if err := r.ParseForm(); err != nil {
+			// require.NoError here would call t.FailNow from this handler
+			// goroutine, not the test goroutine — respond with an HTTP error
+			// instead so the caller observes a normal failure.
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if status != http.StatusOK {
 			w.WriteHeader(status)
 			return
@@ -207,14 +215,19 @@ func TestIntrospectionResolver_Resolve_Concurrent_SingleflightMergesCalls(t *tes
 	const n = 10
 	var wg sync.WaitGroup
 	wg.Add(n)
+	errs := make(chan error, n)
 	for range n {
 		go func() {
 			defer wg.Done()
 			_, err := r.Resolve(t.Context(), newIntrospectionRequest("cred-a"))
-			require.NoError(t, err)
+			errs <- err // collect on the worker goroutine; assert on the test goroutine below
 		}()
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
 
 	require.Equal(
 		t, int32(1), s.calls.Load(), "concurrent resolves for the same credential must be merged",
@@ -244,6 +257,86 @@ func TestIntrospectionResolver_Resolve_EndpointFailure_StaleCache_Continues(t *t
 	key2, err := r.Resolve(t.Context(), newIntrospectionRequest("cred-a"))
 	require.NoError(t, err, "a stale cache entry must be used when the endpoint is down")
 	require.Equal(t, key1, key2)
+}
+
+func TestIntrospectionResolver_Resolve_EndpointFailure_StaleCache_WithinGracePeriod_Continues(
+	t *testing.T,
+) {
+	s := newIntrospectionTestServer(t)
+	resolver := newTestIntrospectionResolver(t, s, time.Minute)
+	r, ok := resolver.(*introspectionResolver)
+	require.True(t, ok)
+
+	cacheKey := r.cacheKey("cred-a")
+	r.store(cacheKey, introspectionCacheEntry{
+		active:    true,
+		sub:       "user-a",
+		expiresAt: time.Now().Add(-(introspectionStaleGracePeriod - time.Minute)),
+	})
+	s.setStatus(http.StatusInternalServerError)
+
+	key, err := r.Resolve(t.Context(), newIntrospectionRequest("cred-a"))
+	require.NoError(t, err, "a stale entry inside the grace period must still be used")
+	require.Equal(t, encodeIdentityKey("rotatingKey", "user-a"), key)
+}
+
+func TestIntrospectionResolver_Resolve_EndpointFailure_StaleCache_ExceedsGracePeriod_ErrUnavailable(
+	t *testing.T,
+) {
+	s := newIntrospectionTestServer(t)
+	resolver := newTestIntrospectionResolver(t, s, time.Minute)
+	r, ok := resolver.(*introspectionResolver)
+	require.True(t, ok)
+
+	cacheKey := r.cacheKey("cred-a")
+	r.store(cacheKey, introspectionCacheEntry{
+		active:    true,
+		sub:       "user-a",
+		expiresAt: time.Now().Add(-(introspectionStaleGracePeriod + time.Second)),
+	})
+	s.setStatus(http.StatusInternalServerError)
+
+	_, err := r.Resolve(t.Context(), newIntrospectionRequest("cred-a"))
+	require.ErrorIs(t, err, ErrUnavailable, "a stale entry past the grace period must not be used")
+}
+
+func TestIntrospectionResolver_Store_CacheSizeBounded(t *testing.T) {
+	s := newIntrospectionTestServer(t)
+	resolver := newTestIntrospectionResolver(t, s, time.Minute)
+	r, ok := resolver.(*introspectionResolver)
+	require.True(t, ok)
+
+	for i := range introspectionCacheMaxEntries + 100 {
+		r.store(fmt.Sprintf("key-%d", i), introspectionCacheEntry{
+			active: true, sub: "user", expiresAt: time.Now().Add(time.Minute),
+		})
+	}
+
+	require.LessOrEqual(
+		t, len(r.cache), introspectionCacheMaxEntries, "cache must never exceed the entry cap",
+	)
+}
+
+func TestIntrospectionResolver_Resolve_OversizedResponse_ErrUnavailable(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	huge := strings.Repeat("a", 2<<20)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(introspectionResponse{Active: true, Sub: huge})
+	}))
+	t.Cleanup(srv.Close)
+
+	r, err := NewResolver(
+		t.Context(), "rotatingKey", newIntrospectionProfile(srv.URL, time.Minute), nil,
+	)
+	require.NoError(t, err)
+
+	_, err = r.Resolve(t.Context(), newIntrospectionRequest("cred-a"))
+	require.ErrorIs(t, err, ErrUnavailable, "a response over the decode limit must be rejected")
 }
 
 func TestIntrospectionResolver_CacheKey_DoesNotStoreRawCredential(t *testing.T) {

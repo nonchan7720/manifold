@@ -35,6 +35,15 @@ func newHeaderResolver(
 ) (*headerResolver, error) {
 	r := &headerResolver{profile: profileName, header: p.Header}
 	if p.Hash {
+		// Defense in depth: gateway config validates encryptKey is 32 bytes,
+		// but a resolver must not silently derive a weak/empty key if that
+		// validation is ever bypassed (e.g. a future caller of NewResolver).
+		if len(encryptKey) != 32 {
+			return nil, fmt.Errorf(
+				"identity: profile %q: hash requires a 32-byte encryptKey, got %d bytes",
+				profileName, len(encryptKey),
+			)
+		}
 		key, err := hkdf.Key(
 			sha256.New, encryptKey, nil, headerHashHKDFInfo+profileName, sha256.Size,
 		)

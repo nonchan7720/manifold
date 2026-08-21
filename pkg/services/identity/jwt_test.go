@@ -264,6 +264,58 @@ func TestJWTResolver_Resolve_AudienceNotConfigured_AnyAudienceAccepted(t *testin
 	require.Equal(t, encodeIdentityKey("oauth", "user-a"), key)
 }
 
+func TestJWTResolver_Resolve_LowercaseBearerScheme_Valid(t *testing.T) {
+	f := newJWTTestFixture(t)
+	r, err := NewResolver(t.Context(), "oauth", f.profile, nil)
+	require.NoError(t, err)
+
+	token := f.sign(t, newJWTClaims("user-a", f.issuer))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp/app1", nil)
+	// RFC 7235: scheme comparison is case-insensitive.
+	req.Header.Set("Authorization", "bearer "+token)
+	key, err := r.Resolve(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, encodeIdentityKey("oauth", "user-a"), key)
+}
+
+func TestBearerToken_SchemeCaseInsensitive(t *testing.T) {
+	for _, scheme := range []string{"Bearer", "bearer", "BEARER", "BeArEr"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp/app1", nil)
+		req.Header.Set("Authorization", scheme+" some-token")
+		token, ok := bearerToken(req)
+		require.True(t, ok, "scheme %q must be accepted", scheme)
+		require.Equal(t, "some-token", token)
+	}
+}
+
+func TestJWTResolver_Resolve_DisallowedAlgorithm_ErrUnauthenticated(t *testing.T) {
+	f := newJWTTestFixture(t)
+	r, err := NewResolver(t.Context(), "oauth", f.profile, nil)
+	require.NoError(t, err)
+
+	// HS256 is symmetric and not among the JWKS-backed asymmetric algorithms
+	// this resolver allows.
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, newJWTClaims("user-a", f.issuer))
+	signed, err := token.SignedString([]byte("some-shared-secret"))
+	require.NoError(t, err)
+
+	_, err = r.Resolve(t.Context(), newBearerRequest(signed))
+	require.ErrorIs(t, err, ErrUnauthenticated)
+}
+
+func TestJWTResolver_Resolve_NoneAlgorithm_ErrUnauthenticated(t *testing.T) {
+	f := newJWTTestFixture(t)
+	r, err := NewResolver(t.Context(), "oauth", f.profile, nil)
+	require.NoError(t, err)
+
+	token := jwt.NewWithClaims(jwt.SigningMethodNone, newJWTClaims("user-a", f.issuer))
+	signed, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	require.NoError(t, err)
+
+	_, err = r.Resolve(t.Context(), newBearerRequest(signed))
+	require.ErrorIs(t, err, ErrUnauthenticated)
+}
+
 func TestJWTResolver_Resolve_ProfileIsolation_SameSubDifferentProfile_DifferentIdentityKey(
 	t *testing.T,
 ) {

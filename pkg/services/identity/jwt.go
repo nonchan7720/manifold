@@ -26,6 +26,16 @@ type jwtResolver struct {
 	kf       keyfunc.Keyfunc
 }
 
+// allowedJWTAlgorithms restricts accepted signatures to the asymmetric
+// algorithms a JWKS can express. HS* is deliberately excluded: it is
+// symmetric, so a JWKS (public keys only) can never legitimately back it.
+var allowedJWTAlgorithms = []string{
+	"RS256", "RS384", "RS512",
+	"ES256", "ES384", "ES512",
+	"PS256", "PS384", "PS512",
+	"EdDSA",
+}
+
 func newJWTResolver(
 	ctx context.Context,
 	profileName string,
@@ -59,7 +69,7 @@ func (r *jwtResolver) Resolve(
 		return "", ErrUnauthenticated
 	}
 
-	opts := []jwt.ParserOption{jwt.WithIssuer(r.issuer)}
+	opts := []jwt.ParserOption{jwt.WithIssuer(r.issuer), jwt.WithValidMethods(allowedJWTAlgorithms)}
 	if r.audience != "" {
 		opts = append(opts, jwt.WithAudience(r.audience))
 	}
@@ -81,11 +91,11 @@ func (r *jwtResolver) Resolve(
 }
 
 func bearerToken(req *http.Request) (string, bool) {
-	const prefix = "Bearer "
 	h := req.Header.Get("Authorization")
-	if !strings.HasPrefix(h, prefix) {
+	scheme, token, ok := strings.Cut(h, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") { // RFC 7235: scheme is case-insensitive
 		return "", false
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(h, prefix))
+	token = strings.TrimSpace(token)
 	return token, token != ""
 }

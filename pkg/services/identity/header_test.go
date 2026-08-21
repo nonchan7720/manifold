@@ -112,6 +112,24 @@ func TestHeaderResolver_Resolve_Hash_DifferentEncryptKey_DifferentIdentityKey(t 
 	require.NotEqual(t, keyA, keyB)
 }
 
+func TestHeaderResolver_NewResolver_Hash_NilEncryptKey_Error(t *testing.T) {
+	_, err := NewResolver(t.Context(), "personalKey", &config.IdentityProfile{
+		Source: config.IdentitySourceHeader,
+		Header: "X-Api-Key",
+		Hash:   true,
+	}, nil)
+	require.Error(t, err)
+}
+
+func TestHeaderResolver_NewResolver_Hash_WrongLengthEncryptKey_Error(t *testing.T) {
+	_, err := NewResolver(t.Context(), "personalKey", &config.IdentityProfile{
+		Source: config.IdentitySourceHeader,
+		Header: "X-Api-Key",
+		Hash:   true,
+	}, make([]byte, 16))
+	require.Error(t, err)
+}
+
 func TestHeaderResolver_Resolve_Hash_DifferentProfile_DifferentIdentityKey(t *testing.T) {
 	// 同じ encryptKey・同じ生ヘッダー値でも、プロファイル名が異なれば HKDF の info
 	// ラベルが分かれるため導出される identityKey も異なる（プロファイル間の分離）。
