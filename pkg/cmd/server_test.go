@@ -616,7 +616,11 @@ func TestMCPAuthMiddleware_RemotePairing_RoutesEachUserToTheirOwnBinding(t *test
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		text, _ := result.Content[0].(*mcp.TextContent)
+		text, ok := result.Content[0].(*mcp.TextContent)
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		_, _ = w.Write([]byte(text.Text))
 	})
 	mux := http.NewServeMux()
