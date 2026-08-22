@@ -39,6 +39,29 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// stopManifold terminates the process group `go run` spawned for the
+// gateway. `go run` execs the built gateway binary as a child of its own
+// process, so killing only the `go run` PID leaves the gateway (and its bound
+// port 9999) running; detached: true (see startManifold) makes child.pid a
+// process group leader, so signaling -child.pid reaches both.
+async function stopManifold(child) {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    child.kill("SIGTERM");
+  }
+  const timeout = sleep(5000).then(() => {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  });
+  await Promise.race([exited, timeout]);
+}
+
 // startManifold launches the gateway against CONFIG_PATH with TEST=true (so
 // client.HTTPClient() permits fetching the loopback JWKS server at startup —
 // see pkg/internal/client/http.go) and JWKS_URL pointed at jwksUrl.
@@ -55,6 +78,7 @@ async function startManifold(jwksUrl) {
         TEST: "true",
       },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     },
   );
   let output = "";
@@ -72,7 +96,7 @@ async function startManifold(jwksUrl) {
     }
     await sleep(300);
   }
-  child.kill();
+  await stopManifold(child);
   throw new Error(`manifold did not report startup within timeout:\n${output}`);
 }
 
@@ -318,7 +342,7 @@ async function main() {
     log("done");
   } finally {
     if (context) await context.close();
-    if (manifold) manifold.kill();
+    await stopManifold(manifold);
     await jwks.close();
   }
 }
