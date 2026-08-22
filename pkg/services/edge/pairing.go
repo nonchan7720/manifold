@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,14 @@ type edgeTokenData struct {
 // docs/design/webmcp-reverse-gateway.ja.md).
 type PairingService struct {
 	store store.Client
+
+	// appendMu serializes appendBinding's Get-modify-Set against the store,
+	// since store.Client has no CAS/transaction to make that sequence atomic
+	// on its own. Correct as long as this is the only PairingService writing
+	// edge tokens for a deployment (v1: single replica or a sticky LB in
+	// front of several); cross-replica atomicity needs store-side CAS and is
+	// Phase 3.
+	appendMu sync.Mutex
 }
 
 // NewPairingService creates a PairingService backed by storeClient.
@@ -136,6 +145,9 @@ func (s *PairingService) appendBinding(
 	token string,
 	identityKey string,
 ) (string, error) {
+	s.appendMu.Lock()
+	defer s.appendMu.Unlock()
+
 	key := edgeTokenKeyPrefix + token
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
@@ -183,7 +195,10 @@ func (s *PairingService) Authenticate(
 	if len(data.IdentityKeys) == 0 {
 		return nil, ErrNotPaired
 	}
-	if err := s.store.Set(ctx, key, raw, edgeTokenSlidingTTL); err != nil {
+	// Expire (not Set) so this doesn't overwrite the payload with what was
+	// read here, which would silently drop a binding appendBinding wrote
+	// concurrently.
+	if err := s.store.Expire(ctx, key, edgeTokenSlidingTTL); err != nil {
 		return nil, fmt.Errorf("edge: slide edge token ttl: %w", err)
 	}
 

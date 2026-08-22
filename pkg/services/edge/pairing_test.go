@@ -2,6 +2,7 @@ package edge
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
@@ -125,6 +126,77 @@ func TestPairingService_ExchangeCode_WithInvalidExistingToken_IssuesNewToken(t *
 	keys, err := s.Authenticate(t.Context(), token)
 	require.NoError(t, err)
 	require.Equal(t, []domainedge.IdentityKey{"oauth:user-a"}, keys)
+}
+
+func TestPairingService_ExchangeCode_ConcurrentAppendBinding_BothBindingsPersist(t *testing.T) {
+	s := newTestPairingService(t)
+	firstCode, err := s.IssueCode(t.Context(), domainedge.IdentityKey("oauth:user-a"))
+	require.NoError(t, err)
+	token, err := s.ExchangeCode(t.Context(), firstCode, "")
+	require.NoError(t, err)
+
+	secondCode := seedPairingCode(t, s, domainedge.IdentityKey("saml:user-a"))
+	thirdCode := seedPairingCode(t, s, domainedge.IdentityKey("oidc:user-a"))
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, code := range []string{secondCode, thirdCode} {
+		wg.Add(1)
+		go func(code string) {
+			defer wg.Done()
+			_, err := s.ExchangeCode(t.Context(), code, token)
+			errs <- err
+		}(code)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	keys, err := s.Authenticate(t.Context(), token)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t,
+		[]domainedge.IdentityKey{"oauth:user-a", "saml:user-a", "oidc:user-a"},
+		keys,
+		"both concurrent appends must persist, not just the last writer",
+	)
+}
+
+func TestPairingService_Authenticate_DuringConcurrentAppendBinding_DoesNotDropBinding(
+	t *testing.T,
+) {
+	s := newTestPairingService(t)
+	firstCode, err := s.IssueCode(t.Context(), domainedge.IdentityKey("oauth:user-a"))
+	require.NoError(t, err)
+	token, err := s.ExchangeCode(t.Context(), firstCode, "")
+	require.NoError(t, err)
+
+	secondCode := seedPairingCode(t, s, domainedge.IdentityKey("saml:user-a"))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = s.ExchangeCode(t.Context(), secondCode, token)
+	}()
+	go func() {
+		defer wg.Done()
+		for range 20 {
+			_, _ = s.Authenticate(t.Context(), token)
+		}
+	}()
+	wg.Wait()
+
+	keys, err := s.Authenticate(t.Context(), token)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t,
+		[]domainedge.IdentityKey{"oauth:user-a", "saml:user-a"},
+		keys,
+		"Authenticate sliding the TTL must not overwrite a concurrent append",
+	)
 }
 
 func TestPairingService_ExchangeCode_BindingsAreIsolatedBetweenTokens(t *testing.T) {
