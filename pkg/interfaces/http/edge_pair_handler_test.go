@@ -353,3 +353,64 @@ func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersReadsHeaderFromCustomCI
 	handler.Pair(rec, req)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
+
+func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersIgnoresSpoofedCFConnectingIP(
+	t *testing.T,
+) {
+	handler, pairing := newTestEdgePairHandlerWithConfig(t, config.EdgeConfig{
+		TrustedForwarders: []string{"192.0.2.0/24"},
+	})
+
+	// Each request claims a distinct CF-Connecting-IP; if that header were
+	// honored for a trustedForwarders-origin connection it would bypass the
+	// rate limit by spreading attempts across "different" IPs.
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		req := newPairRequest(t, "192.0.2.1:1234", code)
+		req.Header.Set("CF-Connecting-IP", fmt.Sprintf("198.51.100.%d", i))
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
+	}
+
+	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
+	require.NoError(t, err)
+	req := newPairRequest(t, "192.0.2.1:1234", code)
+	req.Header.Set("CF-Connecting-IP", "198.51.100.99")
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"a spoofed CF-Connecting-IP from a trustedForwarders-origin connection must not "+
+			"create separate rate-limit buckets")
+}
+
+func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareIgnoresSpoofedXForwardedFor(t *testing.T) {
+	handler, pairing := newTestEdgePairHandlerWithConfig(
+		t, config.EdgeConfig{TrustCloudflare: true},
+	)
+
+	// 173.245.48.1 falls inside Cloudflare's published range 173.245.48.0/20.
+	// Each request claims a distinct X-Forwarded-For; if that header were
+	// honored for a Cloudflare-origin connection it would bypass the rate
+	// limit by spreading attempts across "different" IPs.
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		req := newPairRequest(t, "173.245.48.1:1234", code)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i))
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
+	}
+
+	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
+	require.NoError(t, err)
+	req := newPairRequest(t, "173.245.48.1:1234", code)
+	req.Header.Set("X-Forwarded-For", "198.51.100.99")
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"a spoofed X-Forwarded-For from a Cloudflare-origin connection must not "+
+			"create separate rate-limit buckets")
+}

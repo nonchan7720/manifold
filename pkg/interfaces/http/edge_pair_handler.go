@@ -3,6 +3,7 @@ package httphandler
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -11,30 +12,60 @@ import (
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 )
 
+var (
+	xForwardedForHeaders  = []string{"X-Forwarded-For"}
+	cfConnectingIPHeaders = []string{"CF-Connecting-IP"}
+)
+
 // EdgePairHandler serves POST /edge/pair, exchanging a pairing code (issued
 // via the create_pairing_code tool) for a long-lived edge token.
 type EdgePairHandler struct {
-	pairing    *edgeservices.PairingService
-	remoteAddr *remoteaddr.Addr
+	pairing         *edgeservices.PairingService
+	forwarderGroups []*remoteaddr.Addr
 }
 
-// NewEdgePairHandler creates an EdgePairHandler backed by pairing. The
-// forwarders trusted to resolve RateLimitPairAttempt's caller IP are RFC1918
-// (always, since it can't be spoofed over the internet) plus, opt-in via
-// edgeCfg, Cloudflare's published ranges and any operator-supplied CIDRs —
-// see docs/design/webmcp-reverse-gateway-phase2.ja.md「Phase 1 からの持ち越し判断事項」.
+// NewEdgePairHandler creates an EdgePairHandler backed by pairing. Each
+// trusted-proxy group gets its own remoteaddr.Addr scoped to the single
+// header that group's proxy actually sets: RFC1918 (always, since it can't
+// be spoofed over the internet) and edge.trustedForwarders (an
+// operator-supplied CIDR, e.g. an ALB/Ingress subnet) both read
+// X-Forwarded-For, while Cloudflare's published ranges — opt-in via
+// edgeCfg.TrustCloudflare — read CF-Connecting-IP. Keeping the headers
+// scoped per group stops a request that only arrives through one trusted
+// proxy from forging the header another group would trust — see
+// docs/design/webmcp-reverse-gateway-phase2.ja.md「Phase 1 からの持ち越し判断事項」.
 func NewEdgePairHandler(
 	pairing *edgeservices.PairingService,
 	edgeCfg config.EdgeConfig,
 ) *EdgePairHandler {
-	remoteAddr := remoteaddr.Parse().SetForwarders(rfc1918Forwarders)
+	groups := []*remoteaddr.Addr{
+		remoteaddr.Parse().SetForwarders(rfc1918Forwarders).SetHeaders(xForwardedForHeaders),
+	}
 	if edgeCfg.TrustCloudflare {
-		remoteAddr.AddForwarders(cloudflareForwarders)
+		groups = append(groups, remoteaddr.Parse().
+			SetForwarders(cloudflareForwarders).
+			SetHeaders(cfConnectingIPHeaders))
 	}
 	if len(edgeCfg.TrustedForwarders) > 0 {
-		remoteAddr.AddForwarders(edgeCfg.TrustedForwarders)
+		groups = append(groups, remoteaddr.Parse().
+			SetForwarders(edgeCfg.TrustedForwarders).
+			SetHeaders(xForwardedForHeaders))
 	}
-	return &EdgePairHandler{pairing: pairing, remoteAddr: remoteAddr}
+	return &EdgePairHandler{pairing: pairing, forwarderGroups: groups}
+}
+
+// resolveIP returns r's caller IP for /edge/pair rate limiting: the raw TCP
+// peer address, unless it falls within a trusted group's forwarders, in
+// which case that group's own header is trusted instead (see
+// NewEdgePairHandler).
+func (h *EdgePairHandler) resolveIP(r *http.Request) string {
+	raw, _, _ := net.SplitHostPort(r.RemoteAddr)
+	for _, group := range h.forwarderGroups {
+		if ip, _ := group.IP(r); ip != raw {
+			return ip
+		}
+	}
+	return raw
 }
 
 // Pair handles POST /edge/pair {"code": "12345678", "token": "<existing edge
@@ -50,7 +81,7 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 	}
 
-	ip, _ := h.remoteAddr.IP(r)
+	ip := h.resolveIP(r)
 	if err = h.pairing.RateLimitPairAttempt(ctx, ip); err != nil {
 		if errors.Is(err, edgeservices.ErrIPRateLimited) {
 			writeError(http.StatusTooManyRequests, "rate_limited")
