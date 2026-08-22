@@ -390,6 +390,9 @@ func TestMCPAuthMiddleware_RemotePairing_ReverseServer_Unauthenticated_401(t *te
 	defer resp.Body.Close() //nolint: errcheck
 
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Contains(t, resp.Header.Get("WWW-Authenticate"), "Bearer resource_metadata=",
+		"a 401 must challenge with the same scheme as middleware.JWT's pass-through path, "+
+			"so an OAuth client can discover the auth flow via RFC 6750")
 }
 
 func TestMCPAuthMiddleware_RemotePairing_ReverseServer_Unavailable_503(t *testing.T) {

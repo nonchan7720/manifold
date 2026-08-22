@@ -141,17 +141,26 @@ func identityKeyFromReverseServer(
 
 // writeIdentityError maps identityKeyFromReverseServer's error to the
 // JSON error body {"error": code} used across the edge endpoints (see
-// httphandler.EdgePairHandler): 401 for a bad/missing credential, 503 while
-// the identity source is unreachable, 500 for anything else (a wiring bug,
-// since config validation should make every other case unreachable).
-func writeIdentityError(w http.ResponseWriter, err error) {
+// httphandler.EdgePairHandler): 401 for a bad/missing credential (with the
+// same WWW-Authenticate challenge as middleware.JWT's pass-through path,
+// since reverse skips that middleware), 503 while the identity source is
+// unreachable, 500 for anything else (a wiring bug, since config validation
+// should make every other case unreachable). Every case is logged since none
+// of them carry through to the response body beyond the short error code.
+func writeIdentityError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	switch {
 	case errors.Is(err, identity.ErrUnauthenticated):
 		status, code = http.StatusUnauthorized, "unauthenticated"
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+			`Bearer resource_metadata="%s"`,
+			middleware.ProtectedResourceMetadataURL(r),
+		))
 	case errors.Is(err, identity.ErrUnavailable):
 		status, code = http.StatusServiceUnavailable, "identity_unavailable"
 	}
+	slog.ErrorContext(r.Context(), "mcpAuthMiddleware: failed to resolve identityKey",
+		slog.String("error", err.Error()), slog.Int("status", status), slog.String("code", code))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
@@ -186,7 +195,7 @@ func mcpAuthMiddleware(
 				r.Context(), srv, edgeCfg, identityResolvers, r,
 			)
 			if err != nil {
-				writeIdentityError(w, err)
+				writeIdentityError(w, r, err)
 				return
 			}
 			ctx := domainedge.WithIdentityKey(r.Context(), identityKey)

@@ -26,19 +26,9 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 			}
 			tokenStr := extractBearerToken(r)
 			if tokenStr == "" {
-				scheme := "http"
-				if r.TLS != nil {
-					scheme = "https"
-				}
-				// リバプロがいる場合
-				if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-					scheme = forwardedProto
-				}
-				baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-				metadataURL := baseURL + "/.well-known/oauth-protected-resource"
 				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
 					`Bearer resource_metadata="%s"`,
-					metadataURL,
+					ProtectedResourceMetadataURL(r),
 				))
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
@@ -48,6 +38,21 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// ProtectedResourceMetadataURL builds the RFC 9728 resource metadata URL for
+// r's host/scheme, used as the WWW-Authenticate challenge's
+// resource_metadata parameter (RFC 6750) on a 401.
+func ProtectedResourceMetadataURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	// リバプロがいる場合
+	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+	return fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource", scheme, r.Host)
 }
 
 func extractBearerToken(r *http.Request) string {
