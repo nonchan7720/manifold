@@ -236,11 +236,9 @@ func TestConfig_ValidateWithContext_Identities_ValidProfile_Valid(t *testing.T) 
 
 // --- Config.ValidateWithContext: Server.Identity reference integrity ---
 //
-// pairing.type: remote is still rejected by PairingConfig.ValidateWithContext
-// in this PR (see docs/design/webmcp-reverse-gateway-phase2.ja.md, Phase 2a);
-// the reference-integrity check itself is exercised directly against
-// Server.ValidateWithContext in mcp_test.go, the same way the existing
-// "identity is required unless static" check already is.
+// The reference-integrity check itself (remote + known/unknown profile name)
+// is exercised directly against Server.ValidateWithContext in mcp_test.go and
+// at the Config level in config_test.go.
 
 func TestConfig_ValidateWithContext_Reverse_StaticPairing_UnknownIdentity_StillValid(t *testing.T) {
 	// static は identity を使わないため、未定義のプロファイル名を指していてもエラーにしない。
