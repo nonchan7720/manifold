@@ -342,7 +342,7 @@ func TestPairingService_RateLimitPairAttempt_UnexpectedStoreError_Propagates(t *
 	s := NewPairingService(failing)
 
 	err = s.RateLimitPairAttempt(t.Context(), "203.0.113.1")
-	require.Error(t, err)
+	require.ErrorIs(t, err, wantErr)
 	require.False(t, errors.Is(err, ErrIPRateLimited),
 		"an unexpected store failure resolving the counter must not look like "+
 			"a normal rate limit hit")
@@ -469,7 +469,7 @@ func TestPairingService_recordExchangeFailure_UnexpectedStoreError_Propagates(t 
 	s := NewPairingService(failing)
 
 	err = s.recordExchangeFailure(t.Context(), "00000000")
-	require.Error(t, err)
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestPairingService_ExchangeCode_RecordFailureStoreError_DoesNotWriteFailureCounter(
@@ -519,5 +519,6 @@ func TestPairingService_ExchangeCode_Success_DoesNotCreateFailureCounter(t *test
 	require.NoError(t, err)
 
 	_, err = s.store.Get(t.Context(), pairFailureKeyPrefix+code)
-	require.Error(t, err, "a successful exchange must not create a failure counter entry")
+	require.ErrorIs(t, err, store.ErrNotFound,
+		"a successful exchange must not create a failure counter entry")
 }
