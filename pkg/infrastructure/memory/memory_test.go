@@ -94,6 +94,38 @@ func TestDel_NotExisting(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestExpire_UpdatesTTLWithoutChangingValue(t *testing.T) {
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
+
+	require.NoError(t, c.Set(ctx, "k", "value1", time.Millisecond))
+	require.NoError(t, c.Expire(ctx, "k", time.Minute))
+
+	time.Sleep(5 * time.Millisecond)
+	got, err := c.Get(ctx, "k")
+	require.NoError(t, err)
+	require.Equal(t, "value1", got, "Expire must not change the stored value")
+}
+
+func TestExpire_NotFound(t *testing.T) {
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
+
+	err := c.Expire(ctx, "nonexistent", time.Minute)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "key not found")
+}
+
+func TestExpire_Expired(t *testing.T) {
+	ctx := t.Context()
+	c := newTestClient(ctx, t)
+
+	require.NoError(t, c.Set(ctx, "k", "val", -time.Second))
+	err := c.Expire(ctx, "k", time.Minute)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "key not found")
+}
+
 func TestSet_ValueTypes(t *testing.T) {
 	t.Run("string", func(t *testing.T) {
 		ctx := t.Context()
@@ -159,6 +191,7 @@ func TestImplementsStoreClient(t *testing.T) {
 		Set(ctx context.Context, key string, value any, expiration time.Duration) error
 		Get(ctx context.Context, key string) (string, error)
 		Del(ctx context.Context, key string) error
+		Expire(ctx context.Context, key string, expiration time.Duration) error
 		Close() error
 	} = c
 }

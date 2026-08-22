@@ -573,6 +573,13 @@ func (m *mockStore) Get(_ context.Context, key string) (string, error) {
 	return v, nil
 }
 
+func (m *mockStore) Expire(_ context.Context, key string, _ time.Duration) error {
+	if _, ok := m.data[key]; !ok {
+		return fmt.Errorf("key not found: %s", key)
+	}
+	return nil
+}
+
 func (m *mockStore) Del(_ context.Context, key string) error {
 	delete(m.data, key)
 	return nil

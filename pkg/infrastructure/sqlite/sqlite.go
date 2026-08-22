@@ -105,6 +105,30 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	return value, nil
 }
 
+// Expire はキーの値を変更せずTTLだけを更新する。キーが存在しないか期限切れの場合はエラーを返す。
+func (c *Client) Expire(ctx context.Context, key string, expiration time.Duration) (rErr error) {
+	ctx = trace.StartSpan(ctx, "sqlite/Client/Expire")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	expiresAt := time.Now().Add(expiration).Unix()
+	res, err := c.db.ExecContext(
+		ctx,
+		`UPDATE kv_store SET expires_at = ? WHERE key = ? AND expires_at > ?`,
+		expiresAt, key, time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite Expire: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite Expire: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("key not found: %s", key)
+	}
+	return nil
+}
+
 // Del はキーを削除する。
 func (c *Client) Del(ctx context.Context, key string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "sqlite/Client/Del")
