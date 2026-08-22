@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/uptrace/opentelemetry-go-extra/otelsql"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	_ "modernc.org/sqlite"
@@ -98,7 +99,7 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	).Scan(&value)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("key not found: %s", key)
+			return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
 		}
 		return "", fmt.Errorf("sqlite Get: %w", err)
 	}

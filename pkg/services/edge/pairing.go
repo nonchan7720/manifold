@@ -119,7 +119,9 @@ func (s *PairingService) IssueCode(
 // pairIPRateLimitMax attempts have been seen within the window. This bounds
 // brute-force volume independently of ExchangeCode's per-code failure
 // counter (see 持ち越し判断事項 #4 in
-// docs/design/webmcp-reverse-gateway-phase2.ja.md).
+// docs/design/webmcp-reverse-gateway-phase2.ja.md). An unexpected store
+// failure resolving the current count is propagated rather than silently
+// restarting the counter at 1.
 func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) error {
 	s.rateLimitMu.Lock()
 	defer s.rateLimitMu.Unlock()
@@ -128,8 +130,10 @@ func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) er
 	data := ipRateLimitData{Count: 1, ExpiresAt: time.Now().Add(pairIPRateLimitWindow)}
 	ttl := pairIPRateLimitWindow
 
-	if raw, err := s.store.Get(ctx, key); err == nil {
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+	stored, err := s.store.Get(ctx, key)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal([]byte(stored), &data); err != nil {
 			return fmt.Errorf("edge: decode ip rate limit data: %w", err)
 		}
 		if data.Count >= pairIPRateLimitMax {
@@ -139,13 +143,15 @@ func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) er
 		if ttl = time.Until(data.ExpiresAt); ttl <= 0 {
 			ttl = pairIPRateLimitWindow
 		}
+	case !errors.Is(err, store.ErrNotFound):
+		return fmt.Errorf("edge: get ip rate limit: %w", err)
 	}
 
-	raw, err := json.Marshal(data)
+	payload, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	if err := s.store.Set(ctx, key, raw, ttl); err != nil {
+	if err := s.store.Set(ctx, key, payload, ttl); err != nil {
 		return fmt.Errorf("edge: store ip rate limit: %w", err)
 	}
 	return nil
@@ -173,7 +179,10 @@ func (s *PairingService) ExchangeCode(
 	key := pairingCodeKeyPrefix + code
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
-		s.recordExchangeFailure(ctx, code)
+		if recErr := s.recordExchangeFailure(ctx, code); recErr != nil {
+			slog.ErrorContext(ctx, "edge: failed to record pairing code failure",
+				slog.String("error", recErr.Error()))
+		}
 		return "", ErrInvalidCode
 	}
 	_ = s.store.Del(ctx, key)
@@ -263,25 +272,30 @@ func (s *PairingService) isPairCodeBlocked(ctx context.Context, code string) boo
 // pairingCodeTTL, so the block expires alongside the code space it guards).
 // Counting failures against a code that never existed is intentional and
 // harmless — the counter key just expires with the TTL (持ち越し判断事項 #4).
-func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) {
+// An unexpected store failure resolving the current count is propagated
+// rather than silently restarting the counter at 1.
+func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) error {
 	s.failureMu.Lock()
 	defer s.failureMu.Unlock()
 
 	key := pairFailureKeyPrefix + code
 	count := 1
-	if raw, err := s.store.Get(ctx, key); err == nil {
-		if n, convErr := strconv.Atoi(raw); convErr == nil {
+	stored, err := s.store.Get(ctx, key)
+	switch {
+	case err == nil:
+		if n, convErr := strconv.Atoi(stored); convErr == nil {
 			count = n + 1
 		}
+	case !errors.Is(err, store.ErrNotFound):
+		return fmt.Errorf("edge: get pairing code failure count: %w", err)
 	}
 	if err := s.store.Set(ctx, key, strconv.Itoa(count), pairingCodeTTL); err != nil {
-		slog.ErrorContext(ctx, "edge: failed to record pairing code failure",
-			slog.String("error", err.Error()))
-		return
+		return fmt.Errorf("edge: record pairing code failure: %w", err)
 	}
 	if count >= pairFailureLimit {
 		_ = s.store.Del(ctx, pairingCodeKeyPrefix+code)
 	}
+	return nil
 }
 
 // Authenticate validates an edge token, slides its TTL forward, and returns

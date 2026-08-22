@@ -1,13 +1,16 @@
 package edge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +20,22 @@ func newTestPairingService(t *testing.T) *PairingService {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = storeClient.Close() })
 	return NewPairingService(storeClient)
+}
+
+// failingGetStore wraps a store.Client and fails Get for keys matching
+// keyPrefix with a non-ErrNotFound error, simulating a backend outage
+// (as opposed to a genuinely absent key) isolated to one key space.
+type failingGetStore struct {
+	store.Client
+	keyPrefix string
+	err       error
+}
+
+func (s *failingGetStore) Get(ctx context.Context, key string) (string, error) {
+	if strings.HasPrefix(key, s.keyPrefix) {
+		return "", s.err
+	}
+	return s.Client.Get(ctx, key)
 }
 
 // seedPairingCode stores a pairing code bound to identityKey directly,
@@ -314,6 +333,21 @@ func TestPairingService_RateLimitPairAttempt_IndependentPerIP(t *testing.T) {
 	)
 }
 
+func TestPairingService_RateLimitPairAttempt_UnexpectedStoreError_Propagates(t *testing.T) {
+	memClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memClient.Close() })
+	wantErr := errors.New("store unavailable")
+	failing := &failingGetStore{Client: memClient, keyPrefix: ipRateLimitKeyPrefix, err: wantErr}
+	s := NewPairingService(failing)
+
+	err = s.RateLimitPairAttempt(t.Context(), "203.0.113.1")
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrIPRateLimited),
+		"an unexpected store failure resolving the counter must not look like "+
+			"a normal rate limit hit")
+}
+
 func TestPairingService_RateLimitPairAttempt_ConcurrentCallsCountExactly(t *testing.T) {
 	s := newTestPairingService(t)
 	const attempts = 30
@@ -424,6 +458,41 @@ func TestPairingService_ExchangeCode_ConcurrentFailures_BlocksAfterExactlyFiveFa
 	seedPairingCodeWithValue(t, s, code, domainedge.StaticIdentityKey)
 	_, err := s.ExchangeCode(t.Context(), code, "")
 	require.ErrorIs(t, err, ErrInvalidCode)
+}
+
+func TestPairingService_recordExchangeFailure_UnexpectedStoreError_Propagates(t *testing.T) {
+	memClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memClient.Close() })
+	wantErr := errors.New("store unavailable")
+	failing := &failingGetStore{Client: memClient, keyPrefix: pairFailureKeyPrefix, err: wantErr}
+	s := NewPairingService(failing)
+
+	err = s.recordExchangeFailure(t.Context(), "00000000")
+	require.Error(t, err)
+}
+
+func TestPairingService_ExchangeCode_RecordFailureStoreError_DoesNotWriteFailureCounter(
+	t *testing.T,
+) {
+	memClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memClient.Close() })
+	failing := &failingGetStore{
+		Client:    memClient,
+		keyPrefix: pairFailureKeyPrefix,
+		err:       errors.New("store unavailable"),
+	}
+	s := NewPairingService(failing)
+
+	_, err = s.ExchangeCode(t.Context(), "00000000", "")
+	require.ErrorIs(t, err, ErrInvalidCode,
+		"the code itself is invalid regardless of the failure-counter store's health")
+
+	_, getErr := memClient.Get(t.Context(), pairFailureKeyPrefix+"00000000")
+	require.ErrorIs(t, getErr, store.ErrNotFound,
+		"recordExchangeFailure must not silently write a fresh counter over an "+
+			"unexpected store failure")
 }
 
 func TestPairingService_ExchangeCode_Success_DoesNotCreateFailureCounter(t *testing.T) {

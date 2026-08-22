@@ -2,12 +2,14 @@ package redis_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,6 +41,8 @@ func TestGet_NotFound(t *testing.T) {
 
 	_, err := c.Get(ctx, "nonexistent")
 	require.Error(t, err)
+	require.True(t, errors.Is(err, store.ErrNotFound),
+		"a missing key must be distinguishable from an unexpected backend failure")
 }
 
 func TestSet_Overwrite(t *testing.T) {
