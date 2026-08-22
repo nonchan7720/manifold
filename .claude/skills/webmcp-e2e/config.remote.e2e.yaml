@@ -1,0 +1,25 @@
+gateway:
+  port: 9999
+  encryptKey: ${ENCRYPT_KEY}
+  edge:
+    auth: pairing
+    pairing:
+      type: remote
+
+identities:
+  oauth:
+    source: jwt
+    claim: sub
+    issuer: https://e2e-idp.example.com
+    jwksURL: ${JWKS_URL}
+    audience: manifold
+
+mcpServers:
+  app1:
+    description: WebMCP tools exposed by the local dev app at localhost:5173
+    transport: reverse
+    origin: http://localhost:5173
+    identity: oauth
+
+sqlite:
+  path: ./tmp/manifold-remote-e2e.db
