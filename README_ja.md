@@ -4,7 +4,6 @@
 
 [![CI](https://github.com/nonchan7720/manifold/actions/workflows/ci.yaml/badge.svg)](https://github.com/nonchan7720/manifold/actions/workflows/ci.yaml)
 [![Release](https://img.shields.io/github/v/release/nonchan7720/manifold)](https://github.com/nonchan7720/manifold/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/nonchan7720/manifold)](https://goreportcard.com/report/github.com/nonchan7720/manifold)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [English](README.md) | 日本語
