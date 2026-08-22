@@ -25,7 +25,7 @@ identities:
 mcpServers:
   # reverse transport: tools live in the browser tab itself (WebMCP /
   # document.modelContext), reached through the Manifold browser extension's
-  # outbound WebSocket connection to /edge/ws. Keep https://localhost:5173
+  # outbound WebSocket connection to /edge/ws. Keep http://localhost:5173
   # open in a tab for this server's tools to be callable.
   app1:
     description: WebMCP tools exposed by the local dev app at localhost:5173
