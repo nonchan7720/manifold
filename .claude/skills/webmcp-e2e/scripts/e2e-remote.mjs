@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startJwksServer, signJWT } from "./jwt-helper.mjs";
@@ -308,6 +309,30 @@ async function main() {
     assertExpected(
       results.userBToolNames.length === 1 && results.userBToolNames[0] === "create_pairing_code",
       `an unpaired identityKey must only see create_pairing_code, got: ${results.userBToolNames}`,
+    );
+
+    // --- Step: a rotated JWT for the SAME sub must still reach user-a's
+    // paired tab — proves routing is keyed by identityKey, not by the
+    // Bearer string. ---
+    const tokenA2 = await signJWT({
+      privateKey: jwks.privateKey,
+      kid: KID,
+      sub: "e2e-user-a",
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      jti: randomUUID(),
+    });
+    const clientA2 = await newMcpClient(tokenA2);
+    const toolsA2 = (await clientA2.listTools()).tools.map((t) => t.name);
+    await clientA2.close();
+    results.rotatedTokenToolNames = toolsA2;
+    log(
+      "tools/list as user-a (rotated JWT, same sub)  expected: includes echo  actual:",
+      toolsA2,
+    );
+    assertExpected(
+      toolsA2.includes("echo"),
+      `a rotated JWT for the same sub must still see the paired tools, got: ${toolsA2}`,
     );
 
     // --- Step: close the tab, then call increment_counter again as tokenA ---

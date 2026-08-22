@@ -29,12 +29,15 @@ export async function startJwksServer(kid) {
 
 // signJWT issues an RS256 JWT for sub/issuer/audience, matching the claims
 // shape identity.Resolver(source: jwt) expects (see pkg/services/identity).
-export async function signJWT({ privateKey, kid, sub, issuer, audience }) {
-  return new jose.SignJWT({ sub })
+// An optional jti lets callers mint distinct tokens for the same sub, e.g.
+// to verify routing survives token rotation.
+export async function signJWT({ privateKey, kid, sub, issuer, audience, jti }) {
+  let builder = new jose.SignJWT({ sub })
     .setProtectedHeader({ alg: "RS256", kid })
     .setIssuer(issuer)
     .setAudience(audience)
     .setIssuedAt()
-    .setExpirationTime("5m")
-    .sign(privateKey);
+    .setExpirationTime("5m");
+  if (jti) builder = builder.setJti(jti);
+  return builder.sign(privateKey);
 }
