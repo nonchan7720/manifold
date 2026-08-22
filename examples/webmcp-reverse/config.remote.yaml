@@ -1,0 +1,38 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+  # Multi-user setup: each agent request carries a Bearer JWT that Manifold
+  # itself verifies (issuer + JWKS + audience) to derive a stable identityKey
+  # per user. The browser extension pairs once per identityKey via
+  # create_pairing_code / POST /edge/pair.
+  edge:
+    auth: pairing
+    pairing:
+      type: remote # remote is also the default; spelled out here for clarity
+
+# Named "how to derive an identityKey from an agent request" profiles,
+# referenced by a reverse mcpServers entry's `identity` field.
+identities:
+  oauth:
+    source: jwt
+    claim: sub # defaults to sub; shown here for clarity
+    issuer: https://idp.example.com
+    jwksURL: https://idp.example.com/.well-known/jwks.json
+    audience: manifold # optional
+
+mcpServers:
+  # reverse transport: tools live in the browser tab itself (WebMCP /
+  # document.modelContext), reached through the Manifold browser extension's
+  # outbound WebSocket connection to /edge/ws. Keep https://localhost:5173
+  # open in a tab for this server's tools to be callable.
+  app1:
+    description: WebMCP tools exposed by the local dev app at localhost:5173
+    transport: reverse
+    origin: http://localhost:5173
+    identity: oauth
+    # callTimeout: 60s  # optional, defaults to 60s
+
+sqlite:
+  path: ./tmp/manifold.db
