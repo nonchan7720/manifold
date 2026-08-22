@@ -5,6 +5,12 @@ gateway:
     auth: pairing
     pairing:
       type: remote
+    # 127.0.0.1/32: E2E スクリプトは常にループバック経由で /edge/pair を叩くため、
+    # trustedForwarders に加えないと edge_pair_handler.go の resolveIP がどの
+    # グループにもマッチせず、送信するヘッダーを一切見ない(常に生の RemoteAddr)。
+    # 偽装ヘッダーが無視されることを検証するテストのための設定。
+    trustedForwarders:
+      - 127.0.0.1/32
 
 identities:
   oauth:

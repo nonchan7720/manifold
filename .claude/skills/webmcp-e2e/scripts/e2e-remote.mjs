@@ -95,6 +95,58 @@ async function issuePairingCode(token) {
   return match[1];
 }
 
+// pairIPRateLimitMax in pkg/services/edge/pairing.go — how many /edge/pair
+// attempts a trusted forwarder's real IP may make within the rate-limit
+// window before further attempts return 429.
+const PAIR_IP_RATE_LIMIT_MAX = 10;
+
+async function pairAttempt(headers) {
+  const res = await fetch("http://localhost:9999/edge/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ code: "00000000" }),
+  });
+  return res.status;
+}
+
+async function testTrustedForwarderHeaderSpoofingIsIgnored() {
+  const realIP = "203.0.113.1";
+  const spoofedCFIP = "198.51.100.99";
+
+  const statuses = [];
+  for (let i = 0; i < PAIR_IP_RATE_LIMIT_MAX; i++) {
+    statuses.push(await pairAttempt({ "X-Forwarded-For": realIP }));
+  }
+  const eleventh = await pairAttempt({ "X-Forwarded-For": realIP });
+  const spoofed = await pairAttempt({
+    "X-Forwarded-For": realIP,
+    "CF-Connecting-IP": spoofedCFIP,
+  });
+
+  const outcome = {
+    firstTenStatuses: statuses,
+    eleventhExpected: 429,
+    eleventhActual: eleventh,
+    spoofedAttemptExpected: 429,
+    spoofedAttemptActual: spoofed,
+  };
+  log("=== header spoofing isolation check (trustedForwarders: 127.0.0.1/32) ===");
+  log(`attempts 1-${PAIR_IP_RATE_LIMIT_MAX} (X-Forwarded-For: ${realIP}) statuses:`, statuses);
+  log(`attempt ${PAIR_IP_RATE_LIMIT_MAX + 1} (same IP)  expected: 429  actual: ${eleventh}`);
+  log(
+    `attempt ${PAIR_IP_RATE_LIMIT_MAX + 2} (X-Forwarded-For: ${realIP} + spoofed ` +
+      `CF-Connecting-IP: ${spoofedCFIP})  expected: 429 (CF-Connecting-IP must be ` +
+      `ignored for a trustedForwarders-origin connection)  actual: ${spoofed}`,
+  );
+  assertExpected(eleventh === 429, `11th attempt should be rate-limited, got ${eleventh}`);
+  assertExpected(
+    spoofed === 429,
+    `a spoofed CF-Connecting-IP must not bypass the trustedForwarders' ` +
+      `X-Forwarded-For rate limit, got ${spoofed}`,
+  );
+  return outcome;
+}
+
 async function main() {
   const results = {};
 
@@ -243,6 +295,17 @@ async function main() {
     }
 
     await popup.screenshot({ path: path.join(SHOT_DIR, "06-popup-final.png") });
+
+    // --- Step: spoofed-header isolation for a trustedForwarders-origin
+    // connection (pkg/interfaces/http/edge_pair_handler.go's resolveIP,
+    // fixed per CodeRabbit review 4999741085). config.remote.e2e.yaml trusts
+    // 127.0.0.1/32 (this script's own connection) as a trustedForwarders
+    // entry, which only honors X-Forwarded-For — CF-Connecting-IP must be
+    // ignored for it. Uses an invalid code so /edge/pair still runs
+    // RateLimitPairAttempt (before code validation) without consuming a real
+    // pairing code. ---
+    results.headerSpoofingCheck = await testTrustedForwarderHeaderSpoofingIsIgnored();
+
     fs.writeFileSync(path.join(SHOT_DIR, "results.json"), JSON.stringify(results, null, 2));
 
     await context.close();
