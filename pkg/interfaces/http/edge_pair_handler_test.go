@@ -318,11 +318,14 @@ func TestEdgePairHandler_Pair_RateLimit_RemoteAddrWithoutPort_KeyedPerAddress(t 
 func TestEdgePairHandler_Pair_RateLimit_UntrustedRemoteAddrIgnoresForwardedHeader(t *testing.T) {
 	handler, pairing := newTestEdgePairHandler(t)
 
+	// Each attempt claims a distinct X-Forwarded-For; if that header were
+	// honored for an untrusted RemoteAddr it would bypass the rate limit by
+	// spreading attempts across "different" IPs.
 	for i := range 10 {
 		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
 		require.NoError(t, err)
 		req := newPairRequest(t, "203.0.113.9:1234", code)
-		req.Header.Set("X-Forwarded-For", "198.51.100.42")
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
 		rec := httptest.NewRecorder()
 		handler.Pair(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
@@ -338,16 +341,52 @@ func TestEdgePairHandler_Pair_RateLimit_UntrustedRemoteAddrIgnoresForwardedHeade
 		"an untrusted RemoteAddr must not let a spoofed X-Forwarded-For bypass its own rate limit")
 }
 
+func TestEdgePairHandler_Pair_RateLimit_XForwardedForMultiValue_UsesRightmostUntrusted(
+	t *testing.T,
+) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		req := newPairRequest(t, fmt.Sprintf("10.0.0.%d:1234", i+1), code)
+		req.Header.Set("X-Forwarded-For", "198.51.100.42, 10.0.0.200")
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
+	}
+
+	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
+	require.NoError(t, err)
+	req := newPairRequest(t, "10.0.0.11:1234", code)
+	req.Header.Set("X-Forwarded-For", "198.51.100.42, 10.0.0.200")
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"10.0.0.200 is a trusted hop and must be skipped; 198.51.100.42 is the client")
+
+	otherCode, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("other-client"))
+	require.NoError(t, err)
+	otherReq := newPairRequest(t, "10.0.0.12:1234", otherCode)
+	otherReq.Header.Set("X-Forwarded-For", "198.51.100.43, 10.0.0.200")
+	otherRec := httptest.NewRecorder()
+	handler.Pair(otherRec, otherReq)
+	require.Equal(t, http.StatusOK, otherRec.Code,
+		"a different leftmost client behind the same trusted hop gets its own bucket")
+}
+
 func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareReadsCFConnectingIP(t *testing.T) {
 	handler, pairing := newTestEdgePairHandlerWithConfig(
 		t, config.EdgeConfig{TrustCloudflare: true},
 	)
 
-	// 173.245.48.1 falls inside Cloudflare's published range 173.245.48.0/20.
+	// Each attempt arrives from a different Cloudflare edge IP (all within
+	// the published range 173.245.48.0/20); only a shared CF-Connecting-IP
+	// ties them into the same rate-limit bucket.
 	for i := range 10 {
 		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
 		require.NoError(t, err)
-		req := newPairRequest(t, "173.245.48.1:1234", code)
+		req := newPairRequest(t, fmt.Sprintf("173.245.48.%d:1234", i+1), code)
 		req.Header.Set("CF-Connecting-IP", "198.51.100.42")
 		rec := httptest.NewRecorder()
 		handler.Pair(rec, req)
@@ -356,11 +395,13 @@ func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareReadsCFConnectingIP(t *te
 
 	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
 	require.NoError(t, err)
-	req := newPairRequest(t, "173.245.48.1:1234", code)
+	req := newPairRequest(t, "173.245.48.11:1234", code)
 	req.Header.Set("CF-Connecting-IP", "198.51.100.42")
 	rec := httptest.NewRecorder()
 	handler.Pair(rec, req)
-	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"every attempt came from a different Cloudflare edge; only CF-Connecting-IP "+
+			"ties them together")
 }
 
 func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareFalseIgnoresCFConnectingIP(t *testing.T) {
@@ -370,7 +411,7 @@ func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareFalseIgnoresCFConnectingI
 		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
 		require.NoError(t, err)
 		req := newPairRequest(t, "173.245.48.1:1234", code)
-		req.Header.Set("CF-Connecting-IP", "198.51.100.42")
+		req.Header.Set("CF-Connecting-IP", fmt.Sprintf("198.51.100.%d", i+1))
 		rec := httptest.NewRecorder()
 		handler.Pair(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
@@ -379,12 +420,12 @@ func TestEdgePairHandler_Pair_RateLimit_TrustCloudflareFalseIgnoresCFConnectingI
 	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
 	require.NoError(t, err)
 	req := newPairRequest(t, "173.245.48.1:1234", code)
-	req.Header.Set("CF-Connecting-IP", "198.51.100.42")
+	req.Header.Set("CF-Connecting-IP", "198.51.100.99")
 	rec := httptest.NewRecorder()
 	handler.Pair(rec, req)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code,
-		"without trustCloudflare the Cloudflare edge's own IP (173.245.48.1) "+
-			"must be rate-limited directly")
+		"a different CF-Connecting-IP on every attempt must not open a new bucket "+
+			"when Cloudflare isn't trusted")
 }
 
 func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersReadsHeaderFromCustomCIDR(t *testing.T) {
@@ -392,10 +433,13 @@ func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersReadsHeaderFromCustomCI
 		TrustedForwarders: []string{"192.0.2.0/24"},
 	})
 
+	// Each attempt arrives from a different address within the trusted CIDR;
+	// only a shared X-Forwarded-For ties them into the same rate-limit
+	// bucket.
 	for i := range 10 {
 		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
 		require.NoError(t, err)
-		req := newPairRequest(t, "192.0.2.1:1234", code)
+		req := newPairRequest(t, fmt.Sprintf("192.0.2.%d:1234", i+1), code)
 		req.Header.Set("X-Forwarded-For", "198.51.100.42")
 		rec := httptest.NewRecorder()
 		handler.Pair(rec, req)
@@ -404,11 +448,13 @@ func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersReadsHeaderFromCustomCI
 
 	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("eleventh"))
 	require.NoError(t, err)
-	req := newPairRequest(t, "192.0.2.1:1234", code)
+	req := newPairRequest(t, "192.0.2.11:1234", code)
 	req.Header.Set("X-Forwarded-For", "198.51.100.42")
 	rec := httptest.NewRecorder()
 	handler.Pair(rec, req)
-	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code,
+		"every attempt came from a different address in the trusted CIDR; only "+
+			"X-Forwarded-For ties them together")
 }
 
 func TestEdgePairHandler_Pair_RateLimit_TrustedForwardersIgnoresSpoofedCFConnectingIP(
