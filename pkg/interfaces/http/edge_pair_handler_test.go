@@ -291,6 +291,28 @@ func TestEdgePairHandler_Pair_RateLimitStoreError_InternalServerError(t *testing
 		"a store failure resolving the rate-limit counter must not be reported as rate_limited")
 }
 
+func TestEdgePairHandler_Pair_RateLimit_RemoteAddrWithoutPort_KeyedPerAddress(t *testing.T) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, newPairRequest(t, "203.0.113.77", code))
+		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
+	}
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, newPairRequest(t, "203.0.113.77", "00000000"))
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+
+	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("other"))
+	require.NoError(t, err)
+	rec = httptest.NewRecorder()
+	handler.Pair(rec, newPairRequest(t, "203.0.113.78", code))
+	require.Equal(t, http.StatusOK, rec.Code,
+		"a port-less RemoteAddr must be keyed by its own address, not collapsed into an empty key")
+}
+
 // --- trusted forwarders (Cloudflare / custom CIDR opt-in) ---
 
 func TestEdgePairHandler_Pair_RateLimit_UntrustedRemoteAddrIgnoresForwardedHeader(t *testing.T) {

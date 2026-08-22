@@ -59,9 +59,12 @@ func NewEdgePairHandler(
 // which case that group's own header is trusted instead (see
 // NewEdgePairHandler).
 func (h *EdgePairHandler) resolveIP(r *http.Request) string {
-	raw, _, _ := net.SplitHostPort(r.RemoteAddr)
+	raw, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
 	for _, group := range h.forwarderGroups {
-		if ip, _ := group.IP(r); ip != raw {
+		if ip, _ := group.IP(r); ip != "" && ip != raw {
 			return ip
 		}
 	}
