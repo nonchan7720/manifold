@@ -179,6 +179,9 @@ func (s *PairingService) ExchangeCode(
 	key := pairingCodeKeyPrefix + code
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return "", fmt.Errorf("edge: get pairing code: %w", err)
+		}
 		if recErr := s.recordExchangeFailure(ctx, code); recErr != nil {
 			slog.ErrorContext(ctx, "edge: failed to record pairing code failure",
 				slog.String("error", recErr.Error()))

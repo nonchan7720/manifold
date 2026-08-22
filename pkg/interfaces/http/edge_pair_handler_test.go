@@ -40,6 +40,23 @@ func (s *failingSetStore) Set(
 	return s.Client.Set(ctx, key, value, expiration)
 }
 
+// failingGetStore wraps a store.Client and fails Get for keys matching
+// keyPrefix with a non-store.ErrNotFound error, simulating a backend outage
+// isolated to one key space (e.g. the pairing code itself,
+// edge:pairing_code: — see pairing.go's pairingCodeKeyPrefix).
+type failingGetStore struct {
+	store.Client
+	keyPrefix string
+	err       error
+}
+
+func (s *failingGetStore) Get(ctx context.Context, key string) (string, error) {
+	if strings.HasPrefix(key, s.keyPrefix) {
+		return "", s.err
+	}
+	return s.Client.Get(ctx, key)
+}
+
 func newTestEdgePairHandler(t *testing.T) (*EdgePairHandler, *edgeservices.PairingService) {
 	t.Helper()
 	return newTestEdgePairHandlerWithConfig(t, config.EdgeConfig{})
@@ -233,6 +250,24 @@ func TestEdgePairHandler_Pair_RateLimit_IndependentPerIP(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.Pair(rec, newPairRequest(t, "203.0.113.8:1234", code))
 	require.Equal(t, http.StatusOK, rec.Code, "rate limit must not leak across IPs")
+}
+
+func TestEdgePairHandler_Pair_ExchangeCodeStoreError_InternalServerError(t *testing.T) {
+	memClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memClient.Close() })
+	failing := &failingGetStore{
+		Client:    memClient,
+		keyPrefix: "edge:pairing_code:",
+		err:       errors.New("store unavailable"),
+	}
+	pairing := edgeservices.NewPairingService(failing)
+	handler := NewEdgePairHandler(pairing, config.EdgeConfig{})
+
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, newPairRequest(t, "203.0.113.51:1234", "00000000"))
+	require.Equal(t, http.StatusInternalServerError, rec.Code,
+		"a store failure resolving the pairing code itself must not be reported as invalid_code")
 }
 
 func TestEdgePairHandler_Pair_RateLimitStoreError_InternalServerError(t *testing.T) {

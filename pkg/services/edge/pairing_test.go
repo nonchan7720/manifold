@@ -495,6 +495,21 @@ func TestPairingService_ExchangeCode_RecordFailureStoreError_DoesNotWriteFailure
 			"unexpected store failure")
 }
 
+func TestPairingService_ExchangeCode_UnexpectedStoreError_Propagates(t *testing.T) {
+	memClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memClient.Close() })
+	wantErr := errors.New("store unavailable")
+	failing := &failingGetStore{Client: memClient, keyPrefix: pairingCodeKeyPrefix, err: wantErr}
+	s := NewPairingService(failing)
+
+	_, err = s.ExchangeCode(t.Context(), "00000000", "")
+	require.ErrorIs(t, err, wantErr,
+		"an unexpected store failure resolving the pairing code itself must not "+
+			"be reported as an invalid code")
+	require.NotErrorIs(t, err, ErrInvalidCode)
+}
+
 func TestPairingService_ExchangeCode_Success_DoesNotCreateFailureCounter(t *testing.T) {
 	s := newTestPairingService(t)
 	code, err := s.IssueCode(t.Context(), domainedge.StaticIdentityKey)

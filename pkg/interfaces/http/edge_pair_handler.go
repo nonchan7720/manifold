@@ -107,7 +107,11 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.pairing.ExchangeCode(ctx, req.Code, req.Token)
 	if err != nil {
-		writeError(http.StatusBadRequest, "invalid_code")
+		if errors.Is(err, edgeservices.ErrInvalidCode) {
+			writeError(http.StatusBadRequest, "invalid_code")
+		} else {
+			writeError(http.StatusInternalServerError, "internal_error")
+		}
 		return
 	}
 
