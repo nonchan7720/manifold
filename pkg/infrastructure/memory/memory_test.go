@@ -3,11 +3,13 @@ package memory_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,6 +50,8 @@ func TestGet_NotFound(t *testing.T) {
 	_, err := c.Get(ctx, "nonexistent")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "key not found")
+	require.True(t, errors.Is(err, store.ErrNotFound),
+		"a missing key must be distinguishable from an unexpected backend failure")
 }
 
 func TestGet_Expired(t *testing.T) {
@@ -61,6 +65,7 @@ func TestGet_Expired(t *testing.T) {
 	_, err = c.Get(ctx, "expiredkey")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "key not found")
+	require.True(t, errors.Is(err, store.ErrNotFound))
 }
 
 func TestSet_Overwrite(t *testing.T) {

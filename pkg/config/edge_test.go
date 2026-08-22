@@ -101,10 +101,12 @@ func TestNormalizeOrigin_KeepsIPv6HostWithNonDefaultPort(t *testing.T) {
 
 // --- EdgeConfig.WithDefaults ---
 
-func TestEdgeConfig_WithDefaults_FillsPairingStatic(t *testing.T) {
+func TestEdgeConfig_WithDefaults_FillsPairingRemote(t *testing.T) {
+	// 正本 docs/design/webmcp-reverse-gateway.ja.md の「拡張と identity の
+	// 紐づけ」表のとおり、既定は pairing + type: remote。
 	got := EdgeConfig{}.WithDefaults()
 	require.Equal(t, EdgeAuthPairing, got.Auth)
-	require.Equal(t, PairingTypeStatic, got.Pairing.Type)
+	require.Equal(t, PairingTypeRemote, got.Pairing.Type)
 }
 
 func TestEdgeConfig_WithDefaults_KeepsExplicitValues(t *testing.T) {
@@ -142,9 +144,34 @@ func TestEdgeConfig_ValidateWithContext_RejectsForwardAuth(t *testing.T) {
 	require.Error(t, c.ValidateWithContext(t.Context()))
 }
 
-func TestEdgeConfig_ValidateWithContext_RejectsRemotePairing(t *testing.T) {
-	// remote pairing is config structure only (not implemented yet); see the
-	// PR's "Known limitations".
+func TestEdgeConfig_ValidateWithContext_AcceptsRemotePairing(t *testing.T) {
+	// remote pairing is implemented in Phase 2a (see
+	// docs/design/webmcp-reverse-gateway-phase2.ja.md).
 	c := EdgeConfig{Auth: EdgeAuthPairing, Pairing: PairingConfig{Type: PairingTypeRemote}}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestEdgeConfig_ValidateWithContext_AcceptsStaticPairing(t *testing.T) {
+	c := EdgeConfig{Auth: EdgeAuthPairing, Pairing: PairingConfig{Type: PairingTypeStatic}}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+// --- EdgeConfig.TrustedForwarders ---
+
+func TestEdgeConfig_ValidateWithContext_AcceptsValidCIDR(t *testing.T) {
+	c := EdgeConfig{
+		Auth:              EdgeAuthPairing,
+		Pairing:           PairingConfig{Type: PairingTypeStatic},
+		TrustedForwarders: []string{"203.0.113.0/24", "2001:db8::/32"},
+	}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestEdgeConfig_ValidateWithContext_RejectsMalformedCIDR(t *testing.T) {
+	c := EdgeConfig{
+		Auth:              EdgeAuthPairing,
+		Pairing:           PairingConfig{Type: PairingTypeStatic},
+		TrustedForwarders: []string{"not-a-cidr"},
+	}
 	require.Error(t, c.ValidateWithContext(t.Context()))
 }

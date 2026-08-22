@@ -3,12 +3,14 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 )
@@ -106,7 +108,14 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	ctx = trace.StartSpan(ctx, "redis/Client/Get")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	return c.client.Get(ctx, key).Result()
+	val, err := c.client.Get(ctx, key).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
+		}
+		return "", err
+	}
+	return val, nil
 }
 
 // Expire updates a key's TTL without changing its value

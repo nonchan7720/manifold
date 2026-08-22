@@ -131,32 +131,60 @@ func baseValidReverseServer() Server {
 	}
 }
 
+// reverseValidationContext returns a context carrying an "oauth" identity
+// profile, matching baseValidReverseServer's Identity reference. The default
+// edge.pairing.type (remote) requires reverse servers to reference a known
+// identity profile, so tests that aren't specifically exercising that
+// requirement need one in context to isolate the behavior they do target.
+func reverseValidationContext(t *testing.T) context.Context {
+	t.Helper()
+	return context.WithValue(t.Context(), identitiesContextKey{}, map[string]*IdentityProfile{
+		"oauth": {
+			Source:  IdentitySourceJWT,
+			Issuer:  "https://idp.example.com",
+			JWKSURL: "https://idp.example.com/.well-known/jwks.json",
+		},
+	})
+}
+
 func TestServer_ValidateWithContext_Reverse_Valid(t *testing.T) {
 	s := baseValidReverseServer()
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.NoError(t, err)
 }
 
 func TestServer_ValidateWithContext_Reverse_RequiresOrigin(t *testing.T) {
 	s := baseValidReverseServer()
 	s.Origin = ""
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsOriginWithPath(t *testing.T) {
 	s := baseValidReverseServer()
 	s.Origin = "https://app1.example.com/tools"
+	err := s.ValidateWithContext(reverseValidationContext(t))
+	require.Error(t, err)
+}
+
+func TestServer_ValidateWithContext_Reverse_DefaultIsRemote_RequiresIdentity(t *testing.T) {
+	// エッジ設定なしの ctx はデフォルト (pairing/remote) 相当として扱われるため、
+	// identity 未指定はエラーになる。
+	s := baseValidReverseServer()
+	s.Identity = ""
 	err := s.ValidateWithContext(t.Context())
 	require.Error(t, err)
 }
 
-func TestServer_ValidateWithContext_Reverse_NoIdentityRequired_NoEdgeConfig(t *testing.T) {
-	// エッジ設定なしの ctx はデフォルト (pairing/static) 相当として扱われるため、
-	// identity 未指定でもエラーにならない。
+func TestServer_ValidateWithContext_Reverse_StaticPairing_NoIdentityRequired(t *testing.T) {
 	s := baseValidReverseServer()
 	s.Identity = ""
-	err := s.ValidateWithContext(t.Context())
+	ctx := context.WithValue(
+		t.Context(),
+		edgeContextKey{},
+		EdgeConfig{Pairing: PairingConfig{Type: PairingTypeStatic}},
+	)
+	err := s.ValidateWithContext(ctx)
 	require.NoError(t, err)
 }
 
@@ -206,7 +234,7 @@ func TestServer_ValidateWithContext_Reverse_RemotePairing_KnownIdentity_Valid(t 
 func TestServer_ValidateWithContext_Reverse_RejectsAuthValue(t *testing.T) {
 	s := baseValidReverseServer()
 	s.AuthValue = &AuthValue{Header: "X-Api-Key", Value: "secret"}
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
@@ -218,28 +246,28 @@ func TestServer_ValidateWithContext_Reverse_RejectsOAuth2(t *testing.T) {
 		AuthURL:      "https://example.com/auth",
 		TokenURL:     "https://example.com/token",
 	}
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsTokenExchange(t *testing.T) {
 	s := baseValidReverseServer()
 	s.TokenExchange = &TokenExchange{URL: "https://example.com/token"}
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsCommand(t *testing.T) {
 	s := baseValidReverseServer()
 	s.Command = "/bin/server"
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsURL(t *testing.T) {
 	s := baseValidReverseServer()
 	s.URL = "http://example.com"
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 
@@ -249,7 +277,7 @@ func TestServer_ValidateWithContext_Reverse_RejectsSpec(t *testing.T) {
 	s := baseValidReverseServer()
 	s.Spec = "openapi.yaml"
 	s.BaseURL = "https://api.example.com"
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
 }
 

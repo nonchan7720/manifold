@@ -141,20 +141,21 @@ func TestConfig_ValidateWithContext_Reverse_RemotePairing_RequiresIdentity(t *te
 }
 
 func TestConfig_ValidateWithContext_Reverse_DuplicateOrigin_Invalid(t *testing.T) {
+	// origin の一意性チェックが本題のテストなので、identity 要件は static pairing で
+	// 外して切り分ける（remote + identities の組み合わせは別テストで検証済み）。
 	cfg := newValidConfigWithServers(Servers{
 		"app1": {
 			Description: "app1",
 			Transport:   MCPTransportReverse,
 			Origin:      "https://app.example.com",
-			Identity:    "oauth",
 		},
 		"app2": {
 			Description: "app2",
 			Transport:   MCPTransportReverse,
 			Origin:      "https://APP.example.com", // 正規化後に app1 と衝突する
-			Identity:    "oauth",
 		},
 	})
+	cfg.Gateway.Edge = EdgeConfig{Pairing: PairingConfig{Type: PairingTypeStatic}}
 	err := cfg.ValidateWithContext(t.Context())
 	require.Error(t, err)
 }
@@ -165,15 +166,38 @@ func TestConfig_ValidateWithContext_Reverse_DistinctOrigins_Valid(t *testing.T) 
 			Description: "app1",
 			Transport:   MCPTransportReverse,
 			Origin:      "https://app1.example.com",
-			Identity:    "oauth",
 		},
 		"app2": {
 			Description: "app2",
 			Transport:   MCPTransportReverse,
 			Origin:      "https://app2.example.com",
+		},
+	})
+	cfg.Gateway.Edge = EdgeConfig{Pairing: PairingConfig{Type: PairingTypeStatic}}
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestConfig_ValidateWithContext_Reverse_RemotePairing_WithIdentities_Valid(t *testing.T) {
+	cfg := newValidConfigWithServers(Servers{
+		"app1": {
+			Description: "app1",
+			Transport:   MCPTransportReverse,
+			Origin:      "https://app1.example.com",
 			Identity:    "oauth",
 		},
 	})
+	cfg.Gateway.Edge = EdgeConfig{
+		Auth:    EdgeAuthPairing,
+		Pairing: PairingConfig{Type: PairingTypeRemote},
+	}
+	cfg.Identities = map[string]*IdentityProfile{
+		"oauth": {
+			Source:  IdentitySourceJWT,
+			Issuer:  "https://idp.example.com",
+			JWKSURL: "https://idp.example.com/.well-known/jwks.json",
+		},
+	}
 	err := cfg.ValidateWithContext(t.Context())
 	require.NoError(t, err)
 }

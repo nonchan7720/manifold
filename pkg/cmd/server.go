@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/aws"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/redis"
@@ -27,6 +30,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
+	"github.com/nonchan7720/manifold/pkg/services/identity"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -110,28 +114,92 @@ func resolveMCPServer(
 	return srv
 }
 
-// mcpAuthMiddleware wraps middleware.JWT for the /mcp/{server_name} route,
-// skipping it entirely when pathValue names a reverse-transport server and
-// edgeCfg uses static pairing: reverse transport has no backend to forward
-// the Bearer token to, and static pairing already binds to a fixed
-// identityKey, so the pass-through Bearer check has nothing left to gate
-// (docs/design/webmcp-reverse-gateway.ja.md「type: static」).
+// identityKeyFromReverseServer derives the identityKey for a request bound
+// for srv, a reverse-transport server: the fixed StaticIdentityKey under
+// static pairing, or the profile named by srv.Identity's Resolver under
+// remote pairing (config validation guarantees identityResolvers[srv.Identity]
+// exists whenever this runs, short of a wiring bug — see the default branch
+// of writeIdentityError).
+func identityKeyFromReverseServer(
+	ctx context.Context,
+	srv *config.Server,
+	edgeCfg config.EdgeConfig,
+	identityResolvers map[string]identity.Resolver,
+	r *http.Request,
+) (domainedge.IdentityKey, error) {
+	if edgeCfg.IsStaticPairing() {
+		return domainedge.StaticIdentityKey, nil
+	}
+	resolver, ok := identityResolvers[srv.Identity]
+	if !ok {
+		return "", fmt.Errorf(
+			"mcpAuthMiddleware: no identity resolver wired for profile %q", srv.Identity,
+		)
+	}
+	return resolver.Resolve(ctx, r)
+}
+
+// writeIdentityError maps identityKeyFromReverseServer's error to the
+// JSON error body {"error": code} used across the edge endpoints (see
+// httphandler.EdgePairHandler): 401 for a bad/missing credential (with the
+// same WWW-Authenticate challenge as middleware.JWT's pass-through path,
+// since reverse skips that middleware), 503 while the identity source is
+// unreachable, 500 for anything else (a wiring bug, since config validation
+// should make every other case unreachable). Every case is logged since none
+// of them carry through to the response body beyond the short error code.
+func writeIdentityError(w http.ResponseWriter, r *http.Request, err error) {
+	status, code := http.StatusInternalServerError, "internal_error"
+	switch {
+	case errors.Is(err, identity.ErrUnauthenticated):
+		status, code = http.StatusUnauthorized, "unauthenticated"
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+			`Bearer resource_metadata="%s"`,
+			middleware.ProtectedResourceMetadataURL(r),
+		))
+	case errors.Is(err, identity.ErrUnavailable):
+		status, code = http.StatusServiceUnavailable, "identity_unavailable"
+	}
+	slog.ErrorContext(r.Context(), "mcpAuthMiddleware: failed to resolve identityKey",
+		slog.String("error", err.Error()), slog.Int("status", status), slog.String("code", code))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
+}
+
+// mcpAuthMiddleware protects the /mcp/{server_name} route. For a
+// reverse-transport server it derives identityKey (skipping the pass-through
+// JWT check entirely, which has no backend to forward the Bearer token to —
+// docs/design/webmcp-reverse-gateway.ja.md「拡張と identity の紐づけ」) and
+// stores it in the request context (domainedge.WithIdentityKey) for
+// ReverseGateway.ResolveServer to read back. Every other server keeps the
+// existing pass-through middleware.JWT check.
 func mcpAuthMiddleware(
 	servers config.Servers,
 	reverseGateway *mcpsrv.ReverseGateway,
 	edgeCfg config.EdgeConfig,
+	identityResolvers map[string]identity.Resolver,
 	pathValueName string,
 ) func(http.Handler) http.Handler {
 	jwt := middleware.JWT(servers, pathValueName)
-	skipForReverseStatic := reverseGateway != nil && edgeCfg.IsStaticPairing()
 	return func(next http.Handler) http.Handler {
 		withJWT := jwt(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if skipForReverseStatic && reverseGateway.HasServer(r.PathValue(pathValueName)) {
-				next.ServeHTTP(w, r)
+			name := r.PathValue(pathValueName)
+			srv, exists := servers[name]
+			if reverseGateway == nil || !exists || !reverseGateway.HasServer(name) {
+				withJWT.ServeHTTP(w, r)
 				return
 			}
-			withJWT.ServeHTTP(w, r)
+
+			identityKey, err := identityKeyFromReverseServer(
+				r.Context(), srv, edgeCfg, identityResolvers, r,
+			)
+			if err != nil {
+				writeIdentityError(w, r, err)
+				return
+			}
+			ctx := domainedge.WithIdentityKey(r.Context(), identityKey)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -224,7 +292,20 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
-	edgePairHandler := httphandler.NewEdgePairHandler(pairingService)
+	edgePairHandler := httphandler.NewEdgePairHandler(pairingService, edgeCfg)
+
+	// identityResolvers backs mcpAuthMiddleware's remote-pairing branch (see
+	// docs/design/webmcp-reverse-gateway.ja.md「ユーザー識別」). A profile
+	// failing to construct here (e.g. an unreachable JWKS URL for source:
+	// jwt) is a startup error, not a per-request one.
+	encryptKey, err := base64.StdEncoding.DecodeString(globalConfig.Gateway.EncryptKey)
+	if err != nil {
+		return fmt.Errorf("decode gateway.encryptKey: %w", err)
+	}
+	identityResolvers, err := identity.NewResolvers(ctx, globalConfig.Identities, encryptKey)
+	if err != nil {
+		return err
+	}
 
 	mcpHTTPSrv := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return resolveMCPServer(r.Context(), mcpSrv, reverseGateway, r.PathValue(pathServerName))
@@ -240,7 +321,7 @@ func runGatewayServer(ctx context.Context) error {
 	mux.Handle(
 		fmt.Sprintf("/mcp/{%s}", pathServerName),
 		mcpAuthMiddleware(
-			globalConfig.MCPServer, reverseGateway, edgeCfg, pathServerName,
+			globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
 		)(mcpHTTPSrv),
 	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))

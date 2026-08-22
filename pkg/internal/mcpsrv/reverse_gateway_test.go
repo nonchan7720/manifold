@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,6 +63,14 @@ func staticEdgeConfig() config.EdgeConfig {
 		Auth:    config.EdgeAuthPairing,
 		Pairing: config.PairingConfig{Type: config.PairingTypeStatic},
 	}
+}
+
+// staticResolveCtx returns the context ResolveServer expects for a
+// pairing/static deployment: mcpAuthMiddleware always sets
+// domainedge.StaticIdentityKey there (see reverse_gateway.go).
+func staticResolveCtx(t *testing.T) context.Context {
+	t.Helper()
+	return domainedge.WithIdentityKey(t.Context(), domainedge.StaticIdentityKey)
 }
 
 // bridgedFrameSender forwards a written frame's payload into the peer side's
@@ -163,14 +173,14 @@ func TestReverseGateway_ResolveServer_UnknownName_Error(t *testing.T) {
 
 func TestReverseGateway_ResolveServer_BeforeAnyAppUp_HasPairingTool(t *testing.T) {
 	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
-	srv, err := gateway.ResolveServer(t.Context(), "app1")
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 }
 
 func TestReverseGateway_CreatePairingCodeTool_IssuesCode(t *testing.T) {
 	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
-	srv, err := gateway.ResolveServer(t.Context(), "app1")
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)
 
 	callerTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -200,7 +210,7 @@ func TestReverseGateway_HandleAppUp_ThenResolveServer_ForwardsToolCall(t *testin
 	}
 	connectFakeTab(t, gateway, binding)
 
-	srv, err := gateway.ResolveServer(t.Context(), "app1")
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)
 
 	callerTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -235,7 +245,7 @@ func TestReverseGateway_HandleAppDown_ToolCallReturnsFriendlyError(t *testing.T)
 		binding.AppSession,
 	)
 
-	srv, err := gateway.ResolveServer(t.Context(), "app1")
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)
 
 	callerTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -288,7 +298,7 @@ func TestReverseGateway_DropConnection_DropsAllBoundOrigins(t *testing.T) {
 	gateway.DropConnection(t.Context(), "conn-1")
 
 	for _, name := range []string{"app1", "app2"} {
-		srv, err := gateway.ResolveServer(t.Context(), name)
+		srv, err := gateway.ResolveServer(staticResolveCtx(t), name)
 		require.NoError(t, err)
 		callerTransport, serverTransport := mcp.NewInMemoryTransports()
 		_, err = srv.Connect(t.Context(), serverTransport, nil)
@@ -330,7 +340,7 @@ func TestReverseGateway_HandleAppUp_ToolListChanged_ExposesNewTool(t *testing.T)
 	)
 
 	require.Eventually(t, func() bool {
-		srv, err := gateway.ResolveServer(t.Context(), "app1")
+		srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
 		if err != nil {
 			return false
 		}
@@ -494,18 +504,174 @@ func TestCloseUniqueHandles_ClosesEachDistinctHandleOnce(t *testing.T) {
 	require.Equal(t, 2, closedCount)
 }
 
-func TestIdentityKeyForRequest_Static_ReturnsStaticKey(t *testing.T) {
-	key, err := IdentityKeyForRequest(staticEdgeConfig().WithDefaults())
-	require.NoError(t, err)
-	require.Equal(t, domainedge.StaticIdentityKey, key)
+// --- ResolveServer: identityKey comes from context, not edgeCfg ---
+
+func TestReverseGateway_ResolveServer_NoIdentityKeyInContext_Error(t *testing.T) {
+	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
+	_, err := gateway.ResolveServer(t.Context(), "app1")
+	require.Error(t, err)
 }
 
-func TestIdentityKeyForRequest_Remote_NotImplemented(t *testing.T) {
-	// Remote pairing is rejected by config validation (see edge_test.go), but
-	// IdentityKeyForRequest itself must still refuse to derive identityKey
-	// for it in case a config bypasses validation.
-	pairing := config.PairingConfig{Type: config.PairingTypeRemote}
-	cfg := config.EdgeConfig{Pairing: pairing}.WithDefaults()
-	_, err := IdentityKeyForRequest(cfg)
-	require.Error(t, err)
+func TestReverseGateway_ResolveServer_RemotePairing_LazilyBuildsBaseServer(t *testing.T) {
+	// remote には Init 時点で分かる identityKey が無いため、Init は何も事前構築しない。
+	// ResolveServer が初回アクセス時に create_pairing_code だけの基底サーバーを
+	// 遅延構築し、未ペアリング → create_pairing_code の導線を成立させる。
+	gateway := newTestReverseGateway(
+		t,
+		staticReverseServers(),
+		config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}},
+	)
+	ctx := domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("oauth:user-a"))
+
+	srv, err := gateway.ResolveServer(ctx, "app1")
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+
+	callerTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), callerTransport, nil)
+	require.NoError(t, err)
+	defer session.Close()
+
+	result, err := session.CallTool(
+		t.Context(),
+		&mcp.CallToolParams{Name: createPairingCodeToolName},
+	)
+	require.NoError(t, err)
+	require.False(t, result.IsError, "a lazily-built server must still expose create_pairing_code")
+}
+
+func TestReverseGateway_ResolveServer_RemotePairing_DifferentIdentityKeys_DistinctServers(
+	t *testing.T,
+) {
+	gateway := newTestReverseGateway(
+		t,
+		staticReverseServers(),
+		config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}},
+	)
+	ctxA := domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("oauth:user-a"))
+	ctxB := domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("oauth:user-b"))
+
+	srvA, err := gateway.ResolveServer(ctxA, "app1")
+	require.NoError(t, err)
+	srvB, err := gateway.ResolveServer(ctxB, "app1")
+	require.NoError(t, err)
+
+	require.NotSame(t, srvA, srvB, "each identityKey must get its own per-user server")
+}
+
+func TestReverseGateway_ResolveServer_ConcurrentFirstAccess_BuildsOnce(t *testing.T) {
+	gateway := newTestReverseGateway(
+		t,
+		staticReverseServers(),
+		config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}},
+	)
+	ctx := domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("oauth:user-concurrent"))
+
+	const n = 20
+	servers := make([]*mcp.Server, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			servers[i], errs[i] = gateway.ResolveServer(ctx, "app1")
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range n {
+		require.NoError(t, errs[i])
+		require.Same(
+			t,
+			servers[0],
+			servers[i],
+			"concurrent first access must not build more than one server",
+		)
+	}
+}
+
+// TestReverseGateway_ConcurrentResolveServerAndHandleAppUp_SessionToolsSurvive guards
+// against ResolveServer's lazy first-build racing HandleAppUp's rebuild for
+// the same brand-new identityKey: both write via rebuildUserServer under
+// g.mu, so if ResolveServer's base (session=nil) build wins the write after
+// HandleAppUp's session-carrying build already landed, the session's tools
+// would silently disappear behind create_pairing_code-only again.
+func TestReverseGateway_ConcurrentResolveServerAndHandleAppUp_SessionToolsSurvive(t *testing.T) {
+	gateway := newTestReverseGateway(
+		t,
+		staticReverseServers(),
+		config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}},
+	)
+
+	const rounds = 50
+	for i := range rounds {
+		identityKey := domainedge.IdentityKey(fmt.Sprintf("oauth:user-%d", i))
+		ctx := domainedge.WithIdentityKey(t.Context(), identityKey)
+		binding := domainedge.Binding{
+			IdentityKey: identityKey,
+			Origin:      "https://app1.example.com",
+			AppSession:  fmt.Sprintf("session-%d", i),
+			ConnID:      fmt.Sprintf("conn-%d", i),
+		}
+
+		toGateway := make(chan json.RawMessage, 16)
+		toPage := make(chan json.RawMessage, 16)
+		page := mcp.NewServer(&mcp.Implementation{Name: "page", Version: "0.0.1"}, nil)
+		page.AddTool(
+			&mcp.Tool{Name: "read_dom", InputSchema: map[string]any{"type": "object"}},
+			func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: "dom-snapshot"}},
+				}, nil
+			},
+		)
+		pageTransport := &EdgeTransport{
+			Origin:     binding.Origin,
+			AppSession: binding.AppSession,
+			Sender:     &bridgedFrameSender{peerIncoming: toGateway},
+			Incoming:   toPage,
+		}
+		_, err := page.Connect(t.Context(), pageTransport, nil)
+		require.NoError(t, err)
+
+		var start sync.WaitGroup
+		start.Add(1)
+		var wg sync.WaitGroup
+		var handleAppUpErr error
+		wg.Go(func() {
+			start.Wait()
+			_, _ = gateway.ResolveServer(ctx, "app1")
+		})
+		wg.Go(func() {
+			start.Wait()
+			handleAppUpErr = gateway.HandleAppUp(
+				t.Context(),
+				[]domainedge.IdentityKey{identityKey},
+				binding.Origin, binding.AppSession, binding.ConnID,
+				&bridgedFrameSender{peerIncoming: toPage}, toGateway,
+			)
+		})
+		start.Done()
+		wg.Wait()
+		require.NoError(t, handleAppUpErr, "round %d", i)
+
+		srv, err := gateway.ResolveServer(ctx, "app1")
+		require.NoError(t, err)
+		callerTransport, serverTransport := mcp.NewInMemoryTransports()
+		_, err = srv.Connect(t.Context(), serverTransport, nil)
+		require.NoError(t, err)
+		client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0.0.1"}, nil)
+		session, err := client.Connect(t.Context(), callerTransport, nil)
+		require.NoError(t, err)
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "read_dom"})
+		session.Close()
+		require.NoError(t, err)
+		require.False(t, result.IsError,
+			"round %d: HandleAppUp's session tools must survive a concurrent "+
+				"ResolveServer lazy-build", i)
+	}
 }

@@ -1,0 +1,34 @@
+gateway:
+  port: 9999
+  encryptKey: ${ENCRYPT_KEY}
+  edge:
+    auth: pairing
+    pairing:
+      type: remote
+    # E2E スクリプトは常にループバック経由で /edge/pair を叩くため、
+    # trustedForwarders に加えないと edge_pair_handler.go の resolveIP がどの
+    # グループにもマッチせず、送信するヘッダーを一切見ない(常に生の RemoteAddr)。
+    # 偽装ヘッダーが無視されることを検証するテストのための設定。
+    # "localhost" は環境によって IPv4/IPv6 いずれにも解決されるため両方必要
+    # (macOS では ::1 に解決されることを実測で確認済み)。
+    trustedForwarders:
+      - 127.0.0.1/32
+      - ::1/128
+
+identities:
+  oauth:
+    source: jwt
+    claim: sub
+    issuer: https://e2e-idp.example.com
+    jwksURL: ${JWKS_URL}
+    audience: manifold
+
+mcpServers:
+  app1:
+    description: WebMCP tools exposed by the local dev app at localhost:5173
+    transport: reverse
+    origin: http://localhost:5173
+    identity: oauth
+
+sqlite:
+  path: ./tmp/manifold-remote-e2e.db
