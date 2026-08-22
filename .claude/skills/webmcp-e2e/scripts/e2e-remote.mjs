@@ -138,6 +138,10 @@ async function testTrustedForwarderHeaderSpoofingIsIgnored() {
       `CF-Connecting-IP: ${spoofedCFIP})  expected: 429 (CF-Connecting-IP must be ` +
       `ignored for a trustedForwarders-origin connection)  actual: ${spoofed}`,
   );
+  assertExpected(
+    statuses.every((s) => s !== 429),
+    `the first ${PAIR_IP_RATE_LIMIT_MAX} attempts must not be rate-limited yet, got: ${statuses}`,
+  );
   assertExpected(eleventh === 429, `11th attempt should be rate-limited, got ${eleventh}`);
   assertExpected(
     spoofed === 429,
@@ -153,19 +157,22 @@ async function main() {
   // --- identity: self-hosted JWKS + a signed JWT for sub "user-a" ---
   const jwks = await startJwksServer(KID);
   log("jwks server:", jwks.url);
-  const tokenA = await signJWT({
-    privateKey: jwks.privateKey,
-    kid: KID,
-    sub: "e2e-user-a",
-    issuer: ISSUER,
-    audience: AUDIENCE,
-  });
 
-  const manifold = await startManifold(jwks.url);
-  log("manifold started");
-
+  let manifold;
+  let context;
   try {
-    const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+    const tokenA = await signJWT({
+      privateKey: jwks.privateKey,
+      kid: KID,
+      sub: "e2e-user-a",
+      issuer: ISSUER,
+      audience: AUDIENCE,
+    });
+
+    manifold = await startManifold(jwks.url);
+    log("manifold started");
+
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
       headless: false,
       // Manifest V3 拡張は headless で正しく動かないため headless: false は必須だが、
       // ウィンドウを画面外に出してフォーカスを奪わないようにする(スクリーンショットは
@@ -299,19 +306,19 @@ async function main() {
     // --- Step: spoofed-header isolation for a trustedForwarders-origin
     // connection (pkg/interfaces/http/edge_pair_handler.go's resolveIP,
     // fixed per CodeRabbit review 4999741085). config.remote.e2e.yaml trusts
-    // 127.0.0.1/32 (this script's own connection) as a trustedForwarders
-    // entry, which only honors X-Forwarded-For — CF-Connecting-IP must be
-    // ignored for it. Uses an invalid code so /edge/pair still runs
-    // RateLimitPairAttempt (before code validation) without consuming a real
-    // pairing code. ---
+    // 127.0.0.1/32 and ::1/128 (this script's own connection, whichever
+    // family "localhost" resolves to) as a trustedForwarders entry, which
+    // only honors X-Forwarded-For — CF-Connecting-IP must be ignored for it.
+    // Uses an invalid code so /edge/pair still runs RateLimitPairAttempt
+    // (before code validation) without consuming a real pairing code. ---
     results.headerSpoofingCheck = await testTrustedForwarderHeaderSpoofingIsIgnored();
 
     fs.writeFileSync(path.join(SHOT_DIR, "results.json"), JSON.stringify(results, null, 2));
 
-    await context.close();
     log("done");
   } finally {
-    manifold.kill();
+    if (context) await context.close();
+    if (manifold) manifold.kill();
     await jwks.close();
   }
 }
