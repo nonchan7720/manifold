@@ -34,6 +34,17 @@ type PairingConfig struct {
 type EdgeConfig struct {
 	Auth    EdgeAuth      `mapstructure:"auth"`
 	Pairing PairingConfig `mapstructure:"pairing"`
+
+	// TrustCloudflare, when true, additionally trusts Cloudflare's published
+	// edge IP ranges as /edge/pair rate-limit forwarders. Only enable this
+	// when Manifold is actually deployed behind Cloudflare — see
+	// docs/design/webmcp-reverse-gateway-phase2.ja.md「Phase 1 からの持ち越し判断事項」.
+	TrustCloudflare bool `mapstructure:"trustCloudflare"`
+
+	// TrustedForwarders adds extra CIDR prefixes to trust as /edge/pair
+	// rate-limit forwarders, alongside the RFC1918 default and (if enabled)
+	// Cloudflare's ranges — e.g. an ALB/Ingress subnet outside RFC1918.
+	TrustedForwarders []string `mapstructure:"trustedForwarders"`
 }
 
 // WithDefaults returns a copy of c with zero-value fields replaced by the
@@ -62,7 +73,16 @@ func (c EdgeConfig) ValidateWithContext(ctx context.Context) error {
 		// docs/design/webmcp-reverse-gateway.ja.md.
 		validation.Field(&c.Auth, validation.In(EdgeAuthPairing)),
 		validation.Field(&c.Pairing),
+		validation.Field(&c.TrustedForwarders, validation.Each(validation.By(validateCIDR))),
 	)
+}
+
+func validateCIDR(value any) error {
+	s, _ := value.(string)
+	if _, _, err := net.ParseCIDR(s); err != nil {
+		return fmt.Errorf("must be a valid CIDR: %w", err)
+	}
+	return nil
 }
 
 func (c PairingConfig) ValidateWithContext(ctx context.Context) error {

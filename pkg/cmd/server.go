@@ -283,7 +283,7 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
-	edgePairHandler := httphandler.NewEdgePairHandler(pairingService)
+	edgePairHandler := httphandler.NewEdgePairHandler(pairingService, edgeCfg)
 
 	// identityResolvers backs mcpAuthMiddleware's remote-pairing branch (see
 	// docs/design/webmcp-reverse-gateway.ja.md「ユーザー識別」). A profile

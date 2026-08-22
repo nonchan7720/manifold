@@ -155,3 +155,23 @@ func TestEdgeConfig_ValidateWithContext_AcceptsStaticPairing(t *testing.T) {
 	c := EdgeConfig{Auth: EdgeAuthPairing, Pairing: PairingConfig{Type: PairingTypeStatic}}
 	require.NoError(t, c.ValidateWithContext(t.Context()))
 }
+
+// --- EdgeConfig.TrustedForwarders ---
+
+func TestEdgeConfig_ValidateWithContext_AcceptsValidCIDR(t *testing.T) {
+	c := EdgeConfig{
+		Auth:              EdgeAuthPairing,
+		Pairing:           PairingConfig{Type: PairingTypeStatic},
+		TrustedForwarders: []string{"203.0.113.0/24", "2001:db8::/32"},
+	}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestEdgeConfig_ValidateWithContext_RejectsMalformedCIDR(t *testing.T) {
+	c := EdgeConfig{
+		Auth:              EdgeAuthPairing,
+		Pairing:           PairingConfig{Type: PairingTypeStatic},
+		TrustedForwarders: []string{"not-a-cidr"},
+	}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}

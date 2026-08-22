@@ -2,27 +2,39 @@ package httphandler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/netinternet/remoteaddr"
+	"github.com/nonchan7720/manifold/pkg/config"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 )
-
-// edgePairRemoteAddr resolves POST /edge/pair callers' IPs for
-// RateLimitPairAttempt. A single parser is reused across requests: it only
-// caches trusted-forwarder CIDR parsing, never per-request state.
-var edgePairRemoteAddr = remoteaddr.Parse()
 
 // EdgePairHandler serves POST /edge/pair, exchanging a pairing code (issued
 // via the create_pairing_code tool) for a long-lived edge token.
 type EdgePairHandler struct {
-	pairing *edgeservices.PairingService
+	pairing    *edgeservices.PairingService
+	remoteAddr *remoteaddr.Addr
 }
 
-// NewEdgePairHandler creates an EdgePairHandler backed by pairing.
-func NewEdgePairHandler(pairing *edgeservices.PairingService) *EdgePairHandler {
-	return &EdgePairHandler{pairing: pairing}
+// NewEdgePairHandler creates an EdgePairHandler backed by pairing. The
+// forwarders trusted to resolve RateLimitPairAttempt's caller IP are RFC1918
+// (always, since it can't be spoofed over the internet) plus, opt-in via
+// edgeCfg, Cloudflare's published ranges and any operator-supplied CIDRs —
+// see docs/design/webmcp-reverse-gateway-phase2.ja.md「Phase 1 からの持ち越し判断事項」.
+func NewEdgePairHandler(
+	pairing *edgeservices.PairingService,
+	edgeCfg config.EdgeConfig,
+) *EdgePairHandler {
+	remoteAddr := remoteaddr.Parse().SetForwarders(rfc1918Forwarders)
+	if edgeCfg.TrustCloudflare {
+		remoteAddr.AddForwarders(cloudflareForwarders)
+	}
+	if len(edgeCfg.TrustedForwarders) > 0 {
+		remoteAddr.AddForwarders(edgeCfg.TrustedForwarders)
+	}
+	return &EdgePairHandler{pairing: pairing, remoteAddr: remoteAddr}
 }
 
 // Pair handles POST /edge/pair {"code": "12345678", "token": "<existing edge
@@ -38,9 +50,13 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 	}
 
-	ip, _ := edgePairRemoteAddr.IP(r)
+	ip, _ := h.remoteAddr.IP(r)
 	if err = h.pairing.RateLimitPairAttempt(ctx, ip); err != nil {
-		writeError(http.StatusTooManyRequests, "rate_limited")
+		if errors.Is(err, edgeservices.ErrIPRateLimited) {
+			writeError(http.StatusTooManyRequests, "rate_limited")
+		} else {
+			writeError(http.StatusInternalServerError, "internal_error")
+		}
 		return
 	}
 
