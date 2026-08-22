@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -590,5 +591,87 @@ func TestReverseGateway_ResolveServer_ConcurrentFirstAccess_BuildsOnce(t *testin
 			servers[i],
 			"concurrent first access must not build more than one server",
 		)
+	}
+}
+
+// TestReverseGateway_ConcurrentResolveServerAndHandleAppUp_SessionToolsSurvive guards
+// against ResolveServer's lazy first-build racing HandleAppUp's rebuild for
+// the same brand-new identityKey: both write via rebuildUserServer under
+// g.mu, so if ResolveServer's base (session=nil) build wins the write after
+// HandleAppUp's session-carrying build already landed, the session's tools
+// would silently disappear behind create_pairing_code-only again.
+func TestReverseGateway_ConcurrentResolveServerAndHandleAppUp_SessionToolsSurvive(t *testing.T) {
+	gateway := newTestReverseGateway(
+		t,
+		staticReverseServers(),
+		config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}},
+	)
+
+	const rounds = 50
+	for i := range rounds {
+		identityKey := domainedge.IdentityKey(fmt.Sprintf("oauth:user-%d", i))
+		ctx := domainedge.WithIdentityKey(t.Context(), identityKey)
+		binding := domainedge.Binding{
+			IdentityKey: identityKey,
+			Origin:      "https://app1.example.com",
+			AppSession:  fmt.Sprintf("session-%d", i),
+			ConnID:      fmt.Sprintf("conn-%d", i),
+		}
+
+		toGateway := make(chan json.RawMessage, 16)
+		toPage := make(chan json.RawMessage, 16)
+		page := mcp.NewServer(&mcp.Implementation{Name: "page", Version: "0.0.1"}, nil)
+		page.AddTool(
+			&mcp.Tool{Name: "read_dom", InputSchema: map[string]any{"type": "object"}},
+			func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: "dom-snapshot"}},
+				}, nil
+			},
+		)
+		pageTransport := &EdgeTransport{
+			Origin:     binding.Origin,
+			AppSession: binding.AppSession,
+			Sender:     &bridgedFrameSender{peerIncoming: toGateway},
+			Incoming:   toPage,
+		}
+		_, err := page.Connect(t.Context(), pageTransport, nil)
+		require.NoError(t, err)
+
+		var start sync.WaitGroup
+		start.Add(1)
+		var wg sync.WaitGroup
+		var handleAppUpErr error
+		wg.Go(func() {
+			start.Wait()
+			_, _ = gateway.ResolveServer(ctx, "app1")
+		})
+		wg.Go(func() {
+			start.Wait()
+			handleAppUpErr = gateway.HandleAppUp(
+				t.Context(),
+				[]domainedge.IdentityKey{identityKey},
+				binding.Origin, binding.AppSession, binding.ConnID,
+				&bridgedFrameSender{peerIncoming: toPage}, toGateway,
+			)
+		})
+		start.Done()
+		wg.Wait()
+		require.NoError(t, handleAppUpErr, "round %d", i)
+
+		srv, err := gateway.ResolveServer(ctx, "app1")
+		require.NoError(t, err)
+		callerTransport, serverTransport := mcp.NewInMemoryTransports()
+		_, err = srv.Connect(t.Context(), serverTransport, nil)
+		require.NoError(t, err)
+		client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0.0.1"}, nil)
+		session, err := client.Connect(t.Context(), callerTransport, nil)
+		require.NoError(t, err)
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "read_dom"})
+		session.Close()
+		require.NoError(t, err)
+		require.False(t, result.IsError,
+			"round %d: HandleAppUp's session tools must survive a concurrent "+
+				"ResolveServer lazy-build", i)
 	}
 }

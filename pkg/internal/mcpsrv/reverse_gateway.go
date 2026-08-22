@@ -88,7 +88,7 @@ func (g *ReverseGateway) Init(ctx context.Context) {
 	}
 	for name, srv := range g.byName {
 		binding := domainedge.Binding{IdentityKey: domainedge.StaticIdentityKey, Origin: srv.Origin}
-		if err := g.rebuildUserServer(ctx, name, binding, nil); err != nil {
+		if err := g.rebuildUserServer(ctx, name, binding, nil, false); err != nil {
 			slog.ErrorContext(ctx, "failed to initialize reverse tool server",
 				slog.String("server", name), slog.Any("error", err))
 		}
@@ -186,7 +186,8 @@ func (g *ReverseGateway) HandleAppUp(
 						AppSession:  appSession,
 						ConnID:      connID,
 					}
-					if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, live); err != nil {
+					err := g.rebuildUserServer(ctx, srvCfg.Name, binding, live, false)
+					if err != nil {
 						slog.ErrorContext(ctx, "failed to rebuild reverse tool server",
 							slog.String("origin", origin), slog.Any("error", err))
 					}
@@ -214,7 +215,7 @@ func (g *ReverseGateway) HandleAppUp(
 			AppSession:  appSession,
 			ConnID:      connID,
 		}
-		if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, connected); err != nil {
+		if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, connected, false); err != nil {
 			connected.Close()
 			return fmt.Errorf("initialize tool server for app %s: %w", origin, err)
 		}
@@ -307,7 +308,7 @@ func (g *ReverseGateway) ResolveServer(ctx context.Context, name string) (*mcp.S
 		return srv, nil
 	}
 	binding := domainedge.Binding{IdentityKey: identityKey, Origin: srvCfg.Origin}
-	if err := g.rebuildUserServer(ctx, name, binding, nil); err != nil {
+	if err := g.rebuildUserServer(ctx, name, binding, nil, true); err != nil {
 		return nil, fmt.Errorf("lazily initialize reverse tool server %s: %w", name, err)
 	}
 	srv, ok := g.lookupUserServer(key)
@@ -326,12 +327,17 @@ func (g *ReverseGateway) lookupUserServer(key string) (*mcp.Server, bool) {
 
 // rebuildUserServer (re)builds the per-user server for binding, merging
 // create_pairing_code with session's tools/list (session may be nil before
-// any tab has ever connected).
+// any tab has ever connected). If onlyIfAbsent is true and a server is
+// already registered for binding's key, the newly-built server is discarded
+// and the existing one is kept — used by ResolveServer's lazy first-build
+// (see its doc comment) so it never clobbers a session-carrying server that
+// HandleAppUp raced it into place first.
 func (g *ReverseGateway) rebuildUserServer(
 	ctx context.Context,
 	name string,
 	binding domainedge.Binding,
 	session *mcp.ClientSession,
+	onlyIfAbsent bool,
 ) error {
 	srv := mcp.NewServer(
 		&mcp.Implementation{Name: name, Version: version.MarkVersion},
@@ -347,9 +353,15 @@ func (g *ReverseGateway) rebuildUserServer(
 		RegisterSessionTools(srv, result.Tools, g.sessionResolver(binding))
 	}
 
+	key := userServerKey(binding.IdentityKey, binding.Origin)
 	g.mu.Lock()
-	g.userServers[userServerKey(binding.IdentityKey, binding.Origin)] = srv
-	g.mu.Unlock()
+	defer g.mu.Unlock()
+	if onlyIfAbsent {
+		if _, exists := g.userServers[key]; exists {
+			return nil
+		}
+	}
+	g.userServers[key] = srv
 	return nil
 }
 
