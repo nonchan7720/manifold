@@ -18,26 +18,6 @@ import (
 
 const createPairingCodeToolName = "create_pairing_code"
 
-// ErrIdentityDerivationNotImplemented is returned when resolving a reverse
-// tool call would require deriving identityKey from the identities profile
-// system (edge.pairing.type=remote or edge.auth=forwardAuth), which Phase 1
-// does not implement.
-var ErrIdentityDerivationNotImplemented = errors.New(
-	"mcpsrv: identity derivation for this edge auth mode is not implemented yet; " +
-		"only edge.pairing.type=static is supported",
-)
-
-// IdentityKeyForRequest derives the identityKey used to resolve a reverse
-// tool call. Only edge.pairing.type=static is implemented: the identityKey is
-// always the fixed StaticIdentityKey. Deriving identityKey from the
-// identities profile system (remote pairing or forwardAuth) is Phase 2/3.
-func IdentityKeyForRequest(edgeCfg config.EdgeConfig) (domainedge.IdentityKey, error) {
-	if edgeCfg.WithDefaults().IsStaticPairing() {
-		return domainedge.StaticIdentityKey, nil
-	}
-	return "", ErrIdentityDerivationNotImplemented
-}
-
 // tabNotConnectedMessage is the tool-error text an agent can pass straight
 // through to the user (see the エラー体系 table in
 // docs/design/webmcp-reverse-gateway.ja.md).
@@ -66,6 +46,11 @@ type ReverseGateway struct {
 
 	mu          sync.Mutex
 	userServers map[string]*mcp.Server
+
+	// lazyBuildMu serializes ResolveServer's lazy first-build path (see
+	// ResolveServer) so concurrent first accesses for a brand-new
+	// identityKey build the base server once, not once per goroutine.
+	lazyBuildMu sync.Mutex
 }
 
 // NewReverseGateway creates a ReverseGateway for the reverse-transport
@@ -291,23 +276,52 @@ func closeUniqueHandles(handles []any, closeHandle func(any)) {
 }
 
 // ResolveServer returns the current per-user mcp.Server for the named
-// reverse mcpServers entry, deriving identityKey from edgeCfg.
-func (g *ReverseGateway) ResolveServer(_ context.Context, name string) (*mcp.Server, error) {
+// reverse mcpServers entry, keyed by the identityKey mcpAuthMiddleware stored
+// in ctx (domainedge.WithIdentityKey) — static pairing always sets
+// domainedge.StaticIdentityKey there; remote pairing sets whatever the
+// server's identity profile derived from the request.
+//
+// remote has no identityKey to build ahead of a request (unlike static,
+// which Init pre-builds), so the first call for a given (identityKey, origin)
+// lazily builds the base server (create_pairing_code only, no tab bound
+// yet) — the same shape Init produces for static — so create_pairing_code
+// is always reachable even for a brand-new user.
+func (g *ReverseGateway) ResolveServer(ctx context.Context, name string) (*mcp.Server, error) {
 	srvCfg, ok := g.byName[name]
 	if !ok {
 		return nil, fmt.Errorf("not found mcp server: %s", name)
 	}
-	identityKey, err := IdentityKeyForRequest(g.edgeCfg)
-	if err != nil {
-		return nil, err
+	identityKey, ok := domainedge.IdentityKeyFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("mcpsrv: no identityKey in request context for server %s", name)
 	}
-	g.mu.Lock()
-	srv, ok := g.userServers[userServerKey(identityKey, srvCfg.Origin)]
-	g.mu.Unlock()
+
+	key := userServerKey(identityKey, srvCfg.Origin)
+	if srv, ok := g.lookupUserServer(key); ok {
+		return srv, nil
+	}
+
+	g.lazyBuildMu.Lock()
+	defer g.lazyBuildMu.Unlock()
+	if srv, ok := g.lookupUserServer(key); ok {
+		return srv, nil
+	}
+	binding := domainedge.Binding{IdentityKey: identityKey, Origin: srvCfg.Origin}
+	if err := g.rebuildUserServer(ctx, name, binding, nil); err != nil {
+		return nil, fmt.Errorf("lazily initialize reverse tool server %s: %w", name, err)
+	}
+	srv, ok := g.lookupUserServer(key)
 	if !ok {
 		return nil, fmt.Errorf("not found mcp server: %s", name)
 	}
 	return srv, nil
+}
+
+func (g *ReverseGateway) lookupUserServer(key string) (*mcp.Server, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	srv, ok := g.userServers[key]
+	return srv, ok
 }
 
 // rebuildUserServer (re)builds the per-user server for binding, merging
