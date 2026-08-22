@@ -2,6 +2,7 @@ package edge
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 
@@ -313,6 +314,40 @@ func TestPairingService_RateLimitPairAttempt_IndependentPerIP(t *testing.T) {
 	)
 }
 
+func TestPairingService_RateLimitPairAttempt_ConcurrentCallsCountExactly(t *testing.T) {
+	s := newTestPairingService(t)
+	const attempts = 30
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var wg sync.WaitGroup
+	errs := make([]error, attempts)
+	for i := range attempts {
+		wg.Go(func() {
+			start.Wait()
+			errs[i] = s.RateLimitPairAttempt(t.Context(), "203.0.113.99")
+		})
+	}
+	start.Done()
+	wg.Wait()
+
+	var allowed, limited int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			allowed++
+		case errors.Is(err, ErrIPRateLimited):
+			limited++
+		default:
+			require.NoError(t, err)
+		}
+	}
+	require.Equal(t, pairIPRateLimitMax, allowed,
+		"a non-atomic Get-modify-Set undercounts concurrent attempts, letting more than "+
+			"pairIPRateLimitMax through")
+	require.Equal(t, attempts-pairIPRateLimitMax, limited)
+}
+
 // --- ExchangeCode: 失敗 N 回でコード無効化（/edge/pair 総当たり対策） ---
 
 // seedPairingCodeWithValue seeds a pairing code for an explicit code value
@@ -362,6 +397,33 @@ func TestPairingService_ExchangeCode_FourFailures_DoesNotBlockValidCode(t *testi
 
 	_, err := s.ExchangeCode(t.Context(), code, "")
 	require.NoError(t, err, "fewer than the failure limit must not block a later valid code")
+}
+
+func TestPairingService_ExchangeCode_ConcurrentFailures_BlocksAfterExactlyFiveFailures(
+	t *testing.T,
+) {
+	s := newTestPairingService(t)
+	const code = "00000099"
+	const attempts = 20
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Go(func() {
+			start.Wait()
+			_, _ = s.ExchangeCode(t.Context(), code, "")
+		})
+	}
+	start.Done()
+	wg.Wait()
+
+	// Even if this code value later becomes legitimately issued, it must
+	// stay blocked: a non-atomic failure counter could undercount concurrent
+	// failures below pairFailureLimit.
+	seedPairingCodeWithValue(t, s, code, domainedge.StaticIdentityKey)
+	_, err := s.ExchangeCode(t.Context(), code, "")
+	require.ErrorIs(t, err, ErrInvalidCode)
 }
 
 func TestPairingService_ExchangeCode_Success_DoesNotCreateFailureCounter(t *testing.T) {

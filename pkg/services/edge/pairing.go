@@ -70,6 +70,14 @@ type PairingService struct {
 	// front of several); cross-replica atomicity needs store-side CAS and is
 	// Phase 3.
 	appendMu sync.Mutex
+
+	// rateLimitMu and failureMu serialize RateLimitPairAttempt's and
+	// recordExchangeFailure's own Get-modify-Set counters the same way as
+	// appendMu, and carry the same v1 single-replica/sticky-LB caveat.
+	// Separate locks since the two counters guard unrelated key spaces (IP
+	// vs. pairing code) and serializing one must not block the other.
+	rateLimitMu sync.Mutex
+	failureMu   sync.Mutex
 }
 
 // NewPairingService creates a PairingService backed by storeClient.
@@ -113,6 +121,9 @@ func (s *PairingService) IssueCode(
 // counter (see 持ち越し判断事項 #4 in
 // docs/design/webmcp-reverse-gateway-phase2.ja.md).
 func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) error {
+	s.rateLimitMu.Lock()
+	defer s.rateLimitMu.Unlock()
+
 	key := ipRateLimitKeyPrefix + ip
 	data := ipRateLimitData{Count: 1, ExpiresAt: time.Now().Add(pairIPRateLimitWindow)}
 	ttl := pairIPRateLimitWindow
@@ -253,6 +264,9 @@ func (s *PairingService) isPairCodeBlocked(ctx context.Context, code string) boo
 // Counting failures against a code that never existed is intentional and
 // harmless — the counter key just expires with the TTL (持ち越し判断事項 #4).
 func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) {
+	s.failureMu.Lock()
+	defer s.failureMu.Unlock()
+
 	key := pairFailureKeyPrefix + code
 	count := 1
 	if raw, err := s.store.Get(ctx, key); err == nil {
