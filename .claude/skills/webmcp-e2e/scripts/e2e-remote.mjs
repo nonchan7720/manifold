@@ -115,9 +115,13 @@ async function main() {
   try {
     const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
       headless: false,
+      // Manifest V3 拡張は headless で正しく動かないため headless: false は必須だが、
+      // ウィンドウを画面外に出してフォーカスを奪わないようにする(スクリーンショットは
+      // オフスクリーンでも正しく撮れる)。
       args: [
         `--disable-extensions-except=${EXT_DIST}`,
         `--load-extension=${EXT_DIST}`,
+        "--window-position=-2400,-2400",
       ],
     });
 
