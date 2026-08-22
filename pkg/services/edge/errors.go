@@ -15,6 +15,12 @@ var (
 	// the same identityKey within the rate-limit window.
 	ErrRateLimited = errors.New("edge: pairing code requested too soon, try again shortly")
 
+	// ErrIPRateLimited is returned when more than pairIPRateLimitMax
+	// /edge/pair exchange attempts have been seen from the same IP within
+	// pairIPRateLimitWindow (brute-force guard, independent of the
+	// per-code failure counter below).
+	ErrIPRateLimited = errors.New("edge: too many pairing attempts from this IP, try again later")
+
 	// ErrNotPaired is returned when an edge token carries no identityKey
 	// binding at all. Callers should surface the create_pairing_code tool as
 	// the way to resolve it.

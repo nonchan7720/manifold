@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -24,10 +26,30 @@ const (
 	pairingCodeKeyPrefix = "edge:pairing_code:"
 	rateLimitKeyPrefix   = "edge:pairing_ratelimit:"
 	edgeTokenKeyPrefix   = "edge:token:"
+
+	// pairIPRateLimitWindow/Max bound /edge/pair calls per source IP (see the
+	// 持ち越し判断事項 #4 in docs/design/webmcp-reverse-gateway-phase2.ja.md).
+	pairIPRateLimitWindow = time.Minute
+	pairIPRateLimitMax    = 10
+	ipRateLimitKeyPrefix  = "edge:pair_ratelimit:"
+
+	// pairFailureLimit is how many ErrInvalidCode exchanges against the same
+	// code value block it for the rest of its TTL window.
+	pairFailureLimit     = 5
+	pairFailureKeyPrefix = "edge:pair_fail:"
 )
 
 type pairingCodeData struct {
 	IdentityKey string `json:"identityKey"`
+}
+
+// ipRateLimitData is RateLimitPairAttempt's fixed-window counter payload.
+// ExpiresAt is fixed at the window's first request so incrementing the
+// count on later requests (Set requires a TTL parameter) never slides the
+// window forward.
+type ipRateLimitData struct {
+	Count     int       `json:"count"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 type edgeTokenData struct {
@@ -84,6 +106,40 @@ func (s *PairingService) IssueCode(
 	return code, nil
 }
 
+// RateLimitPairAttempt increments a fixed one-minute-window counter for ip
+// (the caller of POST /edge/pair) and returns ErrIPRateLimited once more than
+// pairIPRateLimitMax attempts have been seen within the window. This bounds
+// brute-force volume independently of ExchangeCode's per-code failure
+// counter (see 持ち越し判断事項 #4 in
+// docs/design/webmcp-reverse-gateway-phase2.ja.md).
+func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) error {
+	key := ipRateLimitKeyPrefix + ip
+	data := ipRateLimitData{Count: 1, ExpiresAt: time.Now().Add(pairIPRateLimitWindow)}
+	ttl := pairIPRateLimitWindow
+
+	if raw, err := s.store.Get(ctx, key); err == nil {
+		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			return fmt.Errorf("edge: decode ip rate limit data: %w", err)
+		}
+		if data.Count >= pairIPRateLimitMax {
+			return ErrIPRateLimited
+		}
+		data.Count++
+		if ttl = time.Until(data.ExpiresAt); ttl <= 0 {
+			ttl = pairIPRateLimitWindow
+		}
+	}
+
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if err := s.store.Set(ctx, key, raw, ttl); err != nil {
+		return fmt.Errorf("edge: store ip rate limit: %w", err)
+	}
+	return nil
+}
+
 // ExchangeCode validates and consumes a pairing code (single use), binding
 // the code's identityKey to an edge token.
 //
@@ -99,9 +155,14 @@ func (s *PairingService) ExchangeCode(
 	code string,
 	existingToken string,
 ) (string, error) {
+	if s.isPairCodeBlocked(ctx, code) {
+		return "", ErrInvalidCode
+	}
+
 	key := pairingCodeKeyPrefix + code
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
+		s.recordExchangeFailure(ctx, code)
 		return "", ErrInvalidCode
 	}
 	_ = s.store.Del(ctx, key)
@@ -172,6 +233,41 @@ func (s *PairingService) appendBinding(
 		return "", fmt.Errorf("edge: store edge token: %w", err)
 	}
 	return token, nil
+}
+
+// isPairCodeBlocked reports whether code has already accumulated
+// pairFailureLimit exchange failures, regardless of whether a pairing code
+// currently exists under that value — a guess that later collides with a
+// legitimately (re)issued code must still be rejected.
+func (s *PairingService) isPairCodeBlocked(ctx context.Context, code string) bool {
+	raw, err := s.store.Get(ctx, pairFailureKeyPrefix+code)
+	if err != nil {
+		return false
+	}
+	count, err := strconv.Atoi(raw)
+	return err == nil && count >= pairFailureLimit
+}
+
+// recordExchangeFailure increments code's failure counter (TTL matches
+// pairingCodeTTL, so the block expires alongside the code space it guards).
+// Counting failures against a code that never existed is intentional and
+// harmless — the counter key just expires with the TTL (持ち越し判断事項 #4).
+func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) {
+	key := pairFailureKeyPrefix + code
+	count := 1
+	if raw, err := s.store.Get(ctx, key); err == nil {
+		if n, convErr := strconv.Atoi(raw); convErr == nil {
+			count = n + 1
+		}
+	}
+	if err := s.store.Set(ctx, key, strconv.Itoa(count), pairingCodeTTL); err != nil {
+		slog.ErrorContext(ctx, "edge: failed to record pairing code failure",
+			slog.String("error", err.Error()))
+		return
+	}
+	if count >= pairFailureLimit {
+		_ = s.store.Del(ctx, pairingCodeKeyPrefix+code)
+	}
 }
 
 // Authenticate validates an edge token, slides its TTL forward, and returns

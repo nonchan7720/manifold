@@ -3,6 +3,7 @@ package httphandler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -137,4 +138,65 @@ func TestEdgePairHandler_Pair_EmptyCode_BadRequest(t *testing.T) {
 	handler.Pair(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// --- rate limiting (総当たり対策) ---
+
+func newPairRequest(t *testing.T, remoteAddr string, code string) *http.Request {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"code": code})
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/edge/pair",
+		bytes.NewReader(body),
+	)
+	req.RemoteAddr = remoteAddr
+	return req
+}
+
+func TestEdgePairHandler_Pair_RateLimit_AllowsUpToTenPerIP(t *testing.T) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, newPairRequest(t, "203.0.113.5:1234", code))
+		require.Equal(t, http.StatusOK, rec.Code, "attempt %d", i+1)
+	}
+}
+
+func TestEdgePairHandler_Pair_RateLimit_EleventhIsTooManyRequests(t *testing.T) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, newPairRequest(t, "203.0.113.6:1234", code))
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, newPairRequest(t, "203.0.113.6:1234", "00000000"))
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+func TestEdgePairHandler_Pair_RateLimit_IndependentPerIP(t *testing.T) {
+	handler, pairing := newTestEdgePairHandler(t)
+
+	for i := range 10 {
+		code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey(fmt.Sprintf("u-%d", i)))
+		require.NoError(t, err)
+		rec := httptest.NewRecorder()
+		handler.Pair(rec, newPairRequest(t, "203.0.113.7:1234", code))
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	code, err := pairing.IssueCode(t.Context(), domainedge.IdentityKey("other-ip-user"))
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	handler.Pair(rec, newPairRequest(t, "203.0.113.8:1234", code))
+	require.Equal(t, http.StatusOK, rec.Code, "rate limit must not leak across IPs")
 }

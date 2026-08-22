@@ -5,8 +5,14 @@ import (
 	"net/http"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/netinternet/remoteaddr"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 )
+
+// edgePairRemoteAddr resolves POST /edge/pair callers' IPs for
+// RateLimitPairAttempt. A single parser is reused across requests: it only
+// caches trusted-forwarder CIDR parsing, never per-request state.
+var edgePairRemoteAddr = remoteaddr.Parse()
 
 // EdgePairHandler serves POST /edge/pair, exchanging a pairing code (issued
 // via the create_pairing_code tool) for a long-lived edge token.
@@ -30,6 +36,12 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
+	}
+
+	ip, _ := edgePairRemoteAddr.IP(r)
+	if err = h.pairing.RateLimitPairAttempt(ctx, ip); err != nil {
+		writeError(http.StatusTooManyRequests, "rate_limited")
+		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
