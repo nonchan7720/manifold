@@ -146,29 +146,29 @@ func (g *ReverseGateway) IsKnownOrigin(origin string) bool {
 	return ok
 }
 
-// HandleAppUp connects to a newly-up tab's WebMCP MCP server over an
-// EdgeTransport built from sender/incoming, then builds (or rebuilds) the
-// per-user server exposing its tools alongside create_pairing_code.
+// HandleAppUp connects to a newly-up tab's WebMCP MCP server over a single
+// EdgeTransport built from sender/incoming, then binds that one connection
+// under every identityKey in identityKeys (see the "ペアリングのプロファイル
+// 対応" section of docs/design/webmcp-reverse-gateway-phase2.ja.md: an edge
+// token may carry several profile bindings, all reaching the same tab).
 func (g *ReverseGateway) HandleAppUp(
 	ctx context.Context,
-	binding domainedge.Binding,
+	identityKeys []domainedge.IdentityKey,
+	origin, appSession, connID string,
 	sender EdgeFrameSender,
 	incoming <-chan json.RawMessage,
 ) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/ReverseGateway/HandleAppUp")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	srvCfg, ok := g.byOrigin[binding.Origin]
+	srvCfg, ok := g.byOrigin[origin]
 	if !ok {
-		return fmt.Errorf(
-			"origin %q is not declared in any reverse mcpServers entry",
-			binding.Origin,
-		)
+		return fmt.Errorf("origin %q is not declared in any reverse mcpServers entry", origin)
 	}
 
 	transport := &EdgeTransport{
-		Origin:     binding.Origin,
-		AppSession: binding.AppSession,
+		Origin:     origin,
+		AppSession: appSession,
 		Sender:     sender,
 		Incoming:   incoming,
 	}
@@ -194,54 +194,99 @@ func (g *ReverseGateway) HandleAppUp(
 				if live == nil {
 					return
 				}
-				if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, live); err != nil {
-					slog.ErrorContext(ctx, "failed to rebuild reverse tool server",
-						slog.String("origin", binding.Origin), slog.Any("error", err))
+				for _, identityKey := range identityKeys {
+					binding := domainedge.Binding{
+						IdentityKey: identityKey,
+						Origin:      origin,
+						AppSession:  appSession,
+						ConnID:      connID,
+					}
+					if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, live); err != nil {
+						slog.ErrorContext(ctx, "failed to rebuild reverse tool server",
+							slog.String("origin", origin), slog.Any("error", err))
+					}
 				}
 			},
 		},
 	)
 	connected, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		return fmt.Errorf("connect to app %s: %w", binding.Origin, err)
+		return fmt.Errorf("connect to app %s: %w", origin, err)
 	}
 	sessionMu.Lock()
 	session = connected
 	sessionMu.Unlock()
 
-	if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, connected); err != nil {
-		connected.Close()
-		return fmt.Errorf("initialize tool server for app %s: %w", binding.Origin, err)
+	// Two passes: build every identityKey's server before binding any of
+	// them, so a failure partway through leaves the registry untouched
+	// instead of some identityKeys bound to a connection the other branch is
+	// about to close.
+	bindings := make([]domainedge.Binding, 0, len(identityKeys))
+	for _, identityKey := range identityKeys {
+		binding := domainedge.Binding{
+			IdentityKey: identityKey,
+			Origin:      origin,
+			AppSession:  appSession,
+			ConnID:      connID,
+		}
+		if err := g.rebuildUserServer(ctx, srvCfg.Name, binding, connected); err != nil {
+			connected.Close()
+			return fmt.Errorf("initialize tool server for app %s: %w", origin, err)
+		}
+		bindings = append(bindings, binding)
 	}
-
-	previous, hadPrevious := g.registry.Bind(ctx, binding, session)
-	if hadPrevious {
-		closeSessionHandle(previous)
+	for _, binding := range bindings {
+		previous, hadPrevious := g.registry.Bind(ctx, binding, connected)
+		if hadPrevious {
+			closeSessionHandle(previous)
+		}
 	}
 	return nil
 }
 
-// HandleAppDown tears down the binding's live session if appSession still
-// matches the currently bound generation. The per-user server built from its
-// tools/list is left in place so tool calls report tabNotConnectedMessage
-// instead of "tool not found".
+// HandleAppDown tears down (origin, appSession) for every identityKey in
+// identityKeys, for whichever of them still match the currently bound
+// generation. The per-user servers built from their tools/list are left in
+// place so tool calls report tabNotConnectedMessage instead of "tool not
+// found". Every identityKey shares the same underlying session (see
+// HandleAppUp), so it is closed once even though it may be unbound from
+// several registry entries.
 func (g *ReverseGateway) HandleAppDown(
 	ctx context.Context,
-	identityKey domainedge.IdentityKey,
+	identityKeys []domainedge.IdentityKey,
 	origin, appSession string,
 ) {
-	handle, ok := g.registry.Unbind(ctx, identityKey, origin, appSession)
-	if !ok {
-		return
+	handles := make([]any, 0, len(identityKeys))
+	for _, identityKey := range identityKeys {
+		if handle, ok := g.registry.Unbind(ctx, identityKey, origin, appSession); ok {
+			handles = append(handles, handle)
+		}
 	}
-	closeSessionHandle(handle)
+	closeUniqueHandles(handles, closeSessionHandle)
 }
 
 // DropConnection tears down every binding owned by connID (edge WebSocket
-// disconnect).
+// disconnect). Several identityKeys can share one underlying session (see
+// HandleAppUp), so handles are deduped the same way as HandleAppDown before
+// closing.
 func (g *ReverseGateway) DropConnection(ctx context.Context, connID string) {
-	for _, dropped := range g.registry.DropConnection(ctx, connID) {
-		closeSessionHandle(dropped.Handle)
+	dropped := g.registry.DropConnection(ctx, connID)
+	handles := make([]any, len(dropped))
+	for i, d := range dropped {
+		handles[i] = d.Handle
+	}
+	closeUniqueHandles(handles, closeSessionHandle)
+}
+
+// closeUniqueHandles closes each distinct handle in handles at most once.
+func closeUniqueHandles(handles []any, closeHandle func(any)) {
+	closed := map[any]bool{}
+	for _, handle := range handles {
+		if closed[handle] {
+			continue
+		}
+		closed[handle] = true
+		closeHandle(handle)
 	}
 }
 

@@ -109,6 +109,21 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	return c.client.Get(ctx, key).Result()
 }
 
+// Expire updates a key's TTL without changing its value
+func (c *Client) Expire(ctx context.Context, key string, expiration time.Duration) (rErr error) {
+	ctx = trace.StartSpan(ctx, "redis/Client/Expire")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	ok, err := c.client.Expire(ctx, key, expiration).Result()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("key not found: %s", key)
+	}
+	return nil
+}
+
 // Del removes a key
 func (c *Client) Del(ctx context.Context, key string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "redis/Client/Del")

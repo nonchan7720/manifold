@@ -19,7 +19,8 @@ func NewEdgePairHandler(pairing *edgeservices.PairingService) *EdgePairHandler {
 	return &EdgePairHandler{pairing: pairing}
 }
 
-// Pair handles POST /edge/pair {"code": "12345678"} -> {"token": "..."}.
+// Pair handles POST /edge/pair {"code": "12345678", "token": "<existing edge
+// token, optional>"} -> {"token": "..."}.
 func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 	ctx := trace.StartSpan(r.Context(), "httphandler/EdgePairHandler/Pair")
 	var err error
@@ -33,7 +34,8 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
 	var req struct {
-		Code string `json:"code"`
+		Code  string `json:"code"`
+		Token string `json:"token"`
 	}
 	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(http.StatusBadRequest, "invalid_request")
@@ -44,7 +46,7 @@ func (h *EdgePairHandler) Pair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.pairing.ExchangeCode(ctx, req.Code)
+	token, err := h.pairing.ExchangeCode(ctx, req.Code, req.Token)
 	if err != nil {
 		writeError(http.StatusBadRequest, "invalid_code")
 		return

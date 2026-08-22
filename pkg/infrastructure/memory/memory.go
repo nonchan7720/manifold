@@ -60,6 +60,21 @@ func (c *Client) Get(_ context.Context, key string) (string, error) {
 	return e.value, nil
 }
 
+// Expire はキーの値を変更せずTTLだけを更新する。キーが存在しないか期限切れの場合はエラーを返す。
+func (c *Client) Expire(_ context.Context, key string, expiration time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e, ok := c.data[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		delete(c.data, key)
+		return fmt.Errorf("key not found: %s", key)
+	}
+	e.expiresAt = time.Now().Add(expiration)
+	c.data[key] = e
+	return nil
+}
+
 // Del はキーを削除する。
 func (c *Client) Del(_ context.Context, key string) error {
 	c.mu.Lock()

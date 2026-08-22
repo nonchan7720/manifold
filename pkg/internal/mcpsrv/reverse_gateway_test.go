@@ -3,6 +3,8 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,19 @@ func newTestReverseGateway(
 	servers config.Servers,
 	edgeCfg config.EdgeConfig,
 ) *ReverseGateway {
+	gateway, _ := newTestReverseGatewayWithRegistry(t, servers, edgeCfg)
+	return gateway
+}
+
+// newTestReverseGatewayWithRegistry also returns the registry backing
+// gateway, so tests can assert on bindings for identityKeys that the
+// gateway's own edgeCfg-derived routing (ResolveServer/IdentityKeyForRequest)
+// cannot reach (e.g. non-static identityKeys under a static-config gateway).
+func newTestReverseGatewayWithRegistry(
+	t *testing.T,
+	servers config.Servers,
+	edgeCfg config.EdgeConfig,
+) (*ReverseGateway, *edgeservices.InMemoryRegistry) {
 	t.Helper()
 	storeClient, err := memory.NewClient(t.Context())
 	require.NoError(t, err)
@@ -27,7 +42,7 @@ func newTestReverseGateway(
 	registry := edgeservices.NewInMemoryRegistry()
 	gateway := NewReverseGateway(registry, pairing, edgeCfg.WithDefaults(), servers)
 	gateway.Init(t.Context())
-	return gateway
+	return gateway, registry
 }
 
 func staticReverseServers() config.Servers {
@@ -69,6 +84,19 @@ func connectFakeTab(
 	binding domainedge.Binding,
 ) *mcp.Server {
 	t.Helper()
+	identityKeys := []domainedge.IdentityKey{binding.IdentityKey}
+	return connectFakeTabMultiKey(t, gateway, identityKeys, binding)
+}
+
+// connectFakeTabMultiKey is connectFakeTab for a binding shared by several
+// identityKeys (e.g. an edge token paired to more than one profile).
+func connectFakeTabMultiKey(
+	t *testing.T,
+	gateway *ReverseGateway,
+	identityKeys []domainedge.IdentityKey,
+	binding domainedge.Binding,
+) *mcp.Server {
+	t.Helper()
 	toGateway := make(chan json.RawMessage, 16)
 	toPage := make(chan json.RawMessage, 16)
 
@@ -95,21 +123,26 @@ func connectFakeTab(
 	require.NoError(t, err)
 
 	sender := &bridgedFrameSender{peerIncoming: toPage}
-	require.NoError(t, gateway.HandleAppUp(t.Context(), binding, sender, toGateway))
+	require.NoError(t, gateway.HandleAppUp(
+		t.Context(),
+		identityKeys,
+		binding.Origin,
+		binding.AppSession,
+		binding.ConnID,
+		sender,
+		toGateway,
+	))
 	return page
 }
 
 func TestReverseGateway_HandleAppUp_UnknownOrigin_Error(t *testing.T) {
 	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
-	binding := domainedge.Binding{
-		IdentityKey: domainedge.StaticIdentityKey,
-		Origin:      "https://unknown.example.com",
-		AppSession:  "session-1",
-		ConnID:      "conn-1",
-	}
 	err := gateway.HandleAppUp(
 		t.Context(),
-		binding,
+		[]domainedge.IdentityKey{domainedge.StaticIdentityKey},
+		"https://unknown.example.com",
+		"session-1",
+		"conn-1",
 		&bridgedFrameSender{},
 		make(chan json.RawMessage),
 	)
@@ -195,7 +228,12 @@ func TestReverseGateway_HandleAppDown_ToolCallReturnsFriendlyError(t *testing.T)
 		ConnID:      "conn-1",
 	}
 	connectFakeTab(t, gateway, binding)
-	gateway.HandleAppDown(t.Context(), binding.IdentityKey, binding.Origin, binding.AppSession)
+	gateway.HandleAppDown(
+		t.Context(),
+		[]domainedge.IdentityKey{binding.IdentityKey},
+		binding.Origin,
+		binding.AppSession,
+	)
 
 	srv, err := gateway.ResolveServer(t.Context(), "app1")
 	require.NoError(t, err)
@@ -309,6 +347,151 @@ func TestReverseGateway_HandleAppUp_ToolListChanged_ExposesNewTool(t *testing.T)
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "new_tool"})
 		return err == nil && !result.IsError
 	}, 2*time.Second, 10*time.Millisecond, "new_tool should become callable once list_changed rebuilds the server")
+}
+
+func TestReverseGateway_HandleAppUp_MultipleIdentityKeys_BindsEachKey(t *testing.T) {
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
+	binding := domainedge.Binding{
+		Origin:     "https://app1.example.com",
+		AppSession: "session-1",
+		ConnID:     "conn-1",
+	}
+	identityKeys := []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}
+	connectFakeTabMultiKey(t, gateway, identityKeys, binding)
+
+	for _, key := range identityKeys {
+		handle, ok := registry.Resolve(t.Context(), key, binding.Origin)
+		require.True(t, ok, "identityKey %s should be bound", key)
+		session, ok := handle.(*mcp.ClientSession)
+		require.True(t, ok)
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "read_dom"})
+		require.NoError(t, err)
+		require.False(t, result.IsError)
+	}
+}
+
+func TestReverseGateway_HandleAppDown_MultipleIdentityKeys_UnbindsAllKeys(t *testing.T) {
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
+	binding := domainedge.Binding{
+		Origin:     "https://app1.example.com",
+		AppSession: "session-1",
+		ConnID:     "conn-1",
+	}
+	identityKeys := []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}
+	connectFakeTabMultiKey(t, gateway, identityKeys, binding)
+
+	gateway.HandleAppDown(t.Context(), identityKeys, binding.Origin, binding.AppSession)
+
+	for _, key := range identityKeys {
+		_, ok := registry.Resolve(t.Context(), key, binding.Origin)
+		require.False(t, ok, "identityKey %s should be unbound", key)
+	}
+}
+
+func TestReverseGateway_DropConnection_MultipleIdentityKeys_DropsAllKeys(t *testing.T) {
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
+	binding := domainedge.Binding{
+		Origin:     "https://app1.example.com",
+		AppSession: "session-1",
+		ConnID:     "conn-1",
+	}
+	identityKeys := []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}
+	connectFakeTabMultiKey(t, gateway, identityKeys, binding)
+
+	gateway.DropConnection(t.Context(), binding.ConnID)
+
+	for _, key := range identityKeys {
+		_, ok := registry.Resolve(t.Context(), key, binding.Origin)
+		require.False(t, ok, "identityKey %s should be dropped", key)
+	}
+}
+
+func TestReverseGateway_HandleAppUp_RebuildFailure_RollsBackAllBindings(t *testing.T) {
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
+	binding := domainedge.Binding{
+		Origin:     "https://app1.example.com",
+		AppSession: "session-1",
+		ConnID:     "conn-1",
+	}
+	identityKeys := []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}
+
+	toGateway := make(chan json.RawMessage, 16)
+	toPage := make(chan json.RawMessage, 16)
+
+	page := mcp.NewServer(&mcp.Implementation{Name: "page", Version: "0.0.1"}, nil)
+	page.AddTool(
+		&mcp.Tool{
+			Name:        "read_dom",
+			Description: "read the page DOM",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "dom-snapshot"}},
+			}, nil
+		},
+	)
+	// Fail the second identityKey's tools/list call (its rebuildUserServer),
+	// so a correct HandleAppUp must not have bound the first identityKey yet
+	// when it rolls back.
+	var listCalls atomic.Int32
+	page.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" && listCalls.Add(1) == 2 {
+				return nil, errors.New("boom")
+			}
+			return next(ctx, method, req)
+		}
+	})
+	pageTransport := &EdgeTransport{
+		Origin:     binding.Origin,
+		AppSession: binding.AppSession,
+		Sender:     &bridgedFrameSender{peerIncoming: toGateway},
+		Incoming:   toPage,
+	}
+	_, err := page.Connect(t.Context(), pageTransport, nil)
+	require.NoError(t, err)
+
+	sender := &bridgedFrameSender{peerIncoming: toPage}
+	err = gateway.HandleAppUp(
+		t.Context(),
+		identityKeys,
+		binding.Origin,
+		binding.AppSession,
+		binding.ConnID,
+		sender,
+		toGateway,
+	)
+	require.Error(t, err)
+
+	for _, key := range identityKeys {
+		_, ok := registry.Resolve(t.Context(), key, binding.Origin)
+		require.False(t, ok, "identityKey %s must not be bound after rollback", key)
+	}
+}
+
+func TestCloseUniqueHandles_ClosesEachDistinctHandleOnce(t *testing.T) {
+	var closedCount int
+	closeUniqueHandles([]any{"session-a", "session-a", "session-b"}, func(any) {
+		closedCount++
+	})
+	require.Equal(t, 2, closedCount)
 }
 
 func TestIdentityKeyForRequest_Static_ReturnsStaticKey(t *testing.T) {
