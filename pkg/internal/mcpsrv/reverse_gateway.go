@@ -217,6 +217,11 @@ func (g *ReverseGateway) HandleAppUp(
 	session = connected
 	sessionMu.Unlock()
 
+	// Two passes: build every identityKey's server before binding any of
+	// them, so a failure partway through leaves the registry untouched
+	// instead of some identityKeys bound to a connection the other branch is
+	// about to close.
+	bindings := make([]domainedge.Binding, 0, len(identityKeys))
 	for _, identityKey := range identityKeys {
 		binding := domainedge.Binding{
 			IdentityKey: identityKey,
@@ -228,6 +233,9 @@ func (g *ReverseGateway) HandleAppUp(
 			connected.Close()
 			return fmt.Errorf("initialize tool server for app %s: %w", origin, err)
 		}
+		bindings = append(bindings, binding)
+	}
+	for _, binding := range bindings {
 		previous, hadPrevious := g.registry.Bind(ctx, binding, connected)
 		if hadPrevious {
 			closeSessionHandle(previous)
@@ -248,22 +256,37 @@ func (g *ReverseGateway) HandleAppDown(
 	identityKeys []domainedge.IdentityKey,
 	origin, appSession string,
 ) {
-	closed := map[any]bool{}
+	handles := make([]any, 0, len(identityKeys))
 	for _, identityKey := range identityKeys {
-		handle, ok := g.registry.Unbind(ctx, identityKey, origin, appSession)
-		if !ok || closed[handle] {
-			continue
+		if handle, ok := g.registry.Unbind(ctx, identityKey, origin, appSession); ok {
+			handles = append(handles, handle)
 		}
-		closed[handle] = true
-		closeSessionHandle(handle)
 	}
+	closeUniqueHandles(handles, closeSessionHandle)
 }
 
 // DropConnection tears down every binding owned by connID (edge WebSocket
-// disconnect).
+// disconnect). Several identityKeys can share one underlying session (see
+// HandleAppUp), so handles are deduped the same way as HandleAppDown before
+// closing.
 func (g *ReverseGateway) DropConnection(ctx context.Context, connID string) {
-	for _, dropped := range g.registry.DropConnection(ctx, connID) {
-		closeSessionHandle(dropped.Handle)
+	dropped := g.registry.DropConnection(ctx, connID)
+	handles := make([]any, len(dropped))
+	for i, d := range dropped {
+		handles[i] = d.Handle
+	}
+	closeUniqueHandles(handles, closeSessionHandle)
+}
+
+// closeUniqueHandles closes each distinct handle in handles at most once.
+func closeUniqueHandles(handles []any, closeHandle func(any)) {
+	closed := map[any]bool{}
+	for _, handle := range handles {
+		if closed[handle] {
+			continue
+		}
+		closed[handle] = true
+		closeHandle(handle)
 	}
 }
 

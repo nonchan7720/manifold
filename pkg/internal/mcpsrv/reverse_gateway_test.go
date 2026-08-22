@@ -3,6 +3,8 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -414,6 +416,82 @@ func TestReverseGateway_DropConnection_MultipleIdentityKeys_DropsAllKeys(t *test
 		_, ok := registry.Resolve(t.Context(), key, binding.Origin)
 		require.False(t, ok, "identityKey %s should be dropped", key)
 	}
+}
+
+func TestReverseGateway_HandleAppUp_RebuildFailure_RollsBackAllBindings(t *testing.T) {
+	gateway, registry := newTestReverseGatewayWithRegistry(
+		t,
+		staticReverseServers(),
+		staticEdgeConfig(),
+	)
+	binding := domainedge.Binding{
+		Origin:     "https://app1.example.com",
+		AppSession: "session-1",
+		ConnID:     "conn-1",
+	}
+	identityKeys := []domainedge.IdentityKey{"oauth:user-a", "saml:user-a"}
+
+	toGateway := make(chan json.RawMessage, 16)
+	toPage := make(chan json.RawMessage, 16)
+
+	page := mcp.NewServer(&mcp.Implementation{Name: "page", Version: "0.0.1"}, nil)
+	page.AddTool(
+		&mcp.Tool{
+			Name:        "read_dom",
+			Description: "read the page DOM",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "dom-snapshot"}},
+			}, nil
+		},
+	)
+	// Fail the second identityKey's tools/list call (its rebuildUserServer),
+	// so a correct HandleAppUp must not have bound the first identityKey yet
+	// when it rolls back.
+	var listCalls atomic.Int32
+	page.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" && listCalls.Add(1) == 2 {
+				return nil, errors.New("boom")
+			}
+			return next(ctx, method, req)
+		}
+	})
+	pageTransport := &EdgeTransport{
+		Origin:     binding.Origin,
+		AppSession: binding.AppSession,
+		Sender:     &bridgedFrameSender{peerIncoming: toGateway},
+		Incoming:   toPage,
+	}
+	_, err := page.Connect(t.Context(), pageTransport, nil)
+	require.NoError(t, err)
+
+	sender := &bridgedFrameSender{peerIncoming: toPage}
+	err = gateway.HandleAppUp(
+		t.Context(),
+		identityKeys,
+		binding.Origin,
+		binding.AppSession,
+		binding.ConnID,
+		sender,
+		toGateway,
+	)
+	require.Error(t, err)
+
+	for _, key := range identityKeys {
+		_, ok := registry.Resolve(t.Context(), key, binding.Origin)
+		require.False(t, ok, "identityKey %s must not be bound after rollback", key)
+	}
+}
+
+func TestCloseUniqueHandles_ClosesEachDistinctHandleOnce(t *testing.T) {
+	var closedCount int
+	closeUniqueHandles([]any{"session-a", "session-a", "session-b"}, func(any) {
+		closedCount++
+	})
+	require.Equal(t, 2, closedCount)
 }
 
 func TestIdentityKeyForRequest_Static_ReturnsStaticKey(t *testing.T) {
