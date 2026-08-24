@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"mime"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -92,10 +92,20 @@ func wrapToolFunc(tool ToolFunc) ToolFunc {
 		if err != nil {
 			return nil, "", err
 		}
-		if strings.Contains(contentType, "application/json") {
+		mediaType, params, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			// content type のパースに失敗した場合はそのまま返す
+			return resp, contentType, nil //nolint: nilerr
+		}
+		profileValue, isProfile := params["profile"]
+		if mediaType == "application/json" || (isProfile && profileValue == "application/json") {
 			if v, err := wrapIfArray(resp); err != nil {
 				return nil, "", err
 			} else {
+				// profile があれば profile 側を使用する
+				if isProfile {
+					contentType = profileValue
+				}
 				return v, contentType, nil
 			}
 		}
