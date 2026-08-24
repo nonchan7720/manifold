@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.4](https://github.com/nonchan7720/manifold/compare/v1.6.3...v1.6.4) (2026-08-24)
+
+
+### Bug Fixes
+
+* array item to item object ([#114](https://github.com/nonchan7720/manifold/issues/114)) ([6f3c0a8](https://github.com/nonchan7720/manifold/commit/6f3c0a82fc758ddb9d65e318eae72e0bb32036bd))
+
 ## [1.6.3](https://github.com/nonchan7720/manifold/compare/v1.6.2...v1.6.3) (2026-08-13)
 
 
