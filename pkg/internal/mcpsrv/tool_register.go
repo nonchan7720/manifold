@@ -1,9 +1,13 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -50,7 +54,7 @@ func (r *MCPToolRegistry) RegisterTool(
 			Description: description,
 			InputSchema: inputSchema,
 		},
-		handler: handler,
+		handler: wrapToolFunc(handler),
 	}
 	for _, fn := range opts {
 		fn(&tool)
@@ -80,4 +84,35 @@ func (r *MCPToolRegistry) ListTools() []Tool {
 		return listTools[i].tool.Name < listTools[j].tool.Name
 	})
 	return listTools
+}
+
+func wrapToolFunc(tool ToolFunc) ToolFunc {
+	return func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		resp, contentType, err := tool(ctx, input)
+		if err != nil {
+			return nil, "", err
+		}
+		if strings.Contains(contentType, "application/json") {
+			if v, err := wrapIfArray(resp); err != nil {
+				return nil, "", err
+			} else {
+				return v, contentType, nil
+			}
+		}
+		return resp, contentType, nil
+	}
+}
+
+func wrapIfArray(b []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return b, nil
+	}
+	if !json.Valid(b) {
+		return nil, fmt.Errorf("invalid json")
+	}
+	wrapped := map[string]json.RawMessage{
+		"items": json.RawMessage(b),
+	}
+	return json.Marshal(wrapped)
 }
