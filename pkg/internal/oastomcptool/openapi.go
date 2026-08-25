@@ -1,6 +1,7 @@
 package oastomcptool
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -232,6 +233,11 @@ type formParameter struct {
 	isFile       bool
 	originalName string
 	parameters   map[string]formParameter
+	// discriminatorProperty は oneOf/anyOf に discriminator がある場合の判別子プロパティ名
+	// （sanitizeParamName 適用後）。discriminator が無ければ空文字列。
+	discriminatorProperty string
+	// discriminatorBranches は判別子の値（文字列化したもの） -> そのブランチの formParameters。
+	discriminatorBranches map[string]formParameters
 }
 
 type formParameters map[string]formParameter
@@ -289,6 +295,46 @@ func newFormParameter(schema *openapi3.Schema) formParameter {
 	return newFormParameterVisited(schema, map[*openapi3.Schema]bool{})
 }
 
+// mergeFormParameterBranches は oneOf/anyOf の各ブランチを処理する。ブランチの formParameters は
+// 常に merged（呼び出し元の fp.parameters）へ maps.Copy でマージし、discriminator が無い場合や
+// ブランチの判別子の値を特定できない場合のフォールバックとして使えるようにする。加えて
+// discriminator があれば、判別子プロパティの値（discriminatorConstValue が返す const 相当の値。
+// mapping 優先、無ければブランチ側の enum 単一値）ごとにそのブランチの formParameters を
+// discBranches に記録する。
+func mergeFormParameterBranches(
+	refs openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	discriminator *openapi3.Discriminator,
+	merged formParameters,
+) (isFile bool, discBranches map[string]formParameters) {
+	for _, ref := range refs {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		branch := newFormParameterVisited(ref.Value, visited)
+		maps.Copy(merged, branch.parameters)
+		if branch.isFile {
+			isFile = true
+		}
+		if discriminator == nil || discriminator.PropertyName == "" {
+			continue
+		}
+		propRef, ok := ref.Value.Properties[discriminator.PropertyName]
+		if !ok || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		key, ok := discriminatorConstValue(ref, propRef.Value, discriminator)
+		if !ok {
+			continue
+		}
+		if discBranches == nil {
+			discBranches = map[string]formParameters{}
+		}
+		discBranches[fmt.Sprintf("%v", key)] = branch.parameters
+	}
+	return isFile, discBranches
+}
+
 // newFormParameterVisited は newFormParameter の実体。visited は現在の再帰パス上にあるスキーマ
 // ポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は $ref をポインタ循環と
 // して解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの再訪を検知した場合は
@@ -316,24 +362,41 @@ func newFormParameterVisited(
 			fp.isFile = true
 		}
 	}
-	for _, ref := range schema.OneOf {
-		if ref == nil || ref.Value == nil {
-			continue
-		}
-		branch := newFormParameterVisited(ref.Value, visited)
-		maps.Copy(fp.parameters, branch.parameters)
-		if branch.isFile {
-			fp.isFile = true
-		}
+
+	oneOfFile, oneOfBranches := mergeFormParameterBranches(
+		schema.OneOf,
+		visited,
+		schema.Discriminator,
+		fp.parameters,
+	)
+	anyOfFile, anyOfBranches := mergeFormParameterBranches(
+		schema.AnyOf,
+		visited,
+		schema.Discriminator,
+		fp.parameters,
+	)
+	if oneOfFile || anyOfFile {
+		fp.isFile = true
 	}
-	for _, ref := range schema.AnyOf {
-		if ref == nil || ref.Value == nil {
-			continue
-		}
-		branch := newFormParameterVisited(ref.Value, visited)
-		maps.Copy(fp.parameters, branch.parameters)
-		if branch.isFile {
-			fp.isFile = true
+	switch {
+	case oneOfBranches != nil:
+		fp.discriminatorProperty = sanitizeParamName(schema.Discriminator.PropertyName)
+		fp.discriminatorBranches = oneOfBranches
+	case anyOfBranches != nil:
+		fp.discriminatorProperty = sanitizeParamName(schema.Discriminator.PropertyName)
+		fp.discriminatorBranches = anyOfBranches
+	}
+
+	// 配列スキーマは Properties を持たず Items にアイテムスキーマを持つ。アイテムが object
+	// （report_form_inputs の各要素など）の場合、その properties / discriminator 情報を配列自身
+	// の formParameter にマージし、writeMultipartValue が配列の各要素（map[string]any）を展開
+	// する際に同じ formParameter を使い回せるようにする。
+	if schema.Items != nil && schema.Items.Value != nil {
+		items := newFormParameterVisited(schema.Items.Value, visited)
+		maps.Copy(fp.parameters, items.parameters)
+		if items.discriminatorProperty != "" {
+			fp.discriminatorProperty = items.discriminatorProperty
+			fp.discriminatorBranches = items.discriminatorBranches
 		}
 	}
 
@@ -467,7 +530,7 @@ func binaryFieldMCPSchema(description string, metadata map[string]any) map[strin
 
 // buildFormPropertySchema はフォームプロパティを MCP input schema のプロパティへ再帰変換する。
 func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
-	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{}, true)
+	return buildFormPropertySchemaVisited(prop, map[*openapi3.Schema]bool{})
 }
 
 // buildFormPropertySchemaVisited は buildFormPropertySchema の実体。
@@ -476,24 +539,13 @@ func buildFormPropertySchema(prop *openapi3.Schema) map[string]any {
 // （kin-openapi の Loader は $ref をポインタ循環として解決するため実際に発生しうる）による
 // 無限再帰を防ぐ。同じスキーマへの再訪を検知した場合、それ以上再帰せず浅いオブジェクト表現を返す。
 //
-// runtimeResolvable は、このスキーマ位置の値が実行時に writeMultipartValue /
-// writeMultipartFile によって実際に「ファイルとして解決」されうるかを表す。true になるのは
-// トップレベル呼び出し（buildFormPropertySchema 経由）と、その配下の array items /
-// oneOf・anyOf ブランチへの再帰のみで、schema.Properties（ネストしたオブジェクトプロパティ）へ
-// 再帰した時点で false になり、以降の再帰全てに伝播する。理由: writeMultipartValue は
-// トップレベルの param.isFile だけを見て、isFile なら writeMultipartFile で
-// url/base64/text/content を解決するが、isFile でない値（ネストしたオブジェクトを含む）は
-// json.Marshal でそのまま JSON 化するだけで、ネストしたオブジェクトプロパティの中まで
-// 立ち入って個々の isFile フィールドを解決することはない。したがってネストしたオブジェクト
-// プロパティ配下の binary フィールドに oneOf/_meta のファイル用スキーマを付けてしまうと、
-// スキーマが「URL や base64 オブジェクトを解決できる」と誤って約束することになる
-// （実際には json.Marshal でそのまま送られるだけで、URL は決してダウンロードされない）。
-// runtimeResolvable=false の間は binary リーフでも通常の type:string として扱い、
-// _meta.manifold も付与しない（＝スキーマを実際の挙動に合わせる）。
+// format: binary のリーフには、ネストの深さに関わらず binaryFieldMCPSchema によるファイル用
+// スキーマ（oneOf + _meta.manifold）を付与する。writeMultipartValue / writeURLEncodedValue が
+// ネストした object/array をブラケット記法のフィールド名へ再帰的に展開するため、multipart では
+// ネスト配下の binary も writeMultipartFile で実際に解決される。
 func buildFormPropertySchemaVisited( //nolint: gocyclo
 	prop *openapi3.Schema,
 	visited map[*openapi3.Schema]bool,
-	runtimeResolvable bool,
 ) map[string]any {
 	if prop == nil {
 		return map[string]any{"type": "string", "description": "", "_meta": map[string]any{}}
@@ -523,34 +575,27 @@ func buildFormPropertySchemaVisited( //nolint: gocyclo
 	}
 
 	metadata := map[string]any{}
-	if runtimeResolvable && schemaIsBinary(prop) {
+	if schemaIsBinary(prop) {
 		metadata["manifold"] = map[string]any{
 			"file":          true,
 			"fileInputHint": fileInputHint,
 		}
 	}
 
-	if runtimeResolvable && prop.Format == "binary" {
+	if prop.Format == "binary" {
 		return binaryFieldMCPSchema(desc, metadata)
 	}
 
-	if len(prop.OneOf) > 0 {
-		return buildFormPropOneOf(
-			prop.OneOf,
-			visited,
-			runtimeResolvable,
-			desc,
-			metadata,
-		)
-	}
-	if len(prop.AnyOf) > 0 {
-		return buildFormAnyOf(
-			prop.AnyOf,
-			visited,
-			runtimeResolvable,
-			desc,
-			metadata,
-		)
+	// prop.Properties が非空のスキーマは、局所的な oneOf/anyOf（required/not による排他制約
+	// など）を型の分岐として扱わない。ここで oneOf/anyOf を無視して通常の object 組み立てに
+	// 進まないと、properties が丸ごと捨てられて意味のない oneOf に化けてしまう。
+	if len(prop.Properties) == 0 {
+		if len(prop.OneOf) > 0 {
+			return buildFormPropOneOf(prop.OneOf, visited, desc, metadata, prop.Discriminator)
+		}
+		if len(prop.AnyOf) > 0 {
+			return buildFormAnyOf(prop.AnyOf, visited, desc, metadata, prop.Discriminator)
+		}
 	}
 
 	propType := schemaTypeStr(prop.Type)
@@ -567,6 +612,9 @@ func buildFormPropertySchemaVisited( //nolint: gocyclo
 		"description": desc,
 		"_meta":       metadata,
 	}
+	if len(prop.Enum) > 0 {
+		result["enum"] = prop.Enum
+	}
 
 	if propType == "object" && len(prop.Properties) > 0 {
 		properties := map[string]any{}
@@ -574,15 +622,13 @@ func buildFormPropertySchemaVisited( //nolint: gocyclo
 			if propRef == nil || propRef.Value == nil {
 				continue
 			}
-			// オブジェクトプロパティへの再帰は常に runtimeResolvable=false
-			// （上記コメント参照）。プロパティ名は sanitizeParamName で MCP スキーマ
-			// 上安全な名前に変換する（トップレベルのフォームパラメータと同じ規約）。
-			// 元の名前への復元は writeMultipartValue が formParameter.parameters
+			// プロパティ名は sanitizeParamName で MCP スキーマ上安全な名前に変換する
+			// （トップレベルのフォームパラメータと同じ規約）。元の名前への復元は
+			// writeMultipartValue/writeURLEncodedValue が formParameter.parameters
 			// （newFormParameterVisited が同じ規則で構築する originalName）を使って行う。
 			properties[sanitizeParamName(propName)] = buildFormPropertySchemaVisited(
 				propRef.Value,
 				visited,
-				false,
 			)
 		}
 		result["properties"] = properties
@@ -597,11 +643,7 @@ func buildFormPropertySchemaVisited( //nolint: gocyclo
 	}
 
 	if propType == "array" && prop.Items != nil && prop.Items.Value != nil {
-		result["items"] = buildFormPropertySchemaVisited(
-			prop.Items.Value,
-			visited,
-			runtimeResolvable,
-		)
+		result["items"] = buildFormPropertySchemaVisited(prop.Items.Value, visited)
 	}
 
 	return result
@@ -610,49 +652,127 @@ func buildFormPropertySchemaVisited( //nolint: gocyclo
 func buildFormPropOneOf(
 	oneOf openapi3.SchemaRefs,
 	visited map[*openapi3.Schema]bool,
-	runtimeResolvable bool,
 	desc string,
 	metadata map[string]any,
+	discriminator *openapi3.Discriminator,
 ) map[string]any {
-	branches := []any{}
-	for _, ref := range oneOf {
-		if ref == nil || ref.Value == nil {
-			continue
-		}
-		branches = append(
-			branches,
-			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
-		)
-	}
-	return map[string]any{
-		"oneOf":       branches,
-		"description": desc,
-		"_meta":       metadata,
-	}
+	return buildFormPropBranches(oneOf, visited, desc, metadata, discriminator, "oneOf")
 }
 
 func buildFormAnyOf(
 	anyOf openapi3.SchemaRefs,
 	visited map[*openapi3.Schema]bool,
-	runtimeResolvable bool,
 	desc string,
 	metadata map[string]any,
+	discriminator *openapi3.Discriminator,
+) map[string]any {
+	return buildFormPropBranches(anyOf, visited, desc, metadata, discriminator, "anyOf")
+}
+
+// buildFormPropBranches は oneOf/anyOf ブランチ群を組み立てる。ブランチごとに description・
+// properties・enum が異なりうるため、マージはせず常に keyword（oneOf/anyOf）を出力し、
+// discriminator があればブランチごとに applyDiscriminatorConst で const を付与する。
+// 全ブランチが object と判定できる場合のみ、結果に補助的な "type": "object" を付ける
+// （MCP クライアントは oneOf を展開しないため properties が見えなくなるとの誤解を避ける
+// 目的の付与であり、oneOf 自体の削除は行わない）。
+func buildFormPropBranches(
+	refs openapi3.SchemaRefs,
+	visited map[*openapi3.Schema]bool,
+	desc string,
+	metadata map[string]any,
+	discriminator *openapi3.Discriminator,
+	keyword string,
 ) map[string]any {
 	branches := []any{}
-	for _, ref := range anyOf {
+	for _, ref := range refs {
 		if ref == nil || ref.Value == nil {
 			continue
 		}
-		branches = append(
-			branches,
-			buildFormPropertySchemaVisited(ref.Value, visited, runtimeResolvable),
-		)
+		branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
 	}
-	return map[string]any{
-		"anyOf":       branches,
+
+	for i, ref := range refs {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		if branch, ok := branches[i].(map[string]any); ok {
+			applyDiscriminatorConst(branch, ref, discriminator)
+		}
+	}
+
+	result := map[string]any{
+		keyword:       branches,
 		"description": desc,
 		"_meta":       metadata,
 	}
+	if allBranchesObject(branches) {
+		result["type"] = "object"
+	}
+	return result
+}
+
+// allBranchesObject は oneOf/anyOf の全ブランチが object と判定できるかを返す。
+// 各ブランチの判定は buildFormPropertySchemaVisited がプロパティ有無から type を
+// 補完した結果（branch["type"]）に委ねる。string 等が混在する場合は false。
+func allBranchesObject(branches []any) bool {
+	if len(branches) == 0 {
+		return false
+	}
+	for _, b := range branches {
+		branch, ok := b.(map[string]any)
+		if !ok || branch["type"] != "object" {
+			return false
+		}
+	}
+	return true
+}
+
+// applyDiscriminatorConst は discriminator.PropertyName が指すブランチのプロパティに
+// const を付与する。mapping があればそのブランチの $ref と一致するキーを const にし、
+// 一致しなければ（mapping が無い場合も含め）ブランチ側の enum が単一値ならそれを const にする。
+func applyDiscriminatorConst(
+	branch map[string]any,
+	ref *openapi3.SchemaRef,
+	discriminator *openapi3.Discriminator,
+) {
+	if discriminator == nil || discriminator.PropertyName == "" || ref == nil || ref.Value == nil {
+		return
+	}
+	propRef, ok := ref.Value.Properties[discriminator.PropertyName]
+	if !ok || propRef == nil || propRef.Value == nil {
+		return
+	}
+	properties, ok := branch["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	target, ok := properties[sanitizeParamName(discriminator.PropertyName)].(map[string]any)
+	if !ok {
+		return
+	}
+	constValue, ok := discriminatorConstValue(ref, propRef.Value, discriminator)
+	if !ok {
+		return
+	}
+	target["const"] = constValue
+}
+
+// discriminatorConstValue は const に使う値を決める。mapping が優先で、
+// 一致するキーが無ければブランチの enum が単一値の場合のみそれを使う。
+func discriminatorConstValue(
+	ref *openapi3.SchemaRef,
+	propSchema *openapi3.Schema,
+	discriminator *openapi3.Discriminator,
+) (any, bool) {
+	for key, mapped := range discriminator.Mapping {
+		if mapped.Ref != "" && mapped.Ref == ref.Ref {
+			return key, true
+		}
+	}
+	if len(propSchema.Enum) == 1 {
+		return propSchema.Enum[0], true
+	}
+	return nil, false
 }
 
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
@@ -1178,8 +1298,15 @@ func isFileURL(v any) (string, bool) {
 	return "", false
 }
 
-// writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
-// または {filename, contentType, ...} のオブジェクト。
+// defaultFileFieldName は明示 filename が無いファイルフィールドの既定ファイル名。
+const defaultFileFieldName = "file"
+
+// resolveFileFieldValue は writeMultipartFile / writeURLEncodedValue が共有するファイル内容の
+// 解決ロジック。value は base64 文字列、URL 文字列、または {filename, contentType, ...} の
+// オブジェクト。filename/contentType は呼び出し元がオブジェクトの明示キーから読み取った現在値
+// （無指定なら filename は defaultFileFieldName、contentType は空文字）と、それが明示指定かどうか
+// （filenameExplicit/contentTypeExplicit）を渡す。戻り値の filename/contentType は、URL 取得や
+// コンテンツ判定の結果を反映した最終値（明示指定があれば upstream の値を維持したものも含む）。
 //
 // オブジェクトの場合、ファイル内容の取得元は明示キー url / base64 / text / content の
 // 優先順位（この順）で決定し、複数指定された場合は最初に一致したものだけを使い残りは無視する。
@@ -1189,18 +1316,19 @@ func isFileURL(v any) (string, bool) {
 //   - content: 既存互換のヒューリスティック判定（isFileURL → decodeFileContent）。
 //
 // オブジェクトでない場合（生の文字列値）は content 相当として同じヒューリスティックを適用する。
-func writeMultipartFile( //nolint: gocyclo
+//
+// 上記いずれの経路でも contentType が空のまま（かつ contentTypeExplicit=false）なら、最後に
+// sniffContentType で body の内容から推定する。
+func resolveFileFieldValue( //nolint: gocyclo
 	ctx context.Context,
-	writer *multipart.Writer,
 	name string,
 	value any,
-) error {
+	filename string,
+	filenameExplicit bool,
+	contentType string,
+	contentTypeExplicit bool,
+) (body io.ReadCloser, resolvedFilename string, resolvedContentType string, err error) {
 	cfg := getFileFetchConfig()
-	const defaultFilename = "file"
-	filename := defaultFilename
-	filenameExplicit := false
-	contentType := ""
-	contentTypeExplicit := false
 	fallbackContent := value
 
 	var (
@@ -1212,15 +1340,7 @@ func writeMultipartFile( //nolint: gocyclo
 		hasText        bool
 	)
 
-	if m, ok := value.(map[string]any); ok { //nolint: nestif
-		if fn, ok := m["filename"].(string); ok && fn != "" {
-			filename = fn
-			filenameExplicit = true
-		}
-		if ct, ok := m["contentType"].(string); ok && ct != "" {
-			contentType = ct
-			contentTypeExplicit = true
-		}
+	if m, ok := value.(map[string]any); ok {
 		if v, ok := m["url"].(string); ok {
 			explicitURL, hasURL = v, true
 		}
@@ -1233,16 +1353,18 @@ func writeMultipartFile( //nolint: gocyclo
 		fallbackContent = m["content"]
 	}
 
-	var body io.ReadCloser
 	switch {
 	case hasURL:
 		if !strings.HasPrefix(explicitURL, "http://") &&
 			!strings.HasPrefix(explicitURL, "https://") {
-			return fmt.Errorf("%q: url must start with http:// or https://", name)
+			return nil, filename, contentType, fmt.Errorf(
+				"%q: url must start with http:// or https://",
+				name,
+			)
 		}
-		b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, explicitURL)
-		if err != nil {
-			return err
+		b, urlFilename, urlContentType, fetchErr := fetchFileFromURL(ctx, explicitURL)
+		if fetchErr != nil {
+			return nil, filename, contentType, fetchErr
 		}
 		body = b
 		if !filenameExplicit && urlFilename != "" {
@@ -1252,12 +1374,16 @@ func writeMultipartFile( //nolint: gocyclo
 			contentType = urlContentType
 		}
 	case hasBase64:
-		decoded, err := base64.StdEncoding.DecodeString(explicitBase64)
-		if err != nil {
-			return fmt.Errorf("%q: invalid base64 content: %w", name, err)
+		decoded, decodeErr := base64.StdEncoding.DecodeString(explicitBase64)
+		if decodeErr != nil {
+			return nil, filename, contentType, fmt.Errorf(
+				"%q: invalid base64 content: %w",
+				name,
+				decodeErr,
+			)
 		}
 		if int64(len(decoded)) > cfg.MaxSize {
-			return fmt.Errorf(
+			return nil, filename, contentType, fmt.Errorf(
 				"%q: file size %d bytes exceeds the maximum allowed size of %d bytes",
 				name,
 				len(decoded),
@@ -1267,7 +1393,7 @@ func writeMultipartFile( //nolint: gocyclo
 		body = io.NopCloser(bytes.NewBuffer(decoded))
 	case hasText:
 		if int64(len(explicitText)) > cfg.MaxSize {
-			return fmt.Errorf(
+			return nil, filename, contentType, fmt.Errorf(
 				"%q: file size %d bytes exceeds the maximum allowed size of %d bytes",
 				name,
 				len(explicitText),
@@ -1277,12 +1403,11 @@ func writeMultipartFile( //nolint: gocyclo
 		body = io.NopCloser(bytes.NewBuffer([]byte(explicitText)))
 	default:
 		if rawURL, ok := isFileURL(fallbackContent); ok { //nolint: nestif
-			b, urlFilename, urlContentType, err := fetchFileFromURL(ctx, rawURL)
-			if err != nil {
-				return err
+			b, urlFilename, urlContentType, fetchErr := fetchFileFromURL(ctx, rawURL)
+			if fetchErr != nil {
+				return nil, filename, contentType, fetchErr
 			}
 			body = b
-			defer body.Close() //nolint: errcheck
 			if !filenameExplicit && urlFilename != "" {
 				filename = urlFilename
 			}
@@ -1290,22 +1415,83 @@ func writeMultipartFile( //nolint: gocyclo
 				contentType = urlContentType
 			}
 		} else {
-			d, err := decodeFileContent(fallbackContent, cfg.MaxSize)
-			if err != nil {
-				return fmt.Errorf("%q: %w", name, err)
+			d, decodeErr := decodeFileContent(fallbackContent, cfg.MaxSize)
+			if decodeErr != nil {
+				return nil, filename, contentType, fmt.Errorf("%q: %w", name, decodeErr)
 			}
 			body = io.NopCloser(bytes.NewBuffer(d))
-			mtype := mimetype.Detect(d)
-			contentType = mtype.String()
-			extensions := mtype.Extension()
-			if defaultFilename == filename {
-				filename = fmt.Sprintf("%s%s", filename, extensions)
+			if defaultFileFieldName == filename {
+				filename = fmt.Sprintf("%s%s", filename, mimetype.Detect(d).Extension())
 			}
 		}
 	}
 
+	if body != nil && contentType == "" && !contentTypeExplicit {
+		body, contentType = sniffContentType(body)
+	}
+
+	return body, filename, contentType, nil
+}
+
+// contentSniffLen は http.DetectContentType が読む先頭バイト数（仕様上 512 固定）に合わせた
+// Peek サイズ。
+const contentSniffLen = 512
+
+// sniffedBody は bufio.Reader で先頭を Peek した後も Read/Close を元の body ストリームへ
+// 委譲するための io.ReadCloser。Peek はバッファから読み出すだけで消費しないため、Read を
+// bufio.Reader 経由にすることで Peek した分も含めた全体を欠落なく読み出せる。
+type sniffedBody struct {
+	io.Reader
+	io.Closer
+}
+
+// sniffContentType は body の先頭 contentSniffLen バイトを http.DetectContentType で判定し、
+// 推定した Content-Type と、その先頭バイトを含む読み出し可能な body を返す。
+func sniffContentType(body io.ReadCloser) (io.ReadCloser, string) {
+	br := bufio.NewReader(body)
+	peeked, _ := br.Peek(contentSniffLen)
+	return &sniffedBody{Reader: br, Closer: body}, http.DetectContentType(peeked)
+}
+
+// writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
+// または {filename, contentType, ...} のオブジェクト。ファイル内容の解決は
+// resolveFileFieldValue に委譲する。
+func writeMultipartFile(
+	ctx context.Context,
+	writer *multipart.Writer,
+	name string,
+	value any,
+) error {
+	filename := defaultFileFieldName
+	filenameExplicit := false
+	contentType := ""
+	contentTypeExplicit := false
+
+	if m, ok := value.(map[string]any); ok {
+		if fn, ok := m["filename"].(string); ok && fn != "" {
+			filename = fn
+			filenameExplicit = true
+		}
+		if ct, ok := m["contentType"].(string); ok && ct != "" {
+			contentType = ct
+			contentTypeExplicit = true
+		}
+	}
+
+	body, filename, contentType, err := resolveFileFieldValue(
+		ctx,
+		name,
+		value,
+		filename,
+		filenameExplicit,
+		contentType,
+		contentTypeExplicit,
+	)
+	if err != nil {
+		return err
+	}
+
 	var part io.Writer
-	var err error
 	if contentType == "" {
 		part, err = writer.CreateFormFile(name, filename)
 		if err != nil {
@@ -1336,38 +1522,98 @@ func writeMultipartFile( //nolint: gocyclo
 	return err
 }
 
-// restoreOriginalParamNames は、buildFormPropertySchemaVisited が MCP スキーマ向けに
-// sanitizeParamName で書き換えたネストしたオブジェクトのキーを、元の OpenAPI プロパティ名
-// （newFormParameterVisited が構築する param.parameters[key].originalName）に復元した
-// コピーを返す。ブラケットを含む名前（例: "filter[status]"）がバックエンドへ送るペイロード
-// 上でも正しい wire 名になるよう、json.Marshal する前に必ず適用する。
-// param.parameters に対応するエントリが無いキー（sanitizeParamName が実質何もしなかった
-// 場合や、スキーマに現れないキーをユーザーが追加した場合）はそのまま素通しする。
-func restoreOriginalParamNames(value any, param formParameter) any {
+// isEmptyFormValue は、フォームフィールドとして書き込まないべき値（nil または空文字列）
+// かどうかを返す。トップレベルのフォームパラメータの既定処理（CreateToolFunction）と同じ規則を
+// ネストした展開（multipart・urlencoded 共通）でも揃える。
+func isEmptyFormValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	if s, ok := v.(string); ok && s == "" {
+		return true
+	}
+	return false
+}
+
+// discriminatorBranchParameters は、param が discriminator 情報を持ち、かつ値 v の中に判別子
+// プロパティが存在し、その値に対応するブランチが param.discriminatorBranches にあれば、その
+// ブランチの formParameters を返す。対応するブランチが見つからない場合（discriminator が無い、
+// 値に判別子プロパティが無い、値がどのブランチにも一致しない、のいずれか）は ok=false を返し、
+// 呼び出し元は param.parameters（全ブランチをマージしたフォールバック）を使うこと。
+func discriminatorBranchParameters(v map[string]any, param formParameter) (formParameters, bool) {
+	if param.discriminatorProperty == "" || param.discriminatorBranches == nil {
+		return nil, false
+	}
+	dv, ok := v[param.discriminatorProperty]
+	if !ok {
+		return nil, false
+	}
+	branch, ok := param.discriminatorBranches[fmt.Sprintf("%v", dv)]
+	return branch, ok
+}
+
+// formFieldExpansion は expandFormValue が返す展開後の 1 フィールド（ブラケット記法の name、
+// その値、対応する formParameter）を表す。
+type formFieldExpansion struct {
+	name  string
+	value any
+	param formParameter
+}
+
+// expandFormValue は、フォーム値がネストした object/array の場合に、ブラケット記法
+// （"parent[key]" / "parent[0]"）のフィールド名へ 1 階層分展開する。map の場合は
+// discriminatorBranchParameters で判別子ブランチを解決してから子の formParameter を引き、
+// originalName が分かればそれをブラケット内の名前として使う。value が object/array でなければ
+// expanded=false を返し、呼び出し元はリーフ値として扱う。multipart / urlencoded の両方の
+// フィールド展開で共有する。
+func expandFormValue(
+	name string,
+	value any,
+	param formParameter,
+) (entries []formFieldExpansion, expanded bool) {
 	switch v := value.(type) {
 	case map[string]any:
-		restored := make(map[string]any, len(v))
+		children := param.parameters
+		if branch, ok := discriminatorBranchParameters(v, param); ok {
+			children = branch
+		}
 		for key, val := range v {
-			child, ok := param.parameters[key]
-			outKey := key
-			if ok && child.originalName != "" {
-				outKey = child.originalName
+			if isEmptyFormValue(val) {
+				continue
 			}
-			restored[outKey] = restoreOriginalParamNames(val, child)
+			child := children[key]
+			label := key
+			if child.originalName != "" {
+				label = child.originalName
+			}
+			entries = append(entries, formFieldExpansion{
+				name:  fmt.Sprintf("%s[%s]", name, label),
+				value: val,
+				param: child,
+			})
 		}
-		return restored
+		return entries, true
 	case []any:
-		restored := make([]any, len(v))
 		for i, item := range v {
-			restored[i] = restoreOriginalParamNames(item, param)
+			if isEmptyFormValue(item) {
+				continue
+			}
+			entries = append(entries, formFieldExpansion{
+				name:  fmt.Sprintf("%s[%d]", name, i),
+				value: item,
+				param: param,
+			})
 		}
-		return restored
+		return entries, true
 	default:
-		return value
+		return nil, false
 	}
 }
 
-// writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。
+// writeMultipartValue はフォーム値 1 件を multipart ボディに書き込む。値がネストした
+// object/array の場合は expandFormValue でブラケット記法（"parent[key]" / "parent[0]"）の
+// フィールド名へ再帰的に展開する。展開先の formParameter で isFile が true なら
+// writeMultipartFile を使う（ネストの中の format: binary フィールドもここで解決される）。
 func writeMultipartValue(
 	ctx context.Context,
 	writer *multipart.Writer,
@@ -1387,27 +1633,93 @@ func writeMultipartValue(
 		return writeMultipartFile(ctx, writer, name, value)
 	}
 
-	switch value.(type) {
-	case map[string]any, []any:
-		data, err := json.Marshal(restoreOriginalParamNames(value, param))
-		if err != nil {
-			return err
+	if entries, expanded := expandFormValue(name, value, param); expanded {
+		for _, e := range entries {
+			if err := writeMultipartValue(ctx, writer, e.name, e.value, e.param); err != nil {
+				return err
+			}
 		}
-		h := textproto.MIMEHeader{}
-		h.Set(
-			"Content-Disposition",
-			fmt.Sprintf(`form-data; name="%s"`, quoteEscaper.Replace(name)),
-		)
-		h.Set("Content-Type", "application/json")
-		part, err := writer.CreatePart(h)
-		if err != nil {
-			return err
-		}
-		_, err = part.Write(data)
-		return err
-	default:
-		return writer.WriteField(name, fmt.Sprintf("%v", value))
+		return nil
 	}
+
+	if isEmptyFormValue(value) {
+		return nil
+	}
+	return writer.WriteField(name, fmt.Sprintf("%v", value))
+}
+
+// writeURLEncodedValue はフォーム値 1 件を application/x-www-form-urlencoded の url.Values に
+// 書き込む。ネストした object/array は writeMultipartValue と同じく expandFormValue で
+// ブラケット記法のフィールド名へ展開する。isFile な位置の値は、urlencoded ではファイルをパートと
+// して送れないため、writeMultipartFile と同じ resolveFileFieldValue でファイル内容（バイト列）を
+// 解決し、それを文字列として url.Values に入れる（base64 化などの変換はせず、値のエンコードは
+// url.Values.Encode に任せる）。filename/contentType は urlencoded では送りようがないため無視する。
+// 配列の場合は各要素を個別に解決し、Set ではなく Add で同じフィールド名の複数値として追加する。
+func writeURLEncodedValue(
+	ctx context.Context,
+	formValues url.Values,
+	name string,
+	value any,
+	param formParameter,
+) error {
+	if !param.isFile {
+		if entries, expanded := expandFormValue(name, value, param); expanded {
+			for _, e := range entries {
+				if err := writeURLEncodedValue(
+					ctx, formValues, e.name, e.value, e.param,
+				); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+
+	if isEmptyFormValue(value) {
+		return nil
+	}
+
+	if param.isFile {
+		if items, ok := value.([]any); ok {
+			for _, item := range items {
+				data, err := resolveURLEncodedFileContent(ctx, name, item)
+				if err != nil {
+					return err
+				}
+				formValues.Add(name, string(data))
+			}
+			return nil
+		}
+		data, err := resolveURLEncodedFileContent(ctx, name, value)
+		if err != nil {
+			return err
+		}
+		formValues.Set(name, string(data))
+		return nil
+	}
+
+	formValues.Set(name, fmt.Sprintf("%v", value))
+	return nil
+}
+
+// resolveURLEncodedFileContent は writeURLEncodedValue のファイル位置の値を
+// resolveFileFieldValue で解決し、ボディを読み切ってバイト列として返す（呼び出し元が
+// url.Values.Set/Add で扱えるようにするため、ここでバイト列を確定させる）。
+func resolveURLEncodedFileContent(ctx context.Context, name string, value any) ([]byte, error) {
+	body, _, _, err := resolveFileFieldValue(
+		ctx,
+		name,
+		value,
+		defaultFileFieldName,
+		false,
+		"",
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close() //nolint: errcheck
+	return io.ReadAll(body)
 }
 
 // CreateToolFunction creates a tool function for an OpenAPI 3.x operation.
@@ -1514,20 +1826,18 @@ func CreateToolFunction( //nolint: gocyclo
 					if s, ok := v.(string); ok && s == "" {
 						continue
 					}
-					field_name := param.originalName
-					switch v.(type) {
-					case map[string]any, []any:
-						data, err := json.Marshal(v)
-						if err != nil {
-							return nil, "", fmt.Errorf(
-								"error marshaling form field %s: %w",
-								field_name,
-								err,
-							)
-						}
-						formValues.Set(field_name, string(data))
-					default:
-						formValues.Set(field_name, fmt.Sprintf("%v", v))
+					if err := writeURLEncodedValue(
+						ctx,
+						formValues,
+						param.originalName,
+						v,
+						param,
+					); err != nil {
+						return nil, "", fmt.Errorf(
+							"error writing urlencoded field %s: %w",
+							param.originalName,
+							err,
+						)
 					}
 				}
 				bodyReader = strings.NewReader(formValues.Encode())
