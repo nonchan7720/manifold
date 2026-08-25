@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.5](https://github.com/nonchan7720/manifold/compare/v1.6.4...v1.6.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* multipart form data parse ([#118](https://github.com/nonchan7720/manifold/issues/118)) ([fa003de](https://github.com/nonchan7720/manifold/commit/fa003de4dd2042170f4c92bc4930173d8ab40e1e))
+
 ## [1.6.4](https://github.com/nonchan7720/manifold/compare/v1.6.3...v1.6.4) (2026-08-24)
 
 
