@@ -3,6 +3,8 @@ rules:
   - match: "pkg/**/*.go"
     per_file_dir: true
     run:
+      - name: fmt
+        cmd: golangci-lint fmt
       - parallel:
           - cmd: go test ./...
             timeout: 240
