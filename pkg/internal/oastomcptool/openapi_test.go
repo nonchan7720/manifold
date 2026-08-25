@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1163,6 +1164,20 @@ func TestCreateToolFunction_PATCH(t *testing.T) {
 }
 
 // --- multipart/form-data スキーマ構築（ネスト・oneOf・allOf・binary） ---
+
+func jsonOperation(schema *openapi3.Schema) *openapi3.Operation {
+	return &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{
+			Value: &openapi3.RequestBody{
+				Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: &openapi3.SchemaRef{Value: schema},
+					},
+				},
+			},
+		},
+	}
+}
 
 func multipartOperation(schema *openapi3.Schema) *openapi3.Operation {
 	return &openapi3.Operation{
@@ -4229,4 +4244,443 @@ func TestCreateToolFunction_MultipartParamWithBrackets_UsesOriginalNameOnWire(t 
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
 	require.Contains(t, capturedFieldNames, "tag[]")
+}
+
+// --- application/json ボディの format: binary フィールド解決 ---
+
+func TestBuildInputSchema_JSONBody_BinaryFile_OneOfStringOrObjectSchema(t *testing.T) {
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	bodyProp := props["body"].(map[string]any)
+	bodyProps := bodyProp["properties"].(map[string]any)
+	fileProp := bodyProps["file"].(map[string]any)
+
+	require.NotContains(t, fileProp, "type")
+	oneOf, ok := fileProp["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+
+	meta := fileProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+}
+
+func TestBuildInputSchema_JSONBody_NestedObjectBinaryProperty(t *testing.T) {
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	schema := BuildInputSchema(op)
+	props := schema["properties"].(map[string]any)
+	bodyProp := props["body"].(map[string]any)
+	bodyProps := bodyProp["properties"].(map[string]any)
+	metadataProp := bodyProps["metadata"].(map[string]any)
+	metadataProps := metadataProp["properties"].(map[string]any)
+	thumbnailProp := metadataProps["thumbnail"].(map[string]any)
+
+	oneOf, ok := thumbnailProp["oneOf"].([]any)
+	require.True(t, ok)
+	require.Len(t, oneOf, 2)
+	meta := thumbnailProp["_meta"].(map[string]any)
+	manifold := meta["manifold"].(map[string]any)
+	require.Equal(t, true, manifold["file"])
+}
+
+func TestCreateToolFunction_JSONBody_FileBareBase64String(t *testing.T) {
+	content := []byte("hello json file")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"file": base64.StdEncoding.EncodeToString(content),
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := base64.StdEncoding.DecodeString(capturedBody["file"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_FileObjectValueBase64(t *testing.T) {
+	content := []byte("json file via base64 key")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"file": map[string]any{"base64": base64.StdEncoding.EncodeToString(content)},
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := base64.StdEncoding.DecodeString(capturedBody["file"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_FileFromURLBareString(t *testing.T) {
+	t.Setenv("TEST", "true")
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	content := []byte("streamed json file body")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"file": fileSrv.URL + "/report.pdf"},
+	})
+	require.NoError(t, err)
+
+	got, err := base64.StdEncoding.DecodeString(capturedBody["file"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_FileObjectValueURL(t *testing.T) {
+	t.Setenv("TEST", "true")
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	content := []byte("json file via url key")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"file": map[string]any{"url": fileSrv.URL + "/report.pdf"},
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := base64.StdEncoding.DecodeString(capturedBody["file"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_FileObjectValueText(t *testing.T) {
+	text := "raw text json file content"
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"file": map[string]any{"text": text},
+		},
+	})
+	require.NoError(t, err)
+
+	got, err := base64.StdEncoding.DecodeString(capturedBody["file"].(string))
+	require.NoError(t, err)
+	require.Equal(t, text, string(got))
+}
+
+func TestCreateToolFunction_JSONBody_NestedBinaryField_Resolved(t *testing.T) {
+	content := []byte("nested json thumbnail bytes")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+						},
+						"name": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"metadata": map[string]any{
+				"thumbnail": base64.StdEncoding.EncodeToString(content),
+				"name":      "avatar",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	metadata := capturedBody["metadata"].(map[string]any)
+	require.Equal(t, "avatar", metadata["name"])
+	got, err := base64.StdEncoding.DecodeString(metadata["thumbnail"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_NestedArrayBinaryField_Resolved(t *testing.T) {
+	content := []byte("array item thumbnail")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"items": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"attachment": &openapi3.SchemaRef{
+									Value: &openapi3.Schema{
+										Type:   &openapi3.Types{"string"},
+										Format: "binary",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"items": []any{
+				map[string]any{"attachment": base64.StdEncoding.EncodeToString(content)},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	items := capturedBody["items"].([]any)
+	require.Len(t, items, 1)
+	item := items[0].(map[string]any)
+	got, err := base64.StdEncoding.DecodeString(item["attachment"].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
+func TestCreateToolFunction_JSONBody_ArrayOfBinary_MultipleFiles(t *testing.T) {
+	content1 := []byte("file one")
+	content2 := []byte("file two")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"files": []any{
+				base64.StdEncoding.EncodeToString(content1),
+				base64.StdEncoding.EncodeToString(content2),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	files := capturedBody["files"].([]any)
+	require.Len(t, files, 2)
+	got1, err := base64.StdEncoding.DecodeString(files[0].(string))
+	require.NoError(t, err)
+	got2, err := base64.StdEncoding.DecodeString(files[1].(string))
+	require.NoError(t, err)
+	require.Equal(t, content1, got1)
+	require.Equal(t, content2, got2)
+}
+
+func TestCreateToolFunction_JSONBody_NonBinaryFieldUnchanged(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"name": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+			},
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"name": "some plain text, not base64",
+			"file": base64.StdEncoding.EncodeToString([]byte("file bytes")),
+		},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "some plain text, not base64", capturedBody["name"])
+}
+
+func TestCreateToolFunction_JSONBody_FileFromURL_HTTPError(t *testing.T) {
+	t.Setenv("TEST", "true")
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer fileSrv.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"file": fileSrv.URL + "/secret.pdf"},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "file")
 }
