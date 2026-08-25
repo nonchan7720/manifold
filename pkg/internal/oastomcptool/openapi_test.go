@@ -4831,3 +4831,69 @@ func TestCreateToolFunction_JSONBody_FileFromURL_HTTPError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "file")
 }
+
+// TestCreateToolFunction_JSONBody_TopLevelOneOfDiscriminator_BranchSelectsFileHandling covers a
+// body schema that is itself a oneOf + discriminator (not nested under a property). Branch "B"
+// declares "payload" as a plain string and branch "A" declares it as format: binary. Only the
+// branch matching the discriminator value must decide whether "payload" is treated as a file;
+// a merged fallback across all branches would let isFile from one branch leak into the other.
+func TestCreateToolFunction_JSONBody_TopLevelOneOfDiscriminator_BranchSelectsFileHandling(
+	t *testing.T,
+) {
+	branchB := &openapi3.Schema{
+		Type: &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{
+			"kind":    {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Enum: []any{"B"}}},
+			"payload": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+		},
+	}
+	branchA := &openapi3.Schema{
+		Type: &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{
+			"kind": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Enum: []any{"A"}}},
+			"payload": {
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	}
+	schema := &openapi3.Schema{
+		OneOf: openapi3.SchemaRefs{
+			{Value: branchB},
+			{Value: branchA},
+		},
+		Discriminator: &openapi3.Discriminator{PropertyName: "kind"},
+	}
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fn := CreateToolFunction(
+		http.DefaultClient,
+		"/upload",
+		"post",
+		jsonOperation(schema),
+		srv.URL,
+		nil,
+		false,
+	)
+
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"kind": "B", "payload": "hello"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hello", capturedBody["payload"])
+
+	content := base64.StdEncoding.EncodeToString([]byte("hello"))
+	_, _, err = fn(context.Background(), map[string]any{
+		"body": map[string]any{"kind": "A", "payload": content},
+	})
+	require.NoError(t, err)
+	got, err := base64.StdEncoding.DecodeString(capturedBody["payload"].(string))
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(got))
+}

@@ -247,7 +247,7 @@ type extractParameter struct {
 	queryParams    []string
 	bodyParams     []string
 	formParams     formParameters
-	bodyFormParams formParameters
+	bodyFormParam formParameter
 	isMultipart    bool
 	paramNameMap   map[string]string // sanitized name -> original OpenAPI name
 }
@@ -776,7 +776,7 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 		queryParams    = []string{}
 		bodyParams     = []string{}
 		formParams     = formParameters{}
-		bodyFormParams = formParameters{}
+		bodyFormParam formParameter
 		isMultipart    = false
 		paramNameMap   = map[string]string{}
 	)
@@ -802,7 +802,7 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 			bodyParams = append(bodyParams, "body")
 			mt := content["application/json"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-				bodyFormParams = newFormParameter(mt.Schema.Value).parameters
+			bodyFormParam = newFormParameter(mt.Schema.Value)
 			}
 		case content["application/x-www-form-urlencoded"] != nil:
 			mt := content["application/x-www-form-urlencoded"]
@@ -822,7 +822,7 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 		queryParams:    queryParams,
 		bodyParams:     bodyParams,
 		formParams:     formParams,
-		bodyFormParams: bodyFormParams,
+		bodyFormParam: bodyFormParam,
 		isMultipart:    isMultipart,
 		paramNameMap:   paramNameMap,
 	}
@@ -1964,12 +1964,12 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 
 			if json_body != nil {
-				if len(extractParameter.bodyFormParams) > 0 {
+				if len(extractParameter.bodyFormParam.parameters) > 0 {
 					resolved, err := resolveJSONBodyFiles(
 						ctx,
 						"body",
 						json_body,
-						formParameter{parameters: extractParameter.bodyFormParams},
+					extractParameter.bodyFormParam,
 					)
 					if err != nil {
 						return nil, "", fmt.Errorf("error resolving json body file field: %w", err)
