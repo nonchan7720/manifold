@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.8.0](https://github.com/nonchan7720/manifold/compare/v1.7.0...v1.8.0) (2026-08-25)
+
+
+### Features
+
+* WebMCP reverse gateway Phase 2a — edge token の複数バインディング ([#105](https://github.com/nonchan7720/manifold/issues/105)) ([3c69934](https://github.com/nonchan7720/manifold/commit/3c699349e0c29b079871eace1fc841eef103d701))
+* WebMCP reverse gateway Phase 2a — identities config + identity 解決器 ([#104](https://github.com/nonchan7720/manifold/issues/104)) ([a406c23](https://github.com/nonchan7720/manifold/commit/a406c23ea9fdb1e6e3da5b686db8319367c8c271))
+* WebMCP reverse gateway Phase 2a — remote pairing の有効化とルーティング ([#111](https://github.com/nonchan7720/manifold/issues/111)) ([176767d](https://github.com/nonchan7720/manifold/commit/176767d627db0f2ad0ef32810ec537baf6434e54))
+
+
+### Bug Fixes
+
+* **deps:** update dependency uuid to v14 ([#103](https://github.com/nonchan7720/manifold/issues/103)) ([03ca9d7](https://github.com/nonchan7720/manifold/commit/03ca9d7d1a1a1d1d00c1447e9cf3e5b9725c1f59))
+* **deps:** update go patch dependencies ([#110](https://github.com/nonchan7720/manifold/issues/110)) ([02121c2](https://github.com/nonchan7720/manifold/commit/02121c22457ae2cf98a554864699d4bfe7415d13))
+* **deps:** update module github.com/micahparks/jwkset to v0.11.3 ([#108](https://github.com/nonchan7720/manifold/issues/108)) ([ce911f5](https://github.com/nonchan7720/manifold/commit/ce911f5a5b81fdf2a58e81d99e9a83a347010bc9))
+* **deps:** update module github.com/stretchr/testify to v1.12.0 ([#90](https://github.com/nonchan7720/manifold/issues/90)) ([4930dda](https://github.com/nonchan7720/manifold/commit/4930dda15c2a5ada01ec03831cf64d0b0e70dfc0))
+* multipart form data parse ([#118](https://github.com/nonchan7720/manifold/issues/118)) ([#120](https://github.com/nonchan7720/manifold/issues/120)) ([0167c9b](https://github.com/nonchan7720/manifold/commit/0167c9bc1d0ecf83b89bd1a7de824f302b1d2b0c))
+* wrap array to items object ([#116](https://github.com/nonchan7720/manifold/issues/116)) ([284ef44](https://github.com/nonchan7720/manifold/commit/284ef44a236e765600db4a681f71b2eba8dd2371))
+
+
+### Miscellaneous
+
+* **deps:** pin docker/dockerfile docker tag to ecfaec9 ([#99](https://github.com/nonchan7720/manifold/issues/99)) ([7aa33ba](https://github.com/nonchan7720/manifold/commit/7aa33ba9e009e984576f9819c18cf0ccc954ebb4))
+
+
+### Documentation
+
+* refactor README ([#112](https://github.com/nonchan7720/manifold/issues/112)) ([094aac4](https://github.com/nonchan7720/manifold/commit/094aac4a8b4326f714ef1a29d57691ed6cb61c7a))
+
 ## [1.7.0](https://github.com/nonchan7720/manifold/compare/v1.6.3...v1.7.0) (2026-08-21)
 
 
