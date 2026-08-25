@@ -4496,7 +4496,10 @@ func TestCreateToolFunction_JSONBody_NestedBinaryField_Resolved(t *testing.T) {
 					Type: &openapi3.Types{"object"},
 					Properties: openapi3.Schemas{
 						"thumbnail": &openapi3.SchemaRef{
-							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
 						},
 						"name": &openapi3.SchemaRef{
 							Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
