@@ -1715,6 +1715,97 @@ func TestBuildInputSchema_Multipart_ArrayOneOfDiscriminatorMapping_BranchesKeptW
 	require.Equal(t, "FormTypeB", typePropB["const"])
 }
 
+// TestBuildInputSchema_Multipart_OneOfDiscriminatorMapping_NilRefsSkipped_ConstOnOwnBranch
+// covers a oneOf whose SchemaRefs contain a leading nil ref and a ref with a nil Value.
+// Those must be skipped without shifting which branch each subsequent const is applied to,
+// and without panicking on the branches/refs index mismatch.
+func TestBuildInputSchema_Multipart_OneOfDiscriminatorMapping_NilRefsSkipped_ConstOnOwnBranch(
+	t *testing.T,
+) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"item": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					OneOf: openapi3.SchemaRefs{
+						nil,
+						{Ref: "#/components/schemas/TypeX"},
+						{Ref: "#/components/schemas/TypeA", Value: discriminatorBranchSchema("TypeA")},
+						{Ref: "#/components/schemas/TypeB", Value: discriminatorBranchSchema("TypeB")},
+					},
+					Discriminator: &openapi3.Discriminator{
+						PropertyName: "type",
+						Mapping: map[string]openapi3.MappingRef{
+							"FormTypeA": {Ref: "#/components/schemas/TypeA"},
+							"FormTypeB": {Ref: "#/components/schemas/TypeB"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+
+	props := schema["properties"].(map[string]any)
+	item := props["item"].(map[string]any)
+	oneOf := item["oneOf"].([]any)
+	require.Len(t, oneOf, 2)
+
+	branchA := oneOf[0].(map[string]any)
+	typePropA := branchA["properties"].(map[string]any)["type"].(map[string]any)
+	require.Equal(t, "FormTypeA", typePropA["const"])
+
+	branchB := oneOf[1].(map[string]any)
+	typePropB := branchB["properties"].(map[string]any)["type"].(map[string]any)
+	require.Equal(t, "FormTypeB", typePropB["const"])
+}
+
+// TestBuildInputSchema_Multipart_OneOfDiscriminatorNoMapping_NilRefsSkipped_ConstOnOwnBranch
+// covers the same nil-ref skipping as the mapping variant above, but without a discriminator
+// mapping, so each branch's const is promoted from its own single enum value.
+func TestBuildInputSchema_Multipart_OneOfDiscriminatorNoMapping_NilRefsSkipped_ConstOnOwnBranch(
+	t *testing.T,
+) {
+	op := multipartOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"item": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					OneOf: openapi3.SchemaRefs{
+						{Ref: "#/components/schemas/TypeX"},
+						{Value: discriminatorBranchSchema("TypeA")},
+						nil,
+						{Value: discriminatorBranchSchema("TypeB")},
+					},
+					Discriminator: &openapi3.Discriminator{
+						PropertyName: "type",
+					},
+				},
+			},
+		},
+	})
+
+	var schema map[string]any
+	require.NotPanics(t, func() {
+		schema = BuildInputSchema(op)
+	})
+
+	props := schema["properties"].(map[string]any)
+	item := props["item"].(map[string]any)
+	oneOf := item["oneOf"].([]any)
+	require.Len(t, oneOf, 2)
+
+	branchA := oneOf[0].(map[string]any)
+	typePropA := branchA["properties"].(map[string]any)["type"].(map[string]any)
+	require.Equal(t, "TypeA", typePropA["const"])
+
+	branchB := oneOf[1].(map[string]any)
+	typePropB := branchB["properties"].(map[string]any)["type"].(map[string]any)
+	require.Equal(t, "TypeB", typePropB["const"])
+}
+
 // TestBuildInputSchema_Multipart_ArrayOneOfNoDiscriminator_BranchesKeptOwnEnum covers a
 // oneOf without a discriminator: branches must be preserved as-is, each keeping its own
 // (unmerged) enum on the discriminating property.

@@ -688,16 +688,9 @@ func buildFormPropBranches(
 		if ref == nil || ref.Value == nil {
 			continue
 		}
-		branches = append(branches, buildFormPropertySchemaVisited(ref.Value, visited))
-	}
-
-	for i, ref := range refs {
-		if ref == nil || ref.Value == nil {
-			continue
-		}
-		if branch, ok := branches[i].(map[string]any); ok {
-			applyDiscriminatorConst(branch, ref, discriminator)
-		}
+		branch := buildFormPropertySchemaVisited(ref.Value, visited)
+		applyDiscriminatorConst(branch, ref, discriminator)
+		branches = append(branches, branch)
 	}
 
 	result := map[string]any{
