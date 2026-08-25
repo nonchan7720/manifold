@@ -1729,8 +1729,14 @@ func TestBuildInputSchema_Multipart_OneOfDiscriminatorMapping_NilRefsSkipped_Con
 					OneOf: openapi3.SchemaRefs{
 						nil,
 						{Ref: "#/components/schemas/TypeX"},
-						{Ref: "#/components/schemas/TypeA", Value: discriminatorBranchSchema("TypeA")},
-						{Ref: "#/components/schemas/TypeB", Value: discriminatorBranchSchema("TypeB")},
+						{
+							Ref:   "#/components/schemas/TypeA",
+							Value: discriminatorBranchSchema("TypeA"),
+						},
+						{
+							Ref:   "#/components/schemas/TypeB",
+							Value: discriminatorBranchSchema("TypeB"),
+						},
 					},
 					Discriminator: &openapi3.Discriminator{
 						PropertyName: "type",
