@@ -243,13 +243,13 @@ type formParameter struct {
 type formParameters map[string]formParameter
 
 type extractParameter struct {
-	pathParams     []string
-	queryParams    []string
-	bodyParams     []string
-	formParams     formParameters
+	pathParams    []string
+	queryParams   []string
+	bodyParams    []string
+	formParams    formParameters
 	bodyFormParam formParameter
-	isMultipart    bool
-	paramNameMap   map[string]string // sanitized name -> original OpenAPI name
+	isMultipart   bool
+	paramNameMap  map[string]string // sanitized name -> original OpenAPI name
 }
 
 // sanitizeParamName converts an OpenAPI parameter/property name into one that is
@@ -772,13 +772,13 @@ func discriminatorConstValue(
 // extractParameters は、OpenAPI 3.x のオペレーションからパラメータ名を取り出す。
 func extractParameters(operation *openapi3.Operation) extractParameter {
 	var (
-		pathParams     = []string{}
-		queryParams    = []string{}
-		bodyParams     = []string{}
-		formParams     = formParameters{}
+		pathParams    = []string{}
+		queryParams   = []string{}
+		bodyParams    = []string{}
+		formParams    = formParameters{}
 		bodyFormParam formParameter
-		isMultipart    = false
-		paramNameMap   = map[string]string{}
+		isMultipart   = false
+		paramNameMap  = map[string]string{}
 	)
 
 	for _, paramRef := range operation.Parameters {
@@ -802,7 +802,7 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 			bodyParams = append(bodyParams, "body")
 			mt := content["application/json"]
 			if mt.Schema != nil && mt.Schema.Value != nil {
-			bodyFormParam = newFormParameter(mt.Schema.Value)
+				bodyFormParam = newFormParameter(mt.Schema.Value)
 			}
 		case content["application/x-www-form-urlencoded"] != nil:
 			mt := content["application/x-www-form-urlencoded"]
@@ -818,13 +818,13 @@ func extractParameters(operation *openapi3.Operation) extractParameter {
 		}
 	}
 	return extractParameter{
-		pathParams:     pathParams,
-		queryParams:    queryParams,
-		bodyParams:     bodyParams,
-		formParams:     formParams,
+		pathParams:    pathParams,
+		queryParams:   queryParams,
+		bodyParams:    bodyParams,
+		formParams:    formParams,
 		bodyFormParam: bodyFormParam,
-		isMultipart:    isMultipart,
-		paramNameMap:   paramNameMap,
+		isMultipart:   isMultipart,
+		paramNameMap:  paramNameMap,
 	}
 }
 
@@ -1721,10 +1721,10 @@ func resolveURLEncodedFileContent(ctx context.Context, name string, value any) (
 	return io.ReadAll(body)
 }
 
-// resolveJSONBodyFileArray は format: binary の配列（複数ファイル）の各要素を解決する。
-// 空値（nil / 空文字列）の要素は変換せずそのまま残す。resolveJSONBodyFiles から isFile かつ
+// normalizeJSONBodyFileArray は format: binary の配列（複数ファイル）の各要素を解決する。
+// 空値（nil / 空文字列）の要素は変換せずそのまま残す。normalizeJSONBody から isFile かつ
 // []any の位置で呼ばれる。
-func resolveJSONBodyFileArray(ctx context.Context, name string, items []any) ([]any, error) {
+func normalizeJSONBodyFileArray(ctx context.Context, name string, items []any) ([]any, error) {
 	resolved := make([]any, len(items))
 	for i, item := range items {
 		if isEmptyFormValue(item) {
@@ -1740,7 +1740,8 @@ func resolveJSONBodyFileArray(ctx context.Context, name string, items []any) ([]
 	return resolved, nil
 }
 
-// resolveJSONBodyFiles は application/json ボディの値 1 件を再帰的に走査し、format: binary の
+// normalizeJSONBody は application/json ボディの値 1 件を再帰的に走査し、サニタイズ済みの
+// プロパティ名を child.originalName（元の OpenAPI プロパティ名）へ復元しつつ、format: binary の
 // 位置に来た値を resolveURLEncodedFileContent で解決したバイト列の base64 文字列へ置き換える。
 // ネストした object/array の展開規則（判別子ブランチの解決、originalName への復元）は
 // writeMultipartValue/expandFormValue と揃える。name はエラーメッセージ用のフィールド識別子。
@@ -1748,7 +1749,7 @@ func resolveJSONBodyFileArray(ctx context.Context, name string, items []any) ([]
 // 空値（nil / 空文字列）は isEmptyFormValue で判定し、変換せずそのまま返す。form 系
 // （writeMultipartValue/writeURLEncodedValue）はフィールド自体を省略するが、JSON では
 // null を明示的に送る慣習があるため、キーごと落とすのではなく値をそのまま通す。
-func resolveJSONBodyFiles(
+func normalizeJSONBody(
 	ctx context.Context,
 	name string,
 	value any,
@@ -1760,7 +1761,7 @@ func resolveJSONBodyFiles(
 
 	if param.isFile {
 		if items, ok := value.([]any); ok {
-			return resolveJSONBodyFileArray(ctx, name, items)
+			return normalizeJSONBodyFileArray(ctx, name, items)
 		}
 		data, err := resolveURLEncodedFileContent(ctx, name, value)
 		if err != nil {
@@ -1782,7 +1783,7 @@ func resolveJSONBodyFiles(
 			if child.originalName != "" {
 				outKey = child.originalName
 			}
-			rv, err := resolveJSONBodyFiles(ctx, fmt.Sprintf("%s.%s", name, outKey), val, child)
+			rv, err := normalizeJSONBody(ctx, fmt.Sprintf("%s.%s", name, outKey), val, child)
 			if err != nil {
 				return nil, err
 			}
@@ -1792,7 +1793,7 @@ func resolveJSONBodyFiles(
 	case []any:
 		resolved := make([]any, len(v))
 		for i, item := range v {
-			rv, err := resolveJSONBodyFiles(ctx, fmt.Sprintf("%s[%d]", name, i), item, param)
+			rv, err := normalizeJSONBody(ctx, fmt.Sprintf("%s[%d]", name, i), item, param)
 			if err != nil {
 				return nil, err
 			}
@@ -1965,14 +1966,14 @@ func CreateToolFunction( //nolint: gocyclo
 
 			if json_body != nil {
 				if len(extractParameter.bodyFormParam.parameters) > 0 {
-					resolved, err := resolveJSONBodyFiles(
+					resolved, err := normalizeJSONBody(
 						ctx,
 						"body",
 						json_body,
-					extractParameter.bodyFormParam,
+						extractParameter.bodyFormParam,
 					)
 					if err != nil {
-						return nil, "", fmt.Errorf("error resolving json body file field: %w", err)
+						return nil, "", fmt.Errorf("error normalizing json body: %w", err)
 					}
 					if rb, ok := resolved.(map[string]any); ok {
 						json_body = rb

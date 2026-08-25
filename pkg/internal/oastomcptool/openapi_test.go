@@ -4897,3 +4897,33 @@ func TestCreateToolFunction_JSONBody_TopLevelOneOfDiscriminator_BranchSelectsFil
 	require.NoError(t, err)
 	require.Equal(t, "hello", string(got))
 }
+
+// TestCreateToolFunction_JSONBody_SanitizedKeyRestored_WithoutBinary locks in that JSON body
+// key restoration (sanitized schema property name -> original OpenAPI name) still applies to
+// bodies that contain no format: binary field at all.
+func TestCreateToolFunction_JSONBody_SanitizedKeyRestored_WithoutBinary(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"user[name]": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"user_name": "x"},
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, capturedBody, "user_name")
+	require.Equal(t, "x", capturedBody["user[name]"])
+}
