@@ -4658,6 +4658,150 @@ func TestCreateToolFunction_JSONBody_NonBinaryFieldUnchanged(t *testing.T) {
 	require.Equal(t, "some plain text, not base64", capturedBody["name"])
 }
 
+// --- application/json ボディの format: binary フィールドの空値（nil / 空文字列）---
+
+func TestCreateToolFunction_JSONBody_FileNullValue_PassesThroughUnchanged(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"file": nil},
+	})
+	require.NoError(t, err)
+
+	fileValue, ok := capturedBody["file"]
+	require.True(t, ok, "null field must still be sent (not omitted)")
+	require.Nil(t, fileValue)
+}
+
+func TestCreateToolFunction_JSONBody_FileEmptyStringValue_PassesThroughUnchanged(t *testing.T) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"file": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{"file": ""},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "", capturedBody["file"])
+}
+
+func TestCreateToolFunction_JSONBody_NestedBinaryFieldNullValue_PassesThroughUnchanged(
+	t *testing.T,
+) {
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"metadata": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"thumbnail": &openapi3.SchemaRef{
+							Value: &openapi3.Schema{
+								Type:   &openapi3.Types{"string"},
+								Format: "binary",
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"metadata": map[string]any{"thumbnail": nil},
+		},
+	})
+	require.NoError(t, err)
+
+	metadata := capturedBody["metadata"].(map[string]any)
+	thumbnailValue, ok := metadata["thumbnail"]
+	require.True(t, ok, "null nested field must still be sent (not omitted)")
+	require.Nil(t, thumbnailValue)
+}
+
+func TestCreateToolFunction_JSONBody_ArrayOfBinary_EmptyElementsPassThrough(t *testing.T) {
+	content := []byte("only non-empty element")
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"files": &openapi3.SchemaRef{
+				Value: &openapi3.Schema{
+					Type: &openapi3.Types{"array"},
+					Items: &openapi3.SchemaRef{
+						Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+					},
+				},
+			},
+		},
+	})
+
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"files": []any{
+				"",
+				nil,
+				base64.StdEncoding.EncodeToString(content),
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	files := capturedBody["files"].([]any)
+	require.Len(t, files, 3)
+	require.Equal(t, "", files[0])
+	require.Nil(t, files[1])
+	got, err := base64.StdEncoding.DecodeString(files[2].(string))
+	require.NoError(t, err)
+	require.Equal(t, content, got)
+}
+
 func TestCreateToolFunction_JSONBody_FileFromURL_HTTPError(t *testing.T) {
 	t.Setenv("TEST", "true")
 	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})

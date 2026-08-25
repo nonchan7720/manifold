@@ -1721,27 +1721,46 @@ func resolveURLEncodedFileContent(ctx context.Context, name string, value any) (
 	return io.ReadAll(body)
 }
 
+// resolveJSONBodyFileArray は format: binary の配列（複数ファイル）の各要素を解決する。
+// 空値（nil / 空文字列）の要素は変換せずそのまま残す。resolveJSONBodyFiles から isFile かつ
+// []any の位置で呼ばれる。
+func resolveJSONBodyFileArray(ctx context.Context, name string, items []any) ([]any, error) {
+	resolved := make([]any, len(items))
+	for i, item := range items {
+		if isEmptyFormValue(item) {
+			resolved[i] = item
+			continue
+		}
+		data, err := resolveURLEncodedFileContent(ctx, name, item)
+		if err != nil {
+			return nil, err
+		}
+		resolved[i] = base64.StdEncoding.EncodeToString(data)
+	}
+	return resolved, nil
+}
+
 // resolveJSONBodyFiles は application/json ボディの値 1 件を再帰的に走査し、format: binary の
 // 位置に来た値を resolveURLEncodedFileContent で解決したバイト列の base64 文字列へ置き換える。
 // ネストした object/array の展開規則（判別子ブランチの解決、originalName への復元）は
 // writeMultipartValue/expandFormValue と揃える。name はエラーメッセージ用のフィールド識別子。
+//
+// 空値（nil / 空文字列）は isEmptyFormValue で判定し、変換せずそのまま返す。form 系
+// （writeMultipartValue/writeURLEncodedValue）はフィールド自体を省略するが、JSON では
+// null を明示的に送る慣習があるため、キーごと落とすのではなく値をそのまま通す。
 func resolveJSONBodyFiles(
 	ctx context.Context,
 	name string,
 	value any,
 	param formParameter,
 ) (any, error) {
+	if isEmptyFormValue(value) {
+		return value, nil
+	}
+
 	if param.isFile {
 		if items, ok := value.([]any); ok {
-			resolved := make([]any, len(items))
-			for i, item := range items {
-				data, err := resolveURLEncodedFileContent(ctx, name, item)
-				if err != nil {
-					return nil, err
-				}
-				resolved[i] = base64.StdEncoding.EncodeToString(data)
-			}
-			return resolved, nil
+			return resolveJSONBodyFileArray(ctx, name, items)
 		}
 		data, err := resolveURLEncodedFileContent(ctx, name, value)
 		if err != nil {
