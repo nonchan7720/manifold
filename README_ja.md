@@ -334,6 +334,72 @@ telemetry:
       insecure: true
 ```
 
+## ツール認可（OPA サイドカー）
+
+Manifold は `tools/call` / `tools/list` に対して、呼び出し元がどの `server/tool` を使えるかを外部の [OPA](https://www.openpolicyagent.org/) サイドカーへの問い合わせで判定・強制できます。既定は無効（`authz.enabled: false`、既存動作を維持）です。認証・グループ解決・ポリシー保存は Manifold の責務外で、前段が注入するアイデンティティヘッダーをそのまま信頼し、判定だけを OPA に問い合わせます。
+
+```yaml
+authz:
+  enabled: true
+  opaURL: http://localhost:8181
+  timeout: 3s
+  decisionPath:
+    list: /v1/data/mcp/authz/allowed_tools
+    call: /v1/data/mcp/authz/allow
+  headers:
+    userID: x-user-id
+    userGroups: x-user-groups
+```
+
+| フィールド | 型 | 既定値 | 説明 |
+| ---------- | -- | ------ | ---- |
+| `enabled` | bool | `false` | authz ミドルウェアを有効化します。以下のフィールドは `true` のときのみ参照されます |
+| `opaURL` | string | `http://localhost:8181` | OPA サイドカーのベース URL（`http` または `https`） |
+| `timeout` | duration | `3s` | 判定 1 回あたりの HTTP タイムアウト |
+| `decisionPath.list` | string | `/v1/data/mcp/authz/allowed_tools` | `tools/list` ごとに 1 回問い合わせる OPA のデータパス |
+| `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | `tools/call` ごとに問い合わせる OPA のデータパス |
+| `headers.userID` | string | `x-user-id` | 呼び出し元のユーザー ID を運ぶ受信ヘッダー名 |
+| `headers.userGroups` | string | `x-user-groups` | 呼び出し元のグループをカンマ区切りで運ぶ受信ヘッダー名 |
+
+### 前提条件
+
+Manifold は `headers.userID` / `headers.userGroups` を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
+
+- 前段のプロキシが、クライアント由来の同名ヘッダーを必ず strip または上書きし、呼び出し元が自分のアイデンティティを偽装できないようにする
+- そのプロキシを経由しない Manifold への直接アクセスを、ネットワーク層（Kubernetes の `NetworkPolicy` 等）で遮断する
+
+### input / data の契約
+
+Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）`{"input": ...}` を POST します。
+
+```jsonc
+// tools/call
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice"}}
+// → {"result": true}
+
+// tools/list
+{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
+// → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+```
+
+OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧とする例）があります。
+
+### fail-closed の挙動
+
+判定が曖昧・失敗するケースはすべて許可ではなく拒否になります。
+
+- `headers.userID` / `headers.userGroups` が欠落・空の場合、OPA に問い合わせず拒否
+- OPA からの非 200 応答、期待する `result` フィールドが無い応答、タイムアウト、接続失敗はすべて拒否
+- `tools/list` での絞り込みは補助的なもの — 呼び出し元が使えないツールをクライアントのツール一覧から隠すためのものであり、強制の本体ではありません。強制は `tools/call` で行われるため、（古い一覧などから）ツール名を知っているクライアントでもそこで拒否されます
+- reverse（WebMCP）の `mcpServers` エントリは常に `create_pairing_code` というツールを登録します（`docs/design/webmcp-reverse-gateway.md` を参照）。`authz.enabled` は他のツールと同様にこれも対象にするため、そのサーバーとペアリングできるべきグループには `<server>/create_pairing_code` をポリシーに含める必要があります。含めなければペアリング自体が拒否されます
+
+### 運用上の推奨事項
+
+- すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする
+- ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする
+
+動作する OPA サイドカーとサンプルのポリシー・データは [`examples/opa/`](examples/opa/) を参照してください。
+
 ## HTTP エンドポイント
 
 Manifold が公開する HTTP エンドポイントの一覧です。

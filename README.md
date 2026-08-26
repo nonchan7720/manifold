@@ -334,6 +334,72 @@ telemetry:
       insecure: true
 ```
 
+## Tool authorization (OPA sidecar)
+
+Manifold can enforce which `server/tool` pairs a caller may use on `tools/call` and `tools/list`, delegating each decision to an external [OPA](https://www.openpolicyagent.org/) sidecar. Disabled by default (`authz.enabled: false`, preserving prior behavior); authentication, group resolution, and policy storage stay out of Manifold's scope — it trusts identity headers injected by an upstream layer and queries OPA for the decision.
+
+```yaml
+authz:
+  enabled: true
+  opaURL: http://localhost:8181
+  timeout: 3s
+  decisionPath:
+    list: /v1/data/mcp/authz/allowed_tools
+    call: /v1/data/mcp/authz/allow
+  headers:
+    userID: x-user-id
+    userGroups: x-user-groups
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enables the authz middleware. Every other field below is only read when `true` |
+| `opaURL` | string | `http://localhost:8181` | Base URL of the OPA sidecar (`http` or `https`) |
+| `timeout` | duration | `3s` | Per-decision HTTP timeout |
+| `decisionPath.list` | string | `/v1/data/mcp/authz/allowed_tools` | OPA data path queried once per `tools/list` |
+| `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | OPA data path queried once per `tools/call` |
+| `headers.userID` | string | `x-user-id` | Inbound header carrying the caller's user ID |
+| `headers.userGroups` | string | `x-user-groups` | Inbound header carrying the caller's groups, comma-separated |
+
+### Prerequisites
+
+Manifold trusts `headers.userID` / `headers.userGroups` on every request without verifying them itself — the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
+
+- The fronting proxy must strip or overwrite any client-supplied headers of the same names, so a caller cannot forge its own identity
+- Direct access to Manifold bypassing that proxy must be blocked at the network layer (e.g. a Kubernetes `NetworkPolicy`)
+
+### Decision contract
+
+Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, and to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool):
+
+```jsonc
+// tools/call
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice"}}
+// → {"result": true}
+
+// tools/list
+{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
+// → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+```
+
+Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns).
+
+### Fail-closed behavior
+
+Every ambiguous or failing case denies the request rather than allowing it:
+
+- A missing or empty `headers.userID` / `headers.userGroups` denies without querying OPA
+- A non-200 response, a response missing the expected `result` field, a timeout, or a connection failure to OPA all deny
+- `tools/list` filtering is a convenience — it hides tools the caller cannot use so they don't clutter a client's tool picker — but it is not the enforcement point. Enforcement happens on `tools/call`; a client that already knows a tool's name (e.g. from a stale list) is still denied there
+- A reverse (WebMCP) `mcpServers` entry always registers a `create_pairing_code` tool (see `docs/design/webmcp-reverse-gateway.md`), and `authz.enabled` covers it like any other tool. A group that should be able to pair with such a server needs `<server>/create_pairing_code` in its policy, or pairing itself is denied
+
+### Operating recommendations
+
+- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query
+- Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar
+
+See [`examples/opa/`](examples/opa/) for a runnable OPA sidecar with sample policy and data.
+
 ## HTTP endpoints
 
 The HTTP endpoints exposed by Manifold.
