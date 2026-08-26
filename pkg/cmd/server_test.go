@@ -714,6 +714,126 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 	require.Contains(t, logBuf.String(), "http response")
 }
 
+// --- authzMiddlewareFn ---
+
+func TestAuthzMiddlewareFn_Disabled_ReturnsNil(t *testing.T) {
+	got := authzMiddlewareFn(config.AuthzConfig{Enabled: false})
+	require.Nil(t, got)
+}
+
+func TestAuthzMiddlewareFn_Enabled_BuildsDenyingMiddleware(t *testing.T) {
+	// fail-closed の配線を確認する: OPA には到達できない設定でも、識別ヘッダーが
+	// 無いリクエストは Decider を呼ばずに拒否される。
+	fn := authzMiddlewareFn(config.AuthzConfig{
+		Enabled: true,
+		OPAURL:  "http://127.0.0.1:1",
+	})
+	require.NotNil(t, fn)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "svc", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "read_thing", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		},
+	)
+	middlewares := fn("svc")
+	require.Len(t, middlewares, 1)
+	srv.AddReceivingMiddleware(middlewares...)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err := srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	_, err = session.CallTool(t.Context(), &mcp.CallToolParams{Name: "read_thing"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not allowed by policy")
+}
+
+// --- newMCPServer: authz wiring ---
+
+func TestNewMCPServer_AuthzMiddlewareFn_AppliedToServer(t *testing.T) {
+	servers := config.Servers{
+		"petstore": {
+			Name:        "petstore",
+			Description: "petstore",
+			Spec:        "../internal/mcpsrv/fixtures/petstore_oas.json",
+			BaseURL:     "https://petstore.example.com",
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	fn := authzMiddlewareFn(config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"})
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+		fn,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	srv, err := mcpSrv.Server("petstore")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	// tools/list はヘッダーが無ければ Decider を呼ばず拒否するため、authz が
+	// 実際にこのサーバーへ配線されていることの証拠になる。
+	_, err = session.ListTools(t.Context(), nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not allowed by policy")
+}
+
+func TestNewMCPServer_NilMiddlewareFn_LeavesServerUnaffected(t *testing.T) {
+	servers := config.Servers{
+		"petstore": {
+			Name:        "petstore",
+			Description: "petstore",
+			Spec:        "../internal/mcpsrv/fixtures/petstore_oas.json",
+			BaseURL:     "https://petstore.example.com",
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+		nil,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	srv, err := mcpSrv.Server("petstore")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	_, err = session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+}
+
 func TestNewGatewayCmd(t *testing.T) {
 	cmd := newGatewayCmd()
 	require.Equal(t, "gateway", cmd.Use)
@@ -818,6 +938,7 @@ func TestNewMCPServer_StartsSpecRefresh(t *testing.T) {
 		servers,
 		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
 		gateway,
+		nil,
 	)
 	require.NoError(t, err)
 	defer mcpSrv.Close()
@@ -859,6 +980,7 @@ func TestNewMCPServer_InitError(t *testing.T) {
 		servers,
 		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
 		config.Gateway{},
+		nil,
 	)
 	require.Error(t, err)
 }

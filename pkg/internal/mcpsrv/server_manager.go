@@ -33,13 +33,25 @@ type MCPServer struct {
 	refreshWG     sync.WaitGroup
 
 	mediaUploader *storage.ContentManagementService
+
+	middlewareFn func(name string) []mcp.Middleware
+}
+
+// Option configures optional behavior of a MCPServer built by NewMCPServer.
+type Option func(*MCPServer)
+
+// WithServerMiddleware makes Init apply fn(name)'s middlewares to every
+// per-backend *mcp.Server it creates, right after construction.
+func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
+	return func(s *MCPServer) { s.middlewareFn = fn }
 }
 
 func NewMCPServer(
 	servers config.Servers,
 	mediaUploader *storage.ContentManagementService,
+	opts ...Option,
 ) *MCPServer {
-	return &MCPServer{
+	s := &MCPServer{
 		servers: servers,
 		srv: mcp.NewServer(
 			&mcp.Implementation{Name: "manifold", Version: version.MarkVersion},
@@ -50,6 +62,10 @@ func NewMCPServer(
 		openAPIStates:  map[string]*openAPIServerState{},
 		mediaUploader:  mediaUploader,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *MCPServer) Init(ctx context.Context) (rErr error) {
@@ -68,6 +84,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			&mcp.Implementation{Name: name, Version: version.MarkVersion},
 			&mcp.ServerOptions{},
 		)
+		if s.middlewareFn != nil {
+			srv.AddReceivingMiddleware(s.middlewareFn(name)...)
+		}
 
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続のためクライアントを登録するのみ

@@ -29,6 +29,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
+	"github.com/nonchan7720/manifold/pkg/services/authz"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 	"github.com/nonchan7720/manifold/pkg/services/identity"
 	"github.com/spf13/cobra"
@@ -204,13 +205,33 @@ func mcpAuthMiddleware(
 	}
 }
 
+// authzMiddlewareFn builds the per-server mcp.Middleware factory wiring
+// mcpsrv.NewAuthzMiddleware into every backend MCPServer and ReverseGateway
+// build, or nil when tool authorization is disabled — the shared decision
+// point for whether authz.enabled adds anything to the request path at all.
+func authzMiddlewareFn(cfg config.AuthzConfig) func(name string) []mcp.Middleware {
+	if !cfg.Enabled {
+		return nil
+	}
+	cfg = cfg.WithDefaults()
+	decider := authz.NewOPADecider(cfg, nil)
+	return func(name string) []mcp.Middleware {
+		return []mcp.Middleware{mcpsrv.NewAuthzMiddleware(name, decider, cfg.Headers)}
+	}
+}
+
 func newMCPServer(
 	ctx context.Context,
 	servers config.Servers,
 	contentManagementService *storage.ContentManagementService,
 	gateway config.Gateway,
+	middlewareFn func(name string) []mcp.Middleware,
 ) (*mcpsrv.MCPServer, error) {
-	mcpSrv := mcpsrv.NewMCPServer(servers, contentManagementService)
+	var opts []mcpsrv.Option
+	if middlewareFn != nil {
+		opts = append(opts, mcpsrv.WithServerMiddleware(middlewareFn))
+	}
+	mcpSrv := mcpsrv.NewMCPServer(servers, contentManagementService, opts...)
 	if err := mcpSrv.Init(ctx); err != nil {
 		return nil, err
 	}
@@ -289,11 +310,13 @@ func runGatewayServer(ctx context.Context) error {
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
+	authzMiddleware := authzMiddlewareFn(globalConfig.Authz)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
 		contentManagementService,
 		globalConfig.Gateway,
+		authzMiddleware,
 	)
 	if err != nil {
 		return err
@@ -303,11 +326,18 @@ func runGatewayServer(ctx context.Context) error {
 	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()
 	pairingService := edgeservices.NewPairingService(storeClient)
 	edgeRegistry := edgeservices.NewInMemoryRegistry()
+	var reverseGatewayOpts []mcpsrv.ReverseGatewayOption
+	if authzMiddleware != nil {
+		reverseGatewayOpts = append(
+			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(authzMiddleware),
+		)
+	}
 	reverseGateway := mcpsrv.NewReverseGateway(
 		edgeRegistry,
 		pairingService,
 		edgeCfg,
 		globalConfig.MCPServer,
+		reverseGatewayOpts...,
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
