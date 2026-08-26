@@ -204,6 +204,20 @@ func mcpAuthMiddleware(
 	}
 }
 
+func newMCPServer(
+	ctx context.Context,
+	servers config.Servers,
+	contentManagementService *storage.ContentManagementService,
+	gateway config.Gateway,
+) (*mcpsrv.MCPServer, error) {
+	mcpSrv := mcpsrv.NewMCPServer(servers, contentManagementService)
+	if err := mcpSrv.Init(ctx); err != nil {
+		return nil, err
+	}
+	mcpSrv.StartSpecRefresh(ctx, gateway.SpecRefresh.Interval)
+	return mcpSrv, nil
+}
+
 func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -275,8 +289,13 @@ func runGatewayServer(ctx context.Context) error {
 	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
-	mcpSrv := mcpsrv.NewMCPServer(globalConfig.MCPServer, contentManagementService)
-	if err := mcpSrv.Init(ctx); err != nil {
+	mcpSrv, err := newMCPServer(
+		ctx,
+		globalConfig.MCPServer,
+		contentManagementService,
+		globalConfig.Gateway,
+	)
+	if err != nil {
 		return err
 	}
 	defer mcpSrv.Close()

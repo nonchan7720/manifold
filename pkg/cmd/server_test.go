@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -777,4 +778,87 @@ func TestRunServer_ServerError(t *testing.T) {
 	// ポートが使用中のためエラーが返る
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "test-server error")
+}
+
+func TestNewMCPServer_StartsSpecRefresh(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1.0.0"},"paths":{` +
+		`"/ping": {"get": {"operationId": "ping", "responses": {"200": {"description": "ok"}}}}}}`
+	updated := `{"openapi":"3.0.0","info":{"title":"t","version":"1.0.0"},"paths":{` +
+		`"/ping": {"get": {"operationId": "ping", "responses": {"200": {"description": "ok"}}}},` +
+		`"/pong": {"get": {"operationId": "pong", "responses": {"200": {"description": "ok"}}}}}}`
+
+	var mu sync.Mutex
+	body := spec
+	specSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(specSrv.Close)
+
+	servers := config.Servers{
+		"api": {
+			Name:        "api",
+			Description: "api",
+			Spec:        specSrv.URL + "/openapi.json",
+			BaseURL:     specSrv.URL,
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+	gateway := config.Gateway{
+		SpecRefresh: config.SpecRefreshConfig{Interval: 20 * time.Millisecond},
+	}
+
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		gateway,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	mu.Lock()
+	body = updated
+	mu.Unlock()
+
+	srv, err := mcpSrv.Server("api")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		callerTransport, serverTransport := mcp.NewInMemoryTransports()
+		if _, err := srv.Connect(t.Context(), serverTransport, nil); err != nil {
+			return false
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+		session, err := client.Connect(t.Context(), callerTransport, nil)
+		if err != nil {
+			return false
+		}
+		defer session.Close() //nolint: errcheck
+		result, err := session.ListTools(t.Context(), nil)
+		if err != nil {
+			return false
+		}
+		return len(result.Tools) == 2
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
+func TestNewMCPServer_InitError(t *testing.T) {
+	servers := config.Servers{
+		"api": {Name: "api", Description: "api", Spec: "nonexistent-spec.json"},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	_, err = newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+	)
+	require.Error(t, err)
 }
