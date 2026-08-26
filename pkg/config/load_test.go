@@ -92,6 +92,45 @@ func TestLoadInternal_FileFetch_EnvOverride_AllowedHosts(t *testing.T) {
 	require.Equal(t, []string{"files.example.com", "cdn.example.com"}, cfg.FileFetch.AllowedHosts)
 }
 
+// --- authz ---
+
+func TestLoadInternal_Authz_Defaults(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// プロジェクトの config.yaml に authz セクションは無いので、既定値が適用される
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.False(t, cfg.Authz.Enabled)
+	require.Equal(t, DefaultAuthzOPAURL, cfg.Authz.OPAURL)
+	require.Equal(t, DefaultAuthzTimeout, cfg.Authz.Timeout)
+	require.Equal(t, DefaultAuthzDecisionPathList, cfg.Authz.DecisionPath.List)
+	require.Equal(t, DefaultAuthzDecisionPathCall, cfg.Authz.DecisionPath.Call)
+	require.Equal(t, DefaultAuthzHeaderUserID, cfg.Authz.Headers.UserID)
+	require.Equal(t, DefaultAuthzHeaderUserGroups, cfg.Authz.Headers.UserGroups)
+}
+
+func TestLoadInternal_Authz_EnvOverride_Enabled(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// viper の SetDefault + AutomaticEnv により AUTHZ_ENABLED で上書きできる
+	t.Setenv("AUTHZ_ENABLED", "true")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.True(t, cfg.Authz.Enabled)
+}
+
+func TestLoadInternal_Authz_EnvOverride_OPAURL(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// viper の SetDefault + AutomaticEnv により AUTHZ_OPAURL で上書きできる
+	t.Setenv("AUTHZ_OPAURL", "https://opa-sidecar.internal.example.com:8181")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, "https://opa-sidecar.internal.example.com:8181", cfg.Authz.OPAURL)
+}
+
 // --- reverse origin 正規化 ---
 
 func TestNormalizeReverseOrigins_LowercasesAndTrimsSlash(t *testing.T) {

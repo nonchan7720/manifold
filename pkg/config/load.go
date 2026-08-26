@@ -71,6 +71,17 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("fileFetch.allowLocal", false)
 	v.SetDefault("fileFetch.allowedHosts", []string{})
 
+	// Same reasoning as fileFetch above — also makes AUTHZ_ENABLED, AUTHZ_OPAURL,
+	// AUTHZ_TIMEOUT, AUTHZ_DECISIONPATH_LIST, AUTHZ_DECISIONPATH_CALL,
+	// AUTHZ_HEADERS_USERID, AUTHZ_HEADERS_USERGROUPS effective overrides.
+	v.SetDefault("authz.enabled", false)
+	v.SetDefault("authz.opaURL", DefaultAuthzOPAURL)
+	v.SetDefault("authz.timeout", DefaultAuthzTimeout)
+	v.SetDefault("authz.decisionPath.list", DefaultAuthzDecisionPathList)
+	v.SetDefault("authz.decisionPath.call", DefaultAuthzDecisionPathCall)
+	v.SetDefault("authz.headers.userID", DefaultAuthzHeaderUserID)
+	v.SetDefault("authz.headers.userGroups", DefaultAuthzHeaderUserGroups)
+
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
