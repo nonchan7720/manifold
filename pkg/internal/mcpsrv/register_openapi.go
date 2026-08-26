@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,6 +45,7 @@ func RegisterOpenAPI(
 	if err != nil {
 		return nil, err
 	}
+	register.setSpecHash(fmt.Sprintf("%x", sha256.Sum256(raw)))
 	var versionProbe struct {
 		Swagger string `json:"swagger"`
 	}

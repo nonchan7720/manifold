@@ -26,6 +26,14 @@ func TestNewMCPToolRegistry(t *testing.T) {
 	require.Empty(t, r.ListTools())
 }
 
+func TestMCPToolRegistry_SpecHash(t *testing.T) {
+	r := NewMCPToolRegistry()
+	require.Empty(t, r.SpecHash())
+
+	r.setSpecHash("abc123")
+	require.Equal(t, "abc123", r.SpecHash())
+}
+
 func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
 	r := NewMCPToolRegistry()
 

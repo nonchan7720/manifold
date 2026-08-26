@@ -21,8 +21,9 @@ type Tool struct {
 }
 
 type MCPToolRegistry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu       sync.RWMutex
+	tools    map[string]Tool
+	specHash string
 }
 
 func NewMCPToolRegistry() *MCPToolRegistry {
@@ -60,6 +61,20 @@ func (r *MCPToolRegistry) RegisterTool(
 		fn(&tool)
 	}
 	r.tools[name] = tool
+}
+
+// SpecHash returns the hash of the spec these tools were built from. It is
+// empty for registries that were not built from a spec.
+func (r *MCPToolRegistry) SpecHash() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.specHash
+}
+
+func (r *MCPToolRegistry) setSpecHash(hash string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.specHash = hash
 }
 
 func (r *MCPToolRegistry) ListTools() []Tool {

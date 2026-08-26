@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -24,6 +25,13 @@ type MCPServer struct {
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
 
+	// mu guards openAPIStates and refreshCancel, which the spec refresh
+	// goroutines touch concurrently with request handling.
+	mu            sync.Mutex
+	openAPIStates map[string]*openAPIServerState
+	refreshCancel context.CancelFunc
+	refreshWG     sync.WaitGroup
+
 	mediaUploader *storage.ContentManagementService
 }
 
@@ -39,6 +47,7 @@ func NewMCPServer(
 		),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
+		openAPIStates:  map[string]*openAPIServerState{},
 		mediaUploader:  mediaUploader,
 	}
 }
@@ -69,21 +78,22 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 		} else {
 			// OpenAPI モード
-			opts := []RegisterOpenAPIOption{
-				WithAuth(server.AuthValue),
-				WithOAuth2(server.OAuth2),
-				WithTokenExchange(server.TokenExchange),
-			}
-			err := registerAPI(
+			toolNames, specHash, err := registerAPI(
 				ctx,
 				server.Spec,
 				server.BaseURL,
 				server.ExtraHeaders,
 				srv,
 				s.mediaUploader,
-				opts...)
+				registerOpenAPIOptions(server)...)
 			if err != nil {
 				return err
+			}
+			s.openAPIStates[name] = &openAPIServerState{
+				srv:       srv,
+				cfg:       server,
+				toolNames: toolNames,
+				specHash:  specHash,
 			}
 		}
 		s.appSrv[name] = srv
@@ -106,13 +116,25 @@ func (s *MCPServer) BackendClient(name string) (*MCPBackendClient, bool) {
 	return bc, ok
 }
 
-// Close は全バックエンドクライアントの接続を閉じる。
+// Close は spec リフレッシュの goroutine を停止し、全バックエンドクライアントの接続を閉じる。
 func (s *MCPServer) Close() {
+	s.stopSpecRefresh()
 	for _, bc := range s.backendClients {
 		bc.Close()
 	}
 }
 
+func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
+	return []RegisterOpenAPIOption{
+		WithAuth(server.AuthValue),
+		WithOAuth2(server.OAuth2),
+		WithTokenExchange(server.TokenExchange),
+	}
+}
+
+// registerAPI builds the tools of an OpenAPI mode server and registers them on
+// srv, returning the registered tool names and the hash of the spec they were
+// built from.
 func registerAPI(
 	ctx context.Context,
 	spec, baseURL string,
@@ -120,14 +142,24 @@ func registerAPI(
 	srv *mcp.Server,
 	mediaUploader storage.MediaService,
 	opts ...RegisterOpenAPIOption,
-) error {
+) ([]string, string, error) {
 	// OpenAPI モード: 既存ロジック
 	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers, opts...)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
+	return attachTools(srv, register, mediaUploader), register.SpecHash(), nil
+}
+
+func attachTools(
+	srv *mcp.Server,
+	register *MCPToolRegistry,
+	mediaUploader storage.MediaService,
+) []string {
 	tools := register.ListTools()
+	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
+		names = append(names, tool.tool.Name)
 		srv.AddTool(
 			&tool.tool,
 			func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
@@ -166,7 +198,7 @@ func registerAPI(
 			},
 		)
 	}
-	return nil
+	return names
 }
 
 // resourceLinkDescription は resource_link の説明文を組み立てる。
