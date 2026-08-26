@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.0](https://github.com/nonchan7720/manifold/compare/v1.9.0...v1.10.0) (2026-08-26)
+
+
+### Features
+
+* periodically refresh OpenAPI specs and update MCP tools ([#127](https://github.com/nonchan7720/manifold/issues/127)) ([06cd8de](https://github.com/nonchan7720/manifold/commit/06cd8decc21582abe64d86f45e76232b486dff27))
+
+
+### Miscellaneous
+
+* remove dead code identified by deadcode analysis ([#125](https://github.com/nonchan7720/manifold/issues/125)) ([970780e](https://github.com/nonchan7720/manifold/commit/970780e442bb290e9edb8d39c872ddb91ed58e04))
+
 ## [1.9.0](https://github.com/nonchan7720/manifold/compare/v1.8.0...v1.9.0) (2026-08-26)
 
 
