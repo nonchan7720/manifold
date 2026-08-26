@@ -51,6 +51,19 @@ type ReverseGateway struct {
 	// ResolveServer) so concurrent first accesses for a brand-new
 	// identityKey build the base server once, not once per goroutine.
 	lazyBuildMu sync.Mutex
+
+	middlewareFn func(name string) []mcp.Middleware
+}
+
+// ReverseGatewayOption configures optional behavior of a ReverseGateway
+// built by NewReverseGateway.
+type ReverseGatewayOption func(*ReverseGateway)
+
+// WithReverseServerMiddleware makes rebuildUserServer apply fn(name)'s
+// middlewares to every per-user *mcp.Server it creates, right after
+// construction.
+func WithReverseServerMiddleware(fn func(name string) []mcp.Middleware) ReverseGatewayOption {
+	return func(g *ReverseGateway) { g.middlewareFn = fn }
 }
 
 // NewReverseGateway creates a ReverseGateway for the reverse-transport
@@ -60,6 +73,7 @@ func NewReverseGateway(
 	pairing *edgeservices.PairingService,
 	edgeCfg config.EdgeConfig,
 	servers config.Servers,
+	opts ...ReverseGatewayOption,
 ) *ReverseGateway {
 	g := &ReverseGateway{
 		registry:    registry,
@@ -75,6 +89,9 @@ func NewReverseGateway(
 		}
 		g.byName[name] = srv
 		g.byOrigin[srv.Origin] = srv
+	}
+	for _, opt := range opts {
+		opt(g)
 	}
 	return g
 }
@@ -343,6 +360,9 @@ func (g *ReverseGateway) rebuildUserServer(
 		&mcp.Implementation{Name: name, Version: version.MarkVersion},
 		&mcp.ServerOptions{},
 	)
+	if g.middlewareFn != nil {
+		srv.AddReceivingMiddleware(g.middlewareFn(name)...)
+	}
 	g.registerPairingTool(srv, binding.IdentityKey)
 
 	if session != nil {

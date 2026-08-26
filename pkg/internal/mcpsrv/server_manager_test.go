@@ -313,6 +313,75 @@ func TestMCPServer_Init_ReverseServer_NotManagedByMCPServer(t *testing.T) {
 	require.False(t, ok)
 }
 
+// --- WithServerMiddleware ---
+
+// recordingMiddleware appends name to calls every time it runs, letting a
+// test assert both that it ran and which server name it was built for.
+// recordingMiddleware records name only for tools/list requests, ignoring
+// the initialize handshake methods every client connection also sends
+// through the same receiving middleware chain.
+func recordingMiddleware(name string, calls *[]string) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == "tools/list" {
+				*calls = append(*calls, name)
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
+func TestMCPServer_WithServerMiddleware_AppliedToEachServer(t *testing.T) {
+	servers := config.Servers{
+		"oas": &config.Server{
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+
+	var calls []string
+	s := NewMCPServer(
+		servers,
+		storage.NewContentManagementService(u, storage.NewNoopUploader()),
+		WithServerMiddleware(func(name string) []mcp.Middleware {
+			return []mcp.Middleware{recordingMiddleware(name, &calls)}
+		}),
+	)
+	require.NoError(t, s.Init(context.Background()))
+
+	srv, err := s.Server("oas")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(context.Background(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(context.Background(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	_, err = session.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"oas"}, calls)
+}
+
+func TestMCPServer_NoMiddlewareOption_LeavesServerUnaffected(t *testing.T) {
+	servers := config.Servers{
+		"oas": &config.Server{
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	srv, err := s.Server("oas")
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+}
+
 func TestMCPServer_Init_MultipleServers(t *testing.T) {
 	servers := config.Servers{
 		"oas": &config.Server{

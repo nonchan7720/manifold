@@ -1,0 +1,14 @@
+services:
+  opa:
+    image: openpolicyagent/opa:1.19.1
+    command:
+      - run
+      - --server
+      - --addr=:8181
+      - -b
+      - /policies
+    volumes:
+      - ./policy.rego:/policies/policy.rego:ro
+      - ./data.json:/policies/data.json:ro
+    ports:
+      - "8181:8181"

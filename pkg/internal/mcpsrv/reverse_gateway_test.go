@@ -504,6 +504,47 @@ func TestCloseUniqueHandles_ClosesEachDistinctHandleOnce(t *testing.T) {
 	require.Equal(t, 2, closedCount)
 }
 
+// --- WithReverseServerMiddleware ---
+
+func TestReverseGateway_WithReverseServerMiddleware_AppliedToBuiltServer(t *testing.T) {
+	storeClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storeClient.Close() })
+	pairing := edgeservices.NewPairingService(storeClient)
+	registry := edgeservices.NewInMemoryRegistry()
+
+	var calls []string
+	gateway := NewReverseGateway(
+		registry, pairing, staticEdgeConfig().WithDefaults(), staticReverseServers(),
+		WithReverseServerMiddleware(func(name string) []mcp.Middleware {
+			return []mcp.Middleware{recordingMiddleware(name, &calls)}
+		}),
+	)
+	gateway.Init(t.Context())
+
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	_, err = session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"app1"}, calls)
+}
+
+func TestReverseGateway_NoMiddlewareOption_LeavesServerUnaffected(t *testing.T) {
+	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+}
+
 // --- ResolveServer: identityKey comes from context, not edgeCfg ---
 
 func TestReverseGateway_ResolveServer_NoIdentityKeyInContext_Error(t *testing.T) {

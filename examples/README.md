@@ -1,3 +1,5 @@
+[日本語](README_ja.md)
+
 # Manifold Examples
 
 Ready-to-run configuration examples for Manifold. Each directory contains a `config.yaml` and a README with step-by-step instructions.
@@ -7,6 +9,7 @@ Ready-to-run configuration examples for Manifold. Each directory contains a `con
 | [`openapi-backend/`](openapi-backend/) | Convert a public OpenAPI spec (Swagger Petstore) into MCP tools — the fastest way to try Manifold |
 | [`mcp-backend/`](mcp-backend/) | Proxy an external MCP server (stdio and HTTP transports) |
 | [`oauth2-backend/`](oauth2-backend/) | Expose an OAuth-protected REST API (Google Calendar) as MCP tools |
+| [`opa/`](opa/) | Authorize `tools/call` / `tools/list` per caller group with an OPA sidecar |
 
 ## Prerequisites
 
