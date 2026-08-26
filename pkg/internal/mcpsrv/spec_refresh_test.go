@@ -261,7 +261,20 @@ func TestMCPServer_StartSpecRefresh_UpdatesToolsAndStopsOnClose(t *testing.T) {
 		t.Fatal("Close did not stop the spec refresh goroutines")
 	}
 
-	fetches := spec.fetches.Load()
+	// Close cancels the refresh goroutine's context and waits for it to
+	// return, but the in-flight request's context-canceled error can still
+	// reach the httptest handler (which increments fetches) just after Close
+	// returns. Wait for the counter to stabilize before taking the baseline,
+	// otherwise it flakes on a fetch that was already in flight at Close time.
+	var fetches int64
+	require.Eventually(t, func() bool {
+		before := spec.fetches.Load()
+		time.Sleep(20 * time.Millisecond)
+		after := spec.fetches.Load()
+		fetches = after
+		return before == after
+	}, 2*time.Second, 20*time.Millisecond)
+
 	time.Sleep(200 * time.Millisecond)
 	require.Equal(t, fetches, spec.fetches.Load(), "no spec fetch should happen after Close")
 }
