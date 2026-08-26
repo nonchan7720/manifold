@@ -19,9 +19,15 @@ func TestAuthzConfig_WithDefaults_FillsAllWhenEmpty(t *testing.T) {
 	require.Equal(t, DefaultAuthzHeaderUserGroups, got.Headers.UserGroups)
 }
 
-func TestAuthzConfig_WithDefaults_FillsTimeoutWhenNegative(t *testing.T) {
-	got := AuthzConfig{Timeout: -1 * time.Second}.WithDefaults()
+func TestAuthzConfig_WithDefaults_FillsTimeoutWhenZero(t *testing.T) {
+	got := AuthzConfig{Timeout: 0}.WithDefaults()
 	require.Equal(t, DefaultAuthzTimeout, got.Timeout)
+}
+
+func TestAuthzConfig_WithDefaults_KeepsNegativeTimeout(t *testing.T) {
+	// 負値は補完せずそのまま残す。起動時に validatePositiveDuration がエラーにする。
+	got := AuthzConfig{Timeout: -1 * time.Second}.WithDefaults()
+	require.Equal(t, -1*time.Second, got.Timeout)
 }
 
 func TestAuthzConfig_WithDefaults_KeepsExplicitValues(t *testing.T) {
@@ -125,4 +131,63 @@ func TestAuthzConfig_ValidateWithContext_Enabled_RejectsDecisionPathCallWithoutL
 	err := c.ValidateWithContext(t.Context())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Call")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsNegativeTimeout(t *testing.T) {
+	c := AuthzConfig{Enabled: true, Timeout: -1 * time.Second}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Timeout")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_ZeroTimeout_UsesDefault(t *testing.T) {
+	c := AuthzConfig{Enabled: true, Timeout: 0}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+// --- AuthzConfig.ValidateWithContext: enabled=true, Headers ---
+
+func TestAuthzConfig_ValidateWithContext_Enabled_DefaultHeaders_Valid(t *testing.T) {
+	c := AuthzConfig{Enabled: true}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsUserIDHeaderWithSpace(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{UserID: "x acme user", UserGroups: "x-acme-groups"},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "UserID")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsUserGroupsHeaderWithColon(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{UserID: "x-acme-user", UserGroups: "x-acme:groups"},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "UserGroups")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsSameHeaderName(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{UserID: "x-acme-identity", UserGroups: "x-acme-identity"},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsSameHeaderNameCaseInsensitive(
+	t *testing.T,
+) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{UserID: "X-Acme-Identity", UserGroups: "x-acme-identity"},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"golang.org/x/net/http/httpguts"
 )
 
 // 既定値（authz 設定省略時）。
@@ -53,7 +54,7 @@ func (c AuthzConfig) WithDefaults() AuthzConfig {
 	if c.OPAURL == "" {
 		c.OPAURL = DefaultAuthzOPAURL
 	}
-	if c.Timeout <= 0 {
+	if c.Timeout == 0 {
 		c.Timeout = DefaultAuthzTimeout
 	}
 	if c.DecisionPath.List == "" {
@@ -80,6 +81,7 @@ func (c AuthzConfig) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.OPAURL, validation.By(validateHTTPURL)),
 		validation.Field(&c.Timeout, validation.By(validatePositiveDuration)),
 		validation.Field(&c.DecisionPath),
+		validation.Field(&c.Headers),
 	)
 }
 
@@ -87,6 +89,22 @@ func (c AuthzDecisionPath) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, &c,
 		validation.Field(&c.List, validation.By(validateLeadingSlash)),
 		validation.Field(&c.Call, validation.By(validateLeadingSlash)),
+	)
+}
+
+func (c AuthzHeaders) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(ctx, &c,
+		validation.Field(&c.UserID, validation.By(validateHTTPHeaderName)),
+		validation.Field(&c.UserGroups,
+			validation.By(validateHTTPHeaderName),
+			validation.By(func(value any) error {
+				s, _ := value.(string)
+				if strings.EqualFold(s, c.UserID) {
+					return fmt.Errorf("must differ from headers.userID")
+				}
+				return nil
+			}),
+		),
 	)
 }
 
@@ -102,6 +120,14 @@ func validateHTTPURL(value any) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("must include a host")
+	}
+	return nil
+}
+
+func validateHTTPHeaderName(value any) error {
+	s, _ := value.(string)
+	if !httpguts.ValidHeaderFieldName(s) {
+		return fmt.Errorf("must be a valid HTTP header field name")
 	}
 	return nil
 }
