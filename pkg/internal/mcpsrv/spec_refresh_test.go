@@ -276,3 +276,30 @@ func TestMCPServer_StartSpecRefresh_GlobalInterval(t *testing.T) {
 		return err == nil && len(names) == 2
 	}, 5*time.Second, 20*time.Millisecond)
 }
+
+func TestMCPServer_StartSpecRefresh_CalledTwice_StopsPreviousCycle(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	interval := 20 * time.Millisecond
+	s := newRefreshTestMCPServer(t, spec, &interval)
+
+	s.StartSpecRefresh(t.Context(), 0)
+	s.StartSpecRefresh(t.Context(), 0)
+
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal(
+			"Close did not stop the spec refresh goroutines started by the previous StartSpecRefresh",
+		)
+	}
+
+	fetches := spec.fetches.Load()
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, fetches, spec.fetches.Load(), "no spec fetch should happen after Close")
+}

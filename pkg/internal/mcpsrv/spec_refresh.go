@@ -61,8 +61,11 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 }
 
 // StartSpecRefresh は OpenAPI モードの各サーバーについて、解決された間隔ごとに
-// spec を取り直す goroutine を起動する。Close で全て停止する。
+// spec を取り直す goroutine を起動する。既に走っているサイクルがあれば
+// 停止してから起動し直す。Close で全て停止する。
 func (s *MCPServer) StartSpecRefresh(ctx context.Context, global time.Duration) {
+	s.stopSpecRefresh()
+
 	ctx, cancel := context.WithCancel(ctx)
 
 	s.mu.Lock()
