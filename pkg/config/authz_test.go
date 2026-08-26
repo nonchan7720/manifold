@@ -19,6 +19,16 @@ func TestAuthzConfig_WithDefaults_FillsAllWhenEmpty(t *testing.T) {
 	require.Equal(t, DefaultAuthzHeaderUserGroups, got.Headers.UserGroups)
 }
 
+func TestAuthzConfig_WithDefaults_AdminGroupsEmptyByDefault(t *testing.T) {
+	got := AuthzConfig{}.WithDefaults()
+	require.Empty(t, got.AdminGroups)
+}
+
+func TestAuthzConfig_WithDefaults_KeepsAdminGroups(t *testing.T) {
+	got := AuthzConfig{AdminGroups: []string{"team-platform"}}.WithDefaults()
+	require.Equal(t, []string{"team-platform"}, got.AdminGroups)
+}
+
 func TestAuthzConfig_WithDefaults_FillsTimeoutWhenZero(t *testing.T) {
 	got := AuthzConfig{Timeout: 0}.WithDefaults()
 	require.Equal(t, DefaultAuthzTimeout, got.Timeout)
