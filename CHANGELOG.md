@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/nonchan7720/manifold/compare/v1.8.0...v1.9.0) (2026-08-26)
+
+
+### Features
+
+* support for binary to application/json ([#121](https://github.com/nonchan7720/manifold/issues/121)) ([af39da7](https://github.com/nonchan7720/manifold/commit/af39da78efeb50b2632552977ee014324c57a95b))
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.3.14 ([#124](https://github.com/nonchan7720/manifold/issues/124)) ([ce209f9](https://github.com/nonchan7720/manifold/commit/ce209f9584f7bca7447248c6f622f7b9cf4b8ed4))
+* **deps:** update module github.com/getkin/kin-openapi to v0.147.0 ([#122](https://github.com/nonchan7720/manifold/issues/122)) ([a85a915](https://github.com/nonchan7720/manifold/commit/a85a915f388d2a430d4a443ecb6d594843d91881))
+
 ## [1.8.0](https://github.com/nonchan7720/manifold/compare/v1.7.0...v1.8.0) (2026-08-25)
 
 
