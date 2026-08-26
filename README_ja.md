@@ -182,6 +182,19 @@ redis:
 | `key`        | string | TLS 秘密鍵ファイルパス（オプション）                                              |
 | `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
 | `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
+| `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
+
+#### `gateway.specRefresh`
+
+OpenAPI モードのサーバー（`mcpServers.<name>.spec`）の spec を定期的に取り直し、Manifold を再起動せずに MCP ツール定義を更新します。増えたツールは登録され、消えたツールは登録解除され、接続中のクライアントには `notifications/tools/list_changed` が通知されます。
+
+```yaml
+gateway:
+  specRefresh:
+    interval: 5m
+```
+
+変更検知は取得した spec 本体のハッシュで行うため、外部 `$ref` 先だけが更新された場合はハッシュが変わらず検知できません。取得やパースに失敗した場合は既存のツール定義を維持し、次の間隔で再試行します。
 
 #### `mcpServers.<name>`
 
@@ -201,6 +214,7 @@ redis:
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 

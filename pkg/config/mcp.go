@@ -30,6 +30,9 @@ type Server struct {
 	Spec         string            `mapstructure:"spec"` // ファイル or http(s)（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
 
+	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
+	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
+
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
@@ -54,6 +57,19 @@ func (s Server) CallTimeoutOrDefault() time.Duration {
 		return DefaultCallTimeout
 	}
 	return s.CallTimeout
+}
+
+// EffectiveSpecRefreshInterval returns the refresh interval for this server,
+// falling back to the gateway-wide default. Only OpenAPI mode servers refresh;
+// others always return 0.
+func (s Server) EffectiveSpecRefreshInterval(global time.Duration) time.Duration {
+	if s.Spec == "" {
+		return 0
+	}
+	if s.SpecRefreshInterval != nil {
+		return *s.SpecRefreshInterval
+	}
+	return global
 }
 
 func (s Server) ValidateWithContext(ctx context.Context) error {
@@ -150,6 +166,12 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
+		validation.Field(&s.SpecRefreshInterval, validation.By(func(value any) error {
+			if s.SpecRefreshInterval != nil && *s.SpecRefreshInterval < 0 {
+				return fmt.Errorf("must be zero or a positive duration")
+			}
+			return nil
+		})),
 	)
 }
 

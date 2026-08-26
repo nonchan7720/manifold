@@ -1,6 +1,9 @@
 package mcpsrv
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -203,6 +206,25 @@ func TestRegisterOpenAPI_BaseUrl_Override(t *testing.T) {
 
 	tools := r.ListTools()
 	require.Len(t, tools, 19)
+}
+
+func TestRegisterOpenAPI_SpecHash(t *testing.T) {
+	raw, err := os.ReadFile("fixtures/petstore_oas.json")
+	require.NoError(t, err)
+	want := fmt.Sprintf("%x", sha256.Sum256(raw))
+
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
+	require.NoError(t, err)
+	require.Equal(t, want, r.SpecHash())
+}
+
+func TestRegisterOpenAPI_SpecHash_DiffersBetweenSpecs(t *testing.T) {
+	oas, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
+	require.NoError(t, err)
+	swagger, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
+	require.NoError(t, err)
+
+	require.NotEqual(t, oas.SpecHash(), swagger.SpecHash())
 }
 
 func TestRegisterOpenAPI_GetTool_NotFound(t *testing.T) {

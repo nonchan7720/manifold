@@ -92,6 +92,8 @@ type Gateway struct {
 	EncryptKey string `mapstructure:"encryptKey"`
 
 	Edge EdgeConfig `mapstructure:"edge"`
+
+	SpecRefresh SpecRefreshConfig `mapstructure:"specRefresh"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -116,5 +118,6 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 			),
 		),
 		validation.Field(&c.Edge),
+		validation.Field(&c.SpecRefresh),
 	)
 }

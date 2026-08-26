@@ -182,6 +182,19 @@ redis:
 | `key`        | string | TLS private key file path (optional)                                                                             |
 | `cert`       | string | TLS certificate file path (optional)                                                                             |
 | `encryptKey` | string | Token encryption key (**required**). Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32` |
+| `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
+
+#### `gateway.specRefresh`
+
+Periodically re-fetches the specs of OpenAPI mode servers (`mcpServers.<name>.spec`) and updates the MCP tool definitions without restarting Manifold. Added tools are registered, removed tools are unregistered, and connected clients are notified via `notifications/tools/list_changed`.
+
+```yaml
+gateway:
+  specRefresh:
+    interval: 5m
+```
+
+Changes are detected by hashing the fetched spec document, so a change made only in an externally `$ref`-ed document leaves the hash unchanged and is not picked up. When a fetch or parse fails, the existing tool definitions are kept and the next interval retries.
 
 #### `mcpServers.<name>`
 
@@ -201,6 +214,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
+| `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 

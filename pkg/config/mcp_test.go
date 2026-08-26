@@ -292,6 +292,79 @@ func TestServer_CallTimeoutOrDefault_UsesConfiguredValue(t *testing.T) {
 	require.Equal(t, 30*time.Second, s.CallTimeoutOrDefault())
 }
 
+func TestServer_EffectiveSpecRefreshInterval(t *testing.T) {
+	ptr := func(d time.Duration) *time.Duration { return &d }
+
+	tests := []struct {
+		name     string
+		server   Server
+		global   time.Duration
+		expected time.Duration
+	}{
+		{
+			name:     "未設定はグローバル既定を使う",
+			server:   Server{Spec: "openapi.yaml"},
+			global:   5 * time.Minute,
+			expected: 5 * time.Minute,
+		},
+		{
+			name:     "0 はサーバー単位で無効化する",
+			server:   Server{Spec: "openapi.yaml", SpecRefreshInterval: ptr(0)},
+			global:   5 * time.Minute,
+			expected: 0,
+		},
+		{
+			name:     "正値はグローバル既定より優先される",
+			server:   Server{Spec: "openapi.yaml", SpecRefreshInterval: ptr(30 * time.Second)},
+			global:   5 * time.Minute,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "グローバル既定も未設定なら無効",
+			server:   Server{Spec: "openapi.yaml"},
+			global:   0,
+			expected: 0,
+		},
+		{
+			name:     "MCP バックエンドモードは対象外",
+			server:   Server{Transport: MCPTransportHTTP, URL: "http://example.com"},
+			global:   5 * time.Minute,
+			expected: 0,
+		},
+		{
+			name: "reverse も対象外",
+			server: Server{
+				Transport:           MCPTransportReverse,
+				Origin:              "https://app.example.com",
+				SpecRefreshInterval: ptr(30 * time.Second),
+			},
+			global:   5 * time.Minute,
+			expected: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.server.EffectiveSpecRefreshInterval(tt.global))
+		})
+	}
+}
+
+func TestServer_ValidateWithContext_NegativeSpecRefreshInterval_Invalid(t *testing.T) {
+	s := baseValidServer()
+	d := -1 * time.Second
+	s.SpecRefreshInterval = &d
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "SpecRefreshInterval")
+}
+
+func TestServer_ValidateWithContext_ZeroSpecRefreshInterval_Valid(t *testing.T) {
+	s := baseValidServer()
+	d := time.Duration(0)
+	s.SpecRefreshInterval = &d
+	require.NoError(t, s.ValidateWithContext(t.Context()))
+}
+
 func TestIsMCPBackend(t *testing.T) {
 	tests := []struct {
 		name     string
