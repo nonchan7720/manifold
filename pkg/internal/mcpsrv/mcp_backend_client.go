@@ -24,6 +24,7 @@ type MCPBackendClient struct {
 	mu        sync.Mutex
 	session   *mcp.ClientSession
 	connected bool
+	toolInfos []ToolInfo
 }
 
 // EnsureConnected は初回のみバックエンドへ接続してツールを登録する。
@@ -53,6 +54,14 @@ func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 	c.connected = true
 	c.mu.Unlock()
 	return nil
+}
+
+// ToolCatalog returns the (name, description) pairs registered by the last
+// successful EnsureConnected call, or nil before the initial connection.
+func (c *MCPBackendClient) ToolCatalog() []ToolInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.toolInfos
 }
 
 // Close はバックエンドとの接続を閉じる。
@@ -133,6 +142,14 @@ func (c *MCPBackendClient) registerTools(
 	if err != nil {
 		return err
 	}
+	infos := make([]ToolInfo, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		infos = append(infos, ToolInfo{Name: tool.Name, Description: tool.Description})
+	}
+	c.mu.Lock()
+	c.toolInfos = infos
+	c.mu.Unlock()
+
 	RegisterSessionTools(c.srv, result.Tools, func(context.Context) (*mcp.ClientSession, error) {
 		return session, nil
 	})

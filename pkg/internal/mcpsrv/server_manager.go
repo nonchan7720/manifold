@@ -97,7 +97,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 		} else {
 			// OpenAPI モード
-			toolNames, specHash, err := registerAPI(
+			toolInfos, specHash, err := registerAPI(
 				ctx,
 				server.Spec,
 				server.BaseURL,
@@ -111,7 +111,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			s.openAPIStates[name] = &openAPIServerState{
 				srv:       srv,
 				cfg:       server,
-				toolNames: toolNames,
+				toolInfos: toolInfos,
 				specHash:  specHash,
 			}
 		}
@@ -133,6 +133,35 @@ func (s *MCPServer) Server(name string) (*mcp.Server, error) {
 func (s *MCPServer) BackendClient(name string) (*MCPBackendClient, bool) {
 	bc, ok := s.backendClients[name]
 	return bc, ok
+}
+
+// ToolCatalog returns the full (name, description) tool list registered for
+// name, independent of any per-caller tools/list authz filtering (see
+// authz_middleware.go): OpenAPI mode reads it from openAPIStates, MCP
+// backend mode connects lazily via EnsureConnected. Reverse-transport
+// servers have no catalog here — their tools only exist per-identityKey
+// after a browser connects — and are reported as "not found" like any other
+// unknown name.
+func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, error) {
+	s.mu.Lock()
+	state, hasOpenAPI := s.openAPIStates[name]
+	var infos []ToolInfo
+	if hasOpenAPI {
+		infos = slices.Clone(state.toolInfos)
+	}
+	s.mu.Unlock()
+	if hasOpenAPI {
+		return infos, nil
+	}
+
+	if bc, ok := s.backendClients[name]; ok {
+		if err := bc.EnsureConnected(ctx); err != nil {
+			return nil, err
+		}
+		return bc.ToolCatalog(), nil
+	}
+
+	return nil, fmt.Errorf("not found mcp server: %s", name)
 }
 
 // Close は spec リフレッシュの goroutine を停止し、全バックエンドクライアントの接続を閉じる。
@@ -161,7 +190,7 @@ func registerAPI(
 	srv *mcp.Server,
 	mediaUploader storage.MediaService,
 	opts ...RegisterOpenAPIOption,
-) ([]string, string, error) {
+) ([]ToolInfo, string, error) {
 	// OpenAPI モード: 既存ロジック
 	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers, opts...)
 	if err != nil {
@@ -174,11 +203,11 @@ func attachTools(
 	srv *mcp.Server,
 	register *MCPToolRegistry,
 	mediaUploader storage.MediaService,
-) []string {
+) []ToolInfo {
 	tools := register.ListTools()
-	names := make([]string, 0, len(tools))
+	infos := make([]ToolInfo, 0, len(tools))
 	for _, tool := range tools {
-		names = append(names, tool.tool.Name)
+		infos = append(infos, ToolInfo{Name: tool.tool.Name, Description: tool.tool.Description})
 		srv.AddTool(
 			&tool.tool,
 			func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
@@ -217,7 +246,7 @@ func attachTools(
 			},
 		)
 	}
-	return names
+	return infos
 }
 
 // resourceLinkDescription は resource_link の説明文を組み立てる。

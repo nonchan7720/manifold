@@ -16,7 +16,7 @@ import (
 type openAPIServerState struct {
 	srv       *mcp.Server
 	cfg       *config.Server
-	toolNames []string
+	toolInfos []ToolInfo
 	specHash  string
 }
 
@@ -45,17 +45,17 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 	if register.SpecHash() == state.specHash {
 		return false, nil
 	}
-	toolNames := attachTools(state.srv, register, s.mediaUploader)
-	removed := make([]string, 0, len(state.toolNames))
-	for _, toolName := range state.toolNames {
-		if !slices.Contains(toolNames, toolName) {
-			removed = append(removed, toolName)
+	toolInfos := attachTools(state.srv, register, s.mediaUploader)
+	removed := make([]string, 0, len(state.toolInfos))
+	for _, prev := range state.toolInfos {
+		if !slices.ContainsFunc(toolInfos, func(ti ToolInfo) bool { return ti.Name == prev.Name }) {
+			removed = append(removed, prev.Name)
 		}
 	}
 	if len(removed) > 0 {
 		state.srv.RemoveTools(removed...)
 	}
-	state.toolNames = toolNames
+	state.toolInfos = toolInfos
 	state.specHash = register.SpecHash()
 	return true, nil
 }

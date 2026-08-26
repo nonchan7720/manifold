@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -416,4 +418,91 @@ func TestMCPServer_Init_MultipleServers(t *testing.T) {
 
 	_, ok = s.BackendClient("oas")
 	require.False(t, ok)
+}
+
+// --- MCPServer.ToolCatalog ---
+
+func TestMCPServer_ToolCatalog_OpenAPIMode(t *testing.T) {
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Name:    "petstore",
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	tools, err := s.ToolCatalog(context.Background(), "petstore")
+	require.NoError(t, err)
+	require.Contains(t, tools, ToolInfo{Name: "getpetbyid", Description: "Find pet by ID."})
+}
+
+func TestMCPServer_ToolCatalog_UnknownServer(t *testing.T) {
+	servers := config.Servers{}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	_, err := s.ToolCatalog(context.Background(), "nonexistent")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found mcp server")
+}
+
+func newToolCatalogBackendServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv := newToolCatalogBackendServer(t)
+
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       httpSrv.URL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	tools, err := s.ToolCatalog(context.Background(), "backend")
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, tools)
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       "http://127.0.0.1:1/mcp",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	_, err := s.ToolCatalog(context.Background(), "backend")
+	require.Error(t, err)
 }

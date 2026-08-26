@@ -157,6 +157,28 @@ func TestMCPServer_RefreshServer_AddedOperation(t *testing.T) {
 	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
 }
 
+func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	s := newRefreshTestMCPServer(t, spec, nil)
+
+	catalog, err := s.ToolCatalog(t.Context(), "api")
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "GET /ping"}}, catalog)
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	catalog, err = s.ToolCatalog(t.Context(), "api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []ToolInfo{
+		{Name: "ping", Description: "GET /ping"},
+		{Name: "pong", Description: "GET /pong"},
+	}, catalog)
+}
+
 func TestMCPServer_RefreshServer_RemovedOperation(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	spec := newSpecTestServer(t, specWithOperations("ping", "pong"))

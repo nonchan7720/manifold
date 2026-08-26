@@ -20,6 +20,14 @@ type Tool struct {
 	handler ToolFunc
 }
 
+// ToolInfo is the (name, description) pair of a registered tool, independent
+// of the input schema and handler — used to build the admin tool catalog
+// (MCPServer.ToolCatalog) without exposing mcp.Tool internals.
+type ToolInfo struct {
+	Name        string
+	Description string
+}
+
 type MCPToolRegistry struct {
 	mu       sync.RWMutex
 	tools    map[string]Tool

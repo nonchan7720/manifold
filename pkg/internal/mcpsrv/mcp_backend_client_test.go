@@ -2,8 +2,11 @@ package mcpsrv
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -100,4 +103,53 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 		c.Close()
 	})
 	require.False(t, c.connected)
+}
+
+// --- MCPBackendClient.ToolCatalog ---
+
+func newBackendCatalogServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+func TestMCPBackendClient_ToolCatalog_EmptyBeforeConnect(t *testing.T) {
+	c := &MCPBackendClient{
+		name: "backend",
+		cfg: &config.Server{
+			Transport: config.MCPTransportHTTP,
+			URL:       "http://backend.example.com/mcp",
+		},
+		srv: mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "0.0.1"}, nil),
+	}
+	require.Empty(t, c.ToolCatalog())
+}
+
+func TestMCPBackendClient_EnsureConnected_PopulatesToolCatalog(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv := newBackendCatalogServer(t)
+
+	c := &MCPBackendClient{
+		name: "backend",
+		cfg:  &config.Server{Transport: config.MCPTransportHTTP, URL: httpSrv.URL},
+		srv:  mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "0.0.1"}, nil),
+	}
+	require.NoError(t, c.EnsureConnected(context.Background()))
+
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, c.ToolCatalog())
 }
