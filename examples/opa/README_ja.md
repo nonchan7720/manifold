@@ -25,6 +25,7 @@ docker compose up -d          # OPA を :8181 で起動
 
 # 一度生成して使い回す — ../README.md を参照
 export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
+mkdir -p tmp
 manifold gateway
 ```
 
@@ -32,12 +33,15 @@ manifold gateway
 
 `x-user-id` / `x-user-groups` は、前段のプロキシが呼び出し元を認証した後に注入するヘッダーの代わり（ルート README の前提条件を参照 — Manifold はこれをそのまま信頼する）。
 
+`/mcp/{name}` は `Authorization: Bearer <token>` ヘッダーも必須。Manifold のパススルー JWT ミドルウェアは値が存在することだけを確認し、検証せずに上流の API へ転送する。Petstore バックエンドは認証不要なので、ここでは任意の値でよい。
+
 読み取り専用グループが許可されたツールを呼ぶ — 成功:
 
 ```bash
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getpetbyid","arguments":{"petId":1}}}'
@@ -49,6 +53,7 @@ curl -s http://localhost:9999/mcp/petstore \
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
@@ -61,6 +66,7 @@ curl -s http://localhost:9999/mcp/petstore \
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
@@ -72,6 +78,7 @@ curl -s http://localhost:9999/mcp/petstore \
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/list"}'
 # {"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```

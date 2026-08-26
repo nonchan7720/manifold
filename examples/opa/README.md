@@ -25,6 +25,7 @@ docker compose up -d          # starts OPA on :8181
 
 # Generate once and reuse — see ../README.md
 export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
+mkdir -p tmp
 manifold gateway
 ```
 
@@ -32,12 +33,15 @@ manifold gateway
 
 `x-user-id` / `x-user-groups` stand in for the headers a fronting proxy would inject after authenticating the caller (see the root README's prerequisites — Manifold trusts them as-is).
 
+`/mcp/{name}` also requires an `Authorization: Bearer <token>` header; Manifold's pass-through JWT middleware only checks that it is present and forwards it to the upstream API without verifying it. The Petstore backend doesn't require authentication, so any value works here.
+
 Read-only group, calling an allowed tool — succeeds:
 
 ```bash
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getpetbyid","arguments":{"petId":1}}}'
@@ -49,6 +53,7 @@ Same group, calling a tool it was not granted — denied with a JSON-RPC error:
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
@@ -61,6 +66,7 @@ curl -s http://localhost:9999/mcp/petstore \
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
@@ -72,6 +78,7 @@ Missing `x-user-id` / `x-user-groups`, or `docker compose stop opa` — both den
 curl -s http://localhost:9999/mcp/petstore \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/list"}'
 # {"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
