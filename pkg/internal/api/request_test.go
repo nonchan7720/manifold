@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -21,7 +22,7 @@ func TestDoRequest_GET(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/test",
@@ -54,13 +55,13 @@ func TestDoRequest_POST_WithBody(t *testing.T) {
 	defer server.Close()
 
 	bodyBytes := []byte(`{"name":"test"}`)
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/create",
 		"post",
 		true,
-		bodyBytes,
+		bytes.NewReader(bodyBytes),
 		"application/json",
 		nil,
 	)
@@ -80,8 +81,8 @@ func TestDoRequest_POST_NoBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// withBody=trueでもbodyBytesが空ならbodyなし
-	resp, err := DoRequest(
+	// withBody=trueでもbodyがnilならbodyなし
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/post",
@@ -103,13 +104,13 @@ func TestDoRequest_PUT(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/update",
 		"put",
 		true,
-		[]byte(`{"val":1}`),
+		bytes.NewReader([]byte(`{"val":1}`)),
 		"application/json",
 		nil,
 	)
@@ -125,7 +126,7 @@ func TestDoRequest_DELETE(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/delete/1",
@@ -147,13 +148,13 @@ func TestDoRequest_PATCH(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/patch/1",
 		"patch",
 		true,
-		[]byte(`{"name":"updated"}`),
+		bytes.NewReader([]byte(`{"name":"updated"}`)),
 		"application/json",
 		nil,
 	)
@@ -174,7 +175,7 @@ func TestDoRequest_WithContextHeaders(t *testing.T) {
 		"X-Tenant-Id": {"tenant-xyz"},
 	})
 
-	resp, err := DoRequest(ctx, &http.Client{}, server.URL, "get", false, nil, "", nil)
+	resp, err := DoRequestWithBody(ctx, &http.Client{}, server.URL, "get", false, nil, "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -183,7 +184,7 @@ func TestDoRequest_WithContextHeaders(t *testing.T) {
 }
 
 func TestDoRequest_InvalidURL(t *testing.T) {
-	resp, err := DoRequest(
+	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		"://invalid-url",

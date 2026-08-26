@@ -64,7 +64,7 @@ func TestRegisterOpenAPI_ToolNaming(t *testing.T) {
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
-			tool := r.GetTool(name)
+			tool := findTool(t, r, name)
 			require.NotNil(t, tool, "tool %q should be registered", name)
 			require.Equal(t, name, tool.tool.Name)
 		})
@@ -99,7 +99,7 @@ func TestRegisterSwagger_ToolNaming(t *testing.T) {
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
-			tool := r.GetTool(name)
+			tool := findTool(t, r, name)
 			require.NotNil(t, tool, "tool %q should be registered", name)
 			require.Equal(t, name, tool.tool.Name)
 		})
@@ -122,7 +122,7 @@ func TestRegisterOpenAPI_Description_UsesSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {
-			tool := r.GetTool(tc.toolName)
+			tool := findTool(t, r, tc.toolName)
 			require.NotNil(t, tool)
 			require.Equal(t, tc.wantSummary, tool.tool.Description)
 		})
@@ -144,7 +144,7 @@ func TestRegisterSwagger_Description_UsesSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {
-			tool := r.GetTool(tc.toolName)
+			tool := findTool(t, r, tc.toolName)
 			require.NotNil(t, tool)
 			require.Equal(t, tc.wantSummary, tool.tool.Description)
 		})
@@ -156,7 +156,7 @@ func TestRegisterOpenAPI_InputSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	// getPetById はパスパラメータ petId を持つ
-	tool := r.GetTool("getpetbyid")
+	tool := findTool(t, r, "getpetbyid")
 	require.NotNil(t, tool)
 
 	schema, ok := tool.tool.InputSchema.(map[string]any)
@@ -173,7 +173,7 @@ func TestRegisterSwagger_InputSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	// getPetById はパスパラメータ petId を持つ
-	tool := r.GetTool("getpetbyid")
+	tool := findTool(t, r, "getpetbyid")
 	require.NotNil(t, tool)
 
 	schema, ok := tool.tool.InputSchema.(map[string]any)
@@ -189,7 +189,7 @@ func TestRegisterOpenAPI_Handler_NotNil(t *testing.T) {
 	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
-	tool := r.GetTool("updatepet")
+	tool := findTool(t, r, "updatepet")
 	require.NotNil(t, tool)
 	require.NotNil(t, tool.handler)
 }
@@ -209,6 +209,6 @@ func TestRegisterOpenAPI_GetTool_NotFound(t *testing.T) {
 	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
 	require.NoError(t, err)
 
-	tool := r.GetTool("nonexistenttool")
+	tool := findTool(t, r, "nonexistenttool")
 	require.Nil(t, tool)
 }
