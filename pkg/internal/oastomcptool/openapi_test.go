@@ -116,52 +116,6 @@ func TestDeriveBaseUrlFromSpecPath(t *testing.T) {
 	}
 }
 
-// --- GetBaseUrl ---
-
-func TestGetBaseUrl_OpenAPI3_AbsoluteServer(t *testing.T) {
-	spec := map[string]any{
-		"servers": []any{
-			map[string]any{"url": "https://api.example.com"},
-		},
-	}
-	got := GetBaseUrl(t.Context(), spec, "")
-	require.Equal(t, "https://api.example.com", got)
-}
-
-func TestGetBaseUrl_OpenAPI3_RelativeServer(t *testing.T) {
-	spec := map[string]any{
-		"servers": []any{
-			map[string]any{"url": "/api/v1"},
-		},
-	}
-	got := GetBaseUrl(t.Context(), spec, "https://example.com/openapi.json")
-	require.Equal(t, "https://example.com/api/v1", got)
-}
-
-func TestGetBaseUrl_Swagger2_WithHost(t *testing.T) {
-	spec := map[string]any{
-		"host":     "api.example.com",
-		"schemes":  []any{"http"},
-		"basePath": "/v2",
-	}
-	got := GetBaseUrl(t.Context(), spec, "")
-	require.Equal(t, "http://api.example.com/v2", got)
-}
-
-func TestGetBaseUrl_Swagger2_DefaultScheme(t *testing.T) {
-	spec := map[string]any{
-		"host":     "api.example.com",
-		"basePath": "/v1",
-	}
-	got := GetBaseUrl(t.Context(), spec, "")
-	require.Equal(t, "https://api.example.com/v1", got)
-}
-
-func TestGetBaseUrl_Fallback(t *testing.T) {
-	got := GetBaseUrl(t.Context(), map[string]any{}, "https://example.com/openapi.json")
-	require.Equal(t, "https://example.com", got)
-}
-
 // --- GetBaseUrlFromOpenAPI3 ---
 
 func TestGetBaseUrlFromOpenAPI3_WithServer(t *testing.T) {
@@ -352,22 +306,6 @@ func TestBuildInputSchema_NoParams(t *testing.T) {
 	props, ok := schema["properties"].(map[string]any)
 	require.True(t, ok)
 	require.Empty(t, props)
-}
-
-// --- LoadOpenapiSpec ---
-
-func TestLoadOpenapiSpec(t *testing.T) {
-	spec, err := LoadOpenapiSpec(context.Background(), "../mcpsrv/fixtures/petstore_oas.json")
-	require.NoError(t, err)
-	require.NotNil(t, spec)
-	// OpenAPI 3.x のspecはopenapi keyを持つ
-	_, hasOpenAPI := spec["openapi"]
-	require.True(t, hasOpenAPI)
-}
-
-func TestLoadOpenapiSpec_NotFound(t *testing.T) {
-	_, err := LoadOpenapiSpec(context.Background(), "nonexistent.json")
-	require.Error(t, err)
 }
 
 // --- LoadOpenAPI3Spec ---

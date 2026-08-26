@@ -93,19 +93,6 @@ func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error)
 	return os.ReadFile(specPath) //nolint: gosec
 }
 
-// LoadOpenapiSpec loads spec as raw map (Deprecated: use LoadOpenAPI3Spec or LoadSwaggerSpec).
-func LoadOpenapiSpec(ctx context.Context, filepath string) (map[string]any, error) {
-	data, err := FetchSpecBytes(ctx, filepath)
-	if err != nil {
-		return nil, err
-	}
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
 // LoadOpenAPI3Spec loads an OpenAPI 3.x spec with automatic $ref resolution.
 func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 	loader := openapi3.NewLoader()
@@ -121,49 +108,6 @@ func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
 		return loader.LoadFromURI(u)
 	}
 	return loader.LoadFromFile(specPath)
-}
-
-// GetBaseUrl extracts base URL from raw OpenAPI spec map.
-func GetBaseUrl(ctx context.Context, spec map[string]any, spec_path string) string {
-	// OpenAPI 3.x
-	if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 { //nolint: nestif
-		if server, ok := servers[0].(map[string]any); ok {
-			if server_url, ok := server["url"].(string); ok {
-				if strings.HasPrefix(server_url, "/") && spec_path != "" {
-					if strings.HasPrefix(spec_path, "http://") ||
-						strings.HasPrefix(spec_path, "https://") {
-						parsed, err := url.Parse(spec_path)
-						if err == nil {
-							base_domain := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-							full_base_url := base_domain + server_url
-							slog.InfoContext(ctx, fmt.Sprintf(
-								"OpenAPI spec has relative server URL '%s'. Deriving base from spec_path: %s",
-								server_url,
-								full_base_url,
-							))
-							return full_base_url
-						}
-					}
-				}
-				return server_url
-			}
-		}
-	}
-	// OpenAPI 2.x (Swagger)
-	if host, ok := spec["host"].(string); ok {
-		scheme := "https"
-		if schemes, ok := spec["schemes"].([]any); ok && len(schemes) > 0 {
-			if s, ok := schemes[0].(string); ok {
-				scheme = s
-			}
-		}
-		base_path := ""
-		if bp, ok := spec["basePath"].(string); ok {
-			base_path = bp
-		}
-		return fmt.Sprintf("%s://%s%s", scheme, host, base_path)
-	}
-	return deriveBaseUrlFromSpecPath(ctx, spec_path)
 }
 
 // GetBaseUrlFromOpenAPI3 extracts base URL from an OpenAPI 3.x typed spec.
