@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.10.1](https://github.com/nonchan7720/manifold/compare/v1.10.0...v1.10.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/stretchr/testify to v1.12.1 ([#129](https://github.com/nonchan7720/manifold/issues/129)) ([1410ccf](https://github.com/nonchan7720/manifold/commit/1410ccfd5499683a3bebe73669067d4c6cd5b682))
+
+
+### Miscellaneous
+
+* **deps:** update docker/setup-buildx-action action to v4.3.0 ([#130](https://github.com/nonchan7720/manifold/issues/130)) ([38263bc](https://github.com/nonchan7720/manifold/commit/38263bc41d46c20b7536a9fafdd94780e256b02d))
+
 ## [1.10.0](https://github.com/nonchan7720/manifold/compare/v1.9.0...v1.10.0) (2026-08-26)
 
 
