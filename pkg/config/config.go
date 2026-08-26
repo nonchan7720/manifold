@@ -25,6 +25,8 @@ type Config struct {
 	Storage Storage `mapstructure:"storage"`
 
 	Identities map[string]*IdentityProfile `mapstructure:"identities"`
+
+	Authz AuthzConfig `mapstructure:"authz"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -80,6 +82,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 			validation.When(c.Redis == nil && c.Memory == nil, validation.Required),
 		),
 		validation.Field(&c.Storage),
+		validation.Field(&c.Authz),
 	)
 }
 
