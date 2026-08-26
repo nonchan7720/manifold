@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* **deps:** update go patch dependencies ([#134](https://github.com/nonchan7720/manifold/issues/134)) ([8a1b9a9](https://github.com/nonchan7720/manifold/commit/8a1b9a94a18a8692f81175d0b4ea7966c809fa18))
 * **deps:** update module github.com/stretchr/testify to v1.12.1 ([#129](https://github.com/nonchan7720/manifold/issues/129)) ([1410ccf](https://github.com/nonchan7720/manifold/commit/1410ccfd5499683a3bebe73669067d4c6cd5b682))
 
 
