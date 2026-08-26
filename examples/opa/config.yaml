@@ -1,0 +1,17 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+mcpServers:
+  petstore:
+    description: Swagger Petstore sample API
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    baseURL: https://petstore3.swagger.io/api/v3
+
+authz:
+  enabled: true
+  opaURL: http://localhost:8181
+
+sqlite:
+  path: ./tmp/manifold.db
