@@ -62,15 +62,6 @@ func (r *MCPToolRegistry) RegisterTool(
 	r.tools[name] = tool
 }
 
-func (r *MCPToolRegistry) GetTool(name string) *Tool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if v, ok := r.tools[name]; ok {
-		return &v
-	}
-	return nil
-}
-
 func (r *MCPToolRegistry) ListTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

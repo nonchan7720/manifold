@@ -10,6 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func findTool(t *testing.T, r *MCPToolRegistry, name string) *Tool {
+	t.Helper()
+	for _, tool := range r.ListTools() {
+		if tool.tool.Name == name {
+			return &tool
+		}
+	}
+	return nil
+}
+
 func TestNewMCPToolRegistry(t *testing.T) {
 	r := NewMCPToolRegistry()
 	require.NotNil(t, r)
@@ -25,7 +35,7 @@ func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
 
 	r.RegisterTool("tool1", "Test Tool 1", map[string]any{"type": "object"}, handler)
 
-	tool := r.GetTool("tool1")
+	tool := findTool(t, r, "tool1")
 	require.NotNil(t, tool)
 	require.Equal(t, "tool1", tool.tool.Name)
 	require.Equal(t, "Test Tool 1", tool.tool.Description)
@@ -34,7 +44,7 @@ func TestMCPToolRegistry_RegisterAndGet(t *testing.T) {
 
 func TestMCPToolRegistry_GetNotFound(t *testing.T) {
 	r := NewMCPToolRegistry()
-	tool := r.GetTool("nonexistent")
+	tool := findTool(t, r, "nonexistent")
 	require.Nil(t, tool)
 }
 
@@ -67,7 +77,7 @@ func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
 	r.RegisterTool("mytool", "Version 2", nil, handler2)
 
 	// 上書きされる
-	tool := r.GetTool("mytool")
+	tool := findTool(t, r, "mytool")
 	require.NotNil(t, tool)
 	require.Equal(t, "Version 2", tool.tool.Description)
 
@@ -86,7 +96,7 @@ func TestMCPToolRegistry_HandlerExecution(t *testing.T) {
 	}
 
 	r.RegisterTool("greet", "Greet tool", nil, handler)
-	tool := r.GetTool("greet")
+	tool := findTool(t, r, "greet")
 	require.NotNil(t, tool)
 
 	result, contentType, err := tool.handler(context.Background(), map[string]any{"name": "World"})
@@ -114,7 +124,7 @@ func TestMCPToolRegistry_InputSchema(t *testing.T) {
 		},
 	)
 
-	tool := r.GetTool("fetch")
+	tool := findTool(t, r, "fetch")
 	require.NotNil(t, tool)
 	require.Equal(t, schema, tool.tool.InputSchema)
 }
