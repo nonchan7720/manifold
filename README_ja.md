@@ -349,6 +349,8 @@ authz:
   headers:
     userID: x-user-id
     userGroups: x-user-groups
+  adminGroups:
+    - team-platform
 ```
 
 | フィールド | 型 | 既定値 | 説明 |
@@ -360,6 +362,7 @@ authz:
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | `tools/call` ごとに問い合わせる OPA のデータパス |
 | `headers.userID` | string | `x-user-id` | 呼び出し元のユーザー ID を運ぶ受信ヘッダー名 |
 | `headers.userGroups` | string | `x-user-groups` | 呼び出し元のグループをカンマ区切りで運ぶ受信ヘッダー名 |
+| `adminGroups` | []string | `[]` | `GET /mcp/list?tools=true`（後述の「ポリシー作成用のツール一覧」参照）を呼び出せるグループ。空の場合は全員拒否 |
 
 ### 前提条件
 
@@ -383,6 +386,29 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 ```
 
 OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧とする例）があります。
+
+### ポリシー作成用のツール一覧
+
+ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がありますが、`tools/list` は呼び出し元がすでに使える範囲しか返しません。`GET /mcp/list?tools=true` は絞り込みのない一覧を返します。`authz.enabled` が `false` なら誰でも取得でき、`true` なら呼び出し元が `authz.adminGroups` のいずれかのグループに属している必要があります（`tools/call` と同じ `headers.userID` / `headers.userGroups` で識別）。属していなければ `403 {"error": "forbidden"}` を返します。
+
+```jsonc
+{
+  "mcp": [
+    {
+      "name": "petstore",
+      "description": "Swagger Petstore sample API",
+      "tools": [
+        {"name": "getpetbyid", "description": "Find pet by ID."}
+      ]
+    },
+    // WebMCP reverse サーバーのツールはブラウザ接続後にしか決まらないため、
+    // ツール一覧の代わりに "dynamic" を返す
+    {"name": "billing-svc", "description": "browser app", "dynamic": true},
+    // 接続に失敗したバックエンドも "tools" の代わりに "error" を付けて一覧には残る
+    {"name": "crm", "description": "CRM MCP backend", "error": "connect: dial tcp: connection refused"}
+  ]
+}
+```
 
 ### fail-closed の挙動
 
@@ -409,7 +435,7 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | メソッド | パス                 | 説明                                     |
 | -------- | -------------------- | ---------------------------------------- |
 | `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）        |
-| `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前と説明）取得 |
+| `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前と説明）取得。`?tools=true` でツール一覧も取得（前述の「ポリシー作成用のツール一覧」参照） |
 
 ### OAuth 2.1
 

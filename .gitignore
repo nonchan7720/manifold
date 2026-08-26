@@ -39,4 +39,5 @@ config-test.yaml
 /tools/ngrok/
 .claude/hooks
 examples/webmcp-reverse/tmp/
+examples/opa/tmp/
 /tmp/

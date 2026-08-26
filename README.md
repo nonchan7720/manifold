@@ -349,6 +349,8 @@ authz:
   headers:
     userID: x-user-id
     userGroups: x-user-groups
+  adminGroups:
+    - team-platform
 ```
 
 | Field | Type | Default | Description |
@@ -360,6 +362,7 @@ authz:
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | OPA data path queried once per `tools/call` |
 | `headers.userID` | string | `x-user-id` | Inbound header carrying the caller's user ID |
 | `headers.userGroups` | string | `x-user-groups` | Inbound header carrying the caller's groups, comma-separated |
+| `adminGroups` | []string | `[]` | Groups allowed to call `GET /mcp/list?tools=true` (see "Tool catalog for policy authoring" below). Empty denies every caller |
 
 ### Prerequisites
 
@@ -383,6 +386,30 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 ```
 
 Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns).
+
+### Tool catalog for policy authoring
+
+Writing a policy requires knowing every `<server>/<tool>` pair that exists, but `tools/list` only ever shows what the caller is already allowed to see. `GET /mcp/list?tools=true` returns the unfiltered catalog instead: when `authz.enabled` is `false` it's open to anyone, and when `true` it requires the caller to be in one of `authz.adminGroups` (identified the same way as `tools/call` — `headers.userID` / `headers.userGroups`), responding `403 {"error": "forbidden"}` otherwise.
+
+```jsonc
+{
+  "mcp": [
+    {
+      "name": "petstore",
+      "description": "Swagger Petstore sample API",
+      "tools": [
+        {"name": "getpetbyid", "description": "Find pet by ID."}
+      ]
+    },
+    // A WebMCP reverse server's tools only exist per-browser-connection, so
+    // it reports "dynamic" instead of a tool list.
+    {"name": "billing-svc", "description": "browser app", "dynamic": true},
+    // A backend that failed to connect still lists (with "error" instead of
+    // "tools") rather than dropping out of the response.
+    {"name": "crm", "description": "CRM MCP backend", "error": "connect: dial tcp: connection refused"}
+  ]
+}
+```
 
 ### Fail-closed behavior
 
@@ -409,7 +436,7 @@ The HTTP endpoints exposed by Manifold.
 | Method | Path                 | Description                                      |
 | ------ | -------------------- | ------------------------------------------------ |
 | `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP)                   |
-| `GET`  | `/mcp/list`          | List registered servers (names and descriptions) |
+| `GET`  | `/mcp/list`          | List registered servers (names and descriptions). Add `?tools=true` for the tool catalog (see "Tool catalog for policy authoring" above) |
 
 ### OAuth 2.1
 
