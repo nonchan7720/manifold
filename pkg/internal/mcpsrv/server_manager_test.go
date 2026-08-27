@@ -1,11 +1,19 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -416,4 +424,365 @@ func TestMCPServer_Init_MultipleServers(t *testing.T) {
 
 	_, ok = s.BackendClient("oas")
 	require.False(t, ok)
+}
+
+// --- MCPServer.ToolCatalog ---
+
+func TestMCPServer_ToolCatalog_OpenAPIMode(t *testing.T) {
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Name:    "petstore",
+			Spec:    "fixtures/petstore_oas.json",
+			BaseURL: "https://petstore.example.com",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	tools, err := s.ToolCatalog(context.Background(), "petstore")
+	require.NoError(t, err)
+	require.Contains(t, tools, ToolInfo{Name: "getpetbyid", Description: "Find pet by ID."})
+}
+
+func TestMCPServer_ToolCatalog_UnknownServer(t *testing.T) {
+	servers := config.Servers{}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	_, err := s.ToolCatalog(context.Background(), "nonexistent")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found mcp server")
+}
+
+// newToolCatalogBackendServer は接続ハンドシェイク（旧プロトコルの initialize、
+// 新プロトコルの server/discover）の回数を数えるバックエンドを返す。
+// 接続が共有されているかの検証に使う。
+func newToolCatalogBackendServer(
+	t *testing.T,
+	requestDelay time.Duration,
+) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	initializeCalls := &atomic.Int32{}
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var rpc struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(body, &rpc) == nil &&
+			(rpc.Method == "initialize" || rpc.Method == "server/discover") {
+			initializeCalls.Add(1)
+		}
+		time.Sleep(requestDelay)
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv, initializeCalls
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, _ := newToolCatalogBackendServer(t, 0)
+
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       httpSrv.URL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	tools, err := s.ToolCatalog(context.Background(), "backend")
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, tools)
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, initializeCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
+
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       httpSrv.URL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+	t.Cleanup(s.Close)
+
+	const callers = 16
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			tools, err := s.ToolCatalog(context.Background(), "backend")
+			if err == nil && len(tools) != 1 {
+				err = fmt.Errorf("unexpected tool count: %d", len(tools))
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	// 16 並行の初回呼び出しでも、バックエンドへの接続（initialize）は 1 回だけ。
+	// tools/list は毎回転送されるため総リクエスト数ではなく initialize で検証する。
+	require.Equal(t, int32(1), initializeCalls.Load())
+}
+
+// newGatedBackendServer は release が呼ばれるまで全リクエストをブロックするバックエンドを返す。
+// failOnRelease の場合、解放後のリクエストは HTTP 500 で失敗する。
+func newGatedBackendServer(
+	t *testing.T,
+	failOnRelease bool,
+) (*httptest.Server, *atomic.Int32, func()) {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	requestCalls := &atomic.Int32{}
+	gate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls.Add(1)
+		<-gate
+		if failOnRelease {
+			http.Error(w, "backend down", http.StatusInternalServerError)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	// Cleanup は LIFO なので、httpSrv.Close の前に release が走りハンドラの詰まりを解く。
+	t.Cleanup(httpSrv.Close)
+	t.Cleanup(release)
+	return httpSrv, requestCalls, release
+}
+
+func newSingleBackendMCPServer(t *testing.T, backendURL string) *MCPServer {
+	t.Helper()
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       backendURL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestMCPBackendClient_EnsureConnected_WaiterHonorsContext(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, false)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	defer leaderCancel()
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(leaderCtx) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	// 接続試行が進行中でも、待機者は自分の ctx の期限で抜けられる
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := bc.EnsureConnected(waitCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	release()
+	require.NoError(t, <-leaderErr)
+	require.NoError(t, bc.EnsureConnected(context.Background()))
+}
+
+func TestMCPBackendClient_Close_DoesNotBlockOnInflightConnect(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, false)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(context.Background()) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close should return without waiting for the in-flight connect")
+	}
+
+	// 接続完了後もセッションは採用されず、以降の接続要求は拒否される
+	release()
+	require.ErrorContains(t, <-leaderErr, "client closed")
+	require.ErrorContains(t, bc.EnsureConnected(context.Background()), "client closed")
+}
+
+func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, true)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(context.Background()) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	const waiters = 8
+	errs := make(chan error, waiters)
+	for range waiters {
+		go func() { errs <- bc.EnsureConnected(context.Background()) }()
+	}
+	// 全待機者が進行中の試行に合流したことを確認してから失敗させる
+	require.Eventually(t, func() bool { return bc.waiting.Load() == waiters },
+		5*time.Second, 5*time.Millisecond, "all waiters should join the in-flight attempt")
+	release()
+
+	require.ErrorContains(t, <-leaderErr, "connect")
+	for range waiters {
+		require.ErrorContains(t, <-errs, "connect")
+	}
+	sharedPhaseCalls := requestCalls.Load()
+
+	// 1 試行あたりの HTTP リクエスト数は SDK の内部リトライで変わるため、
+	// 単独の失敗試行を実測してベースラインにする。
+	require.ErrorContains(t, bc.EnsureConnected(context.Background()), "connect")
+	singleAttemptCalls := requestCalls.Load() - sharedPhaseCalls
+	require.Positive(t, singleAttemptCalls)
+
+	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのはリーダーの
+	// 1 試行分のみ。待機者は失敗を共有し、各自が接続をやり直さない。
+	require.Equal(t, singleAttemptCalls, sharedPhaseCalls)
+}
+
+// TestMCPServer_MCPBackendMode_ToolsPassthrough は、MCP バックエンドの
+// tools/list・tools/call がゲートウェイのレジストリを介さず毎回バックエンドへ
+// 転送されること（後から追加されたツールが即時見える・呼べる）を検証する。
+func TestMCPServer_MCPBackendMode_ToolsPassthrough(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, backendSrv := newBackendCatalogServer(t)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+
+	gwSrv, err := s.Server("backend")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = gwSrv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close()
+
+	toolNames := func(tools []*mcp.Tool) []string {
+		names := make([]string, len(tools))
+		for i, tool := range tools {
+			names[i] = tool.Name
+		}
+		return names
+	}
+
+	result, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ping"}, toolNames(result.Tools))
+
+	// 接続後にバックエンドへ追加されたツールが tools/list に即時反映され、呼び出せる
+	backendSrv.AddTool(
+		&mcp.Tool{
+			Name:        "echo",
+			Description: "echo the input",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "echoed"}},
+			}, nil
+		},
+	)
+
+	result, err = session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Contains(t, toolNames(result.Tools), "echo")
+
+	callResult, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "echo",
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, callResult.IsError)
+	text, ok := callResult.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Equal(t, "echoed", text.Text)
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       "http://127.0.0.1:1/mcp",
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	_, err := s.ToolCatalog(context.Background(), "backend")
+	require.Error(t, err)
 }

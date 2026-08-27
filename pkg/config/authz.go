@@ -46,6 +46,12 @@ type AuthzConfig struct {
 	Timeout      time.Duration     `mapstructure:"timeout"`
 	DecisionPath AuthzDecisionPath `mapstructure:"decisionPath"`
 	Headers      AuthzHeaders      `mapstructure:"headers"`
+
+	// AdminGroups authorizes GET /mcp/list?tools=true (the unfiltered tool
+	// catalog policy authors need): a caller must be in one of these groups.
+	// Empty denies every request for it, since an unset allowlist must not
+	// mean "everyone".
+	AdminGroups []string `mapstructure:"adminGroups"`
 }
 
 // WithDefaults returns a copy of c with zero-value fields replaced by the

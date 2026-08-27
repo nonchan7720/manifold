@@ -25,6 +25,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/infrastructure/memory"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/sqlite"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	httphandler "github.com/nonchan7720/manifold/pkg/interfaces/http"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 	"github.com/nonchan7720/manifold/pkg/services/identity"
@@ -832,6 +833,52 @@ func TestNewMCPServer_NilMiddlewareFn_LeavesServerUnaffected(t *testing.T) {
 
 	_, err = session.ListTools(t.Context(), nil)
 	require.NoError(t, err)
+}
+
+// --- mcpHandler wiring: NewMCPHandler(mcpSrv) ---
+
+func TestNewMCPHandler_WiredWithMCPServer_ReturnsToolCatalog(t *testing.T) {
+	servers := config.Servers{
+		"petstore": {
+			Name:        "petstore",
+			Description: "petstore",
+			Spec:        "../internal/mcpsrv/fixtures/petstore_oas.json",
+			BaseURL:     "https://petstore.example.com",
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+		nil,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	mcpHandler := httphandler.NewMCPHandler(servers, mcpSrv, config.AuthzConfig{})
+	req := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "/mcp/list?tools=true", nil,
+	)
+	rec := httptest.NewRecorder()
+	mcpHandler.MCPList(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		MCP []struct {
+			Name  string `json:"name"`
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"mcp"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	require.Len(t, body.MCP, 1)
+	require.Equal(t, "petstore", body.MCP[0].Name)
+	require.NotEmpty(t, body.MCP[0].Tools)
 }
 
 func TestNewGatewayCmd(t *testing.T) {

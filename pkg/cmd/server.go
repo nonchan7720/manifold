@@ -307,7 +307,6 @@ func runGatewayServer(ctx context.Context) error {
 		globalConfig.MCPServer,
 		httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey),
 	)
-	mcpHandler := httphandler.NewMCPHandler(globalConfig.MCPServer)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzMiddleware := authzMiddlewareFn(globalConfig.Authz)
@@ -322,6 +321,9 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer mcpSrv.Close()
+	mcpHandler := httphandler.NewMCPHandler(
+		globalConfig.MCPServer, mcpSrv, globalConfig.Authz.WithDefaults(),
+	)
 
 	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()
 	pairingService := edgeservices.NewPairingService(storeClient)

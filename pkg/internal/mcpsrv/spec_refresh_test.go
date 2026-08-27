@@ -157,6 +157,28 @@ func TestMCPServer_RefreshServer_AddedOperation(t *testing.T) {
 	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
 }
 
+func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	s := newRefreshTestMCPServer(t, spec, nil)
+
+	catalog, err := s.ToolCatalog(t.Context(), "api")
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "GET /ping"}}, catalog)
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	catalog, err = s.ToolCatalog(t.Context(), "api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []ToolInfo{
+		{Name: "ping", Description: "GET /ping"},
+		{Name: "pong", Description: "GET /pong"},
+	}, catalog)
+}
+
 func TestMCPServer_RefreshServer_RemovedOperation(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	spec := newSpecTestServer(t, specWithOperations("ping", "pong"))
@@ -239,7 +261,20 @@ func TestMCPServer_StartSpecRefresh_UpdatesToolsAndStopsOnClose(t *testing.T) {
 		t.Fatal("Close did not stop the spec refresh goroutines")
 	}
 
-	fetches := spec.fetches.Load()
+	// Close cancels the refresh goroutine's context and waits for it to
+	// return, but the in-flight request's context-canceled error can still
+	// reach the httptest handler (which increments fetches) just after Close
+	// returns. Wait for the counter to stabilize before taking the baseline,
+	// otherwise it flakes on a fetch that was already in flight at Close time.
+	var fetches int64
+	require.Eventually(t, func() bool {
+		before := spec.fetches.Load()
+		time.Sleep(20 * time.Millisecond)
+		after := spec.fetches.Load()
+		fetches = after
+		return before == after
+	}, 2*time.Second, 20*time.Millisecond)
+
 	time.Sleep(200 * time.Millisecond)
 	require.Equal(t, fetches, spec.fetches.Load(), "no spec fetch should happen after Close")
 }
