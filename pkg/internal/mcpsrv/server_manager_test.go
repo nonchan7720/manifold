@@ -3,11 +3,15 @@ package mcpsrv
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -450,7 +454,10 @@ func TestMCPServer_ToolCatalog_UnknownServer(t *testing.T) {
 	require.Contains(t, err.Error(), "not found mcp server")
 }
 
-func newToolCatalogBackendServer(t *testing.T) *httptest.Server {
+func newToolCatalogBackendServer(
+	t *testing.T,
+	requestDelay time.Duration,
+) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
 	srv.AddTool(
@@ -463,17 +470,23 @@ func newToolCatalogBackendServer(t *testing.T) *httptest.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
 		},
 	)
-	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true},
-	))
+	)
+	requestCalls := &atomic.Int32{}
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls.Add(1)
+		time.Sleep(requestDelay)
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(httpSrv.Close)
-	return httpSrv
+	return httpSrv, requestCalls
 }
 
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
-	httpSrv := newToolCatalogBackendServer(t)
+	httpSrv, _ := newToolCatalogBackendServer(t, 0)
 
 	servers := config.Servers{
 		"backend": &config.Server{
@@ -489,6 +502,49 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing
 	tools, err := s.ToolCatalog(context.Background(), "backend")
 	require.NoError(t, err)
 	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, tools)
+}
+
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
+
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       httpSrv.URL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+	t.Cleanup(s.Close)
+
+	const callers = 16
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			tools, err := s.ToolCatalog(context.Background(), "backend")
+			if err == nil && len(tools) != 1 {
+				err = fmt.Errorf("unexpected tool count: %d", len(tools))
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	// One backend session performs exactly two requests: initialize and tools/list.
+	require.Equal(t, int32(2), requestCalls.Load())
 }
 
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {

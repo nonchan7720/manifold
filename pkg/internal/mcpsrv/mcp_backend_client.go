@@ -21,6 +21,7 @@ type MCPBackendClient struct {
 	cfg  *config.Server
 	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
 
+	connectMu sync.Mutex
 	mu        sync.Mutex
 	session   *mcp.ClientSession
 	connected bool
@@ -32,6 +33,11 @@ type MCPBackendClient struct {
 func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/EnsureConnected")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	// Serialize the complete connection lifecycle so concurrent initial callers
+	// reuse the session established by the first successful attempt.
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 
 	c.mu.Lock()
 	if c.connected {
@@ -66,6 +72,9 @@ func (c *MCPBackendClient) ToolCatalog() []ToolInfo {
 
 // Close はバックエンドとの接続を閉じる。
 func (c *MCPBackendClient) Close() {
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.session != nil {
