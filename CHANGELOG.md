@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.11.0](https://github.com/nonchan7720/manifold/compare/v1.10.1...v1.11.0) (2026-08-27)
+
+
+### Features
+
+* allow per-request authz bypass via header (phase 4) ([#142](https://github.com/nonchan7720/manifold/issues/142)) ([940c854](https://github.com/nonchan7720/manifold/commit/940c8549f8e4c0f54de665200b16d201e4d9ab9d))
+* enforce OPA tool authorization on tools/list and tools/call (phase 2) ([#132](https://github.com/nonchan7720/manifold/issues/132)) ([82b6f00](https://github.com/nonchan7720/manifold/commit/82b6f00683ff30ec05b10bd1d2e0038275dab205))
+* expose unfiltered tool catalog via /mcp/list?tools=true (phase 3) ([#140](https://github.com/nonchan7720/manifold/issues/140)) ([15cc47b](https://github.com/nonchan7720/manifold/commit/15cc47b07712ef527cb74234d8b18308fca7bdda))
+* OPA sidecar tool authorization (PEP) ([#128](https://github.com/nonchan7720/manifold/issues/128)) ([6b75a6b](https://github.com/nonchan7720/manifold/commit/6b75a6bd06d929a5f0aed381a6b55a323bf76f03))
+
+
+### Bug Fixes
+
+* HTTPバックエンドのMCPセッションをリクエストごとに分離する ([#144](https://github.com/nonchan7720/manifold/issues/144)) ([aa8adda](https://github.com/nonchan7720/manifold/commit/aa8adda187e2956417cf8519197d0309c8caedff))
+
+
+### Miscellaneous
+
+* **deps:** update aws-actions/amazon-ecr-login action to v2.1.7 ([#141](https://github.com/nonchan7720/manifold/issues/141)) ([1ca0e76](https://github.com/nonchan7720/manifold/commit/1ca0e7605c58bcb09d796d5262e3b460677a75a0))
+* **main:** release 1.10.1 ([#136](https://github.com/nonchan7720/manifold/issues/136)) ([8d84223](https://github.com/nonchan7720/manifold/commit/8d842238b2e44c9dff627e9648646259f7c69bd9))
+
+
+### Documentation
+
+* update readme ([#143](https://github.com/nonchan7720/manifold/issues/143)) ([870a7f6](https://github.com/nonchan7720/manifold/commit/870a7f69a14f6d74eefd839557c8550ffce0dc71))
+
 ## [1.10.1](https://github.com/nonchan7720/manifold/compare/v1.10.0...v1.10.1) (2026-08-26)
 
 
