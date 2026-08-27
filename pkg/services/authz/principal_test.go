@@ -90,3 +90,66 @@ func TestPrincipalFromHeader_CustomHeaderNames(t *testing.T) {
 	require.Equal(t, "user-042", p.UserID)
 	require.Equal(t, []string{"team-finance"}, p.Groups)
 }
+
+// --- BypassRequested ---
+
+func defaultHeadersWithBypass() config.AuthzHeaders {
+	return config.AuthzHeaders{
+		UserID:     "x-user-id",
+		UserGroups: "x-user-groups",
+		Bypass:     "x-authz-bypass",
+	}
+}
+
+func TestBypassRequested_ExactLowercaseTrue_ReturnsTrue(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "true")
+
+	require.True(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_Missing_ReturnsFalse(t *testing.T) {
+	h := http.Header{}
+
+	require.False(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_Empty_ReturnsFalse(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "")
+
+	require.False(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_CapitalizedTrue_ReturnsFalse(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "True")
+
+	require.False(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_NumericOne_ReturnsFalse(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "1")
+
+	require.False(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_TrueWithTrailingSpace_ReturnsFalse(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "true ")
+
+	require.False(t, BypassRequested(h, defaultHeadersWithBypass()))
+}
+
+func TestBypassRequested_CustomHeaderName(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-acme-bypass", "true")
+
+	cfg := config.AuthzHeaders{
+		UserID:     "x-acme-user",
+		UserGroups: "x-acme-groups",
+		Bypass:     "x-acme-bypass",
+	}
+	require.True(t, BypassRequested(h, cfg))
+}

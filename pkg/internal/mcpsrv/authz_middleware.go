@@ -36,6 +36,17 @@ func authzPrincipal(
 	return authz.PrincipalFromHeader(extra.Header, headers)
 }
 
+// authzBypassRequested reports whether req's HTTP headers carry
+// headers.Bypass per authz.BypassRequested. A nil Extra (non-HTTP
+// transports) never bypasses.
+func authzBypassRequested(req mcp.Request, headers config.AuthzHeaders) bool {
+	extra := req.GetExtra()
+	if extra == nil {
+		return false
+	}
+	return authz.BypassRequested(extra.Header, headers)
+}
+
 // authzHandleToolCall enforces d.Allow for a tools/call request, forwarding
 // to next only when allowed. Any non-allow outcome (deny, Decider error, or
 // an unexpected params type) maps to the same fixed JSON-RPC error.
@@ -140,6 +151,13 @@ func NewAuthzMiddleware(
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			if method != authzMethodToolsCall && method != authzMethodToolsList {
+				return next(ctx, method, req)
+			}
+
+			if authzBypassRequested(req, headers) {
+				slog.InfoContext(ctx, "authz decision",
+					slog.String("server", serverName), slog.String("method", method),
+					slog.String("decision", "bypass"))
 				return next(ctx, method, req)
 			}
 

@@ -83,6 +83,19 @@ curl -s http://localhost:9999/mcp/petstore \
 # {"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
 
+`x-authz-bypass: true` disables authz entirely for a single request (see the root README's ["Disabling authorization per tenant"](../../README.md#disabling-authorization-per-tenant)). The read-only group can now call `deletepet`, which its policy does not grant:
+
+```bash
+curl -s http://localhost:9999/mcp/petstore \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-authz-bypass: true' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
+```
+
 ## Adapting to your own policy
 
 Replace `policy.rego` / `data.json` with your own, keeping the `allow` and `allowed_tools` rule names (or point `authz.decisionPath` at different ones). For production, prefer distributing `data.json` and `policy.rego` as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, and enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query.

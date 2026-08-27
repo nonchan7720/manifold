@@ -362,14 +362,16 @@ authz:
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | `tools/call` ごとに問い合わせる OPA のデータパス |
 | `headers.userID` | string | `x-user-id` | 呼び出し元のユーザー ID を運ぶ受信ヘッダー名 |
 | `headers.userGroups` | string | `x-user-groups` | 呼び出し元のグループをカンマ区切りで運ぶ受信ヘッダー名 |
+| `headers.bypass` | string | `x-authz-bypass` | 完全一致で文字列 `true` を設定すると、そのリクエスト 1 件の authz 強制を無効化する受信ヘッダー名（後述の「テナントごとに認可を無効化する」参照） |
 | `adminGroups` | []string | `[]` | `GET /mcp/list?tools=true`（後述の「ポリシー作成用のツール一覧」参照）を呼び出せるグループ。空の場合は全員拒否 |
 
 ### 前提条件
 
-Manifold は `headers.userID` / `headers.userGroups` を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
+Manifold は `headers.userID` / `headers.userGroups`（設定していれば `headers.bypass` も含む）を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
 
 - 前段のプロキシが、クライアント由来の同名ヘッダーを必ず strip または上書きし、呼び出し元が自分のアイデンティティを偽装できないようにする
 - そのプロキシを経由しない Manifold への直接アクセスを、ネットワーク層（Kubernetes の `NetworkPolicy` 等）で遮断する
+- **`headers.bypass` は識別用ヘッダーよりもさらに機微です**: 呼び出し元がこれを `true` に設定できると、アイデンティティやグループ所属に関係なく自分のリクエストの認可を完全に無効化できます。前段のプロキシは同じ厳格さで strip または上書きし、そのプロキシを経由せず Manifold に到達しうるネットワーク経路はすべて（別レイヤーでの認証で済ませるのではなく）ネットワーク層で完全に遮断してください
 
 ### input / data の契約
 
@@ -409,6 +411,18 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
   ]
 }
 ```
+
+### テナントごとに認可を無効化する
+
+1 台の Manifold の手前で複数テナントを振り分ける前段プロキシは、`authz.enabled` をグローバルに切り替えなくても、`headers.bypass`（既定 `x-authz-bypass`）を完全一致で文字列 `true` に設定することで、リクエスト 1 件単位で authz を無効化できます。それ以外の値（`True`、`1`、空、ヘッダー自体が無い場合を含む）は通常の authz 判定（fail-closed）に従います。
+
+無効化された場合、そのリクエストでは:
+
+- `tools/call` は OPA に問い合わせず、ツールに直接到達する
+- `tools/list` は絞り込みなしでバックエンドの全ツール一覧を返す
+- `GET /mcp/list?tools=true` は `adminGroups` の所属に関係なく `200` で全カタログを返す
+
+これはそのリクエスト 1 件に限り `authz.enabled: false` と同じ挙動になります。Manifold は `decision: bypass` をログに出します（`server` / `method` は出ますが、アイデンティティは解決していないため出ません）。これにより監査ログ上で `allow` / `deny` と区別できます。
 
 ### fail-closed の挙動
 

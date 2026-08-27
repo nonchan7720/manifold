@@ -22,6 +22,7 @@ const (
 
 	DefaultAuthzHeaderUserID     = "x-user-id"
 	DefaultAuthzHeaderUserGroups = "x-user-groups"
+	DefaultAuthzHeaderBypass     = "x-authz-bypass" //nolint: gosec // header name, not a credential
 )
 
 // AuthzDecisionPath is the OPA data path queried for each decision kind (see
@@ -33,9 +34,13 @@ type AuthzDecisionPath struct {
 
 // AuthzHeaders names the inbound HTTP headers an upstream identity/authn
 // layer is expected to inject before Manifold sees the request.
+// AuthzHeaders.Bypass is checked against the literal string "true" (see
+// authz.BypassRequested); it exists so a fronting proxy can disable authz
+// per-request for tenants that opt out, without flipping Enabled globally.
 type AuthzHeaders struct {
 	UserID     string `mapstructure:"userID"`
 	UserGroups string `mapstructure:"userGroups"`
+	Bypass     string `mapstructure:"bypass"`
 }
 
 // AuthzConfig configures the OPA sidecar used as the tool-call PDP.
@@ -75,6 +80,9 @@ func (c AuthzConfig) WithDefaults() AuthzConfig {
 	if c.Headers.UserGroups == "" {
 		c.Headers.UserGroups = DefaultAuthzHeaderUserGroups
 	}
+	if c.Headers.Bypass == "" {
+		c.Headers.Bypass = DefaultAuthzHeaderBypass
+	}
 	return c
 }
 
@@ -103,15 +111,26 @@ func (c AuthzHeaders) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.UserID, validation.By(validateHTTPHeaderName)),
 		validation.Field(&c.UserGroups,
 			validation.By(validateHTTPHeaderName),
-			validation.By(func(value any) error {
-				s, _ := value.(string)
-				if strings.EqualFold(s, c.UserID) {
-					return fmt.Errorf("must differ from headers.userID")
-				}
-				return nil
-			}),
+			validation.By(validateDiffersFrom("headers.userID", c.UserID)),
+		),
+		validation.Field(&c.Bypass,
+			validation.By(validateHTTPHeaderName),
+			validation.By(validateDiffersFrom("headers.userID", c.UserID)),
+			validation.By(validateDiffersFrom("headers.userGroups", c.UserGroups)),
 		),
 	)
+}
+
+// validateDiffersFrom rejects a value equal (case-insensitively) to other,
+// naming the field it must differ from.
+func validateDiffersFrom(otherField, other string) validation.RuleFunc {
+	return func(value any) error {
+		s, _ := value.(string)
+		if strings.EqualFold(s, other) {
+			return fmt.Errorf("must differ from %s", otherField)
+		}
+		return nil
+	}
 }
 
 func validateHTTPURL(value any) error {

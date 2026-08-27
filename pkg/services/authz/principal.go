@@ -38,6 +38,13 @@ func splitGroups(raw string) []string {
 	return groups
 }
 
+// BypassRequested reports whether h carries cfg.Bypass set to the literal
+// string "true" — an exact, case-sensitive match, so anything else (missing,
+// empty, "True", "1") leaves authz enforcement in effect.
+func BypassRequested(h http.Header, cfg config.AuthzHeaders) bool {
+	return h.Get(cfg.Bypass) == "true"
+}
+
 // PrincipalFromHeader derives a Principal from a single occurrence of
 // cfg.UserID and cfg.UserGroups in h (repeated headers are not merged — only
 // the first value is read, per http.Header.Get).
