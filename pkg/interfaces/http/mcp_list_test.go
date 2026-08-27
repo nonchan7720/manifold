@@ -228,3 +228,55 @@ func TestMCPList_WithoutToolsQuery_AuthzEnabled_NoIdentityRequired(t *testing.T)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 }
+
+// --- bypass ---
+
+func authzCfgWithBypass() config.AuthzConfig {
+	return config.AuthzConfig{
+		Enabled:     true,
+		AdminGroups: []string{"team-platform"},
+		Headers: config.AuthzHeaders{
+			UserID:     "x-user-id",
+			UserGroups: "x-user-groups",
+			Bypass:     "x-authz-bypass",
+		},
+	}
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutAdminGroup(
+	t *testing.T,
+) {
+	catalog := &fakeToolCatalog{
+		infos: map[string][]mcpsrv.ToolInfo{
+			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
+		},
+	}
+	h := NewMCPHandler(testMCPListServers(), catalog, authzCfgWithBypass())
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	req.Header.Set("x-authz-bypass", "true")
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	entries := decodeMCPList(t, rec)
+	petstore := findMCPListEntry(t, entries, "petstore")
+	require.JSONEq(
+		t,
+		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
+		string(petstore.Tools),
+	)
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderNotExactlyTrue_StillRequiresAdminGroup(
+	t *testing.T,
+) {
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfgWithBypass())
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	req.Header.Set("x-authz-bypass", "True")
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}

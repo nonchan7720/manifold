@@ -1,7 +1,9 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -66,7 +68,11 @@ func (d *fakeDecider) allowedToolsCallCount() int {
 }
 
 func testAuthzHeaders() config.AuthzHeaders {
-	return config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"}
+	return config.AuthzHeaders{
+		UserID:     "x-user-id",
+		UserGroups: "x-user-groups",
+		Bypass:     "x-authz-bypass",
+	}
 }
 
 // headerRoundTripper injects a fixed set of headers into every outgoing
@@ -307,4 +313,65 @@ func TestAuthzMiddleware_NoExtra_DeniesWithoutCallingDecider(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool not allowed by policy")
 	require.Equal(t, 0, d.allowCallCount())
+}
+
+// --- bypass ---
+
+func bypassHeaders() http.Header {
+	h := http.Header{}
+	h.Set("x-authz-bypass", "true")
+	return h
+}
+
+func TestAuthzMiddleware_ToolCall_BypassHeaderTrue_ReachesUpstreamWithoutDecider(t *testing.T) {
+	d := &fakeDecider{allowResult: false}
+	session := newAuthzTestServer(t, newBillingServer(t), d, bypassHeaders())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Equal(t, 0, d.allowCallCount())
+}
+
+func TestAuthzMiddleware_ToolCall_BypassHeaderNotExactlyTrue_UsesNormalAuthz(t *testing.T) {
+	d := &fakeDecider{allowResult: true}
+	headers := http.Header{}
+	headers.Set("x-authz-bypass", "True")
+	session := newAuthzTestServer(t, newBillingServer(t), d, headers)
+
+	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not allowed by policy")
+	require.Equal(t, 0, d.allowCallCount())
+}
+
+func TestAuthzMiddleware_ToolsList_BypassHeaderTrue_ReturnsUnfilteredListWithoutDecider(
+	t *testing.T,
+) {
+	d := &fakeDecider{allowedToolsResult: nil}
+	session := newAuthzTestServer(t, newBillingServer(t), d, bypassHeaders())
+
+	result, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 2)
+	require.Equal(t, 0, d.allowedToolsCallCount())
+}
+
+func TestAuthzMiddleware_ToolCall_BypassHeaderTrue_LogsBypassDecision(t *testing.T) {
+	var buf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	d := &fakeDecider{allowResult: false}
+	session := newAuthzTestServer(t, newBillingServer(t), d, bypassHeaders())
+
+	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+
+	logOutput := buf.String()
+	require.Contains(t, logOutput, "decision=bypass")
+	require.Contains(t, logOutput, "server=billing-svc")
+	require.Contains(t, logOutput, "method=tools/call")
+	require.NotContains(t, logOutput, "user=")
 }

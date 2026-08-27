@@ -96,7 +96,8 @@ func (h *MCPHandler) MCPList(w http.ResponseWriter, r *http.Request) {
 	defer func() { trace.EndSpan(ctx, err) }()
 
 	includeTools := r.URL.Query().Get("tools") == "true"
-	if includeTools && h.authzCfg.Enabled && !h.isToolCatalogAdmin(r) {
+	if includeTools && h.authzCfg.Enabled &&
+		!authz.BypassRequested(r.Header, h.authzCfg.Headers) && !h.isToolCatalogAdmin(r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
