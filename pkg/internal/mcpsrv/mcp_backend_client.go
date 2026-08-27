@@ -193,9 +193,8 @@ func (c *MCPBackendClient) invalidateSession(session *mcp.ClientSession) {
 // 含む全 HTTP リクエストが呼び出し元の ctx で送られるため、認証トークン
 // （contexts.FromRequestAuthHeader 等）が呼び出し元本人のものになり、
 // ユーザー・テナントをまたいでセッションが共有されることがない。
-// Close 済みのクライアントでは接続せずエラーを返す（stdio パスと同じ挙動）。
-// チェックと接続の間に Close が割り込む可能性は残るが、セッションは fn の
-// 終了時に必ずクローズされるため、残留リソースは発生しない。
+// Close 済みのクライアントでは接続せずエラーを返し、接続中に Close が
+// 割り込んだ場合もセッションを破棄してエラーを返す（stdio パスと同じ挙動）。
 func (c *MCPBackendClient) withStatelessSession(
 	ctx context.Context,
 	fn func(*mcp.ClientSession) error,
@@ -211,6 +210,18 @@ func (c *MCPBackendClient) withStatelessSession(
 	if err != nil {
 		return fmt.Errorf("backend %s: connect: %w", c.name, err)
 	}
+
+	// 接続中に Close が割り込んだ場合は fn を実行せず破棄する。
+	// シャットダウン中のリクエストがツール呼び出しとしてバックエンドへ
+	// 到達しないようにするため。
+	c.mu.Lock()
+	closed = c.closed
+	c.mu.Unlock()
+	if closed {
+		session.Close()
+		return fmt.Errorf("backend %s: client closed", c.name)
+	}
+
 	defer session.Close()
 	return fn(session)
 }
