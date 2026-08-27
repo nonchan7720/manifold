@@ -107,6 +107,7 @@ func TestLoadInternal_Authz_Defaults(t *testing.T) {
 	require.Equal(t, DefaultAuthzDecisionPathCall, cfg.Authz.DecisionPath.Call)
 	require.Equal(t, DefaultAuthzHeaderUserID, cfg.Authz.Headers.UserID)
 	require.Equal(t, DefaultAuthzHeaderUserGroups, cfg.Authz.Headers.UserGroups)
+	require.Equal(t, DefaultAuthzHeaderBypass, cfg.Authz.Headers.Bypass)
 }
 
 func TestLoadInternal_Authz_EnvOverride_Enabled(t *testing.T) {
@@ -129,6 +130,17 @@ func TestLoadInternal_Authz_EnvOverride_OPAURL(t *testing.T) {
 	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.Equal(t, "https://opa-sidecar.internal.example.com:8181", cfg.Authz.OPAURL)
+}
+
+func TestLoadInternal_Authz_EnvOverride_HeadersBypass(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// viper の SetDefault + AutomaticEnv により AUTHZ_HEADERS_BYPASS で上書きできる
+	t.Setenv("AUTHZ_HEADERS_BYPASS", "x-acme-bypass")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, "x-acme-bypass", cfg.Authz.Headers.Bypass)
 }
 
 // --- reverse origin 正規化 ---

@@ -17,6 +17,7 @@ func TestAuthzConfig_WithDefaults_FillsAllWhenEmpty(t *testing.T) {
 	require.Equal(t, DefaultAuthzDecisionPathCall, got.DecisionPath.Call)
 	require.Equal(t, DefaultAuthzHeaderUserID, got.Headers.UserID)
 	require.Equal(t, DefaultAuthzHeaderUserGroups, got.Headers.UserGroups)
+	require.Equal(t, DefaultAuthzHeaderBypass, got.Headers.Bypass)
 }
 
 func TestAuthzConfig_WithDefaults_AdminGroupsEmptyByDefault(t *testing.T) {
@@ -52,6 +53,7 @@ func TestAuthzConfig_WithDefaults_KeepsExplicitValues(t *testing.T) {
 		Headers: AuthzHeaders{
 			UserID:     "x-acme-user",
 			UserGroups: "x-acme-groups",
+			Bypass:     "x-acme-bypass",
 		},
 	}.WithDefaults()
 	require.Equal(t, "https://opa.internal.example.com:8181", got.OPAURL)
@@ -60,6 +62,7 @@ func TestAuthzConfig_WithDefaults_KeepsExplicitValues(t *testing.T) {
 	require.Equal(t, "/v1/data/acme/authz/call", got.DecisionPath.Call)
 	require.Equal(t, "x-acme-user", got.Headers.UserID)
 	require.Equal(t, "x-acme-groups", got.Headers.UserGroups)
+	require.Equal(t, "x-acme-bypass", got.Headers.Bypass)
 }
 
 // --- AuthzConfig.ValidateWithContext: enabled=false ---
@@ -200,4 +203,48 @@ func TestAuthzConfig_ValidateWithContext_Enabled_RejectsSameHeaderNameCaseInsens
 	}
 	err := c.ValidateWithContext(t.Context())
 	require.Error(t, err)
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsBypassHeaderWithSpace(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{
+			UserID:     "x-acme-user",
+			UserGroups: "x-acme-groups",
+			Bypass:     "x acme bypass",
+		},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Bypass")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsBypassEqualsUserID(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{
+			UserID:     "x-acme-identity",
+			UserGroups: "x-acme-groups",
+			Bypass:     "x-acme-identity",
+		},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Bypass")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsBypassEqualsUserGroupsCaseInsensitive(
+	t *testing.T,
+) {
+	c := AuthzConfig{
+		Enabled: true,
+		Headers: AuthzHeaders{
+			UserID:     "x-acme-user",
+			UserGroups: "X-Acme-Groups",
+			Bypass:     "x-acme-groups",
+		},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Bypass")
 }
