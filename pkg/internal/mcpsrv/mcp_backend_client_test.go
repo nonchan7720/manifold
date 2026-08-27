@@ -105,9 +105,9 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 	require.False(t, c.connected)
 }
 
-// --- MCPBackendClient.ToolCatalog ---
+// --- MCPBackendClient.ListToolInfos ---
 
-func newBackendCatalogServer(t *testing.T) *httptest.Server {
+func newBackendCatalogServer(t *testing.T) (*httptest.Server, *mcp.Server) {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
 	srv.AddTool(
@@ -125,31 +125,52 @@ func newBackendCatalogServer(t *testing.T) *httptest.Server {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	))
 	t.Cleanup(httpSrv.Close)
-	return httpSrv
+	return httpSrv, srv
 }
 
-func TestMCPBackendClient_ToolCatalog_EmptyBeforeConnect(t *testing.T) {
-	c := &MCPBackendClient{
-		name: "backend",
-		cfg: &config.Server{
-			Transport: config.MCPTransportHTTP,
-			URL:       "http://backend.example.com/mcp",
-		},
-		srv: mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "0.0.1"}, nil),
-	}
-	require.Empty(t, c.ToolCatalog())
-}
-
-func TestMCPBackendClient_EnsureConnected_PopulatesToolCatalog(t *testing.T) {
+func TestMCPBackendClient_ListToolInfos_ConnectsLazily(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
-	httpSrv := newBackendCatalogServer(t)
+	httpSrv, _ := newBackendCatalogServer(t)
 
 	c := &MCPBackendClient{
 		name: "backend",
 		cfg:  &config.Server{Transport: config.MCPTransportHTTP, URL: httpSrv.URL},
-		srv:  mcp.NewServer(&mcp.Implementation{Name: "gateway", Version: "0.0.1"}, nil),
 	}
-	require.NoError(t, c.EnsureConnected(context.Background()))
+	t.Cleanup(c.Close)
 
-	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, c.ToolCatalog())
+	infos, err := c.ListToolInfos(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, infos)
+}
+
+func TestMCPBackendClient_ListToolInfos_ReflectsBackendToolChanges(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, backendSrv := newBackendCatalogServer(t)
+
+	c := &MCPBackendClient{
+		name: "backend",
+		cfg:  &config.Server{Transport: config.MCPTransportHTTP, URL: httpSrv.URL},
+	}
+	t.Cleanup(c.Close)
+
+	infos, err := c.ListToolInfos(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, infos)
+
+	// 接続後にバックエンド側でツールが増えても、次の問い合わせに反映される
+	backendSrv.AddTool(
+		&mcp.Tool{
+			Name:        "echo",
+			Description: "echo the input",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "echo"}}}, nil
+		},
+	)
+
+	infos, err = c.ListToolInfos(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, infos, ToolInfo{Name: "ping", Description: "ping the backend"})
+	require.Contains(t, infos, ToolInfo{Name: "echo", Description: "echo the input"})
 }

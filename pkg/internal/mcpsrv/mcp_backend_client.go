@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,21 +14,22 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/version"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // MCPBackendClient はバックエンドの MCP サーバーへの接続を管理する。
 // 遅延接続方式を採用し、最初のリクエスト時（認証トークン入りコンテキスト）に接続する。
+// ツール一覧はゲートウェイ側に登録・固定せず、tools/list・tools/call とも
+// このクライアント経由でバックエンドへ毎回転送する（newBackendPassthroughMiddleware）。
 type MCPBackendClient struct {
 	name string
 	cfg  *config.Server
-	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
 
 	mu         sync.Mutex
 	session    *mcp.ClientSession
 	connected  bool
 	closed     bool
 	connecting *connectAttempt // 進行中の接続試行。なければ nil
-	toolInfos  []ToolInfo
 }
 
 // connectAttempt は進行中の接続試行を待機者と共有するためのもの。
@@ -37,7 +39,7 @@ type connectAttempt struct {
 	err  error
 }
 
-// EnsureConnected は初回のみバックエンドへ接続してツールを登録する。
+// EnsureConnected は初回のみバックエンドへ接続する。
 // 同時呼び出しは最初の1つ（リーダー）だけが接続を試行し、他は結果を待つ。
 // 待機は ctx を尊重するため、バックエンド障害時でも呼び出し元の期限を超えて
 // ブロックしない。接続失敗時は次のリクエストでリトライ可能（sync.Once は使わない）。
@@ -88,9 +90,6 @@ func (c *MCPBackendClient) leadConnect(ctx context.Context, att *connectAttempt)
 	session, err := c.connect(ctx)
 	if err != nil {
 		err = fmt.Errorf("backend %s: connect: %w", c.name, err)
-	} else if rerr := c.registerTools(ctx, session); rerr != nil {
-		session.Close()
-		err = fmt.Errorf("backend %s: register tools: %w", c.name, rerr)
 	}
 
 	var staleSession *mcp.ClientSession
@@ -116,12 +115,70 @@ func (c *MCPBackendClient) leadConnect(ctx context.Context, att *connectAttempt)
 	return err
 }
 
-// ToolCatalog returns the (name, description) pairs registered by the last
-// successful EnsureConnected call, or nil before the initial connection.
-func (c *MCPBackendClient) ToolCatalog() []ToolInfo {
+// ensureSession は接続を保証した上で現在のセッションを返す。
+func (c *MCPBackendClient) ensureSession(ctx context.Context) (*mcp.ClientSession, error) {
+	if err := c.EnsureConnected(ctx); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.toolInfos
+	if c.session == nil {
+		return nil, fmt.Errorf("backend %s: client closed", c.name)
+	}
+	return c.session, nil
+}
+
+// ListTools はバックエンドへ tools/list を問い合わせる。結果はゲートウェイ側に
+// 固定されないため、バックエンドのツール増減や呼び出しユーザーごとの差異が
+// そのまま反映される。バックエンドが SEP-2549 の ttlMs を宣言した場合のみ、
+// SDK がその期間だけ結果をキャッシュする。
+func (c *MCPBackendClient) ListTools(
+	ctx context.Context,
+	params *mcp.ListToolsParams,
+) (_ *mcp.ListToolsResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListTools")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	session, err := c.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return session.ListTools(ctx, params)
+}
+
+// CallTool はバックエンドへ tools/call をそのまま転送する。
+// 引数の検証はバックエンド側の責務とし、ゲートウェイでは行わない。
+func (c *MCPBackendClient) CallTool(
+	ctx context.Context,
+	name string,
+	args json.RawMessage,
+) (_ *mcp.CallToolResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/CallTool",
+		attribute.String("tool-name", name))
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	session, err := c.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+}
+
+// ListToolInfos はバックエンドの tools/list を全ページ問い合わせ、
+// (name, description) の一覧を返す。
+func (c *MCPBackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error) {
+	session, err := c.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	infos := []ToolInfo{}
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, fmt.Errorf("backend %s: list tools: %w", c.name, err)
+		}
+		infos = append(infos, ToolInfo{Name: tool.Name, Description: tool.Description})
+	}
+	return infos, nil
 }
 
 // Close はバックエンドとの接続を閉じ、以降の接続を禁止する。
@@ -192,29 +249,4 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 	default:
 		return nil, fmt.Errorf("backend %s: unknown transport %q", c.name, c.cfg.Transport)
 	}
-}
-
-func (c *MCPBackendClient) registerTools(
-	ctx context.Context,
-	session *mcp.ClientSession,
-) (rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/registerTools")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-
-	result, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return err
-	}
-	infos := make([]ToolInfo, 0, len(result.Tools))
-	for _, tool := range result.Tools {
-		infos = append(infos, ToolInfo{Name: tool.Name, Description: tool.Description})
-	}
-	c.mu.Lock()
-	c.toolInfos = infos
-	c.mu.Unlock()
-
-	RegisterSessionTools(c.srv, result.Tools, func(context.Context) (*mcp.ClientSession, error) {
-		return session, nil
-	})
-	return nil
 }

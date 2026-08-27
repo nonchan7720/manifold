@@ -1,8 +1,10 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -454,6 +456,9 @@ func TestMCPServer_ToolCatalog_UnknownServer(t *testing.T) {
 	require.Contains(t, err.Error(), "not found mcp server")
 }
 
+// newToolCatalogBackendServer は接続ハンドシェイク（旧プロトコルの initialize、
+// 新プロトコルの server/discover）の回数を数えるバックエンドを返す。
+// 接続が共有されているかの検証に使う。
 func newToolCatalogBackendServer(
 	t *testing.T,
 	requestDelay time.Duration,
@@ -474,14 +479,22 @@ func newToolCatalogBackendServer(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
-	requestCalls := &atomic.Int32{}
+	initializeCalls := &atomic.Int32{}
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var rpc struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(body, &rpc) == nil &&
+			(rpc.Method == "initialize" || rpc.Method == "server/discover") {
+			initializeCalls.Add(1)
+		}
 		time.Sleep(requestDelay)
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(httpSrv.Close)
-	return httpSrv, requestCalls
+	return httpSrv, initializeCalls
 }
 
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing.T) {
@@ -506,7 +519,7 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing
 
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
-	httpSrv, requestCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
+	httpSrv, initializeCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
 
 	servers := config.Servers{
 		"backend": &config.Server{
@@ -543,8 +556,9 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	// One backend session performs exactly two requests: initialize and tools/list.
-	require.Equal(t, int32(2), requestCalls.Load())
+	// 16 並行の初回呼び出しでも、バックエンドへの接続（initialize）は 1 回だけ。
+	// tools/list は毎回転送されるため総リクエスト数ではなく initialize で検証する。
+	require.Equal(t, int32(1), initializeCalls.Load())
 }
 
 // newGatedBackendServer は release が呼ばれるまで全リクエストをブロックするバックエンドを返す。
@@ -694,6 +708,66 @@ func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T
 	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのは 1 試行分のみ。
 	// 待機者は失敗を共有し、各自が接続をやり直さない。
 	require.Equal(t, singleAttemptCalls, sharedPhaseCalls)
+}
+
+// TestMCPServer_MCPBackendMode_ToolsPassthrough は、MCP バックエンドの
+// tools/list・tools/call がゲートウェイのレジストリを介さず毎回バックエンドへ
+// 転送されること（後から追加されたツールが即時見える・呼べる）を検証する。
+func TestMCPServer_MCPBackendMode_ToolsPassthrough(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, backendSrv := newBackendCatalogServer(t)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+
+	gwSrv, err := s.Server("backend")
+	require.NoError(t, err)
+
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = gwSrv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer session.Close()
+
+	toolNames := func(tools []*mcp.Tool) []string {
+		names := make([]string, len(tools))
+		for i, tool := range tools {
+			names[i] = tool.Name
+		}
+		return names
+	}
+
+	result, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ping"}, toolNames(result.Tools))
+
+	// 接続後にバックエンドへ追加されたツールが tools/list に即時反映され、呼び出せる
+	backendSrv.AddTool(
+		&mcp.Tool{
+			Name:        "echo",
+			Description: "echo the input",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "echoed"}},
+			}, nil
+		},
+	)
+
+	result, err = session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Contains(t, toolNames(result.Tools), "echo")
+
+	callResult, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "echo",
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, callResult.IsError)
+	text, ok := callResult.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Equal(t, "echoed", text.Text)
 }
 
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {

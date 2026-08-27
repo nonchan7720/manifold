@@ -80,22 +80,30 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			continue
 		}
 
+		srvOpts := &mcp.ServerOptions{}
+		if server.IsMCPBackend() {
+			// MCP バックエンドはツールを登録せず毎回転送するため、
+			// tools capability の広告を明示する（listChanged はゲートウェイが
+			// バックエンドの通知を転送しないため広告しない）。
+			srvOpts.Capabilities = &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
+		}
 		srv := mcp.NewServer(
 			&mcp.Implementation{Name: name, Version: version.MarkVersion},
-			&mcp.ServerOptions{},
+			srvOpts,
 		)
+		if server.IsMCPBackend() {
+			// MCP バックエンドモード: 遅延接続クライアントを登録し、
+			// tools/list・tools/call はバックエンドへ毎回転送する。
+			// パススルーは authz ミドルウェアより先に追加して内側に置く。
+			bc := &MCPBackendClient{name: name, cfg: server}
+			s.backendClients[name] = bc
+			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(bc))
+		}
 		if s.middlewareFn != nil {
 			srv.AddReceivingMiddleware(s.middlewareFn(name)...)
 		}
 
-		if server.IsMCPBackend() {
-			// MCP バックエンドモード: 遅延接続のためクライアントを登録するのみ
-			s.backendClients[name] = &MCPBackendClient{
-				name: name,
-				cfg:  server,
-				srv:  srv,
-			}
-		} else {
+		if !server.IsMCPBackend() {
 			// OpenAPI モード
 			toolInfos, specHash, err := registerAPI(
 				ctx,
@@ -135,13 +143,13 @@ func (s *MCPServer) BackendClient(name string) (*MCPBackendClient, bool) {
 	return bc, ok
 }
 
-// ToolCatalog returns the full (name, description) tool list registered for
-// name, independent of any per-caller tools/list authz filtering (see
+// ToolCatalog returns the full (name, description) tool list for name,
+// independent of any per-caller tools/list authz filtering (see
 // authz_middleware.go): OpenAPI mode reads it from openAPIStates, MCP
-// backend mode connects lazily via EnsureConnected. Reverse-transport
-// servers have no catalog here — their tools only exist per-identityKey
-// after a browser connects — and are reported as "not found" like any other
-// unknown name.
+// backend mode connects lazily and queries the backend's tools/list on
+// every call. Reverse-transport servers have no catalog here — their tools
+// only exist per-identityKey after a browser connects — and are reported as
+// "not found" like any other unknown name.
 func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, error) {
 	s.mu.Lock()
 	state, hasOpenAPI := s.openAPIStates[name]
@@ -155,10 +163,7 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 	}
 
 	if bc, ok := s.backendClients[name]; ok {
-		if err := bc.EnsureConnected(ctx); err != nil {
-			return nil, err
-		}
-		return bc.ToolCatalog(), nil
+		return bc.ListToolInfos(ctx)
 	}
 
 	return nil, fmt.Errorf("not found mcp server: %s", name)
