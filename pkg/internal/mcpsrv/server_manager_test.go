@@ -689,8 +689,9 @@ func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T
 	for range waiters {
 		go func() { errs <- bc.EnsureConnected(context.Background()) }()
 	}
-	// 待機者が進行中の試行に合流するのを待ってから失敗させる
-	time.Sleep(250 * time.Millisecond)
+	// 全待機者が進行中の試行に合流したことを確認してから失敗させる
+	require.Eventually(t, func() bool { return bc.waiting.Load() == waiters },
+		5*time.Second, 5*time.Millisecond, "all waiters should join the in-flight attempt")
 	release()
 
 	require.ErrorContains(t, <-leaderErr, "connect")
@@ -705,11 +706,9 @@ func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T
 	singleAttemptCalls := requestCalls.Load() - sharedPhaseCalls
 	require.Positive(t, singleAttemptCalls)
 
-	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのは基本 1 試行分のみ
-	// （待機者は失敗を共有する）。CI のスケジューラ遅延で合流し損ねた待機者が
-	// 自力で 1 試行する余地だけ許容し、全員が個別に再試行する回帰は検出する。
-	require.GreaterOrEqual(t, sharedPhaseCalls, singleAttemptCalls)
-	require.LessOrEqual(t, sharedPhaseCalls, 2*singleAttemptCalls)
+	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのはリーダーの
+	// 1 試行分のみ。待機者は失敗を共有し、各自が接続をやり直さない。
+	require.Equal(t, singleAttemptCalls, sharedPhaseCalls)
 }
 
 // TestMCPServer_MCPBackendMode_ToolsPassthrough は、MCP バックエンドの

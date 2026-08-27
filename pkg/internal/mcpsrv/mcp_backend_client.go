@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -30,6 +31,10 @@ type MCPBackendClient struct {
 	connected  bool
 	closed     bool
 	connecting *connectAttempt // 進行中の接続試行。なければ nil
+
+	// waiting は進行中の接続試行を待っている呼び出し数。
+	// テストが待機者の合流を決定的に検知するために参照する。
+	waiting atomic.Int32
 }
 
 // connectAttempt は進行中の接続試行を待機者と共有するためのもの。
@@ -59,9 +64,12 @@ func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 		case c.connecting != nil:
 			att := c.connecting
 			c.mu.Unlock()
+			c.waiting.Add(1)
 			select {
 			case <-att.done:
+				c.waiting.Add(-1)
 			case <-ctx.Done():
+				c.waiting.Add(-1)
 				return fmt.Errorf("backend %s: wait for connect: %w", c.name, ctx.Err())
 			}
 			if att.err != nil {
