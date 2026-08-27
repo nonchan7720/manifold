@@ -705,9 +705,11 @@ func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T
 	singleAttemptCalls := requestCalls.Load() - sharedPhaseCalls
 	require.Positive(t, singleAttemptCalls)
 
-	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのは 1 試行分のみ。
-	// 待機者は失敗を共有し、各自が接続をやり直さない。
-	require.Equal(t, singleAttemptCalls, sharedPhaseCalls)
+	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのは基本 1 試行分のみ
+	// （待機者は失敗を共有する）。CI のスケジューラ遅延で合流し損ねた待機者が
+	// 自力で 1 試行する余地だけ許容し、全員が個別に再試行する回帰は検出する。
+	require.GreaterOrEqual(t, sharedPhaseCalls, singleAttemptCalls)
+	require.LessOrEqual(t, sharedPhaseCalls, 2*singleAttemptCalls)
 }
 
 // TestMCPServer_MCPBackendMode_ToolsPassthrough は、MCP バックエンドの

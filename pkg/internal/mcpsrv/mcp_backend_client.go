@@ -128,6 +128,28 @@ func (c *MCPBackendClient) ensureSession(ctx context.Context) (*mcp.ClientSessio
 	return c.session, nil
 }
 
+// isDeadSessionError は再接続が必要なセッション失効を示すエラーかを判定する。
+// バックエンドが応答した JSON-RPC エラー（ツールの業務エラー等）や HTTP レベルの
+// 拒否（認証失敗等）はセッション自体が生きているため対象にしない。
+func isDeadSessionError(err error) bool {
+	return errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, mcp.ErrSessionMissing)
+}
+
+// invalidateSession は session がまだ現在のセッションであれば破棄し、
+// 次のリクエストで再接続させる。既に別のセッションへ入れ替わっている場合や
+// Close 済みの場合は何もしない。
+func (c *MCPBackendClient) invalidateSession(session *mcp.ClientSession) {
+	c.mu.Lock()
+	if c.closed || c.session != session {
+		c.mu.Unlock()
+		return
+	}
+	c.session = nil
+	c.connected = false
+	c.mu.Unlock()
+	session.Close()
+}
+
 // ListTools はバックエンドへ tools/list を問い合わせる。結果はゲートウェイ側に
 // 固定されないため、バックエンドのツール増減や呼び出しユーザーごとの差異が
 // そのまま反映される。バックエンドが SEP-2549 の ttlMs を宣言した場合のみ、
@@ -143,7 +165,11 @@ func (c *MCPBackendClient) ListTools(
 	if err != nil {
 		return nil, err
 	}
-	return session.ListTools(ctx, params)
+	res, err := session.ListTools(ctx, params)
+	if isDeadSessionError(err) {
+		c.invalidateSession(session)
+	}
+	return res, err
 }
 
 // CallTool はバックエンドへ tools/call をそのまま転送する。
@@ -161,7 +187,11 @@ func (c *MCPBackendClient) CallTool(
 	if err != nil {
 		return nil, err
 	}
-	return session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if isDeadSessionError(err) {
+		c.invalidateSession(session)
+	}
+	return res, err
 }
 
 // ListToolInfos はバックエンドの tools/list を全ページ問い合わせ、
@@ -174,6 +204,9 @@ func (c *MCPBackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error
 	infos := []ToolInfo{}
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
+			if isDeadSessionError(err) {
+				c.invalidateSession(session)
+			}
 			return nil, fmt.Errorf("backend %s: list tools: %w", c.name, err)
 		}
 		infos = append(infos, ToolInfo{Name: tool.Name, Description: tool.Description})

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -103,6 +104,51 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 		c.Close()
 	})
 	require.False(t, c.connected)
+}
+
+// --- MCPBackendClient session recovery ---
+
+func TestMCPBackendClient_ReconnectsAfterSessionTerminated(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	backendSrv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	backendSrv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	// ステートフルモード（セッション ID あり）でセッション失効を再現する
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return backendSrv },
+		nil,
+	))
+	t.Cleanup(httpSrv.Close)
+
+	c := &MCPBackendClient{
+		name: "backend",
+		cfg:  &config.Server{Transport: config.MCPTransportHTTP, URL: httpSrv.URL},
+	}
+	t.Cleanup(c.Close)
+
+	_, err := c.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+
+	// サーバー側でセッションを終了させる（バックエンド再起動相当）
+	for ss := range backendSrv.Sessions() {
+		require.NoError(t, ss.Close())
+	}
+
+	// 失効を検知するまでの呼び出しは失敗するが、失効セッションは破棄され、
+	// その後の呼び出しは再接続して成功する。
+	require.Eventually(t, func() bool {
+		res, err := c.ListTools(context.Background(), nil)
+		return err == nil && len(res.Tools) == 1
+	}, 10*time.Second, 50*time.Millisecond,
+		"ListTools should recover by reconnecting after session termination")
 }
 
 // --- MCPBackendClient.ListToolInfos ---
