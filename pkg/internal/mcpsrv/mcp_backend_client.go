@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,45 +22,98 @@ type MCPBackendClient struct {
 	cfg  *config.Server
 	srv  *mcp.Server // ゲートウェイ側の MCP サーバー（ツール登録先）
 
-	connectMu sync.Mutex
-	mu        sync.Mutex
-	session   *mcp.ClientSession
-	connected bool
-	toolInfos []ToolInfo
+	mu         sync.Mutex
+	session    *mcp.ClientSession
+	connected  bool
+	closed     bool
+	connecting *connectAttempt // 進行中の接続試行。なければ nil
+	toolInfos  []ToolInfo
+}
+
+// connectAttempt は進行中の接続試行を待機者と共有するためのもの。
+// err は done がクローズされた後にのみ読んでよい。
+type connectAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 // EnsureConnected は初回のみバックエンドへ接続してツールを登録する。
-// 接続失敗時は次のリクエストでリトライ可能（sync.Once は使わない）。
+// 同時呼び出しは最初の1つ（リーダー）だけが接続を試行し、他は結果を待つ。
+// 待機は ctx を尊重するため、バックエンド障害時でも呼び出し元の期限を超えて
+// ブロックしない。接続失敗時は次のリクエストでリトライ可能（sync.Once は使わない）。
 func (c *MCPBackendClient) EnsureConnected(ctx context.Context) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/EnsureConnected")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	// Serialize the complete connection lifecycle so concurrent initial callers
-	// reuse the session established by the first successful attempt.
-	c.connectMu.Lock()
-	defer c.connectMu.Unlock()
-
-	c.mu.Lock()
-	if c.connected {
-		c.mu.Unlock()
-		return nil
+	for {
+		c.mu.Lock()
+		switch {
+		case c.connected:
+			c.mu.Unlock()
+			return nil
+		case c.closed:
+			c.mu.Unlock()
+			return fmt.Errorf("backend %s: client closed", c.name)
+		case c.connecting != nil:
+			att := c.connecting
+			c.mu.Unlock()
+			select {
+			case <-att.done:
+			case <-ctx.Done():
+				return fmt.Errorf("backend %s: wait for connect: %w", c.name, ctx.Err())
+			}
+			if att.err != nil {
+				// リーダーの ctx 起因の失敗はこの呼び出しの成否を意味しないので、
+				// 自分の ctx で試行し直す。それ以外の失敗は共有して即座に返す
+				// （待機者が順番に同じ失敗を繰り返さないため）。
+				if errors.Is(att.err, context.Canceled) ||
+					errors.Is(att.err, context.DeadlineExceeded) {
+					continue
+				}
+				return att.err
+			}
+			continue
+		default:
+			att := &connectAttempt{done: make(chan struct{})}
+			c.connecting = att
+			c.mu.Unlock()
+			return c.leadConnect(ctx, att)
+		}
 	}
-	c.mu.Unlock()
+}
 
+// leadConnect はリーダーとして接続試行を実行し、結果を待機者へ公開する。
+// ロックを保持せずにネットワーク I/O を行うため、Close や待機者をブロックしない。
+func (c *MCPBackendClient) leadConnect(ctx context.Context, att *connectAttempt) error {
 	session, err := c.connect(ctx)
 	if err != nil {
-		return fmt.Errorf("backend %s: connect: %w", c.name, err)
-	}
-	if err := c.registerTools(ctx, session); err != nil {
+		err = fmt.Errorf("backend %s: connect: %w", c.name, err)
+	} else if rerr := c.registerTools(ctx, session); rerr != nil {
 		session.Close()
-		return fmt.Errorf("backend %s: register tools: %w", c.name, err)
+		err = fmt.Errorf("backend %s: register tools: %w", c.name, rerr)
 	}
 
+	var staleSession *mcp.ClientSession
 	c.mu.Lock()
-	c.session = session
-	c.connected = true
+	c.connecting = nil
+	if err == nil {
+		if c.closed {
+			// 接続中に Close された場合はこのセッションを採用せず破棄する。
+			staleSession = session
+			err = fmt.Errorf("backend %s: client closed", c.name)
+		} else {
+			c.session = session
+			c.connected = true
+		}
+	}
 	c.mu.Unlock()
-	return nil
+
+	if staleSession != nil {
+		staleSession.Close()
+	}
+	att.err = err
+	close(att.done)
+	return err
 }
 
 // ToolCatalog returns the (name, description) pairs registered by the last
@@ -70,13 +124,13 @@ func (c *MCPBackendClient) ToolCatalog() []ToolInfo {
 	return c.toolInfos
 }
 
-// Close はバックエンドとの接続を閉じる。
+// Close はバックエンドとの接続を閉じ、以降の接続を禁止する。
+// 進行中の接続試行を待たずに即座に返る。試行中だったセッションは
+// リーダー側が closed フラグを見て破棄する。
 func (c *MCPBackendClient) Close() {
-	c.connectMu.Lock()
-	defer c.connectMu.Unlock()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	if c.session != nil {
 		c.session.Close()
 		c.session = nil

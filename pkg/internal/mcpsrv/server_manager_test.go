@@ -547,6 +547,155 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(
 	require.Equal(t, int32(2), requestCalls.Load())
 }
 
+// newGatedBackendServer は release が呼ばれるまで全リクエストをブロックするバックエンドを返す。
+// failOnRelease の場合、解放後のリクエストは HTTP 500 で失敗する。
+func newGatedBackendServer(
+	t *testing.T,
+	failOnRelease bool,
+) (*httptest.Server, *atomic.Int32, func()) {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{
+			Name:        "ping",
+			Description: "ping the backend",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	requestCalls := &atomic.Int32{}
+	gate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCalls.Add(1)
+		<-gate
+		if failOnRelease {
+			http.Error(w, "backend down", http.StatusInternalServerError)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	// Cleanup は LIFO なので、httpSrv.Close の前に release が走りハンドラの詰まりを解く。
+	t.Cleanup(httpSrv.Close)
+	t.Cleanup(release)
+	return httpSrv, requestCalls, release
+}
+
+func newSingleBackendMCPServer(t *testing.T, backendURL string) *MCPServer {
+	t.Helper()
+	servers := config.Servers{
+		"backend": &config.Server{
+			Name:      "backend",
+			Transport: config.MCPTransportHTTP,
+			URL:       backendURL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func TestMCPBackendClient_EnsureConnected_WaiterHonorsContext(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, false)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderCtx, leaderCancel := context.WithCancel(context.Background())
+	defer leaderCancel()
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(leaderCtx) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	// 接続試行が進行中でも、待機者は自分の ctx の期限で抜けられる
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := bc.EnsureConnected(waitCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	release()
+	require.NoError(t, <-leaderErr)
+	require.NoError(t, bc.EnsureConnected(context.Background()))
+}
+
+func TestMCPBackendClient_Close_DoesNotBlockOnInflightConnect(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, false)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(context.Background()) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close should return without waiting for the in-flight connect")
+	}
+
+	// 接続完了後もセッションは採用されず、以降の接続要求は拒否される
+	release()
+	require.ErrorContains(t, <-leaderErr, "client closed")
+	require.ErrorContains(t, bc.EnsureConnected(context.Background()), "client closed")
+}
+
+func TestMCPBackendClient_EnsureConnected_WaitersShareLeaderFailure(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	httpSrv, requestCalls, release := newGatedBackendServer(t, true)
+	s := newSingleBackendMCPServer(t, httpSrv.URL)
+	bc, ok := s.BackendClient("backend")
+	require.True(t, ok)
+
+	leaderErr := make(chan error, 1)
+	go func() { leaderErr <- bc.EnsureConnected(context.Background()) }()
+	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },
+		5*time.Second, 5*time.Millisecond, "leader should start connecting")
+
+	const waiters = 8
+	errs := make(chan error, waiters)
+	for range waiters {
+		go func() { errs <- bc.EnsureConnected(context.Background()) }()
+	}
+	// 待機者が進行中の試行に合流するのを待ってから失敗させる
+	time.Sleep(250 * time.Millisecond)
+	release()
+
+	require.ErrorContains(t, <-leaderErr, "connect")
+	for range waiters {
+		require.ErrorContains(t, <-errs, "connect")
+	}
+	sharedPhaseCalls := requestCalls.Load()
+
+	// 1 試行あたりの HTTP リクエスト数は SDK の内部リトライで変わるため、
+	// 単独の失敗試行を実測してベースラインにする。
+	require.ErrorContains(t, bc.EnsureConnected(context.Background()), "connect")
+	singleAttemptCalls := requestCalls.Load() - sharedPhaseCalls
+	require.Positive(t, singleAttemptCalls)
+
+	// リーダー+待機者 9 呼び出しでもバックエンドに到達するのは 1 試行分のみ。
+	// 待機者は失敗を共有し、各自が接続をやり直さない。
+	require.Equal(t, singleAttemptCalls, sharedPhaseCalls)
+}
+
 func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {
 	servers := config.Servers{
 		"backend": &config.Server{
