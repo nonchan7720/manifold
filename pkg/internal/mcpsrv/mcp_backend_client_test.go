@@ -129,7 +129,7 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 // 成立しなくなったため置き換えた（stdio 側の共有セッション破棄自体は
 // invalidateSession の実装として引き続き存在する）。
 
-func TestMCPBackendClient_HTTP_BackendSideSessionTerminationDoesNotAffectSubsequentCalls(t *testing.T) {
+func TestMCPBackendClient_HTTP_SessionTerminationDoesNotAffectNextCall(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	backendSrv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
 	backendSrv.AddTool(
@@ -190,7 +190,10 @@ func TestMCPBackendClient_HTTP_EachCallUsesIndependentSession(t *testing.T) {
 		},
 	)
 	// ステートフルモード。Mcp-Session-Id は initialize のレスポンスにのみ付与される。
-	inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return backendSrv }, nil)
+	inner := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return backendSrv },
+		nil,
+	)
 
 	var mu sync.Mutex
 	var sessionIDs []string

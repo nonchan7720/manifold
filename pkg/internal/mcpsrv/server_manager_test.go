@@ -517,13 +517,13 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing
 	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, tools)
 }
 
-// TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsUseIndependentSessions
+// TestMCPServer_ToolCatalog_MCPBackendMode_IndependentSessions
 // は、http バックエンドへの並行アクセスがセッションを共有しない（毎回
 // initialize からやり直す）ことを検証する。これがマルチテナント環境での
 // アイデンティティ混線バグの修正点そのもの。旧テストは逆に「1回だけ
 // initialize すればよい（=セッションが共有される）」ことを検証していたが、
 // それ自体がバグだったため期待値を反転させて置き換えた。
-func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsUseIndependentSessions(t *testing.T) {
+func TestMCPServer_ToolCatalog_MCPBackendMode_IndependentSessions(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	httpSrv, initializeCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
 
