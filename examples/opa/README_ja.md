@@ -83,6 +83,19 @@ curl -s http://localhost:9999/mcp/petstore \
 # {"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
 
+`x-authz-bypass: true` を付けるとそのリクエスト 1 件だけ authz を完全に無効化できます（ルート README の [「テナントごとに認可を無効化する」](../../README_ja.md#テナントごとに認可を無効化する) を参照）。読み取り専用グループでも、ポリシーで許可していない `deletepet` を呼び出せるようになります:
+
+```bash
+curl -s http://localhost:9999/mcp/petstore \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-authz-bypass: true' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
+```
+
 ## 自分のポリシーに置き換える
 
 `policy.rego` / `data.json` を自分のものに置き換える。ルール名 `allow` / `allowed_tools` はそのまま使うか、`authz.decisionPath` で別名を指す。本番ではローカルファイルのマウントではなく、`data.json` / `policy.rego` を OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP で配布し、すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にすることを推奨する。

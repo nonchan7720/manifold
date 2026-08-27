@@ -362,14 +362,16 @@ authz:
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | OPA data path queried once per `tools/call` |
 | `headers.userID` | string | `x-user-id` | Inbound header carrying the caller's user ID |
 | `headers.userGroups` | string | `x-user-groups` | Inbound header carrying the caller's groups, comma-separated |
+| `headers.bypass` | string | `x-authz-bypass` | Inbound header that, set to the exact string `true`, disables authz enforcement for that one request (see "Disabling authorization per tenant" below) |
 | `adminGroups` | []string | `[]` | Groups allowed to call `GET /mcp/list?tools=true` (see "Tool catalog for policy authoring" below). Empty denies every caller |
 
 ### Prerequisites
 
-Manifold trusts `headers.userID` / `headers.userGroups` on every request without verifying them itself — the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
+Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, `headers.bypass` — on every request without verifying them itself, the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
 
 - The fronting proxy must strip or overwrite any client-supplied headers of the same names, so a caller cannot forge its own identity
 - Direct access to Manifold bypassing that proxy must be blocked at the network layer (e.g. a Kubernetes `NetworkPolicy`)
+- **`headers.bypass` is more sensitive than the identity headers**: a caller that can set it to `true` disables authorization entirely for its own requests, regardless of identity or group membership. The fronting proxy must strip or overwrite it with the same rigor, and every network path that can reach Manifold without going through that proxy must be closed at the network layer — not merely authenticated separately
 
 ### Decision contract
 
@@ -410,6 +412,18 @@ Writing a policy requires knowing every `<server>/<tool>` pair that exists, but 
   ]
 }
 ```
+
+### Disabling authorization per tenant
+
+A fronting proxy that multiplexes several tenants behind one Manifold deployment can disable authz for a single request without flipping `authz.enabled` globally: set `headers.bypass` (default `x-authz-bypass`) to the exact string `true`. Any other value — `True`, `1`, empty, or the header missing — goes through the normal authz checks (fail-closed).
+
+When bypassed, for that request:
+
+- `tools/call` skips OPA and reaches the tool directly
+- `tools/list` returns the backend's full tool list, unfiltered
+- `GET /mcp/list?tools=true` returns `200` with the full catalog regardless of `adminGroups` membership
+
+This is equivalent to `authz.enabled: false` for that one request. Manifold logs `decision: bypass` (with `server` / `method`, no identity — none was resolved) so bypassed requests are distinguishable from `allow` / `deny` in an audit trail.
 
 ### Fail-closed behavior
 
