@@ -99,3 +99,5 @@ curl -s http://localhost:9999/mcp/petstore \
 ## 自分のポリシーに置き換える
 
 `policy.rego` / `data.json` を自分のものに置き換える。ルール名 `allow` / `allowed_tools` はそのまま使うか、`authz.decisionPath` で別名を指す。本番ではローカルファイルのマウントではなく、`data.json` / `policy.rego` を OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP で配布し、すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にすることを推奨する。
+
+実サーバーから bundle を配信するようにすると、取得に失敗しても強制は止まらない — OPA は最後に activate した bundle で判定を継続する。すべての判定が拒否になるのは、起動後に一度も bundle を activate できていない場合（`data` が空のまま）だけである。これは Health API の `bundles=true` チェックで検知できる（ルート README の「運用上の推奨事項」参照）。

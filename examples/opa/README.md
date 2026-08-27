@@ -99,3 +99,5 @@ curl -s http://localhost:9999/mcp/petstore \
 ## Adapting to your own policy
 
 Replace `policy.rego` / `data.json` with your own, keeping the `allow` and `allowed_tools` rule names (or point `authz.decisionPath` at different ones). For production, prefer distributing `data.json` and `policy.rego` as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, and enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query.
+
+Once bundles come from a real server, a fetch failure doesn't stop enforcement — OPA keeps deciding with the last bundle it activated. Only the case where OPA has never activated a bundle since startup denies everything (`data` stays empty). Watch for that with the Health API's `bundles=true` check (see the root README's "Operating recommendations").
