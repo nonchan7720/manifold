@@ -93,8 +93,13 @@ func resolveMCPServer(
 		return srv
 	}
 
-	// MCP バックエンドの場合は遅延接続を行う
-	if bc, ok := mcpSrv.BackendClient(pathValue); ok {
+	// stdio バックエンドはプロセスを全呼び出し元で共有するため、遅延接続で
+	// 1回だけ起動しておく（IsPersistent）。http バックエンドは ListTools・
+	// CallTool 等が操作ごとに独立したセッションを張る完全ステートレス方式の
+	// ため、ここで事前接続しても意味がなく、また呼び出し元の認証コンテキスト
+	// を先取りして共有セッションに焼き付けてしまう（マルチテナント漏洩の再現）
+	// ことになるため呼び出さない。
+	if bc, ok := mcpSrv.BackendClient(pathValue); ok && bc.IsPersistent() {
 		if err := bc.EnsureConnected(ctx); err != nil {
 			slog.ErrorContext(ctx, "failed to connect mcp backend",
 				slog.String("backend", pathValue),

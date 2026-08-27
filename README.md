@@ -45,7 +45,7 @@ Server
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
-- **Lazy connection**: Connects to backends on first request (no backend dependency at gateway startup)
+- **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management backed by Redis or SQLite
 - **OpenTelemetry support**: OTLP export of traces, metrics, and logs (metrics also support Prometheus-style pull)
 
