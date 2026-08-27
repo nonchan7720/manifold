@@ -365,6 +365,8 @@ authz:
 | `headers.bypass` | string | `x-authz-bypass` | Inbound header that, set to the exact string `true`, disables authz enforcement for that one request (see "Disabling authorization per tenant" below) |
 | `adminGroups` | []string | `[]` | Groups allowed to call `GET /mcp/list?tools=true` (see "Tool catalog for policy authoring" below). Empty denies every caller |
 
+Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through to OPA's `input.user` as-is. In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
+
 ### Prerequisites
 
 Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, `headers.bypass` — on every request without verifying them itself, the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
@@ -433,11 +435,13 @@ Every ambiguous or failing case denies the request rather than allowing it:
 - A non-200 response, a response missing the expected `result` field, a timeout, or a connection failure to OPA all deny
 - `tools/list` filtering is a convenience — it hides tools the caller cannot use so they don't clutter a client's tool picker — but it is not the enforcement point. Enforcement happens on `tools/call`; a client that already knows a tool's name (e.g. from a stale list) is still denied there
 - A reverse (WebMCP) `mcpServers` entry always registers a `create_pairing_code` tool (see `docs/design/webmcp-reverse-gateway.md`), and `authz.enabled` covers it like any other tool. A group that should be able to pair with such a server needs `<server>/create_pairing_code` in its policy, or pairing itself is denied
+- This also holds one level down, inside OPA itself: if a bundle fetch fails, OPA keeps enforcing with the last bundle it activated — a bundle server outage stops policy updates, not decisions. But if OPA has never activated a bundle since startup (the bundle server was unreachable at boot, for example), `data` stays empty and every decision comes back `false` / `[]`, which fail-closes the same way. Bundle fetch failures are still worth alerting on — see "Operating recommendations" below
 
 ### Operating recommendations
 
-- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query
-- Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar
+- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query. Each event should carry `user` / `groups` / `server` / `tool` / the decision, and the revision of the policy data that produced it — without a data revision there's no way to tell which policy version a given decision was made under
+- Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar. Bundle mode also stamps every decision log event with `bundles.<name>.revision`, which is where that revision comes from
+- Monitor OPA's bundle fetch status (see "Fail-closed behavior" above for what a failure does to enforcement): OPA's Health API (`GET /health?bundles=true`) reports unhealthy until every configured bundle has been activated at least once, so it doubles as a readiness probe. The status API and decision log also surface fetch failures
 
 See [`examples/opa/`](examples/opa/) for a runnable OPA sidecar with sample policy and data.
 

@@ -365,6 +365,8 @@ authz:
 | `headers.bypass` | string | `x-authz-bypass` | 完全一致で文字列 `true` を設定すると、そのリクエスト 1 件の authz 強制を無効化する受信ヘッダー名（後述の「テナントごとに認可を無効化する」参照） |
 | `adminGroups` | []string | `[]` | `GET /mcp/list?tools=true`（後述の「ポリシー作成用のツール一覧」参照）を呼び出せるグループ。空の場合は全員拒否 |
 
+Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま OPA の `input.user` に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
+
 ### 前提条件
 
 Manifold は `headers.userID` / `headers.userGroups`（設定していれば `headers.bypass` も含む）を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
@@ -432,11 +434,13 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
 - OPA からの非 200 応答、期待する `result` フィールドが無い応答、タイムアウト、接続失敗はすべて拒否
 - `tools/list` での絞り込みは補助的なもの — 呼び出し元が使えないツールをクライアントのツール一覧から隠すためのものであり、強制の本体ではありません。強制は `tools/call` で行われるため、（古い一覧などから）ツール名を知っているクライアントでもそこで拒否されます
 - reverse（WebMCP）の `mcpServers` エントリは常に `create_pairing_code` というツールを登録します（`docs/design/webmcp-reverse-gateway.md` を参照）。`authz.enabled` は他のツールと同様にこれも対象にするため、そのサーバーとペアリングできるべきグループには `<server>/create_pairing_code` をポリシーに含める必要があります。含めなければペアリング自体が拒否されます
+- これは OPA 自身の内部でも一段成り立ちます: bundle の取得に失敗しても、OPA は最後に activate 済みの bundle で判定を継続します — bundle サーバーの障害が止めるのはポリシーの更新であって、判定そのものではありません。ただし起動後に一度も bundle を activate できていない場合（起動時に bundle サーバーへ到達できなかった等）は `data` が空のままなので、すべての判定が `false` / `[]` になり、同じく fail-closed になります。bundle の取得失敗はそれでも監視・アラートの対象にする価値があります — 後述の「運用上の推奨事項」参照
 
 ### 運用上の推奨事項
 
-- すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする
-- ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする
+- すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする。各イベントには `user` / `groups` / `server` / `tool` / 判定結果に加えて、その判定に使ったポリシーデータのリビジョンを含めること — リビジョンが無いと、ある判定がどのポリシー版で下されたのか追跡できない
+- ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする。bundle 運用にすると decision log の各イベントに `bundles.<name>.revision` が入るようになり、そのリビジョンはここから得られる
+- OPA の bundle 取得状況を監視する（取得失敗時の判定への影響は前述の「fail-closed の挙動」参照）: OPA の Health API（`GET /health?bundles=true`）は、設定した全 bundle が少なくとも一度 activate されるまで unhealthy を返すため、readiness probe としても使える。status API や decision log からも取得失敗を検知できる
 
 動作する OPA サイドカーとサンプルのポリシー・データは [`examples/opa/`](examples/opa/) を参照してください。
 
