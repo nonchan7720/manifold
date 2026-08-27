@@ -15,11 +15,15 @@ import (
 
 // --- IsPersistent ---
 
+// TestMCPBackendClient_IsPersistent_Stdio は stdio が共有セッション方式
+// （IsPersistent = true）と判定されることを検証する。
 func TestMCPBackendClient_IsPersistent_Stdio(t *testing.T) {
 	c := &MCPBackendClient{cfg: &config.Server{Transport: config.MCPTransportStdio}}
 	require.True(t, c.IsPersistent())
 }
 
+// TestMCPBackendClient_IsPersistent_HTTP は http がステートレス方式
+// （IsPersistent = false）と判定されることを検証する。
 func TestMCPBackendClient_IsPersistent_HTTP(t *testing.T) {
 	c := &MCPBackendClient{cfg: &config.Server{Transport: config.MCPTransportHTTP}}
 	require.False(t, c.IsPersistent())
@@ -119,6 +123,29 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 	require.False(t, c.connected)
 }
 
+// TestMCPBackendClient_HTTP_ClosedClientRejectsCalls は、Close 済みの
+// クライアントでは http の都度接続パスも接続を試みずエラーを返すことを
+// 検証する（シャットダウン中のリクエストがバックエンドへ到達しないため）。
+func TestMCPBackendClient_HTTP_ClosedClientRejectsCalls(t *testing.T) {
+	c := &MCPBackendClient{
+		name: "test",
+		cfg: &config.Server{
+			Transport: config.MCPTransportHTTP,
+			URL:       "http://example.invalid/mcp",
+		},
+	}
+	c.Close()
+
+	_, err := c.ListTools(context.Background(), nil)
+	require.ErrorContains(t, err, "client closed")
+
+	_, err = c.CallTool(context.Background(), "ping", nil)
+	require.ErrorContains(t, err, "client closed")
+
+	_, err = c.ListToolInfos(context.Background())
+	require.ErrorContains(t, err, "client closed")
+}
+
 // --- MCPBackendClient session recovery (stdio 共有セッションのみ意味を持つ) ---
 //
 // isDeadSessionError / invalidateSession による再接続処理は stdio の共有セッ
@@ -129,6 +156,9 @@ func TestMCPBackendClient_Close_NotConnected(t *testing.T) {
 // 成立しなくなったため置き換えた（stdio 側の共有セッション破棄自体は
 // invalidateSession の実装として引き続き存在する）。
 
+// TestMCPBackendClient_HTTP_SessionTerminationDoesNotAffectNextCall は、
+// バックエンド側でセッションが終了しても http の後続呼び出しに影響しない
+// ことを検証する（上記コメント参照）。
 func TestMCPBackendClient_HTTP_SessionTerminationDoesNotAffectNextCall(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	backendSrv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)

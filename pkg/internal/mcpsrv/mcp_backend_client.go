@@ -39,7 +39,8 @@ type MCPBackendClient struct {
 	name string
 	cfg  *config.Server
 
-	// mu 以下は stdio 用の共有セッション状態。http では参照・更新されない。
+	// mu 以下は stdio 用の共有セッション状態。http が参照するのは
+	// closed（withStatelessSession の Close 済みチェック）のみ。
 	mu         sync.Mutex
 	session    *mcp.ClientSession
 	connected  bool
@@ -192,10 +193,20 @@ func (c *MCPBackendClient) invalidateSession(session *mcp.ClientSession) {
 // 含む全 HTTP リクエストが呼び出し元の ctx で送られるため、認証トークン
 // （contexts.FromRequestAuthHeader 等）が呼び出し元本人のものになり、
 // ユーザー・テナントをまたいでセッションが共有されることがない。
+// Close 済みのクライアントでは接続せずエラーを返す（stdio パスと同じ挙動）。
+// チェックと接続の間に Close が割り込む可能性は残るが、セッションは fn の
+// 終了時に必ずクローズされるため、残留リソースは発生しない。
 func (c *MCPBackendClient) withStatelessSession(
 	ctx context.Context,
 	fn func(*mcp.ClientSession) error,
 ) error {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return fmt.Errorf("backend %s: client closed", c.name)
+	}
+
 	session, err := c.connect(ctx)
 	if err != nil {
 		return fmt.Errorf("backend %s: connect: %w", c.name, err)
