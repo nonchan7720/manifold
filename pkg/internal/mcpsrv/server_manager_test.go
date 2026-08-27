@@ -517,7 +517,13 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectsAndReturnsTools(t *testing
 	require.Equal(t, []ToolInfo{{Name: "ping", Description: "ping the backend"}}, tools)
 }
 
-func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(t *testing.T) {
+// TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsUseIndependentSessions
+// は、http バックエンドへの並行アクセスがセッションを共有しない（毎回
+// initialize からやり直す）ことを検証する。これがマルチテナント環境での
+// アイデンティティ混線バグの修正点そのもの。旧テストは逆に「1回だけ
+// initialize すればよい（=セッションが共有される）」ことを検証していたが、
+// それ自体がバグだったため期待値を反転させて置き換えた。
+func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsUseIndependentSessions(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	httpSrv, initializeCalls := newToolCatalogBackendServer(t, 25*time.Millisecond)
 
@@ -556,9 +562,9 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConcurrentRequestsShareConnection(
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	// 16 並行の初回呼び出しでも、バックエンドへの接続（initialize）は 1 回だけ。
-	// tools/list は毎回転送されるため総リクエスト数ではなく initialize で検証する。
-	require.Equal(t, int32(1), initializeCalls.Load())
+	// 16 並行呼び出しはそれぞれ独立したセッションを張るため、バックエンドへの
+	// initialize は 16 回すべて発生する（1本のセッションに相乗りしない）。
+	require.Equal(t, int32(callers), initializeCalls.Load())
 }
 
 // newGatedBackendServer は release が呼ばれるまで全リクエストをブロックするバックエンドを返す。
@@ -618,6 +624,14 @@ func newSingleBackendMCPServer(t *testing.T, backendURL string) *MCPServer {
 	return s
 }
 
+// 以下の EnsureConnected 系テストは、リーダー/待機者の接続共有という低レベル
+// な並行処理プリミティブそのものを検証する。本番コードでこのプリミティブを
+// 実際に使うのは stdio バックエンドのみ（http は ListTools 等が操作ごとに
+// 独立したセッションを張るためこのメソッドを経由しない。pkg/cmd/server.go の
+// resolveMCPServer も IsPersistent() が true の場合、つまり stdio のときだけ
+// 呼び出す）。ここでは決定的にゲート可能なテスト用バックエンドとして http の
+// httptest サーバーを使っているだけで、EnsureConnected の並行処理ロジック
+// 自体はトランスポートに依存しない。
 func TestMCPBackendClient_EnsureConnected_WaiterHonorsContext(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	httpSrv, requestCalls, release := newGatedBackendServer(t, false)
