@@ -570,7 +570,7 @@ Every ambiguous or failing case denies the request rather than allowing it:
 
 - A missing or empty `headers.userID` / `headers.userGroups` denies without querying OPA
 - A missing or empty header for a **required** field configured in `input.fromHeaders` denies the same way, without querying OPA. `required` defaults to `true`; a field with `required: false` is omitted from the input instead of denying
-- A `input.fromHeaders` value that doesn't parse as its configured `type` (e.g. `type: number` on a non-numeric header) denies without querying OPA, regardless of `required`
+- An `input.fromHeaders` value that doesn't parse as its configured `type` (e.g. `type: number` on a non-numeric header) denies without querying OPA, regardless of `required`
 - A non-200 response, a response missing the expected `result` field, a timeout, or a connection failure to OPA all deny
 - `tools/list` filtering is a convenience — it hides tools the caller cannot use so they don't clutter a client's tool picker — but it is not the enforcement point. Enforcement happens on `tools/call`; a client that already knows a tool's name (e.g. from a stale list) is still denied there
 - A reverse (WebMCP) `mcpServers` entry always registers a `create_pairing_code` tool (see `docs/design/webmcp-reverse-gateway.md`), and `authz.enabled` covers it like any other tool. A group that should be able to pair with such a server needs `<server>/create_pairing_code` in its policy, or pairing itself is denied
@@ -586,7 +586,7 @@ Every ambiguous or failing case denies the request rather than allowing it:
   | `allowed_tools` | `tools/list` | `user`, `groups`, and a `tools` array of `{server, name}` entries |
   | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
 
-  Every `input.fromHeaders` field that resolved is present in all three, at the top level. A field with `required: false` is absent from the input on requests where its header was, so a decision log missing it is expected rather than a dropped field.
+  Every `input.fromHeaders` field that resolved is present in all three, at the top level. A field with `required: false` is absent from the input on requests whose header was missing or empty, so a decision log missing it is expected rather than a dropped field.
 
 - Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar. Bundle mode also stamps every decision log event with `bundles.<name>.revision`, which is where that revision comes from
 - Monitor OPA's bundle fetch status (see "Fail-closed behavior" above for what a failure does to enforcement): OPA's Health API (`GET /health?bundles=true`) reports unhealthy until every configured bundle has been activated at least once, so it doubles as a readiness probe. The status API and decision log also surface fetch failures
