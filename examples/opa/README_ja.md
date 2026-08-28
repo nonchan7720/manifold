@@ -7,16 +7,18 @@
 ## 構成
 
 - `policy.rego` — Manifold が問い合わせる `allow`（単一ツール）、`allowed_tools`（一括）、`allow_catalog`（`GET /mcp/list?tools=true`）のルール
-- `data.json` — 4 つのサンプルグループ。それぞれ [ULID 風の不透明な](https://github.com/ulid/spec) グループ ID を `<server>/<tool>` の glob パターン一覧と `catalog` フラグの一方または両方に対応付ける（`catalog` は `tools` とは独立しており、どちらか一方だけ・両方・どちらも無し、いずれの組み合わせも取れる）
+- `data.json` — 4 つのサンプルグループ。それぞれグループ ID を `<server>/<tool>` の glob パターン一覧と `catalog` フラグの一方または両方に対応付ける（`catalog` は `tools` とは独立しており、どちらか一方だけ・両方・どちらも無し、いずれの組み合わせも取れる）
 - `compose.yaml` — これらのファイルを `-b` バンドルディレクトリとして読み込んで OPA を起動する
 - `config.yaml` — `openapi-backend` の `petstore` サーバーに `authz.enabled: true` を追加したもの
 
 | グループ ID | 許可される操作 |
 | ----------- | -------------- |
-| `01J8X9QZ3KZFN8P8V6H2R5T4WC` | 読み取り専用: `getpetbyid`, `findpetsbystatus`, `getinventory` |
-| `01J8X9R14V0S9WQKX9DAT2F7NB` | `petstore` の全ツール（`petstore/*`）— ツール一覧の閲覧権限は無し |
-| `01J8X9RM8D3V1CQ0K7P5N2T9YH` | 任意サーバーの `getpetbyid`（`*/getpetbyid`）— サーバー横断パターンの例 |
-| `01J8X9T2E7B4M6XR0N8Q3V5KDA` | ツールは一切実行できないが、絞り込みのないツール一覧を読める（`catalog: true`）— ポリシー作成者向けに、実行権限を持たせずにツール一覧だけ見せたい場合の例 |
+| `petstore-readers` | 読み取り専用: `getpetbyid`, `findpetsbystatus`, `getinventory` |
+| `petstore-operators` | `petstore` の全ツール（`petstore/*`）— ツール一覧の閲覧権限は無し |
+| `pet-lookup` | 任意サーバーの `getpetbyid`（`*/getpetbyid`）— サーバー横断パターンの例 |
+| `policy-authors` | ツールは一切実行できないが、絞り込みのないツール一覧を読める（`catalog: true`）— ポリシー作成者向けに、実行権限を持たせずにツール一覧だけ見せたい場合の例 |
+
+これらのグループ ID はこの例の可読性のための名前であり、本番ではルート README が推奨する[不変の不透明 ID](../../README_ja.md#ツール認可opa-サイドカー)（ULID など）を使うべきである。表示名は変わりうるためである。
 
 ## 実行
 
@@ -44,7 +46,7 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'Accept: application/json, text/event-stream' \
   -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-user-groups: petstore-readers' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"getpetbyid","arguments":{"petId":1}}}'
 ```
 
@@ -56,12 +58,12 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'Accept: application/json, text/event-stream' \
   -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-user-groups: petstore-readers' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
 # {"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
 
-読み取り専用グループの `tools/list` は許可された 3 ツールのみを返す。`x-user-groups` を管理者グループの `01J8X9R14V0S9WQKX9DAT2F7NB` に変えて実行すると、`petstore` の全ツールが返る:
+読み取り専用グループの `tools/list` は許可された 3 ツールのみを返す。`x-user-groups` を管理者グループの `petstore-operators` に変えて実行すると、`petstore` の全ツールが返る:
 
 ```bash
 curl -s http://localhost:9999/mcp/petstore \
@@ -69,20 +71,20 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'Accept: application/json, text/event-stream' \
   -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-user-groups: petstore-readers' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 ```
 
-ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がある — `GET /mcp/list?tools=true` は絞り込みのないその一覧を返す。`allow` / `allowed_tools` ではなく `allow_catalog` ルールで判定する。これはツールの実行権限とは別の許可であり、下の例ではツールを一切実行できないグループが一覧を読める一方、`petstore` の全ツールを実行できるグループ（`01J8X9R14V0S9WQKX9DAT2F7NB`）は一覧の取得を拒否される:
+ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がある — `GET /mcp/list?tools=true` は絞り込みのないその一覧を返す。`allow` / `allowed_tools` ではなく `allow_catalog` ルールで判定する。これはツールの実行権限とは別の許可であり、下の例ではツールを一切実行できないグループが一覧を読める一方、`petstore` の全ツールを実行できるグループ（`petstore-operators`）は一覧の取得を拒否される:
 
 ```bash
 curl -s 'http://localhost:9999/mcp/list?tools=true' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9T2E7B4M6XR0N8Q3V5KDA'
+  -H 'x-user-groups: policy-authors'
 
 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:9999/mcp/list?tools=true' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9R14V0S9WQKX9DAT2F7NB'
+  -H 'x-user-groups: petstore-operators'
 # 403
 ```
 
@@ -105,7 +107,7 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'Accept: application/json, text/event-stream' \
   -H 'Authorization: Bearer dummy-token' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC' \
+  -H 'x-user-groups: petstore-readers' \
   -H 'x-authz-bypass: true' \
   -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"deletepet","arguments":{"petId":1}}}'
 ```
