@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/nonchan7720/manifold/compare/v1.11.0...v1.12.0) (2026-08-28)
+
+
+### Features
+
+* make OPA decision input configurable and move catalog authz to OPA ([#145](https://github.com/nonchan7720/manifold/issues/145)) ([0f9512e](https://github.com/nonchan7720/manifold/commit/0f9512e60f9045acae20dacded962c17f6c9031c))
+* resolve OPA decision input fields from inbound headers ([#146](https://github.com/nonchan7720/manifold/issues/146)) ([11882bc](https://github.com/nonchan7720/manifold/commit/11882bc7783854ee8c9fa4136e791e7351409d41))
+
 ## [1.11.0](https://github.com/nonchan7720/manifold/compare/v1.10.1...v1.11.0) (2026-08-27)
 
 
