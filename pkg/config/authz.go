@@ -17,19 +17,41 @@ const (
 
 	DefaultAuthzTimeout = 3 * time.Second
 
-	DefaultAuthzDecisionPathList = "/v1/data/mcp/authz/allowed_tools"
-	DefaultAuthzDecisionPathCall = "/v1/data/mcp/authz/allow"
+	DefaultAuthzDecisionPathList    = "/v1/data/mcp/authz/allowed_tools"
+	DefaultAuthzDecisionPathCall    = "/v1/data/mcp/authz/allow"
+	DefaultAuthzDecisionPathCatalog = "/v1/data/mcp/authz/allow_catalog"
 
 	DefaultAuthzHeaderUserID     = "x-user-id"
 	DefaultAuthzHeaderUserGroups = "x-user-groups"
 	DefaultAuthzHeaderBypass     = "x-authz-bypass" //nolint: gosec // header name, not a credential
+
+	DefaultAuthzInputUser     = "user"
+	DefaultAuthzInputGroups   = "groups"
+	DefaultAuthzInputServer   = "server"
+	DefaultAuthzInputTool     = "tool"
+	DefaultAuthzInputTools    = "tools"
+	DefaultAuthzInputToolName = "name"
 )
 
 // AuthzDecisionPath is the OPA data path queried for each decision kind (see
 // docs/design/opa-tool-authorization-plan.ja.md「動作」).
 type AuthzDecisionPath struct {
-	List string `mapstructure:"list"`
-	Call string `mapstructure:"call"`
+	List    string `mapstructure:"list"`
+	Call    string `mapstructure:"call"`
+	Catalog string `mapstructure:"catalog"`
+}
+
+// AuthzInput names the JSON keys Manifold uses when building the OPA
+// decision input (see OPADecider.Allow / AllowedTools / AllowCatalog).
+// Configurable so a policy author can match an existing input contract
+// instead of Manifold's defaults.
+type AuthzInput struct {
+	User     string `mapstructure:"user"`
+	Groups   string `mapstructure:"groups"`
+	Server   string `mapstructure:"server"`
+	Tool     string `mapstructure:"tool"`
+	Tools    string `mapstructure:"tools"`
+	ToolName string `mapstructure:"toolName"`
 }
 
 // AuthzHeaders names the inbound HTTP headers an upstream identity/authn
@@ -51,12 +73,7 @@ type AuthzConfig struct {
 	Timeout      time.Duration     `mapstructure:"timeout"`
 	DecisionPath AuthzDecisionPath `mapstructure:"decisionPath"`
 	Headers      AuthzHeaders      `mapstructure:"headers"`
-
-	// AdminGroups authorizes GET /mcp/list?tools=true (the unfiltered tool
-	// catalog policy authors need): a caller must be in one of these groups.
-	// Empty denies every request for it, since an unset allowlist must not
-	// mean "everyone".
-	AdminGroups []string `mapstructure:"adminGroups"`
+	Input        AuthzInput        `mapstructure:"input"`
 }
 
 // WithDefaults returns a copy of c with zero-value fields replaced by the
@@ -74,6 +91,9 @@ func (c AuthzConfig) WithDefaults() AuthzConfig {
 	if c.DecisionPath.Call == "" {
 		c.DecisionPath.Call = DefaultAuthzDecisionPathCall
 	}
+	if c.DecisionPath.Catalog == "" {
+		c.DecisionPath.Catalog = DefaultAuthzDecisionPathCatalog
+	}
 	if c.Headers.UserID == "" {
 		c.Headers.UserID = DefaultAuthzHeaderUserID
 	}
@@ -82,6 +102,24 @@ func (c AuthzConfig) WithDefaults() AuthzConfig {
 	}
 	if c.Headers.Bypass == "" {
 		c.Headers.Bypass = DefaultAuthzHeaderBypass
+	}
+	if c.Input.User == "" {
+		c.Input.User = DefaultAuthzInputUser
+	}
+	if c.Input.Groups == "" {
+		c.Input.Groups = DefaultAuthzInputGroups
+	}
+	if c.Input.Server == "" {
+		c.Input.Server = DefaultAuthzInputServer
+	}
+	if c.Input.Tool == "" {
+		c.Input.Tool = DefaultAuthzInputTool
+	}
+	if c.Input.Tools == "" {
+		c.Input.Tools = DefaultAuthzInputTools
+	}
+	if c.Input.ToolName == "" {
+		c.Input.ToolName = DefaultAuthzInputToolName
 	}
 	return c
 }
@@ -96,6 +134,7 @@ func (c AuthzConfig) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.Timeout, validation.By(validatePositiveDuration)),
 		validation.Field(&c.DecisionPath),
 		validation.Field(&c.Headers),
+		validation.Field(&c.Input),
 	)
 }
 
@@ -103,6 +142,38 @@ func (c AuthzDecisionPath) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, &c,
 		validation.Field(&c.List, validation.By(validateLeadingSlash)),
 		validation.Field(&c.Call, validation.By(validateLeadingSlash)),
+		validation.Field(&c.Catalog, validation.By(validateLeadingSlash)),
+	)
+}
+
+// ValidateWithContext rejects collisions between keys that appear together
+// in the same OPA input object: user/groups/server/tool (tools/call),
+// user/groups/tools (tools/list), and server/toolName (each tools/list
+// array element). Empty keys are not rejected here: like headers.*,
+// decisionPath.*, opaURL and timeout, a zero value means "unset" and is
+// backfilled by WithDefaults before validation runs.
+func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(ctx, &c,
+		validation.Field(&c.User),
+		validation.Field(&c.Groups,
+			validation.By(validateDiffersFrom("input.user", c.User)),
+		),
+		validation.Field(&c.Server,
+			validation.By(validateDiffersFrom("input.user", c.User)),
+			validation.By(validateDiffersFrom("input.groups", c.Groups)),
+		),
+		validation.Field(&c.Tool,
+			validation.By(validateDiffersFrom("input.user", c.User)),
+			validation.By(validateDiffersFrom("input.groups", c.Groups)),
+			validation.By(validateDiffersFrom("input.server", c.Server)),
+		),
+		validation.Field(&c.Tools,
+			validation.By(validateDiffersFrom("input.user", c.User)),
+			validation.By(validateDiffersFrom("input.groups", c.Groups)),
+		),
+		validation.Field(&c.ToolName,
+			validation.By(validateDiffersFrom("input.server", c.Server)),
+		),
 	)
 }
 
