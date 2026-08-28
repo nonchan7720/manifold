@@ -85,15 +85,38 @@ func (d *OPADecider) post(ctx context.Context, path string, input, out any) erro
 	return nil
 }
 
+// withExtra adds p.Extra's fields to input as top-level keys. A field that
+// would replace a key input already carries is an error rather than an
+// overwrite: silently accepting it would let an inbound header rename the
+// decision subject (input.user and friends). Startup validation already
+// rejects such a fromHeaders field name, so this only catches a config that
+// never went through it.
+func withExtra(input map[string]any, p Principal) (map[string]any, error) {
+	for field, value := range p.Extra {
+		if _, exists := input[field]; exists {
+			return nil, fmt.Errorf(
+				"authz: input field %q from fromHeaders collides with a decision input key", field,
+			)
+		}
+		input[field] = value
+	}
+	return input, nil
+}
+
 func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (bool, error) {
-	var out opaAllowResult
-	err := d.post(ctx, d.decisionPath.Call, map[string]any{
+	input := map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,
 		d.input.Server: t.Server,
 		d.input.Tool:   t.Name,
-	}, &out)
+	}
+	input, err := withExtra(input, p)
 	if err != nil {
+		return false, err
+	}
+
+	var out opaAllowResult
+	if err := d.post(ctx, d.decisionPath.Call, input, &out); err != nil {
 		return false, err
 	}
 	if out.Result == nil {
@@ -117,13 +140,18 @@ func (d *OPADecider) AllowedTools(
 		}
 	}
 
-	var out opaAllowedToolsResult
-	err := d.post(ctx, d.decisionPath.List, map[string]any{
+	input := map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,
 		d.input.Tools:  inputTools,
-	}, &out)
+	}
+	input, err := withExtra(input, p)
 	if err != nil {
+		return nil, err
+	}
+
+	var out opaAllowedToolsResult
+	if err := d.post(ctx, d.decisionPath.List, input, &out); err != nil {
 		return nil, err
 	}
 	if out.Result == nil {
@@ -149,12 +177,17 @@ func (d *OPADecider) AllowedTools(
 // AllowCatalog reports whether p may read the unfiltered tool catalog
 // (GET /mcp/list?tools=true).
 func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (bool, error) {
-	var out opaAllowResult
-	err := d.post(ctx, d.decisionPath.Catalog, map[string]any{
+	input := map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,
-	}, &out)
+	}
+	input, err := withExtra(input, p)
 	if err != nil {
+		return false, err
+	}
+
+	var out opaAllowResult
+	if err := d.post(ctx, d.decisionPath.Catalog, input, &out); err != nil {
 		return false, err
 	}
 	if out.Result == nil {

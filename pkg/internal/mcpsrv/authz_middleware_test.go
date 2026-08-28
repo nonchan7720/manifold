@@ -70,6 +70,16 @@ func (d *fakeDecider) allowCallCount() int {
 	return len(d.allowCalls)
 }
 
+// lastPrincipal returns the Principal passed to the most recent Allow call.
+func (d *fakeDecider) lastPrincipal() authz.Principal {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.allowCalls) == 0 {
+		return authz.Principal{}
+	}
+	return d.allowCalls[len(d.allowCalls)-1].p
+}
+
 func (d *fakeDecider) allowedToolsCallCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -108,9 +118,14 @@ func newAuthzTestServer(
 	srv *mcp.Server,
 	d authz.Decider,
 	headers http.Header,
+	fromHeaders ...map[string]config.AuthzInputHeaderField,
 ) *mcp.ClientSession {
 	t.Helper()
-	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders()))
+	var fh map[string]config.AuthzInputHeaderField
+	if len(fromHeaders) > 0 {
+		fh = fromHeaders[0]
+	}
+	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders(), fh))
 
 	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
@@ -244,6 +259,86 @@ func TestAuthzHandleToolCall_UnexpectedParamsType_DeniesWithoutCallingDeciderOrN
 	require.Equal(t, 0, d.allowCallCount())
 }
 
+// --- fromHeaders ---
+
+func testRequiredFromHeaders() map[string]config.AuthzInputHeaderField {
+	return map[string]config.AuthzInputHeaderField{"tenant": {Header: "x-tenant-id"}}
+}
+
+// testOptionalFromHeaders configures the same field as
+// testRequiredFromHeaders but with required: false, so a request without the
+// header still reaches the Decider.
+func testOptionalFromHeaders() map[string]config.AuthzInputHeaderField {
+	required := false
+	return map[string]config.AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id", Required: &required},
+	}
+}
+
+func TestAuthzMiddleware_ToolCall_FromHeadersMissing_DeniesWithoutCallingDecider(t *testing.T) {
+	d := &fakeDecider{allowResult: true}
+	session := newAuthzTestServer(
+		t, newBillingServer(t), d, identityHeaders(), testRequiredFromHeaders(),
+	)
+
+	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not allowed by policy")
+	require.Equal(t, 0, d.allowCallCount())
+}
+
+func TestAuthzMiddleware_ToolCall_OptionalFromHeadersMissing_ReachesDecider(t *testing.T) {
+	d := &fakeDecider{allowResult: true}
+	session := newAuthzTestServer(
+		t, newBillingServer(t), d, identityHeaders(), testOptionalFromHeaders(),
+	)
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Equal(t, 1, d.allowCallCount())
+	require.NotContains(t, d.lastPrincipal().Extra, "tenant")
+}
+
+func TestAuthzMiddleware_ToolCall_FromHeadersPresent_ForwardedToDecider(t *testing.T) {
+	d := &fakeDecider{allowResult: true}
+	headers := identityHeaders()
+	headers.Set("x-tenant-id", "acme")
+	session := newAuthzTestServer(t, newBillingServer(t), d, headers, testRequiredFromHeaders())
+
+	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"tenant": "acme"}, d.lastPrincipal().Extra)
+}
+
+func TestAuthzMiddleware_ToolsList_OptionalFromHeadersMissing_ReachesDecider(t *testing.T) {
+	d := &fakeDecider{allowedToolsResult: []authz.ToolRef{
+		{Server: "billing-svc", Name: "create_invoice"},
+	}}
+	session := newAuthzTestServer(
+		t, newBillingServer(t), d, identityHeaders(), testOptionalFromHeaders(),
+	)
+
+	result, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+	require.Equal(t, 1, d.allowedToolsCallCount())
+}
+
+func TestAuthzMiddleware_ToolCall_BypassHeaderTrue_FromHeadersMissing_ReachesUpstream(
+	t *testing.T,
+) {
+	d := &fakeDecider{allowResult: false}
+	headers := identityHeaders()
+	headers.Set("x-authz-bypass", "true")
+	session := newAuthzTestServer(t, newBillingServer(t), d, headers, testRequiredFromHeaders())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Equal(t, 0, d.allowCallCount())
+}
+
 // --- tools/list ---
 
 func TestAuthzMiddleware_ToolsList_FiltersUsingSingleAllowedToolsCall(t *testing.T) {
@@ -308,7 +403,7 @@ func TestAuthzMiddleware_OtherMethod_PassesThrough(t *testing.T) {
 func TestAuthzMiddleware_NoExtra_DeniesWithoutCallingDecider(t *testing.T) {
 	d := &fakeDecider{allowResult: true}
 	srv := newBillingServer(t)
-	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders()))
+	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders(), nil))
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	_, err := srv.Connect(t.Context(), serverTransport, nil)
