@@ -73,16 +73,24 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 
 	// Same reasoning as fileFetch above — also makes AUTHZ_ENABLED, AUTHZ_OPAURL,
 	// AUTHZ_TIMEOUT, AUTHZ_DECISIONPATH_LIST, AUTHZ_DECISIONPATH_CALL,
-	// AUTHZ_HEADERS_USERID, AUTHZ_HEADERS_USERGROUPS, AUTHZ_HEADERS_BYPASS
-	// effective overrides.
+	// AUTHZ_DECISIONPATH_CATALOG, AUTHZ_HEADERS_USERID, AUTHZ_HEADERS_USERGROUPS,
+	// AUTHZ_HEADERS_BYPASS, AUTHZ_INPUT_USER, AUTHZ_INPUT_GROUPS, AUTHZ_INPUT_SERVER,
+	// AUTHZ_INPUT_TOOL, AUTHZ_INPUT_TOOLS, AUTHZ_INPUT_TOOLNAME effective overrides.
 	v.SetDefault("authz.enabled", false)
 	v.SetDefault("authz.opaURL", DefaultAuthzOPAURL)
 	v.SetDefault("authz.timeout", DefaultAuthzTimeout)
 	v.SetDefault("authz.decisionPath.list", DefaultAuthzDecisionPathList)
 	v.SetDefault("authz.decisionPath.call", DefaultAuthzDecisionPathCall)
+	v.SetDefault("authz.decisionPath.catalog", DefaultAuthzDecisionPathCatalog)
 	v.SetDefault("authz.headers.userID", DefaultAuthzHeaderUserID)
 	v.SetDefault("authz.headers.userGroups", DefaultAuthzHeaderUserGroups)
 	v.SetDefault("authz.headers.bypass", DefaultAuthzHeaderBypass)
+	v.SetDefault("authz.input.user", DefaultAuthzInputUser)
+	v.SetDefault("authz.input.groups", DefaultAuthzInputGroups)
+	v.SetDefault("authz.input.server", DefaultAuthzInputServer)
+	v.SetDefault("authz.input.tool", DefaultAuthzInputTool)
+	v.SetDefault("authz.input.tools", DefaultAuthzInputTools)
+	v.SetDefault("authz.input.toolName", DefaultAuthzInputToolName)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)

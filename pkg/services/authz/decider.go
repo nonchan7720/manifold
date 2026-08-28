@@ -16,4 +16,8 @@ type Decider interface {
 	// AllowedTools filters tools down to the subset p may call, preserving
 	// the input order.
 	AllowedTools(ctx context.Context, p Principal, tools []ToolRef) ([]ToolRef, error)
+
+	// AllowCatalog reports whether p may read the unfiltered tool catalog
+	// (GET /mcp/list?tools=true).
+	AllowCatalog(ctx context.Context, p Principal) (bool, error)
 }

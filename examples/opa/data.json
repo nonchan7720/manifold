@@ -1,17 +1,20 @@
 {
   "policies": {
-    "01J8X9QZ3KZFN8P8V6H2R5T4WC": {
+    "petstore-readers": {
       "tools": [
         "petstore/getpetbyid",
         "petstore/findpetsbystatus",
         "petstore/getinventory"
       ]
     },
-    "01J8X9R14V0S9WQKX9DAT2F7NB": {
+    "petstore-operators": {
       "tools": ["petstore/*"]
     },
-    "01J8X9RM8D3V1CQ0K7P5N2T9YH": {
+    "pet-lookup": {
       "tools": ["*/getpetbyid"]
+    },
+    "policy-authors": {
+      "catalog": true
     }
   }
 }

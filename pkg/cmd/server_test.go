@@ -715,20 +715,33 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 	require.Contains(t, logBuf.String(), "http response")
 }
 
+// --- newAuthzDecider ---
+
+func TestNewAuthzDecider_Disabled_ReturnsNil(t *testing.T) {
+	got := newAuthzDecider(config.AuthzConfig{Enabled: false})
+	require.Nil(t, got)
+}
+
+func TestNewAuthzDecider_Enabled_ReturnsNonNilDecider(t *testing.T) {
+	got := newAuthzDecider(config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"})
+	require.NotNil(t, got)
+}
+
 // --- authzMiddlewareFn ---
 
 func TestAuthzMiddlewareFn_Disabled_ReturnsNil(t *testing.T) {
-	got := authzMiddlewareFn(config.AuthzConfig{Enabled: false})
+	got := authzMiddlewareFn(config.AuthzConfig{Enabled: false}, nil)
 	require.Nil(t, got)
 }
 
 func TestAuthzMiddlewareFn_Enabled_BuildsDenyingMiddleware(t *testing.T) {
 	// fail-closed の配線を確認する: OPA には到達できない設定でも、識別ヘッダーが
 	// 無いリクエストは Decider を呼ばずに拒否される。
-	fn := authzMiddlewareFn(config.AuthzConfig{
+	cfg := config.AuthzConfig{
 		Enabled: true,
 		OPAURL:  "http://127.0.0.1:1",
-	})
+	}
+	fn := authzMiddlewareFn(cfg, newAuthzDecider(cfg))
 	require.NotNil(t, fn)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "svc", Version: "0.0.1"}, nil)
@@ -769,7 +782,8 @@ func TestNewMCPServer_AuthzMiddlewareFn_AppliedToServer(t *testing.T) {
 	hostURL, err := url.Parse("https://example.com")
 	require.NoError(t, err)
 
-	fn := authzMiddlewareFn(config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"})
+	authzCfg := config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"}
+	fn := authzMiddlewareFn(authzCfg, newAuthzDecider(authzCfg))
 	mcpSrv, err := newMCPServer(
 		t.Context(),
 		servers,
@@ -859,7 +873,7 @@ func TestNewMCPHandler_WiredWithMCPServer_ReturnsToolCatalog(t *testing.T) {
 	require.NoError(t, err)
 	defer mcpSrv.Close()
 
-	mcpHandler := httphandler.NewMCPHandler(servers, mcpSrv, config.AuthzConfig{})
+	mcpHandler := httphandler.NewMCPHandler(servers, mcpSrv, config.AuthzConfig{}, nil)
 	req := httptest.NewRequestWithContext(
 		t.Context(), http.MethodGet, "/mcp/list?tools=true", nil,
 	)
@@ -879,6 +893,80 @@ func TestNewMCPHandler_WiredWithMCPServer_ReturnsToolCatalog(t *testing.T) {
 	require.Len(t, body.MCP, 1)
 	require.Equal(t, "petstore", body.MCP[0].Name)
 	require.NotEmpty(t, body.MCP[0].Tools)
+}
+
+func TestNewMCPHandler_WiredWithAuthzDecider_Enabled_DeciderReachesOPA(t *testing.T) {
+	servers := config.Servers{
+		"petstore": {
+			Name:        "petstore",
+			Description: "petstore",
+			Spec:        "../internal/mcpsrv/fixtures/petstore_oas.json",
+			BaseURL:     "https://petstore.example.com",
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+		nil,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	authzCfg := config.AuthzConfig{
+		Enabled: true,
+		OPAURL:  "http://127.0.0.1:1",
+		Headers: config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"},
+	}
+	mcpHandler := httphandler.NewMCPHandler(servers, mcpSrv, authzCfg, newAuthzDecider(authzCfg))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	req.Header.Set("x-user-id", "user-1")
+	req.Header.Set("x-user-groups", "team-platform")
+	rec := httptest.NewRecorder()
+	mcpHandler.MCPList(rec, req)
+
+	// OPA has no listener at OPAURL, so a fresh Decider must have actually
+	// been wired into the handler for this to fail closed with 403 —
+	// proof that newAuthzDecider's Decider reached the handler.
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestNewMCPHandler_WiredWithAuthzDecider_Disabled_NilDeciderDoesNotBlockCatalog(t *testing.T) {
+	servers := config.Servers{
+		"petstore": {
+			Name:        "petstore",
+			Description: "petstore",
+			Spec:        "../internal/mcpsrv/fixtures/petstore_oas.json",
+			BaseURL:     "https://petstore.example.com",
+		},
+	}
+	hostURL, err := url.Parse("https://example.com")
+	require.NoError(t, err)
+
+	mcpSrv, err := newMCPServer(
+		t.Context(),
+		servers,
+		storage.NewContentManagementService(hostURL, storage.NewNoopUploader()),
+		config.Gateway{},
+		nil,
+	)
+	require.NoError(t, err)
+	defer mcpSrv.Close()
+
+	authzCfg := config.AuthzConfig{Enabled: false}
+	decider := newAuthzDecider(authzCfg)
+	require.Nil(t, decider)
+
+	mcpHandler := httphandler.NewMCPHandler(servers, mcpSrv, authzCfg, decider)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	rec := httptest.NewRecorder()
+	mcpHandler.MCPList(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestNewGatewayCmd(t *testing.T) {

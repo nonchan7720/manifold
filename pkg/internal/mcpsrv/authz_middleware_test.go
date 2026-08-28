@@ -29,6 +29,9 @@ type fakeDecider struct {
 	allowedToolsResult []authz.ToolRef
 	allowedToolsErr    error
 	allowedToolsCalls  [][]authz.ToolRef
+
+	allowCatalogResult bool
+	allowCatalogErr    error
 }
 
 func (d *fakeDecider) Allow(
@@ -53,6 +56,12 @@ func (d *fakeDecider) AllowedTools(
 		return nil, d.allowedToolsErr
 	}
 	return d.allowedToolsResult, nil
+}
+
+func (d *fakeDecider) AllowCatalog(_ context.Context, _ authz.Principal) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.allowCatalogResult, d.allowCatalogErr
 }
 
 func (d *fakeDecider) allowCallCount() int {

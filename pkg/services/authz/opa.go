@@ -11,25 +11,22 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/client"
 )
 
-// opaTool is the {"server","name"} shape used both for the "tools" input
-// array and the "allowed_tools" result array.
-type opaTool struct {
-	Server string `json:"server"`
-	Name   string `json:"name"`
-}
-
 type opaAllowResult struct {
 	Result *bool `json:"result"`
 }
 
+// opaAllowedToolsResult's Result entries are decoded as raw maps because the
+// {"<server>","<toolName>"} keys are configurable (config.AuthzInput), not
+// fixed JSON tags.
 type opaAllowedToolsResult struct {
-	Result *[]opaTool `json:"result"`
+	Result *[]map[string]any `json:"result"`
 }
 
 // OPADecider is a Decider backed by an OPA sidecar's REST data API.
 type OPADecider struct {
 	opaURL       string
 	decisionPath config.AuthzDecisionPath
+	input        config.AuthzInput
 	httpClient   *http.Client
 }
 
@@ -39,6 +36,7 @@ var _ Decider = (*OPADecider)(nil)
 // built from the shared internal transport with cfg.Timeout — callers that
 // need a different transport (e.g. for tests) pass their own client.
 func NewOPADecider(cfg config.AuthzConfig, httpClient *http.Client) *OPADecider {
+	cfg = cfg.WithDefaults()
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: client.CustomTransport(),
@@ -48,6 +46,7 @@ func NewOPADecider(cfg config.AuthzConfig, httpClient *http.Client) *OPADecider 
 	return &OPADecider{
 		opaURL:       cfg.OPAURL,
 		decisionPath: cfg.DecisionPath,
+		input:        cfg.Input,
 		httpClient:   httpClient,
 	}
 }
@@ -89,10 +88,10 @@ func (d *OPADecider) post(ctx context.Context, path string, input, out any) erro
 func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (bool, error) {
 	var out opaAllowResult
 	err := d.post(ctx, d.decisionPath.Call, map[string]any{
-		"user":   p.UserID,
-		"groups": p.Groups,
-		"server": t.Server,
-		"tool":   t.Name,
+		d.input.User:   p.UserID,
+		d.input.Groups: p.Groups,
+		d.input.Server: t.Server,
+		d.input.Tool:   t.Name,
 	}, &out)
 	if err != nil {
 		return false, err
@@ -110,16 +109,19 @@ func (d *OPADecider) AllowedTools(
 		return []ToolRef{}, nil
 	}
 
-	inputTools := make([]opaTool, len(tools))
+	inputTools := make([]map[string]any, len(tools))
 	for i, t := range tools {
-		inputTools[i] = opaTool(t)
+		inputTools[i] = map[string]any{
+			d.input.Server:   t.Server,
+			d.input.ToolName: t.Name,
+		}
 	}
 
 	var out opaAllowedToolsResult
 	err := d.post(ctx, d.decisionPath.List, map[string]any{
-		"user":   p.UserID,
-		"groups": p.Groups,
-		"tools":  inputTools,
+		d.input.User:   p.UserID,
+		d.input.Groups: p.Groups,
+		d.input.Tools:  inputTools,
 	}, &out)
 	if err != nil {
 		return nil, err
@@ -129,8 +131,10 @@ func (d *OPADecider) AllowedTools(
 	}
 
 	allowed := make(map[ToolRef]struct{}, len(*out.Result))
-	for _, t := range *out.Result {
-		allowed[ToolRef(t)] = struct{}{}
+	for _, entry := range *out.Result {
+		server, _ := entry[d.input.Server].(string)
+		name, _ := entry[d.input.ToolName].(string)
+		allowed[ToolRef{Server: server, Name: name}] = struct{}{}
 	}
 
 	filtered := make([]ToolRef, 0, len(tools))
@@ -140,4 +144,21 @@ func (d *OPADecider) AllowedTools(
 		}
 	}
 	return filtered, nil
+}
+
+// AllowCatalog reports whether p may read the unfiltered tool catalog
+// (GET /mcp/list?tools=true).
+func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (bool, error) {
+	var out opaAllowResult
+	err := d.post(ctx, d.decisionPath.Catalog, map[string]any{
+		d.input.User:   p.UserID,
+		d.input.Groups: p.Groups,
+	}, &out)
+	if err != nil {
+		return false, err
+	}
+	if out.Result == nil {
+		return false, fmt.Errorf("authz: OPA response missing result")
+	}
+	return *out.Result, nil
 }

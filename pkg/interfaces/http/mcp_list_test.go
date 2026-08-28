@@ -10,6 +10,7 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
+	"github.com/nonchan7720/manifold/pkg/services/authz"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,6 +25,32 @@ func (f *fakeToolCatalog) ToolCatalog(_ context.Context, name string) ([]mcpsrv.
 		return nil, err
 	}
 	return f.infos[name], nil
+}
+
+// fakeCatalogDecider is an authz.Decider test double whose AllowCatalog
+// result/error is configurable. Allow / AllowedTools are not exercised by
+// MCPHandler and just return zero values.
+type fakeCatalogDecider struct {
+	allowCatalogResult bool
+	allowCatalogErr    error
+	calls              int
+}
+
+func (d *fakeCatalogDecider) Allow(
+	context.Context, authz.Principal, authz.ToolRef,
+) (bool, error) {
+	return false, nil
+}
+
+func (d *fakeCatalogDecider) AllowedTools(
+	context.Context, authz.Principal, []authz.ToolRef,
+) ([]authz.ToolRef, error) {
+	return nil, nil
+}
+
+func (d *fakeCatalogDecider) AllowCatalog(context.Context, authz.Principal) (bool, error) {
+	d.calls++
+	return d.allowCatalogResult, d.allowCatalogErr
 }
 
 func testMCPListServers() config.Servers {
@@ -76,7 +103,7 @@ func findMCPListEntry(t *testing.T, entries []mcpListEntry, name string) mcpList
 }
 
 func TestMCPList_WithoutToolsQuery_OmitsToolsField(t *testing.T) {
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, config.AuthzConfig{})
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, config.AuthzConfig{}, nil)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list", nil)
 	rec := httptest.NewRecorder()
 
@@ -98,7 +125,7 @@ func TestMCPList_ToolsQuery_AuthzDisabled_ReturnsToolsPerServer(t *testing.T) {
 			"backend":  {},
 		},
 	}
-	h := NewMCPHandler(testMCPListServers(), catalog, config.AuthzConfig{})
+	h := NewMCPHandler(testMCPListServers(), catalog, config.AuthzConfig{}, nil)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
 	rec := httptest.NewRecorder()
 
@@ -121,7 +148,7 @@ func TestMCPList_ToolsQuery_AuthzDisabled_ReturnsToolsPerServer(t *testing.T) {
 }
 
 func TestMCPList_ToolsQuery_ReverseBackend_MarksDynamicWithoutTools(t *testing.T) {
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, config.AuthzConfig{})
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, config.AuthzConfig{}, nil)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
 	rec := httptest.NewRecorder()
 
@@ -137,7 +164,7 @@ func TestMCPList_ToolsQuery_CatalogError_ReturnsErrorAndOmitsTools_Status200(t *
 	catalog := &fakeToolCatalog{
 		errs: map[string]error{"backend": errors.New("connect: dial tcp: refused")},
 	}
-	h := NewMCPHandler(testMCPListServers(), catalog, config.AuthzConfig{})
+	h := NewMCPHandler(testMCPListServers(), catalog, config.AuthzConfig{}, nil)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
 	rec := httptest.NewRecorder()
 
@@ -150,30 +177,43 @@ func TestMCPList_ToolsQuery_CatalogError_ReturnsErrorAndOmitsTools_Status200(t *
 	require.Contains(t, backend.Error, "connect: dial tcp: refused")
 }
 
-func TestMCPList_ToolsQuery_AuthzEnabled_AdminGroup_ReturnsTools(t *testing.T) {
-	authzCfg := config.AuthzConfig{
-		Enabled:     true,
-		AdminGroups: []string{"team-platform"},
-		Headers:     config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"},
+// --- authz enabled: catalog access delegated to the Decider ---
+
+func testMCPListAuthzHeaders() config.AuthzHeaders {
+	return config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"}
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_DeciderAllows_ReturnsTools(t *testing.T) {
+	catalog := &fakeToolCatalog{
+		infos: map[string][]mcpsrv.ToolInfo{
+			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
+		},
 	}
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg)
+	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
+	decider := &fakeCatalogDecider{allowCatalogResult: true}
+	h := NewMCPHandler(testMCPListServers(), catalog, authzCfg, decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
-	req.Header.Set("x-user-id", "admin-1")
+	req.Header.Set("x-user-id", "user-1")
 	req.Header.Set("x-user-groups", "team-platform")
 	rec := httptest.NewRecorder()
 
 	h.MCPList(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	entries := decodeMCPList(t, rec)
+	petstore := findMCPListEntry(t, entries, "petstore")
+	require.JSONEq(
+		t,
+		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
+		string(petstore.Tools),
+	)
+	require.Equal(t, 1, decider.calls)
 }
 
-func TestMCPList_ToolsQuery_AuthzEnabled_NonAdminGroup_Returns403(t *testing.T) {
-	authzCfg := config.AuthzConfig{
-		Enabled:     true,
-		AdminGroups: []string{"team-platform"},
-		Headers:     config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"},
-	}
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg)
+func TestMCPList_ToolsQuery_AuthzEnabled_DeciderDenies_Returns403(t *testing.T) {
+	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
+	decider := &fakeCatalogDecider{allowCatalogResult: false}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
 	req.Header.Set("x-user-id", "user-1")
 	req.Header.Set("x-user-groups", "team-billing")
@@ -185,56 +225,57 @@ func TestMCPList_ToolsQuery_AuthzEnabled_NonAdminGroup_Returns403(t *testing.T) 
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	require.Equal(t, "forbidden", body["error"])
+	require.Equal(t, 1, decider.calls)
 }
 
-func TestMCPList_ToolsQuery_AuthzEnabled_MissingIdentityHeaders_Returns403(t *testing.T) {
-	authzCfg := config.AuthzConfig{
-		Enabled:     true,
-		AdminGroups: []string{"team-platform"},
-		Headers:     config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"},
-	}
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg)
+func TestMCPList_ToolsQuery_AuthzEnabled_DeciderErrors_Returns403(t *testing.T) {
+	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
+	decider := &fakeCatalogDecider{allowCatalogErr: errors.New("opa: connection refused")}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
-	rec := httptest.NewRecorder()
-
-	h.MCPList(rec, req)
-
-	require.Equal(t, http.StatusForbidden, rec.Code)
-}
-
-func TestMCPList_ToolsQuery_AuthzEnabled_EmptyAdminGroups_Returns403(t *testing.T) {
-	authzCfg := config.AuthzConfig{
-		Enabled: true,
-		Headers: config.AuthzHeaders{UserID: "x-user-id", UserGroups: "x-user-groups"},
-	}
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg)
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
-	req.Header.Set("x-user-id", "admin-1")
+	req.Header.Set("x-user-id", "user-1")
 	req.Header.Set("x-user-groups", "team-platform")
 	rec := httptest.NewRecorder()
 
 	h.MCPList(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, 1, decider.calls)
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_MissingIdentityHeaders_Returns403WithoutCallingDecider(
+	t *testing.T,
+) {
+	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
+	decider := &fakeCatalogDecider{allowCatalogResult: true}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Zero(t, decider.calls)
 }
 
 func TestMCPList_WithoutToolsQuery_AuthzEnabled_NoIdentityRequired(t *testing.T) {
-	authzCfg := config.AuthzConfig{Enabled: true, AdminGroups: []string{"team-platform"}}
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg)
+	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
+	decider := &fakeCatalogDecider{allowCatalogResult: false}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list", nil)
 	rec := httptest.NewRecorder()
 
 	h.MCPList(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Zero(t, decider.calls)
 }
 
 // --- bypass ---
 
 func authzCfgWithBypass() config.AuthzConfig {
 	return config.AuthzConfig{
-		Enabled:     true,
-		AdminGroups: []string{"team-platform"},
+		Enabled: true,
 		Headers: config.AuthzHeaders{
 			UserID:     "x-user-id",
 			UserGroups: "x-user-groups",
@@ -243,7 +284,7 @@ func authzCfgWithBypass() config.AuthzConfig {
 	}
 }
 
-func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutAdminGroup(
+func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutCallingDecider(
 	t *testing.T,
 ) {
 	catalog := &fakeToolCatalog{
@@ -251,7 +292,8 @@ func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutAdm
 			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
 		},
 	}
-	h := NewMCPHandler(testMCPListServers(), catalog, authzCfgWithBypass())
+	decider := &fakeCatalogDecider{allowCatalogResult: false}
+	h := NewMCPHandler(testMCPListServers(), catalog, authzCfgWithBypass(), decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
 	req.Header.Set("x-authz-bypass", "true")
 	rec := httptest.NewRecorder()
@@ -266,17 +308,22 @@ func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutAdm
 		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
 		string(petstore.Tools),
 	)
+	require.Zero(t, decider.calls)
 }
 
-func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderNotExactlyTrue_StillRequiresAdminGroup(
+func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderNotExactlyTrue_StillRequiresDeciderAllow(
 	t *testing.T,
 ) {
-	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfgWithBypass())
+	decider := &fakeCatalogDecider{allowCatalogResult: false}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfgWithBypass(), decider)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	req.Header.Set("x-user-id", "user-1")
+	req.Header.Set("x-user-groups", "team-billing")
 	req.Header.Set("x-authz-bypass", "True")
 	rec := httptest.NewRecorder()
 
 	h.MCPList(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, 1, decider.calls)
 }

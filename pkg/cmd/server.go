@@ -210,16 +210,27 @@ func mcpAuthMiddleware(
 	}
 }
 
+// newAuthzDecider builds the single authz.Decider shared by every consumer
+// of cfg (authzMiddlewareFn and httphandler.NewMCPHandler's tool-catalog
+// check), or nil when tool authorization is disabled.
+func newAuthzDecider(cfg config.AuthzConfig) authz.Decider {
+	if !cfg.Enabled {
+		return nil
+	}
+	return authz.NewOPADecider(cfg, nil)
+}
+
 // authzMiddlewareFn builds the per-server mcp.Middleware factory wiring
 // mcpsrv.NewAuthzMiddleware into every backend MCPServer and ReverseGateway
 // build, or nil when tool authorization is disabled — the shared decision
 // point for whether authz.enabled adds anything to the request path at all.
-func authzMiddlewareFn(cfg config.AuthzConfig) func(name string) []mcp.Middleware {
+func authzMiddlewareFn(
+	cfg config.AuthzConfig, decider authz.Decider,
+) func(name string) []mcp.Middleware {
 	if !cfg.Enabled {
 		return nil
 	}
 	cfg = cfg.WithDefaults()
-	decider := authz.NewOPADecider(cfg, nil)
 	return func(name string) []mcp.Middleware {
 		return []mcp.Middleware{mcpsrv.NewAuthzMiddleware(name, decider, cfg.Headers)}
 	}
@@ -314,7 +325,8 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
-	authzMiddleware := authzMiddlewareFn(globalConfig.Authz)
+	authzDecider := newAuthzDecider(globalConfig.Authz)
+	authzMiddleware := authzMiddlewareFn(globalConfig.Authz, authzDecider)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
@@ -327,7 +339,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer mcpSrv.Close()
 	mcpHandler := httphandler.NewMCPHandler(
-		globalConfig.MCPServer, mcpSrv, globalConfig.Authz.WithDefaults(),
+		globalConfig.MCPServer, mcpSrv, globalConfig.Authz.WithDefaults(), authzDecider,
 	)
 
 	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()

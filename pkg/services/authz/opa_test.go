@@ -22,8 +22,9 @@ func testAuthzConfig(opaURL string) config.AuthzConfig {
 		OPAURL:  opaURL,
 		Timeout: 2 * time.Second,
 		DecisionPath: config.AuthzDecisionPath{
-			List: "/v1/data/acme/authz/allowed_tools",
-			Call: "/v1/data/acme/authz/allow",
+			List:    "/v1/data/acme/authz/allowed_tools",
+			Call:    "/v1/data/acme/authz/allow",
+			Catalog: "/v1/data/acme/authz/allow_catalog",
 		},
 	}
 }
@@ -101,6 +102,38 @@ func TestOPADecider_Allow_PostsToCallDecisionPath(t *testing.T) {
 	require.Equal(t, []any{"team-finance", "team-ops"}, input["groups"])
 	require.Equal(t, "billing-svc", input["server"])
 	require.Equal(t, "create_invoice", input["tool"])
+}
+
+func TestOPADecider_Allow_CustomInputKeys_PostsWithConfiguredNames(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	cfg := testAuthzConfig(s.srv.URL)
+	cfg.Input = config.AuthzInput{
+		User:   "acct",
+		Groups: "roles",
+		Server: "svc",
+		Tool:   "action",
+	}
+	d := NewOPADecider(cfg, nil)
+
+	_, err := d.Allow(
+		t.Context(),
+		testPrincipal(),
+		ToolRef{Server: "billing-svc", Name: "create_invoice"},
+	)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "user-042", input["acct"])
+	require.Equal(t, []any{"team-finance", "team-ops"}, input["roles"])
+	require.Equal(t, "billing-svc", input["svc"])
+	require.Equal(t, "create_invoice", input["action"])
+	require.NotContains(t, input, "user")
+	require.NotContains(t, input, "groups")
+	require.NotContains(t, input, "server")
+	require.NotContains(t, input, "tool")
 }
 
 // --- Allow: result handling ---
@@ -230,6 +263,38 @@ func TestOPADecider_AllowedTools_PostsToListDecisionPath(t *testing.T) {
 	}, gotTools)
 }
 
+func TestOPADecider_AllowedTools_CustomInputKeys_PostsWithConfiguredNames(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": []}`
+	cfg := testAuthzConfig(s.srv.URL)
+	cfg.Input = config.AuthzInput{
+		User:     "acct",
+		Groups:   "roles",
+		Server:   "svc",
+		Tools:    "items",
+		ToolName: "op",
+	}
+	d := NewOPADecider(cfg, nil)
+
+	tools := []ToolRef{{Server: "billing-svc", Name: "create_invoice"}}
+	_, err := d.AllowedTools(t.Context(), testPrincipal(), tools)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "user-042", input["acct"])
+	require.Equal(t, []any{"team-finance", "team-ops"}, input["roles"])
+	gotTools, ok := input["items"].([]any)
+	require.True(t, ok)
+	require.Equal(t, []any{
+		map[string]any{"svc": "billing-svc", "op": "create_invoice"},
+	}, gotTools)
+	require.NotContains(t, input, "user")
+	require.NotContains(t, input, "groups")
+	require.NotContains(t, input, "tools")
+}
+
 // --- AllowedTools: result handling ---
 
 func TestOPADecider_AllowedTools_FiltersAndPreservesInputOrder(t *testing.T) {
@@ -251,6 +316,22 @@ func TestOPADecider_AllowedTools_FiltersAndPreservesInputOrder(t *testing.T) {
 		{Server: "billing-svc", Name: "create_invoice"},
 		{Server: "inventory-svc", Name: "list_items"},
 	}, got)
+}
+
+func TestOPADecider_AllowedTools_ReadsResultWithConfiguredKeys(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": [{"svc": "billing-svc", "op": "create_invoice"}]}`
+	cfg := testAuthzConfig(s.srv.URL)
+	cfg.Input = config.AuthzInput{Server: "svc", ToolName: "op"}
+	d := NewOPADecider(cfg, nil)
+
+	tools := []ToolRef{
+		{Server: "billing-svc", Name: "create_invoice"},
+		{Server: "billing-svc", Name: "delete_invoice"},
+	}
+	got, err := d.AllowedTools(t.Context(), testPrincipal(), tools)
+	require.NoError(t, err)
+	require.Equal(t, []ToolRef{{Server: "billing-svc", Name: "create_invoice"}}, got)
 }
 
 func TestOPADecider_AllowedTools_EmptyInput_DoesNotCallOPA(t *testing.T) {
@@ -299,5 +380,94 @@ func TestOPADecider_AllowedTools_NonOKStatus_Error(t *testing.T) {
 		testPrincipal(),
 		[]ToolRef{{Server: "billing-svc", Name: "create_invoice"}},
 	)
+	require.Error(t, err)
+}
+
+// --- AllowCatalog: request shape ---
+
+func TestOPADecider_AllowCatalog_PostsToCatalogDecisionPath(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	require.NotNil(t, req)
+	require.Equal(t, "/v1/data/acme/authz/allow_catalog", req.path)
+	require.Equal(t, "application/json", req.contentType)
+
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "user-042", input["user"])
+	require.Equal(t, []any{"team-finance", "team-ops"}, input["groups"])
+}
+
+func TestOPADecider_AllowCatalog_CustomInputKeys_PostsWithConfiguredNames(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	cfg := testAuthzConfig(s.srv.URL)
+	cfg.Input = config.AuthzInput{User: "acct", Groups: "roles"}
+	d := NewOPADecider(cfg, nil)
+
+	_, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "user-042", input["acct"])
+	require.Equal(t, []any{"team-finance", "team-ops"}, input["roles"])
+	require.NotContains(t, input, "user")
+	require.NotContains(t, input, "groups")
+}
+
+// --- AllowCatalog: result handling ---
+
+func TestOPADecider_AllowCatalog_ResultTrue(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	allowed, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.NoError(t, err)
+	require.True(t, allowed)
+}
+
+func TestOPADecider_AllowCatalog_ResultFalse(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": false}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	allowed, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.NoError(t, err)
+	require.False(t, allowed)
+}
+
+func TestOPADecider_AllowCatalog_ResultMissing_Error(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.Error(t, err)
+}
+
+func TestOPADecider_AllowCatalog_NonOKStatus_Error(t *testing.T) {
+	s := newOPAStub(t)
+	s.statusCode = http.StatusInternalServerError
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.AllowCatalog(t.Context(), testPrincipal())
+	require.Error(t, err)
+}
+
+func TestOPADecider_AllowCatalog_ConnectionFailure_Error(t *testing.T) {
+	s := newOPAStub(t)
+	s.srv.Close()
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.AllowCatalog(t.Context(), testPrincipal())
 	require.Error(t, err)
 }

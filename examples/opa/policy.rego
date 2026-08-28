@@ -23,3 +23,15 @@ allowed_tools contains t if {
 	some pattern in data.policies[group].tools
 	glob.match(pattern, ["/"], sprintf("%s/%s", [t.server, t.name]))
 }
+
+# data.policies[<group id>].catalog is a plain boolean, independent of the
+# tools glob patterns above.
+
+# input (GET /mcp/list?tools=true, decisionPath.catalog):
+#   {"user": "...", "groups": [...]}
+default allow_catalog := false
+
+allow_catalog if {
+	some group in input.groups
+	data.policies[group].catalog == true
+}

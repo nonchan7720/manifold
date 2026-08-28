@@ -11,11 +11,14 @@
   "go.lintTool": "golangci-lint-v2",
   "go.lintFlags": [
     "--path-mode=abs",
-    // "--fast-only"
+    // TODO: fast-only is often detected in CI because heavy linters are skipped
+    "--fast-only"
   ],
   "go.formatTool": "custom",
   "go.alternateTools": {
-    "customFormatter": "golangci-lint-v2"
+    "customFormatter": "golangci-lint-v2",
+    "golangci-lint-v2": "${env:HOME}/.local/share/mise/shims/golangci-lint",
+    "go": "${env:HOME}/.local/share/mise/shims/go"
   },
   "go.formatFlags": [
     "fmt",
