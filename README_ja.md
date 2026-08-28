@@ -346,11 +346,17 @@ authz:
   decisionPath:
     list: /v1/data/mcp/authz/allowed_tools
     call: /v1/data/mcp/authz/allow
+    catalog: /v1/data/mcp/authz/allow_catalog
   headers:
     userID: x-user-id
     userGroups: x-user-groups
-  adminGroups:
-    - team-platform
+  input:
+    user: user
+    groups: groups
+    server: server
+    tool: tool
+    tools: tools
+    toolName: name
 ```
 
 | フィールド | 型 | 既定値 | 説明 |
@@ -360,12 +366,20 @@ authz:
 | `timeout` | duration | `3s` | 判定 1 回あたりの HTTP タイムアウト |
 | `decisionPath.list` | string | `/v1/data/mcp/authz/allowed_tools` | `tools/list` ごとに 1 回問い合わせる OPA のデータパス |
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | `tools/call` ごとに問い合わせる OPA のデータパス |
+| `decisionPath.catalog` | string | `/v1/data/mcp/authz/allow_catalog` | `GET /mcp/list?tools=true` ごとに問い合わせる OPA のデータパス（後述の「ポリシー作成用のツール一覧」参照） |
 | `headers.userID` | string | `x-user-id` | 呼び出し元のユーザー ID を運ぶ受信ヘッダー名 |
 | `headers.userGroups` | string | `x-user-groups` | 呼び出し元のグループをカンマ区切りで運ぶ受信ヘッダー名 |
 | `headers.bypass` | string | `x-authz-bypass` | 完全一致で文字列 `true` を設定すると、そのリクエスト 1 件の authz 強制を無効化する受信ヘッダー名（後述の「テナントごとに認可を無効化する」参照） |
-| `adminGroups` | []string | `[]` | `GET /mcp/list?tools=true`（後述の「ポリシー作成用のツール一覧」参照）を呼び出せるグループ。空の場合は全員拒否 |
+| `input.user` | string | `user` | 全ての判定 input で呼び出し元のユーザー ID に使う JSON キー |
+| `input.groups` | string | `groups` | 全ての判定 input で呼び出し元のグループに使う JSON キー |
+| `input.server` | string | `server` | `tools/call` の input、および `tools/list` の各配列要素でサーバー名に使う JSON キー |
+| `input.tool` | string | `tool` | `tools/call` の input でツール名に使う JSON キー |
+| `input.tools` | string | `tools` | `tools/list` の input でツール配列に使う JSON キー |
+| `input.toolName` | string | `name` | `tools/list` の各配列要素でツール名に使う JSON キー |
 
 Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま OPA の `input.user` に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
+
+`input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。
 
 ### 前提条件
 
@@ -377,7 +391,7 @@ Manifold は `headers.userID` / `headers.userGroups`（設定していれば `he
 
 ### input / data の契約
 
-Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）`{"input": ...}` を POST します。
+Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
 
 ```jsonc
 // tools/call
@@ -387,13 +401,17 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 // tools/list
 {"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
 // → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+
+// GET /mcp/list?tools=true
+{"input": {"user": "user-042", "groups": ["team-finance"]}}
+// → {"result": true}
 ```
 
-OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧とする例）があります。
+OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧、`data.policies[<group id>].catalog` を真偽値とする例）があります。
 
 ### ポリシー作成用のツール一覧
 
-ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がありますが、`tools/list` は呼び出し元がすでに使える範囲しか返しません。`GET /mcp/list?tools=true` は絞り込みのない一覧を返します。`authz.enabled` が `false` なら誰でも取得でき、`true` なら呼び出し元が `authz.adminGroups` のいずれかのグループに属している必要があります（`tools/call` と同じ `headers.userID` / `headers.userGroups` で識別）。属していなければ `403 {"error": "forbidden"}` を返します。
+ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がありますが、`tools/list` は呼び出し元がすでに使える範囲しか返しません。`GET /mcp/list?tools=true` は絞り込みのない一覧を返します。`authz.enabled` が `false` なら誰でも取得できる。`true` なら `tools/call` が `decisionPath.call` に問い合わせるのと同様に `decisionPath.catalog` に問い合わせる — `headers.userID` / `headers.userGroups` で識別し、アイデンティティの欠落・ポリシーでの拒否・Decider のエラーのいずれでも（静的な許可リストにフォールバックすることなく）`403 {"error": "forbidden"}` を返す。
 
 ```jsonc
 {
@@ -422,7 +440,7 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
 
 - `tools/call` は OPA に問い合わせず、ツールに直接到達する
 - `tools/list` は絞り込みなしでバックエンドの全ツール一覧を返す
-- `GET /mcp/list?tools=true` は `adminGroups` の所属に関係なく `200` で全カタログを返す
+- `GET /mcp/list?tools=true` は `decisionPath.catalog` に問い合わせず `200` で全カタログを返す
 
 これはそのリクエスト 1 件に限り `authz.enabled: false` と同じ挙動になります。Manifold は `decision: bypass` をログに出します（`server` / `method` は出ますが、アイデンティティは解決していないため出ません）。これにより監査ログ上で `allow` / `deny` と区別できます。
 
@@ -438,7 +456,7 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
 
 ### 運用上の推奨事項
 
-- すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする。各イベントには `user` / `groups` / `server` / `tool` / 判定結果に加えて、その判定に使ったポリシーデータのリビジョンを含めること — リビジョンが無いと、ある判定がどのポリシー版で下されたのか追跡できない
+- すべての `allow` / `allowed_tools` / `allow_catalog` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする。各イベントには `user` / `groups` / `server` / `tool` / 判定結果に加えて、その判定に使ったポリシーデータのリビジョンを含めること — リビジョンが無いと、ある判定がどのポリシー版で下されたのか追跡できない
 - ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする。bundle 運用にすると decision log の各イベントに `bundles.<name>.revision` が入るようになり、そのリビジョンはここから得られる
 - OPA の bundle 取得状況を監視する（取得失敗時の判定への影響は前述の「fail-closed の挙動」参照）: OPA の Health API（`GET /health?bundles=true`）は、設定した全 bundle が少なくとも一度 activate されるまで unhealthy を返すため、readiness probe としても使える。status API や decision log からも取得失敗を検知できる
 

@@ -8,7 +8,8 @@
       ]
     },
     "01J8X9R14V0S9WQKX9DAT2F7NB": {
-      "tools": ["petstore/*"]
+      "tools": ["petstore/*"],
+      "catalog": true
     },
     "01J8X9RM8D3V1CQ0K7P5N2T9YH": {
       "tools": ["*/getpetbyid"]

@@ -6,15 +6,15 @@
 
 ## 構成
 
-- `policy.rego` — Manifold が問い合わせる `allow`（単一ツール）と `allowed_tools`（一括）のルール
-- `data.json` — 3 つのサンプルグループ。それぞれ [ULID 風の不透明な](https://github.com/ulid/spec) グループ ID を `<server>/<tool>` の glob パターン一覧に対応付ける
+- `policy.rego` — Manifold が問い合わせる `allow`（単一ツール）、`allowed_tools`（一括）、`allow_catalog`（`GET /mcp/list?tools=true`）のルール
+- `data.json` — 3 つのサンプルグループ。それぞれ [ULID 風の不透明な](https://github.com/ulid/spec) グループ ID を `<server>/<tool>` の glob パターン一覧と `catalog` フラグに対応付ける
 - `compose.yaml` — これらのファイルを `-b` バンドルディレクトリとして読み込んで OPA を起動する
 - `config.yaml` — `openapi-backend` の `petstore` サーバーに `authz.enabled: true` を追加したもの
 
 | グループ ID | 許可される操作 |
 | ----------- | -------------- |
 | `01J8X9QZ3KZFN8P8V6H2R5T4WC` | 読み取り専用: `getpetbyid`, `findpetsbystatus`, `getinventory` |
-| `01J8X9R14V0S9WQKX9DAT2F7NB` | `petstore` の全ツール（`petstore/*`） |
+| `01J8X9R14V0S9WQKX9DAT2F7NB` | `petstore` の全ツール（`petstore/*`）、加えて絞り込みのないツール一覧（`catalog: true`） |
 | `01J8X9RM8D3V1CQ0K7P5N2T9YH` | 任意サーバーの `getpetbyid`（`*/getpetbyid`）— サーバー横断パターンの例 |
 
 ## 実行
@@ -72,6 +72,19 @@ curl -s http://localhost:9999/mcp/petstore \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 ```
 
+ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がある — `GET /mcp/list?tools=true` は絞り込みのないその一覧を返す。`allow` / `allowed_tools` ではなく `allow_catalog` ルールで判定する。管理者グループは取得でき、読み取り専用グループは拒否される:
+
+```bash
+curl -s 'http://localhost:9999/mcp/list?tools=true' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9R14V0S9WQKX9DAT2F7NB'
+
+curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:9999/mcp/list?tools=true' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC'
+# 403
+```
+
 `x-user-id` / `x-user-groups` を付けない場合、または `docker compose stop opa` で OPA を止めた場合、どちらもすべての呼び出しを拒否する（fail-closed）。前者では Manifold は OPA に問い合わせすらしない:
 
 ```bash
@@ -98,6 +111,6 @@ curl -s http://localhost:9999/mcp/petstore \
 
 ## 自分のポリシーに置き換える
 
-`policy.rego` / `data.json` を自分のものに置き換える。ルール名 `allow` / `allowed_tools` はそのまま使うか、`authz.decisionPath` で別名を指す。本番ではローカルファイルのマウントではなく、`data.json` / `policy.rego` を OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP で配布し、すべての `allow` / `allowed_tools` 問い合わせを追跡できるよう OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にすることを推奨する。
+`policy.rego` / `data.json` を自分のものに置き換える。ルール名 `allow` / `allowed_tools` / `allow_catalog` はそのまま使うか、`authz.decisionPath` で別名を指す。本番ではローカルファイルのマウントではなく、`data.json` / `policy.rego` を OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP で配布し、すべての `allow` / `allowed_tools` / `allow_catalog` 問い合わせを追跡できるよう OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にすることを推奨する。
 
 実サーバーから bundle を配信するようにすると、取得に失敗しても強制は止まらない — OPA は最後に activate した bundle で判定を継続する。すべての判定が拒否になるのは、起動後に一度も bundle を activate できていない場合（`data` が空のまま）だけである。これは Health API の `bundles=true` チェックで検知できる（ルート README の「運用上の推奨事項」参照）。

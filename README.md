@@ -346,11 +346,17 @@ authz:
   decisionPath:
     list: /v1/data/mcp/authz/allowed_tools
     call: /v1/data/mcp/authz/allow
+    catalog: /v1/data/mcp/authz/allow_catalog
   headers:
     userID: x-user-id
     userGroups: x-user-groups
-  adminGroups:
-    - team-platform
+  input:
+    user: user
+    groups: groups
+    server: server
+    tool: tool
+    tools: tools
+    toolName: name
 ```
 
 | Field | Type | Default | Description |
@@ -360,12 +366,20 @@ authz:
 | `timeout` | duration | `3s` | Per-decision HTTP timeout |
 | `decisionPath.list` | string | `/v1/data/mcp/authz/allowed_tools` | OPA data path queried once per `tools/list` |
 | `decisionPath.call` | string | `/v1/data/mcp/authz/allow` | OPA data path queried once per `tools/call` |
+| `decisionPath.catalog` | string | `/v1/data/mcp/authz/allow_catalog` | OPA data path queried once per `GET /mcp/list?tools=true` (see "Tool catalog for policy authoring" below) |
 | `headers.userID` | string | `x-user-id` | Inbound header carrying the caller's user ID |
 | `headers.userGroups` | string | `x-user-groups` | Inbound header carrying the caller's groups, comma-separated |
 | `headers.bypass` | string | `x-authz-bypass` | Inbound header that, set to the exact string `true`, disables authz enforcement for that one request (see "Disabling authorization per tenant" below) |
-| `adminGroups` | []string | `[]` | Groups allowed to call `GET /mcp/list?tools=true` (see "Tool catalog for policy authoring" below). Empty denies every caller |
+| `input.user` | string | `user` | JSON key for the caller's user ID in every decision input |
+| `input.groups` | string | `groups` | JSON key for the caller's groups in every decision input |
+| `input.server` | string | `server` | JSON key for the server name in the `tools/call` input and in each `tools/list` array element |
+| `input.tool` | string | `tool` | JSON key for the tool name in the `tools/call` input |
+| `input.tools` | string | `tools` | JSON key for the tool array in the `tools/list` input |
+| `input.toolName` | string | `name` | JSON key for the tool name in each `tools/list` array element |
 
 Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through to OPA's `input.user` as-is. In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
+
+`input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty.
 
 ### Prerequisites
 
@@ -377,7 +391,7 @@ Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, 
 
 ### Decision contract
 
-Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, and to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool):
+Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool), and to `opaURL + decisionPath.catalog` for every `GET /mcp/list?tools=true`. The examples below use the default `authz.input` key names; every key is renameable (see the `input` table above):
 
 ```jsonc
 // tools/call
@@ -387,13 +401,17 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 // tools/list
 {"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
 // → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+
+// GET /mcp/list?tools=true
+{"input": {"user": "user-042", "groups": ["team-finance"]}}
+// → {"result": true}
 ```
 
-Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns).
+Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns, `data.policies[<group id>].catalog` as a boolean).
 
 ### Tool catalog for policy authoring
 
-Writing a policy requires knowing every `<server>/<tool>` pair that exists, but `tools/list` only ever shows what the caller is already allowed to see. `GET /mcp/list?tools=true` returns the unfiltered catalog instead: when `authz.enabled` is `false` it's open to anyone, and when `true` it requires the caller to be in one of `authz.adminGroups` (identified the same way as `tools/call` — `headers.userID` / `headers.userGroups`), responding `403 {"error": "forbidden"}` otherwise.
+Writing a policy requires knowing every `<server>/<tool>` pair that exists, but `tools/list` only ever shows what the caller is already allowed to see. `GET /mcp/list?tools=true` returns the unfiltered catalog instead: when `authz.enabled` is `false` it's open to anyone, and when `true` it queries `decisionPath.catalog` the same way `tools/call` queries `decisionPath.call` — identified by `headers.userID` / `headers.userGroups`, and denying (`403 {"error": "forbidden"}`) on a missing identity, a policy deny, or a Decider error, without ever falling back to a static allowlist.
 
 ```jsonc
 {
@@ -423,7 +441,7 @@ When bypassed, for that request:
 
 - `tools/call` skips OPA and reaches the tool directly
 - `tools/list` returns the backend's full tool list, unfiltered
-- `GET /mcp/list?tools=true` returns `200` with the full catalog regardless of `adminGroups` membership
+- `GET /mcp/list?tools=true` returns `200` with the full catalog without querying `decisionPath.catalog`
 
 This is equivalent to `authz.enabled: false` for that one request. Manifold logs `decision: bypass` (with `server` / `method`, no identity — none was resolved) so bypassed requests are distinguishable from `allow` / `deny` in an audit trail.
 
@@ -439,7 +457,7 @@ Every ambiguous or failing case denies the request rather than allowing it:
 
 ### Operating recommendations
 
-- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query. Each event should carry `user` / `groups` / `server` / `tool` / the decision, and the revision of the policy data that produced it — without a data revision there's no way to tell which policy version a given decision was made under
+- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` / `allow_catalog` query. Each event should carry `user` / `groups` / `server` / `tool` / the decision, and the revision of the policy data that produced it — without a data revision there's no way to tell which policy version a given decision was made under
 - Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar. Bundle mode also stamps every decision log event with `bundles.<name>.revision`, which is where that revision comes from
 - Monitor OPA's bundle fetch status (see "Fail-closed behavior" above for what a failure does to enforcement): OPA's Health API (`GET /health?bundles=true`) reports unhealthy until every configured bundle has been activated at least once, so it doubles as a readiness probe. The status API and decision log also surface fetch failures
 

@@ -6,15 +6,15 @@ Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of the [`openap
 
 ## What's here
 
-- `policy.rego` — the `allow` (single tool) and `allowed_tools` (batch) rules Manifold queries
-- `data.json` — three example groups, each an [opaque, ULID-like](https://github.com/ulid/spec) group ID mapped to a list of `<server>/<tool>` glob patterns
+- `policy.rego` — the `allow` (single tool), `allowed_tools` (batch), and `allow_catalog` (`GET /mcp/list?tools=true`) rules Manifold queries
+- `data.json` — three example groups, each an [opaque, ULID-like](https://github.com/ulid/spec) group ID mapped to a list of `<server>/<tool>` glob patterns and a `catalog` flag
 - `compose.yaml` — starts OPA with these files loaded as a `-b` bundle directory
 - `config.yaml` — the `petstore` server from `openapi-backend`, plus `authz.enabled: true`
 
 | Group ID | Grants |
 | -------- | ------ |
 | `01J8X9QZ3KZFN8P8V6H2R5T4WC` | Read-only: `getpetbyid`, `findpetsbystatus`, `getinventory` |
-| `01J8X9R14V0S9WQKX9DAT2F7NB` | All `petstore` tools (`petstore/*`) |
+| `01J8X9R14V0S9WQKX9DAT2F7NB` | All `petstore` tools (`petstore/*`), plus the unfiltered tool catalog (`catalog: true`) |
 | `01J8X9RM8D3V1CQ0K7P5N2T9YH` | `getpetbyid` on any server (`*/getpetbyid`) — shows a cross-server pattern |
 
 ## Run
@@ -72,6 +72,19 @@ curl -s http://localhost:9999/mcp/petstore \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 ```
 
+Writing a policy requires knowing every `<server>/<tool>` pair that exists — `GET /mcp/list?tools=true` returns that unfiltered catalog, gated by the `allow_catalog` rule instead of `allow` / `allowed_tools`. The admin group can read it; the read-only group is denied:
+
+```bash
+curl -s 'http://localhost:9999/mcp/list?tools=true' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9R14V0S9WQKX9DAT2F7NB'
+
+curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:9999/mcp/list?tools=true' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC'
+# 403
+```
+
 Missing `x-user-id` / `x-user-groups`, or `docker compose stop opa` — both deny every call (fail-closed) without Manifold ever reaching OPA in the first case:
 
 ```bash
@@ -98,6 +111,6 @@ curl -s http://localhost:9999/mcp/petstore \
 
 ## Adapting to your own policy
 
-Replace `policy.rego` / `data.json` with your own, keeping the `allow` and `allowed_tools` rule names (or point `authz.decisionPath` at different ones). For production, prefer distributing `data.json` and `policy.rego` as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, and enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` query.
+Replace `policy.rego` / `data.json` with your own, keeping the `allow`, `allowed_tools`, and `allow_catalog` rule names (or point `authz.decisionPath` at different ones). For production, prefer distributing `data.json` and `policy.rego` as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, and enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` / `allow_catalog` query.
 
 Once bundles come from a real server, a fetch failure doesn't stop enforcement — OPA keeps deciding with the last bundle it activated. Only the case where OPA has never activated a bundle since startup denies everything (`data` stays empty). Watch for that with the Health API's `bundles=true` check (see the root README's "Operating recommendations").
