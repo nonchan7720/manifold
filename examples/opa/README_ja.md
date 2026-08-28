@@ -63,7 +63,7 @@ curl -s http://localhost:9999/mcp/petstore \
 # {"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
 
-読み取り専用グループの `tools/list` は許可された 3 ツールのみを返す。`x-user-groups` を管理者グループの `petstore-operators` に変えて実行すると、`petstore` の全ツールが返る:
+読み取り専用グループの `tools/list` は許可された 3 ツールのみを返す。`x-user-groups` をオペレーターグループの `petstore-operators` に変えて実行すると、`petstore` の全ツールが返る:
 
 ```bash
 curl -s http://localhost:9999/mcp/petstore \

@@ -63,7 +63,7 @@ curl -s http://localhost:9999/mcp/petstore \
 # {"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"tool not allowed by policy"}}
 ```
 
-`tools/list` for the read-only group only lists the three tools its patterns match; run it again with the admin group's `x-user-groups: petstore-operators` to see every `petstore` tool instead:
+`tools/list` for the read-only group only lists the three tools its patterns match; run it again with the operator group's `x-user-groups: petstore-operators` to see every `petstore` tool instead:
 
 ```bash
 curl -s http://localhost:9999/mcp/petstore \
