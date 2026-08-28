@@ -475,6 +475,59 @@ allow if {
 
 これは前述の `headers.userID` に対する `{tenant}:{user}` 形式の規約の代替になる。`input.fromHeaders` がテナントを明示的に解決するため、`headers.userID` はそのテナント内でユーザーを識別できれば十分になる。
 
+#### テナントごとのデータ配布
+
+Manifold が知っているのは `opaURL` と `decisionPath.*` だけで、policy と `data` をサイドカーへ届ける経路は OPA 側の責務になる（bundle を HTTP で配る方法は後述の「運用上の推奨事項」を参照）。`data` をテナントで引く構成にしたら、どこまで細かく分割するかを選べる。
+
+```mermaid
+flowchart LR
+    M[Manifold] -->|"POST /v1/data/mcp/authz/allow<br/>input.tenant = acme"| O[OPA sidecar]
+    O -.->|poll| B[(bundle サービス)]
+    B -.->|"mcp-authz/policy.tar.gz<br/>roots: mcp/authz"| O
+    B -.->|"tenants/acme/bundle.tar.gz<br/>roots: tenants/acme"| O
+    B -.->|"tenants/globex/bundle.tar.gz<br/>roots: tenants/globex"| O
+```
+
+1 つの OPA に複数の bundle を読み込ませ、それぞれが `data` の重ならない部分木を所有する形にできる。あるテナントのポリシーデータを、他のテナントと独立に配布・ロールバックできるようになる。OPA 側の設定は次のようになる。
+
+```yaml
+services:
+  bundles:
+    url: https://bundles.example.com
+bundles:
+  policy:
+    service: bundles
+    resource: mcp-authz/policy.tar.gz
+  tenant-acme:
+    service: bundles
+    resource: tenants/acme/bundle.tar.gz
+  tenant-globex:
+    service: bundles
+    resource: tenants/globex/bundle.tar.gz
+```
+
+各 bundle の `.manifest` で所有する部分木を宣言する。前述の Rego は `data.tenants[input.tenant]` のまま変更不要。
+
+```jsonc
+// mcp-authz/policy.tar.gz
+{"revision": "2026-08-29-01", "roots": ["mcp/authz"]}
+// tenants/acme/bundle.tar.gz
+{"revision": "2026-08-29-01", "roots": ["tenants/acme"]}
+```
+
+OPA が bundle をマージする仕組み上、制約が 3 つある。
+
+- **roots は重複できない。** 別の bundle の root と衝突する bundle（`["tenants"]` と `["tenants/acme"]` の同居など）は OPA が activate を拒否する。分割するなら全テナントを分割する必要があり、共通のデータをテナント固有データと同じ部分木に置くこともできない
+- **分割は分離ではない。** どの bundle も最終的には 1 つの OPA プロセスの 1 つの `data` ツリーに載るため、`data.tenants.globex` を読むポリシーは読める。テナント境界を担保するのは `input.tenant` で引くポリシーの書き方であり、bundle の境界は更新の粒度と障害の影響範囲を区切るだけ
+- **テナント追加は OPA の設定変更になる。** `bundles:` は静的な設定なので、テナントが増えるたびにサイドカーの再設定が要る。OPA の [discovery](https://www.openpolicyagent.org/docs/management-discovery) で bundle 一覧そのものを配ることもできるが、可動部品が 1 つ増える。また bundle ごとに独立して poll するため、テナント数が非常に多い場合はこの方法では素直にスケールしない
+
+もう 1 つの選択肢は、サイドカーを共有しないこと。テナントごとに Manifold + OPA のペアを立てれば、サイドカー自体がテナントを表すので `data` にテナント階層は不要になり、`input.fromHeaders` で解決すべきものも無くなる。
+
+| 構成 | `input.fromHeaders` での `tenant` |
+| ---- | --------------------------------- |
+| 1 つの Manifold + OPA が複数テナントを捌く | 必要 — テナントを区別できるのは判定 input だけ |
+| テナントごとに Manifold + OPA のペアを立てる | 不要 — サイドカーが暗黙にテナントを識別する |
+
 ### ポリシー作成用のツール一覧
 
 ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がありますが、`tools/list` は呼び出し元がすでに使える範囲しか返しません。`GET /mcp/list?tools=true` は絞り込みのない一覧を返します。`authz.enabled` が `false` なら誰でも取得できる。`true` なら `tools/call` が `decisionPath.call` に問い合わせるのと同様に `decisionPath.catalog` に問い合わせる — `headers.userID` / `headers.userGroups` で識別し、アイデンティティの欠落・ポリシーでの拒否・Decider のエラーのいずれでも（静的な許可リストにフォールバックすることなく）`403 {"error": "forbidden"}` を返す。

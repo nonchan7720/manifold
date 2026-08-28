@@ -475,6 +475,59 @@ allow if {
 
 This replaces the `{tenant}:{user}` convention described above for `headers.userID` — with `input.fromHeaders` resolving the tenant explicitly, `headers.userID` only needs to identify the user within that tenant.
 
+#### Distributing per-tenant data
+
+Manifold only knows `opaURL` and `decisionPath.*`; how policy and `data` reach the sidecar is OPA's concern (see "Operating recommendations" below for serving them as a bundle over HTTP). Once `data` is keyed by tenant, you can choose how finely to split it:
+
+```mermaid
+flowchart LR
+    M[Manifold] -->|"POST /v1/data/mcp/authz/allow<br/>input.tenant = acme"| O[OPA sidecar]
+    O -.->|poll| B[(bundle service)]
+    B -.->|"mcp-authz/policy.tar.gz<br/>roots: mcp/authz"| O
+    B -.->|"tenants/acme/bundle.tar.gz<br/>roots: tenants/acme"| O
+    B -.->|"tenants/globex/bundle.tar.gz<br/>roots: tenants/globex"| O
+```
+
+One OPA can load several bundles, each owning a disjoint subtree of `data`, so a tenant's policy data can be published and rolled back independently of every other tenant's. The OPA side of that looks like:
+
+```yaml
+services:
+  bundles:
+    url: https://bundles.example.com
+bundles:
+  policy:
+    service: bundles
+    resource: mcp-authz/policy.tar.gz
+  tenant-acme:
+    service: bundles
+    resource: tenants/acme/bundle.tar.gz
+  tenant-globex:
+    service: bundles
+    resource: tenants/globex/bundle.tar.gz
+```
+
+Each bundle's `.manifest` declares the subtree it owns; the Rego above keeps reading `data.tenants[input.tenant]` unchanged.
+
+```jsonc
+// mcp-authz/policy.tar.gz
+{"revision": "2026-08-29-01", "roots": ["mcp/authz"]}
+// tenants/acme/bundle.tar.gz
+{"revision": "2026-08-29-01", "roots": ["tenants/acme"]}
+```
+
+Three constraints follow from how OPA merges bundles:
+
+- **Roots must not overlap.** OPA refuses to activate a bundle whose root conflicts with another's (`["tenants"]` alongside `["tenants/acme"]`, for example), so splitting means splitting every tenant, and shared data cannot live in the same subtree as tenant-specific data
+- **Splitting is not isolation.** Every bundle still lands in the one `data` tree of the one OPA process, so a policy that reads `data.tenants.globex` can. The tenant boundary is enforced by the policy indexing through `input.tenant`; bundle boundaries only scope updates and blast radius
+- **Adding a tenant is an OPA config change.** `bundles:` is static, so each new tenant needs the sidecar reconfigured. OPA's [discovery](https://www.openpolicyagent.org/docs/management-discovery) feature can distribute the bundle list itself, at the cost of another moving part, and every bundle polls independently, so very large tenant counts do not scale gracefully this way
+
+The alternative is to not share the sidecar at all: run one Manifold + OPA pair per tenant. Then the sidecar *is* the tenant, `data` needs no tenant level, and there is nothing for `input.fromHeaders` to resolve.
+
+| Deployment | `tenant` via `input.fromHeaders` |
+| ---------- | -------------------------------- |
+| One Manifold + OPA serving several tenants | Required — the decision input is the only thing that tells tenants apart |
+| One Manifold + OPA pair per tenant | Not needed — the sidecar implicitly identifies the tenant |
+
 ### Tool catalog for policy authoring
 
 Writing a policy requires knowing every `<server>/<tool>` pair that exists, but `tools/list` only ever shows what the caller is already allowed to see. `GET /mcp/list?tools=true` returns the unfiltered catalog instead: when `authz.enabled` is `false` it's open to anyone, and when `true` it queries `decisionPath.catalog` the same way `tools/call` queries `decisionPath.call` — identified by `headers.userID` / `headers.userGroups`, and denying (`403 {"error": "forbidden"}`) on a missing identity, a policy deny, or a Decider error, without ever falling back to a static allowlist.
