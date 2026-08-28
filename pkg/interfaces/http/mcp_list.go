@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"slices"
 	"sort"
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -37,36 +36,41 @@ type MCPHandler struct {
 	servers  []*config.Server
 	catalog  ToolCataloger
 	authzCfg config.AuthzConfig
+	decider  authz.Decider
 }
 
+// NewMCPHandler builds an MCPHandler. decider is nil when authzCfg.Enabled
+// is false; it must be non-nil whenever authzCfg.Enabled is true, since
+// allowToolCatalog denies (fails closed) rather than dereferencing a nil
+// Decider.
 func NewMCPHandler(
-	cfg config.Servers, catalog ToolCataloger, authzCfg config.AuthzConfig,
+	cfg config.Servers, catalog ToolCataloger, authzCfg config.AuthzConfig, decider authz.Decider,
 ) *MCPHandler {
 	servers := make([]*config.Server, 0, len(cfg))
 	for _, srv := range cfg {
 		servers = append(servers, srv)
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
-	return &MCPHandler{servers: servers, catalog: catalog, authzCfg: authzCfg}
+	return &MCPHandler{servers: servers, catalog: catalog, authzCfg: authzCfg, decider: decider}
 }
 
-// isToolCatalogAdmin reports whether r's identity headers place it in one of
-// h.authzCfg.AdminGroups. Fails closed: a missing/unresolvable identity or
-// an empty AdminGroups both deny.
-func (h *MCPHandler) isToolCatalogAdmin(r *http.Request) bool {
-	if len(h.authzCfg.AdminGroups) == 0 {
-		return false
-	}
+// allowToolCatalog reports whether r may read the unfiltered tool catalog,
+// delegating the decision to h.decider. Fails closed: a missing/unresolvable
+// identity denies without querying the Decider, and a nil Decider or a
+// Decider error both deny.
+func (h *MCPHandler) allowToolCatalog(ctx context.Context, r *http.Request) bool {
 	principal, err := authz.PrincipalFromHeader(r.Header, h.authzCfg.Headers)
 	if err != nil {
 		return false
 	}
-	for _, g := range principal.Groups {
-		if slices.Contains(h.authzCfg.AdminGroups, g) {
-			return true
-		}
+	if h.decider == nil {
+		return false
 	}
-	return false
+	allowed, err := h.decider.AllowCatalog(ctx, principal)
+	if err != nil {
+		return false
+	}
+	return allowed
 }
 
 // toolCatalogFields resolves the tools/dynamic/error portion of srv's
@@ -97,7 +101,7 @@ func (h *MCPHandler) MCPList(w http.ResponseWriter, r *http.Request) {
 
 	includeTools := r.URL.Query().Get("tools") == "true"
 	if includeTools && h.authzCfg.Enabled &&
-		!authz.BypassRequested(r.Header, h.authzCfg.Headers) && !h.isToolCatalogAdmin(r) {
+		!authz.BypassRequested(r.Header, h.authzCfg.Headers) && !h.allowToolCatalog(ctx, r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
