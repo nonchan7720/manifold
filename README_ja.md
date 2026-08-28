@@ -357,6 +357,10 @@ authz:
     tool: tool
     tools: tools
     toolName: name
+    fromHeaders:
+      tenant:
+        header: x-tenant-id
+        required: true
 ```
 
 | フィールド | 型 | 既定値 | 説明 |
@@ -376,14 +380,18 @@ authz:
 | `input.tool` | string | `tool` | `tools/call` の input でツール名に使う JSON キー |
 | `input.tools` | string | `tools` | `tools/list` の input でツール配列に使う JSON キー |
 | `input.toolName` | string | `name` | `tools/list` の各配列要素でツール名に使う JSON キー |
+| `input.fromHeaders` | map[string]object | `{}` | 判定 input のフィールド名 → その値を読み取る受信ヘッダーの定義のマップ。既定は空で、何も追加しない。後述の「マルチテナントのポリシーデータ」参照 |
+| `input.fromHeaders.<field>.header` | string | — | そのフィールドの値を運ぶ受信ヘッダー名。必須で、有効な HTTP ヘッダー名であること |
+| `input.fromHeaders.<field>.required` | bool | `true` | `true`（既定。キーを省略した場合も同じ）ならヘッダーの欠落・空で拒否する。`false` なら拒否せず、そのフィールドを判定 input に入れない |
+| `input.fromHeaders.<field>.type` | string | `string` | ヘッダーの生値を JSON のどの型にするか: `string` / `list` / `number`。空文字は `string` と同義で、それ以外の値は起動時に拒否される |
 
-Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま判定 input のうち `authz.input.user` が指すキー（既定 `user`）に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
+Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま判定 input のうち `authz.input.user` が指すキー（既定 `user`）に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。または `input.fromHeaders` を使う方法もあります（後述の「マルチテナントのポリシーデータ」参照）。この場合 `headers.userID` にテナントを埋め込む必要はありません。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
 
-`input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。
+`input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。`input.fromHeaders` のフィールド名も同様に空文字不可で、上記のトップレベルのキー（改名されていれば改名後の `user` / `groups` / `server` / `tool` / `tools`）と衝突してはならない。OPA に渡る JSON のキーは case-sensitive なので比較も case-sensitive で、既定のままなら `User` という名前のフィールドは `input.user` とは別キーなので通る。`toolName` は予約されない: `tools` 配列の要素内のキーであってトップレベルには出ないため。同じヘッダーを複数のフィールドに割り当てることは可能。
 
 ### 前提条件
 
-Manifold は `headers.userID` / `headers.userGroups`（設定していれば `headers.bypass` も含む）を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
+Manifold は `headers.userID` / `headers.userGroups`（設定していれば `headers.bypass` および `input.fromHeaders` に列挙した全ヘッダーも含む）を検証せずそのまま信頼します — WebMCP reverse gateway の `forwardAuth` モードと同じ注意点です（`docs/design/webmcp-reverse-gateway.md` の Trust boundary 節を参照）。`authz.enabled` を有効にする前に以下を満たしてください。
 
 - 前段のプロキシが、クライアント由来の同名ヘッダーを必ず strip または上書きし、呼び出し元が自分のアイデンティティを偽装できないようにする
 - そのプロキシを経由しない Manifold への直接アクセスを、ネットワーク層（Kubernetes の `NetworkPolicy` 等）で遮断する
@@ -408,6 +416,64 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 ```
 
 OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧、`data.policies[<group id>].catalog` を真偽値とする例）があります。
+
+### マルチテナントのポリシーデータ
+
+`input.fromHeaders` は判定 input のフィールド名を受信ヘッダーにマッピングする。前段のアイデンティティ層がすでに知っている値（テナント ID・リージョンなど）を、`headers.userID` にエンコードすることなくポリシーへ渡せる。設定した各フィールドは全ての判定種別（`tools/call`、`tools/list`、`GET /mcp/list?tools=true`）で解決され、`user` / `groups` などと並ぶトップレベルのフィールドとして追加される。
+
+```yaml
+authz:
+  input:
+    fromHeaders:
+      tenant:
+        header: x-tenant-id
+        required: true
+      roles:
+        header: x-roles
+        required: false
+        type: list
+      seat_count:
+        header: x-seat-count
+        type: number
+```
+
+```jsonc
+// tools/call
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice", "tenant": "acme", "roles": ["admin", "auditor"], "seat_count": 42}}
+```
+
+`type` はヘッダーの生値を JSON のどの型にするかを決める。
+
+| `type` | 判定 input の値 | 備考 |
+| ------ | --------------- | ---- |
+| `string`（既定） | ヘッダーの生値そのまま | |
+| `list` | 文字列の配列 | `,` で分割し各要素を trim、空要素は除去する（`headers.userGroups` と同じ規則） |
+| `number` | JSON の数値 | 生値の桁をそのまま送り、丸めない。数値として解釈できない値は `required` の真偽にかかわらず拒否する |
+
+`required` の既定は `true`。キーを省略すればアイデンティティヘッダーと同じ fail-closed のままになる。`required: false` を指定した場合、ヘッダーの欠落・空（`list` で非空要素が 1 つも無い場合を含む）では空の値を送るのではなく、そのフィールドを**判定 input から丸ごと省く**。ポリシー側では存在チェックを入れること。
+
+```rego
+# x-roles ヘッダーが無かったリクエストでは input.roles 自体が存在しないため、
+# 直接参照せず既定値付きで読む。
+roles := object.get(input, "roles", [])
+```
+
+この `tenant` フィールドがあれば、`data` をフラットではなくテナント単位で構成できる。`user` に規約を埋め込まなくても 1 つの bundle で全テナントに対応できる。
+
+```rego
+package mcp.authz
+
+default allow := false
+
+allow if {
+	tenant_policies := data.tenants[input.tenant].policies
+	some group in input.groups
+	some pattern in tenant_policies[group].tools
+	glob.match(pattern, ["/"], sprintf("%s/%s", [input.server, input.tool]))
+}
+```
+
+これは前述の `headers.userID` に対する `{tenant}:{user}` 形式の規約の代替になる。`input.fromHeaders` がテナントを明示的に解決するため、`headers.userID` はそのテナント内でユーザーを識別できれば十分になる。
 
 ### ポリシー作成用のツール一覧
 
@@ -449,6 +515,8 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
 判定が曖昧・失敗するケースはすべて許可ではなく拒否になります。
 
 - `headers.userID` / `headers.userGroups` が欠落・空の場合、OPA に問い合わせず拒否
+- `input.fromHeaders` に設定した**必須**フィールドのヘッダーが欠落・空の場合も同様に、OPA に問い合わせず拒否。`required` の既定は `true` で、`required: false` のフィールドは拒否ではなく input からの省略になる
+- `input.fromHeaders` の値が設定した `type` として解釈できない場合（`type: number` に数値でないヘッダーが来た等）も、`required` の真偽にかかわらず OPA に問い合わせず拒否
 - OPA からの非 200 応答、期待する `result` フィールドが無い応答、タイムアウト、接続失敗はすべて拒否
 - `tools/list` での絞り込みは補助的なもの — 呼び出し元が使えないツールをクライアントのツール一覧から隠すためのものであり、強制の本体ではありません。強制は `tools/call` で行われるため、（古い一覧などから）ツール名を知っているクライアントでもそこで拒否されます
 - reverse（WebMCP）の `mcpServers` エントリは常に `create_pairing_code` というツールを登録します（`docs/design/webmcp-reverse-gateway.md` を参照）。`authz.enabled` は他のツールと同様にこれも対象にするため、そのサーバーとペアリングできるべきグループには `<server>/create_pairing_code` をポリシーに含める必要があります。含めなければペアリング自体が拒否されます
@@ -463,6 +531,8 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
   | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
   | `allowed_tools` | `tools/list` | `user`, `groups`、および `{server, name}` の配列 `tools` |
   | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
+
+  解決できた `input.fromHeaders` のフィールドは、上記 3 種すべてにトップレベルで入る。`required: false` のフィールドはヘッダーが無かったリクエストの input には現れないので、decision log に出ていないのは想定どおりであってフィールドの取りこぼしではない。
 
 - ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする。bundle 運用にすると decision log の各イベントに `bundles.<name>.revision` が入るようになり、そのリビジョンはここから得られる
 - OPA の bundle 取得状況を監視する（取得失敗時の判定への影響は前述の「fail-closed の挙動」参照）: OPA の Health API（`GET /health?bundles=true`）は、設定した全 bundle が少なくとも一度 activate されるまで unhealthy を返すため、readiness probe としても使える。status API や decision log からも取得失敗を検知できる
