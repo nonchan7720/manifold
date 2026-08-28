@@ -7,15 +7,16 @@ Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of the [`openap
 ## What's here
 
 - `policy.rego` — the `allow` (single tool), `allowed_tools` (batch), and `allow_catalog` (`GET /mcp/list?tools=true`) rules Manifold queries
-- `data.json` — three example groups, each an [opaque, ULID-like](https://github.com/ulid/spec) group ID mapped to a list of `<server>/<tool>` glob patterns and a `catalog` flag
+- `data.json` — four example groups, each an [opaque, ULID-like](https://github.com/ulid/spec) group ID mapped to a list of `<server>/<tool>` glob patterns and/or a `catalog` flag. `catalog` is independent of `tools`: a group can hold either, both, or neither
 - `compose.yaml` — starts OPA with these files loaded as a `-b` bundle directory
 - `config.yaml` — the `petstore` server from `openapi-backend`, plus `authz.enabled: true`
 
 | Group ID | Grants |
 | -------- | ------ |
 | `01J8X9QZ3KZFN8P8V6H2R5T4WC` | Read-only: `getpetbyid`, `findpetsbystatus`, `getinventory` |
-| `01J8X9R14V0S9WQKX9DAT2F7NB` | All `petstore` tools (`petstore/*`), plus the unfiltered tool catalog (`catalog: true`) |
+| `01J8X9R14V0S9WQKX9DAT2F7NB` | All `petstore` tools (`petstore/*`) — no catalog access |
 | `01J8X9RM8D3V1CQ0K7P5N2T9YH` | `getpetbyid` on any server (`*/getpetbyid`) — shows a cross-server pattern |
+| `01J8X9T2E7B4M6XR0N8Q3V5KDA` | No tools at all — can't call or list anything, but can read the unfiltered tool catalog (`catalog: true`); for policy authors who need to see every `<server>/<tool>` pair without any execution rights |
 
 ## Run
 
@@ -72,16 +73,16 @@ curl -s http://localhost:9999/mcp/petstore \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 ```
 
-Writing a policy requires knowing every `<server>/<tool>` pair that exists — `GET /mcp/list?tools=true` returns that unfiltered catalog, gated by the `allow_catalog` rule instead of `allow` / `allowed_tools`. The admin group can read it; the read-only group is denied:
+Writing a policy requires knowing every `<server>/<tool>` pair that exists — `GET /mcp/list?tools=true` returns that unfiltered catalog, gated by the `allow_catalog` rule instead of `allow` / `allowed_tools`. This is a separate grant from tool execution: the catalog-only group below can't call or list a single `petstore` tool but can read the catalog, while the group that can call every `petstore` tool (`01J8X9R14V0S9WQKX9DAT2F7NB`) is denied the catalog:
 
 ```bash
 curl -s 'http://localhost:9999/mcp/list?tools=true' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9R14V0S9WQKX9DAT2F7NB'
+  -H 'x-user-groups: 01J8X9T2E7B4M6XR0N8Q3V5KDA'
 
 curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:9999/mcp/list?tools=true' \
   -H 'x-user-id: user-001' \
-  -H 'x-user-groups: 01J8X9QZ3KZFN8P8V6H2R5T4WC'
+  -H 'x-user-groups: 01J8X9R14V0S9WQKX9DAT2F7NB'
 # 403
 ```
 
