@@ -377,7 +377,7 @@ authz:
 | `input.tools` | string | `tools` | `tools/list` の input でツール配列に使う JSON キー |
 | `input.toolName` | string | `name` | `tools/list` の各配列要素でツール名に使う JSON キー |
 
-Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま OPA の `input.user` に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
+Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま判定 input のうち `authz.input.user` が指すキー（既定 `user`）に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
 
 `input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。
 
@@ -456,7 +456,14 @@ OPA 側の `data` の形は Manifold が規定しません。ポリシー側で�
 
 ### 運用上の推奨事項
 
-- すべての `allow` / `allowed_tools` / `allow_catalog` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする。各イベントには `user` / `groups` / `server` / `tool` / 判定結果に加えて、その判定に使ったポリシーデータのリビジョンを含めること — リビジョンが無いと、ある判定がどのポリシー版で下されたのか追跡できない
+- すべての `allow` / `allowed_tools` / `allow_catalog` 問い合わせを追跡できるよう、OPA の [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) を有効にする。各イベントには判定結果と、その判定の input と同じフィールド、判定に使ったポリシーデータのリビジョンを含めること — リビジョンが無いと、ある判定がどのポリシー版で下されたのか追跡できない。input のフィールドは判定種別ごとに異なる（前述の「input / data の契約」参照）。以下は `authz.input` の既定名で、それぞれ変更可能:
+
+  | 判定 | 問い合わせ | input のフィールド |
+  | ---- | ---------- | ------------------- |
+  | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
+  | `allowed_tools` | `tools/list` | `user`, `groups`、および `{server, name}` の配列 `tools` |
+  | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
+
 - ローカルファイルのマウントではなく、ポリシーとデータを OPA の [bundle](https://www.openpolicyagent.org/docs/management-bundles) として HTTP 配布し、ポリシー更新のたびにサイドカーを再起動しなくて済むようにする。bundle 運用にすると decision log の各イベントに `bundles.<name>.revision` が入るようになり、そのリビジョンはここから得られる
 - OPA の bundle 取得状況を監視する（取得失敗時の判定への影響は前述の「fail-closed の挙動」参照）: OPA の Health API（`GET /health?bundles=true`）は、設定した全 bundle が少なくとも一度 activate されるまで unhealthy を返すため、readiness probe としても使える。status API や decision log からも取得失敗を検知できる
 

@@ -377,7 +377,7 @@ authz:
 | `input.tools` | string | `tools` | JSON key for the tool array in the `tools/list` input |
 | `input.toolName` | string | `name` | JSON key for the tool name in each `tools/list` array element |
 
-Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through to OPA's `input.user` as-is. In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
+Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through as-is to the key `authz.input.user` names in the decision input (default `user`). In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
 
 `input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty.
 
@@ -457,7 +457,14 @@ Every ambiguous or failing case denies the request rather than allowing it:
 
 ### Operating recommendations
 
-- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` / `allow_catalog` query. Each event should carry `user` / `groups` / `server` / `tool` / the decision, and the revision of the policy data that produced it — without a data revision there's no way to tell which policy version a given decision was made under
+- Enable OPA's [decision log](https://www.openpolicyagent.org/docs/management-decision-logs) for an audit trail of every `allow` / `allowed_tools` / `allow_catalog` query. Each event should carry the decision, the same fields Manifold sent in that decision's input, and the revision of the policy data that produced it — without a data revision there's no way to tell which policy version a given decision was made under. The input fields differ per decision kind (see "Decision contract" above); the names below are the `authz.input` defaults, each of which is renameable:
+
+  | Decision | Query | Input fields |
+  | -------- | ----- | ------------- |
+  | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
+  | `allowed_tools` | `tools/list` | `user`, `groups`, and a `tools` array of `{server, name}` entries |
+  | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
+
 - Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar. Bundle mode also stamps every decision log event with `bundles.<name>.revision`, which is where that revision comes from
 - Monitor OPA's bundle fetch status (see "Fail-closed behavior" above for what a failure does to enforcement): OPA's Health API (`GET /health?bundles=true`) reports unhealthy until every configured bundle has been activated at least once, so it doubles as a readiness probe. The status API and decision log also surface fetch failures
 
