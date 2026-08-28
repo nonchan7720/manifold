@@ -34,6 +34,7 @@ type fakeCatalogDecider struct {
 	allowCatalogResult bool
 	allowCatalogErr    error
 	calls              int
+	lastPrincipal      authz.Principal
 }
 
 func (d *fakeCatalogDecider) Allow(
@@ -48,8 +49,9 @@ func (d *fakeCatalogDecider) AllowedTools(
 	return nil, nil
 }
 
-func (d *fakeCatalogDecider) AllowCatalog(context.Context, authz.Principal) (bool, error) {
+func (d *fakeCatalogDecider) AllowCatalog(_ context.Context, p authz.Principal) (bool, error) {
 	d.calls++
+	d.lastPrincipal = p
 	return d.allowCatalogResult, d.allowCatalogErr
 }
 
@@ -309,6 +311,76 @@ func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutCal
 		string(petstore.Tools),
 	)
 	require.Zero(t, decider.calls)
+}
+
+// --- fromHeaders ---
+
+func testMCPListAuthzCfgWithFromHeaders(
+	fromHeaders map[string]config.AuthzInputHeaderField,
+) config.AuthzConfig {
+	return config.AuthzConfig{
+		Enabled: true,
+		Headers: testMCPListAuthzHeaders(),
+		Input:   config.AuthzInput{FromHeaders: fromHeaders},
+	}
+}
+
+func newMCPListIdentityRequest(t *testing.T) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list?tools=true", nil)
+	req.Header.Set("x-user-id", "user-1")
+	req.Header.Set("x-user-groups", "team-platform")
+	return req
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_FromHeadersMissing_Returns403WithoutCallingDecider(
+	t *testing.T,
+) {
+	authzCfg := testMCPListAuthzCfgWithFromHeaders(map[string]config.AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id"},
+	})
+	decider := &fakeCatalogDecider{allowCatalogResult: true}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, newMCPListIdentityRequest(t))
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Zero(t, decider.calls)
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_OptionalFromHeadersMissing_ReachesDecider(
+	t *testing.T,
+) {
+	required := false
+	authzCfg := testMCPListAuthzCfgWithFromHeaders(map[string]config.AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id", Required: &required},
+	})
+	decider := &fakeCatalogDecider{allowCatalogResult: true}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, newMCPListIdentityRequest(t))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, decider.calls)
+	require.NotContains(t, decider.lastPrincipal.Extra, "tenant")
+}
+
+func TestMCPList_ToolsQuery_AuthzEnabled_FromHeadersPresent_ForwardedToDecider(t *testing.T) {
+	authzCfg := testMCPListAuthzCfgWithFromHeaders(map[string]config.AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id"},
+	})
+	decider := &fakeCatalogDecider{allowCatalogResult: true}
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, authzCfg, decider)
+	req := newMCPListIdentityRequest(t)
+	req.Header.Set("x-tenant-id", "acme")
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, map[string]any{"tenant": "acme"}, decider.lastPrincipal.Extra)
 }
 
 func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderNotExactlyTrue_StillRequiresDeciderAllow(

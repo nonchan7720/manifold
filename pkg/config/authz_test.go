@@ -501,3 +501,203 @@ func TestAuthzConfig_ValidateWithContext_Enabled_AllowsToolAndToolsSharingName(t
 	}
 	require.NoError(t, c.ValidateWithContext(t.Context()))
 }
+
+// authzConfigWithFromHeaders builds the minimal enabled config needed to
+// exercise Input.FromHeaders validation; every other key is backfilled by
+// WithDefaults.
+func authzConfigWithFromHeaders(fromHeaders map[string]AuthzInputHeaderField) AuthzConfig {
+	return AuthzConfig{Enabled: true, Input: AuthzInput{FromHeaders: fromHeaders}}
+}
+
+// --- AuthzInputHeaderField.IsRequired / Input.FromHeaders ---
+
+func TestAuthzInputHeaderField_IsRequired_UnsetDefaultsToTrue(t *testing.T) {
+	f := AuthzInputHeaderField{Header: "x-tenant-id"}
+	require.True(t, f.IsRequired())
+}
+
+func TestAuthzInputHeaderField_IsRequired_ExplicitTrue(t *testing.T) {
+	f := AuthzInputHeaderField{Header: "x-tenant-id", Required: new(true)}
+	require.True(t, f.IsRequired())
+}
+
+func TestAuthzInputHeaderField_IsRequired_ExplicitFalse(t *testing.T) {
+	f := AuthzInputHeaderField{Header: "x-tenant-id", Required: new(false)}
+	require.False(t, f.IsRequired())
+}
+
+func TestAuthzConfig_WithDefaults_LeavesFromHeadersUntouched(t *testing.T) {
+	// マップは値コピーしても同じ実体を指すため、WithDefaults が中身を書き換えると
+	// 呼び出し元の設定まで変わってしまう。
+	fromHeaders := map[string]AuthzInputHeaderField{"tenant": {Header: "x-tenant-id"}}
+	got := AuthzConfig{Input: AuthzInput{FromHeaders: fromHeaders}}.WithDefaults()
+	require.Equal(
+		t,
+		map[string]AuthzInputHeaderField{"tenant": {Header: "x-tenant-id"}},
+		fromHeaders,
+	)
+	require.Equal(t, fromHeaders, got.Input.FromHeaders)
+}
+
+// --- AuthzConfig.ValidateWithContext: enabled=true, Input.FromHeaders ---
+
+func TestAuthzConfig_ValidateWithContext_Enabled_OmittedFromHeaders_Valid(t *testing.T) {
+	c := AuthzConfig{Enabled: true}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AcceptsFromHeaders(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id"},
+		"region": {Header: "x-region"},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_OmittedRequired_Valid(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id"},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+	require.True(t, c.Input.FromHeaders["tenant"].IsRequired())
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AcceptsRequiredFalse(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id", Required: new(false)},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+	require.False(t, c.Input.FromHeaders["tenant"].IsRequired())
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AcceptsEveryKnownType(t *testing.T) {
+	for _, typ := range []string{"", "string", "list", "number"} {
+		c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+			"tenant": {Header: "x-tenant-id", Type: typ},
+		})
+		require.NoError(t, c.ValidateWithContext(t.Context()), "type %q must be accepted", typ)
+	}
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsUnknownType(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id", Type: "bool"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsTypeDifferingOnlyInCase(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id", Type: "List"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsEmptyFromHeadersFieldName(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"": {Header: "x-tenant-id"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsEmptyFromHeadersHeaderName(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{"tenant": {Header: ""}})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsInvalidFromHeadersHeaderName(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x tenant id"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsFromHeadersFieldCollidingWithUser(
+	t *testing.T,
+) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"user": {Header: "x-tenant-id"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsFromHeadersFieldCollidingWithGroups(
+	t *testing.T,
+) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"groups": {Header: "x-tenant-id"},
+	})
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AllowsFromHeadersFieldDifferingOnlyInCase(
+	t *testing.T,
+) {
+	// OPA に渡る JSON のキーは case-sensitive なので User と user は別キー。
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"User": {Header: "x-tenant-id"},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AllowsFromHeadersFieldMatchingToolName(
+	t *testing.T,
+) {
+	// input.toolName は tools 配列の要素内のキーで、トップレベルには出ないため衝突しない。
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"name": {Header: "x-tenant-id"},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsFromHeadersFieldCollidingWithRenamedInputKey(
+	t *testing.T,
+) {
+	// user キーを acct に改名した場合、FromHeaders の acct は改名後の値と衝突する。
+	c := AuthzConfig{
+		Enabled: true,
+		Input: AuthzInput{
+			User:        "acct",
+			FromHeaders: map[string]AuthzInputHeaderField{"acct": {Header: "x-tenant-id"}},
+		},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "FromHeaders")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RenamedInputKey_AllowsFromHeadersFieldMatchingOriginalName(
+	t *testing.T,
+) {
+	// user キーを acct に改名した場合、改名前の名前 user はもう衝突しない。
+	c := AuthzConfig{
+		Enabled: true,
+		Input: AuthzInput{
+			User:        "acct",
+			FromHeaders: map[string]AuthzInputHeaderField{"user": {Header: "x-tenant-id"}},
+		},
+	}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_AllowsSameHeaderAssignedToTwoFields(t *testing.T) {
+	c := authzConfigWithFromHeaders(map[string]AuthzInputHeaderField{
+		"tenant": {Header: "x-tenant-id"},
+		"region": {Header: "x-tenant-id"},
+	})
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}

@@ -2,6 +2,7 @@ package authz
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -33,6 +34,7 @@ type capturedRequest struct {
 	path        string
 	contentType string
 	body        map[string]any
+	rawBody     string
 }
 
 // opaStub is a stub OPA endpoint recording the last request it received and
@@ -55,12 +57,14 @@ func newOPAStub(t *testing.T) *opaStub {
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.calls.Add(1)
 
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.Unmarshal(raw, &body)
 		s.lastRequest.Store(&capturedRequest{
 			path:        r.URL.Path,
 			contentType: r.Header.Get("Content-Type"),
 			body:        body,
+			rawBody:     string(raw),
 		})
 
 		if s.delay > 0 {
@@ -234,6 +238,84 @@ func TestOPADecider_Allow_ConnectionFailure_Error(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestOPADecider_Allow_FromHeaders_AddsTopLevelFields(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	cfg := testAuthzConfig(s.srv.URL)
+	d := NewOPADecider(cfg, nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"tenant": "acme", "region": "us-east"}
+	_, err := d.Allow(
+		t.Context(), p, ToolRef{Server: "billing-svc", Name: "create_invoice"},
+	)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "acme", input["tenant"])
+	require.Equal(t, "us-east", input["region"])
+}
+
+func TestOPADecider_Allow_FromHeaders_ListAndNumberKeepTheirJSONTypes(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{
+		"roles":      []string{"admin", "auditor"},
+		"seat_count": json.Number("42"),
+	}
+	_, err := d.Allow(t.Context(), p, ToolRef{Server: "billing-svc", Name: "create_invoice"})
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	// list は配列、number はクォート無しの数値として送られること。
+	require.Contains(t, req.rawBody, `"roles":["admin","auditor"]`)
+	require.Contains(t, req.rawBody, `"seat_count":42`)
+
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, []any{"admin", "auditor"}, input["roles"])
+	require.InEpsilon(t, 42.0, input["seat_count"], 0.0001)
+}
+
+func TestOPADecider_Allow_ExtraCollidesWithInputKey_ErrorsWithoutCallingOPA(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"user": "impersonated"}
+	_, err := d.Allow(t.Context(), p, ToolRef{Server: "billing-svc", Name: "create_invoice"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "user")
+	require.Zero(t, s.calls.Load())
+}
+
+func TestOPADecider_Allow_EmptyExtra_MatchesCurrentBody(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.Allow(
+		t.Context(), testPrincipal(), ToolRef{Server: "billing-svc", Name: "create_invoice"},
+	)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, map[string]any{
+		"user":   "user-042",
+		"groups": []any{"team-finance", "team-ops"},
+		"server": "billing-svc",
+		"tool":   "create_invoice",
+	}, input)
+}
+
 // --- AllowedTools: request shape ---
 
 func TestOPADecider_AllowedTools_PostsToListDecisionPath(t *testing.T) {
@@ -293,6 +375,39 @@ func TestOPADecider_AllowedTools_CustomInputKeys_PostsWithConfiguredNames(t *tes
 	require.NotContains(t, input, "user")
 	require.NotContains(t, input, "groups")
 	require.NotContains(t, input, "tools")
+}
+
+func TestOPADecider_AllowedTools_FromHeaders_AddsTopLevelFields(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": []}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"tenant": "acme"}
+	_, err := d.AllowedTools(
+		t.Context(), p, []ToolRef{{Server: "billing-svc", Name: "create_invoice"}},
+	)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "acme", input["tenant"])
+}
+
+func TestOPADecider_AllowedTools_ExtraCollidesWithInputKey_ErrorsWithoutCallingOPA(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": []}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"tools": "everything"}
+	_, err := d.AllowedTools(
+		t.Context(), p, []ToolRef{{Server: "billing-svc", Name: "create_invoice"}},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tools")
+	require.Zero(t, s.calls.Load())
 }
 
 // --- AllowedTools: result handling ---
@@ -421,6 +536,35 @@ func TestOPADecider_AllowCatalog_CustomInputKeys_PostsWithConfiguredNames(t *tes
 	require.Equal(t, []any{"team-finance", "team-ops"}, input["roles"])
 	require.NotContains(t, input, "user")
 	require.NotContains(t, input, "groups")
+}
+
+func TestOPADecider_AllowCatalog_FromHeaders_AddsTopLevelFields(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"tenant": "acme"}
+	_, err := d.AllowCatalog(t.Context(), p)
+	require.NoError(t, err)
+
+	req := s.lastRequest.Load()
+	input, ok := req.body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "acme", input["tenant"])
+}
+
+func TestOPADecider_AllowCatalog_ExtraCollidesWithInputKey_ErrorsWithoutCallingOPA(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	p := testPrincipal()
+	p.Extra = map[string]any{"groups": []string{"admin"}}
+	_, err := d.AllowCatalog(t.Context(), p)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "groups")
+	require.Zero(t, s.calls.Load())
 }
 
 // --- AllowCatalog: result handling ---

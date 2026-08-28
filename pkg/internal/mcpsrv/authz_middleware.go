@@ -23,17 +23,19 @@ var errToolNotAllowedByPolicy = &jsonrpc.Error{
 	Message: "tool not allowed by policy",
 }
 
-// authzPrincipal resolves the calling Principal from req's HTTP headers.
-// A nil Extra (e.g. non-HTTP transports) is treated the same as a missing
-// identity header.
+// authzPrincipal resolves the calling Principal from req's HTTP headers,
+// including the config.AuthzInput.FromHeaders fields. A nil Extra (e.g.
+// non-HTTP transports) is treated the same as a missing identity header.
 func authzPrincipal(
-	req mcp.Request, headers config.AuthzHeaders,
+	req mcp.Request,
+	headers config.AuthzHeaders,
+	fromHeaders map[string]config.AuthzInputHeaderField,
 ) (authz.Principal, error) {
 	extra := req.GetExtra()
 	if extra == nil {
 		return authz.Principal{}, authz.ErrMissingIdentity
 	}
-	return authz.PrincipalFromHeader(extra.Header, headers)
+	return authz.PrincipalFromHeader(extra.Header, headers, fromHeaders)
 }
 
 // authzBypassRequested reports whether req's HTTP headers carry
@@ -146,7 +148,10 @@ func authzHandleToolsList(
 // without querying d, and any tools/call or tools/list Decider error also
 // denies rather than falling through to next.
 func NewAuthzMiddleware(
-	serverName string, d authz.Decider, headers config.AuthzHeaders,
+	serverName string,
+	d authz.Decider,
+	headers config.AuthzHeaders,
+	fromHeaders map[string]config.AuthzInputHeaderField,
 ) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -161,11 +166,12 @@ func NewAuthzMiddleware(
 				return next(ctx, method, req)
 			}
 
-			p, err := authzPrincipal(req, headers)
+			p, err := authzPrincipal(req, headers, fromHeaders)
 			if err != nil {
 				slog.InfoContext(ctx, "authz decision",
 					slog.String("server", serverName), slog.String("method", method),
-					slog.String("decision", "deny"), slog.String("reason", "missing_identity"))
+					slog.String("decision", "deny"),
+					slog.String("reason", authz.DenyReason(err)), slog.Any("error", err))
 				return nil, errToolNotAllowedByPolicy
 			}
 

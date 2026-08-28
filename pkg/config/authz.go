@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,31 @@ const (
 	DefaultAuthzInputToolName = "name"
 )
 
+// Value types accepted by AuthzInputHeaderField.Type, naming the JSON type
+// the header's raw value becomes in the decision input. An empty Type is a
+// synonym for AuthzInputFieldTypeString.
+const (
+	AuthzInputFieldTypeString = "string"
+	AuthzInputFieldTypeList   = "list"
+	AuthzInputFieldTypeNumber = "number"
+)
+
+// AuthzInputHeaderField describes one entry of AuthzInput.FromHeaders: the
+// inbound header to read, whether the request is denied when it is absent,
+// and how the raw value is turned into a JSON value.
+type AuthzInputHeaderField struct {
+	Header   string `mapstructure:"header"`
+	Required *bool  `mapstructure:"required"`
+	Type     string `mapstructure:"type"`
+}
+
+// IsRequired reports whether a missing or empty header denies the request.
+// Unset (nil) means required, so omitting the key stays fail-closed while
+// still letting an explicit false through.
+func (f AuthzInputHeaderField) IsRequired() bool {
+	return f.Required == nil || *f.Required
+}
+
 // AuthzDecisionPath is the OPA data path queried for each decision kind (see
 // docs/design/opa-tool-authorization-plan.ja.md「動作」).
 type AuthzDecisionPath struct {
@@ -52,6 +78,14 @@ type AuthzInput struct {
 	Tool     string `mapstructure:"tool"`
 	Tools    string `mapstructure:"tools"`
 	ToolName string `mapstructure:"toolName"`
+
+	// FromHeaders maps a decision-input field name to the inbound HTTP
+	// header it is read from. Resolved values are added as top-level
+	// fields to every decision input, typed per AuthzInputHeaderField.Type.
+	// Empty (the default) adds nothing; a required header missing or empty
+	// on a request denies (authz.ErrMissingInputHeader), while an optional
+	// one is simply left out of the input.
+	FromHeaders map[string]AuthzInputHeaderField `mapstructure:"fromHeaders"`
 }
 
 // AuthzHeaders names the inbound HTTP headers an upstream identity/authn
@@ -174,7 +208,44 @@ func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.ToolName,
 			validation.By(validateDiffersFrom("input.server", c.Server)),
 		),
+		validation.Field(&c.FromHeaders, validation.By(c.validateFromHeaders)),
 	)
+}
+
+// validateFromHeaders rejects an empty field name, an empty or invalid
+// header name, an unknown value type, and a field name equal to an
+// already-resolved top-level input key (c.User/Groups/Server/Tool/Tools —
+// the renamed value, not the original mapstructure key). c.ToolName is not
+// reserved: it only names a key inside the tools array elements, never a
+// top-level one, so it cannot collide. The comparison is case-sensitive
+// because OPA input keys are. The same header may be assigned to more than
+// one field.
+func (c AuthzInput) validateFromHeaders(value any) error {
+	m, _ := value.(map[string]AuthzInputHeaderField)
+	reserved := []string{c.User, c.Groups, c.Server, c.Tool, c.Tools}
+	for field, spec := range m {
+		if field == "" {
+			return fmt.Errorf("field name must not be empty")
+		}
+		if !httpguts.ValidHeaderFieldName(spec.Header) {
+			return fmt.Errorf(
+				"header name for field %q must be a valid, non-empty HTTP header field name", field,
+			)
+		}
+		switch spec.Type {
+		case "", AuthzInputFieldTypeString, AuthzInputFieldTypeList, AuthzInputFieldTypeNumber:
+		default:
+			return fmt.Errorf(
+				"type for field %q must be one of %q, %q, %q (or empty)",
+				field,
+				AuthzInputFieldTypeString, AuthzInputFieldTypeList, AuthzInputFieldTypeNumber,
+			)
+		}
+		if slices.Contains(reserved, field) {
+			return fmt.Errorf("field name %q collides with an existing input key", field)
+		}
+	}
+	return nil
 }
 
 func (c AuthzHeaders) ValidateWithContext(ctx context.Context) error {

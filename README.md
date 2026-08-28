@@ -357,6 +357,10 @@ authz:
     tool: tool
     tools: tools
     toolName: name
+    fromHeaders:
+      tenant:
+        header: x-tenant-id
+        required: true
 ```
 
 | Field | Type | Default | Description |
@@ -376,14 +380,18 @@ authz:
 | `input.tool` | string | `tool` | JSON key for the tool name in the `tools/call` input |
 | `input.tools` | string | `tools` | JSON key for the tool array in the `tools/list` input |
 | `input.toolName` | string | `name` | JSON key for the tool name in each `tools/list` array element |
+| `input.fromHeaders` | map[string]object | `{}` | Maps a decision-input field name to the inbound HTTP header it is read from. Empty by default, adding nothing. See "Multi-tenant policy data" below |
+| `input.fromHeaders.<field>.header` | string | — | Inbound header carrying the field's value. Required, and must be a valid HTTP header field name |
+| `input.fromHeaders.<field>.required` | bool | `true` | When `true` (the default, including when the key is omitted), a missing or empty header denies the request. When `false`, the field is left out of the decision input instead |
+| `input.fromHeaders.<field>.type` | string | `string` | How the raw header value becomes a JSON value: `string`, `list`, or `number`. Empty means `string`; anything else is rejected at startup |
 
-Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through as-is to the key `authz.input.user` names in the decision input (default `user`). In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
+Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through as-is to the key `authz.input.user` names in the decision input (default `user`). In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart — or use `input.fromHeaders` instead (see "Multi-tenant policy data" below), in which case `headers.userID` doesn't need to carry the tenant. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
 
-`input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty.
+`input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty. `input.fromHeaders` field names must likewise be non-empty and must not collide with any of the (possibly renamed) top-level keys above — `user` / `groups` / `server` / `tool` / `tools`. The comparison is case-sensitive, since OPA input keys are: with the defaults in place, a field named `User` is accepted because `input.user` is a different key. `toolName` is not reserved: it only names a key inside the `tools` array elements, never a top-level one. The same header may be assigned to more than one field.
 
 ### Prerequisites
 
-Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, `headers.bypass` — on every request without verifying them itself, the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
+Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, `headers.bypass` and every header named in `input.fromHeaders` — on every request without verifying them itself, the same caveat as the WebMCP reverse gateway's `forwardAuth` mode (see its Trust boundary section in `docs/design/webmcp-reverse-gateway.md`). Before enabling `authz.enabled`:
 
 - The fronting proxy must strip or overwrite any client-supplied headers of the same names, so a caller cannot forge its own identity
 - Direct access to Manifold bypassing that proxy must be blocked at the network layer (e.g. a Kubernetes `NetworkPolicy`)
@@ -408,6 +416,117 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 ```
 
 Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns, `data.policies[<group id>].catalog` as a boolean).
+
+### Multi-tenant policy data
+
+`input.fromHeaders` maps a decision-input field name to an inbound HTTP header, so a value the upstream identity layer already knows (a tenant ID, a region) reaches the policy without being encoded into `headers.userID`. Every configured field is resolved for every decision kind (`tools/call`, `tools/list`, and `GET /mcp/list?tools=true`) and added as a top-level field alongside `user` / `groups` / etc.:
+
+```yaml
+authz:
+  input:
+    fromHeaders:
+      tenant:
+        header: x-tenant-id
+        required: true
+      roles:
+        header: x-roles
+        required: false
+        type: list
+      seat_count:
+        header: x-seat-count
+        type: number
+```
+
+```jsonc
+// tools/call
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice", "tenant": "acme", "roles": ["admin", "auditor"], "seat_count": 42}}
+```
+
+`type` controls the JSON type the raw header value becomes:
+
+| `type` | Decision input value | Notes |
+| ------ | -------------------- | ----- |
+| `string` (default) | The raw header value, unmodified | |
+| `list` | An array of strings | Split on `,`, each element trimmed, blank elements dropped — the same rule `headers.userGroups` uses |
+| `number` | A JSON number | The raw digits are sent through unrounded. A value that isn't a number denies the request, whether the field is required or not |
+
+`required` defaults to `true` — omitting the key keeps the fail-closed behavior of the identity headers. With `required: false`, a missing or empty header (or a `list` with no non-blank element) leaves the field **out of the decision input entirely** rather than sending an empty value, so a policy should guard it:
+
+```rego
+# input.roles is absent on requests that carried no x-roles header, so read
+# it through a default instead of indexing it directly.
+roles := object.get(input, "roles", [])
+```
+
+That `tenant` field lets `data` be organized per tenant instead of flat, so one bundle can serve every tenant without a naming convention baked into `user`:
+
+```rego
+package mcp.authz
+
+default allow := false
+
+allow if {
+	tenant_policies := data.tenants[input.tenant].policies
+	some group in input.groups
+	some pattern in tenant_policies[group].tools
+	glob.match(pattern, ["/"], sprintf("%s/%s", [input.server, input.tool]))
+}
+```
+
+This replaces the `{tenant}:{user}` convention described above for `headers.userID` — with `input.fromHeaders` resolving the tenant explicitly, `headers.userID` only needs to identify the user within that tenant.
+
+#### Distributing per-tenant data
+
+Manifold only knows `opaURL` and `decisionPath.*`; how policy and `data` reach the sidecar is OPA's concern (see "Operating recommendations" below for serving them as a bundle over HTTP). Once `data` is keyed by tenant, you can choose how finely to split it:
+
+```mermaid
+flowchart LR
+    M[Manifold] -->|"POST /v1/data/mcp/authz/allow<br/>input.tenant = acme"| O[OPA sidecar]
+    O -.->|poll| B[(bundle service)]
+    B -.->|"mcp-authz/policy.tar.gz<br/>roots: mcp/authz"| O
+    B -.->|"tenants/acme/bundle.tar.gz<br/>roots: tenants/acme"| O
+    B -.->|"tenants/globex/bundle.tar.gz<br/>roots: tenants/globex"| O
+```
+
+One OPA can load several bundles, each owning a disjoint subtree of `data`, so a tenant's policy data can be published and rolled back independently of every other tenant's. The OPA side of that looks like:
+
+```yaml
+services:
+  bundles:
+    url: https://bundles.example.com
+bundles:
+  policy:
+    service: bundles
+    resource: mcp-authz/policy.tar.gz
+  tenant-acme:
+    service: bundles
+    resource: tenants/acme/bundle.tar.gz
+  tenant-globex:
+    service: bundles
+    resource: tenants/globex/bundle.tar.gz
+```
+
+Each bundle's `.manifest` declares the subtree it owns; the Rego above keeps reading `data.tenants[input.tenant]` unchanged.
+
+```jsonc
+// mcp-authz/policy.tar.gz
+{"revision": "2026-08-29-01", "roots": ["mcp/authz"]}
+// tenants/acme/bundle.tar.gz
+{"revision": "2026-08-29-01", "roots": ["tenants/acme"]}
+```
+
+Three constraints follow from how OPA merges bundles:
+
+- **Roots must not overlap.** OPA refuses to activate a bundle whose root conflicts with another's (`["tenants"]` alongside `["tenants/acme"]`, for example), so splitting means splitting every tenant, and shared data cannot live in the same subtree as tenant-specific data
+- **Splitting is not isolation.** Every bundle still lands in the one `data` tree of the one OPA process, so a policy that reads `data.tenants.globex` can. The tenant boundary is enforced by the policy indexing through `input.tenant`; bundle boundaries only scope updates and blast radius
+- **Adding a tenant is an OPA config change.** `bundles:` is static, so each new tenant needs the sidecar reconfigured. OPA's [discovery](https://www.openpolicyagent.org/docs/management-discovery) feature can distribute the bundle list itself, at the cost of another moving part, and every bundle polls independently, so very large tenant counts do not scale gracefully this way
+
+The alternative is to not share the sidecar at all: run one Manifold + OPA pair per tenant. Then the sidecar *is* the tenant, `data` needs no tenant level, and there is nothing for `input.fromHeaders` to resolve.
+
+| Deployment | `tenant` via `input.fromHeaders` |
+| ---------- | -------------------------------- |
+| One Manifold + OPA serving several tenants | Required — the decision input is the only thing that tells tenants apart |
+| One Manifold + OPA pair per tenant | Not needed — the sidecar implicitly identifies the tenant |
 
 ### Tool catalog for policy authoring
 
@@ -450,6 +569,8 @@ This is equivalent to `authz.enabled: false` for that one request. Manifold logs
 Every ambiguous or failing case denies the request rather than allowing it:
 
 - A missing or empty `headers.userID` / `headers.userGroups` denies without querying OPA
+- A missing or empty header for a **required** field configured in `input.fromHeaders` denies the same way, without querying OPA. `required` defaults to `true`; a field with `required: false` is omitted from the input instead of denying
+- An `input.fromHeaders` value that doesn't parse as its configured `type` (e.g. `type: number` on a non-numeric header) denies without querying OPA, regardless of `required`
 - A non-200 response, a response missing the expected `result` field, a timeout, or a connection failure to OPA all deny
 - `tools/list` filtering is a convenience — it hides tools the caller cannot use so they don't clutter a client's tool picker — but it is not the enforcement point. Enforcement happens on `tools/call`; a client that already knows a tool's name (e.g. from a stale list) is still denied there
 - A reverse (WebMCP) `mcpServers` entry always registers a `create_pairing_code` tool (see `docs/design/webmcp-reverse-gateway.md`), and `authz.enabled` covers it like any other tool. A group that should be able to pair with such a server needs `<server>/create_pairing_code` in its policy, or pairing itself is denied
@@ -464,6 +585,8 @@ Every ambiguous or failing case denies the request rather than allowing it:
   | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
   | `allowed_tools` | `tools/list` | `user`, `groups`, and a `tools` array of `{server, name}` entries |
   | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
+
+  Every `input.fromHeaders` field that resolved is present in all three, at the top level. A field with `required: false` is absent from the input on requests whose header was missing or empty, so a decision log missing it is expected rather than a dropped field.
 
 - Distribute policy and data as an OPA [bundle](https://www.openpolicyagent.org/docs/management-bundles) served over HTTP rather than mounting local files, so policy updates don't require restarting the sidecar. Bundle mode also stamps every decision log event with `bundles.<name>.revision`, which is where that revision comes from
 - Monitor OPA's bundle fetch status (see "Fail-closed behavior" above for what a failure does to enforcement): OPA's Health API (`GET /health?bundles=true`) reports unhealthy until every configured bundle has been activated at least once, so it doubles as a readiness probe. The status API and decision log also surface fetch failures

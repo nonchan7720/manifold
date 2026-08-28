@@ -3,6 +3,7 @@ package httphandler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 
@@ -57,10 +58,17 @@ func NewMCPHandler(
 // allowToolCatalog reports whether r may read the unfiltered tool catalog,
 // delegating the decision to h.decider. Fails closed: a missing/unresolvable
 // identity denies without querying the Decider, and a nil Decider or a
-// Decider error both deny.
+// Decider error both deny. The 403 body stays generic, so the reason (which
+// names the header at fault) is only ever logged.
 func (h *MCPHandler) allowToolCatalog(ctx context.Context, r *http.Request) bool {
-	principal, err := authz.PrincipalFromHeader(r.Header, h.authzCfg.Headers)
+	principal, err := authz.PrincipalFromHeader(
+		r.Header, h.authzCfg.Headers, h.authzCfg.Input.FromHeaders,
+	)
 	if err != nil {
+		slog.InfoContext(ctx, "authz decision",
+			slog.String("method", "GET /mcp/list?tools=true"),
+			slog.String("decision", "deny"),
+			slog.String("reason", authz.DenyReason(err)), slog.Any("error", err))
 		return false
 	}
 	if h.decider == nil {

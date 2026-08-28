@@ -5,7 +5,7 @@ test: ## Run all tests with coverage
 	go tool cover -func=coverage.out | tail -1
 
 lint: ## Run golangci-lint
-	$$(go env GOPATH)/bin/golangci-lint run ./...
+	golangci-lint run ./...
 
 ENVFILE = .env
 

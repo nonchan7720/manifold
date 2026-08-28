@@ -232,7 +232,9 @@ func authzMiddlewareFn(
 	}
 	cfg = cfg.WithDefaults()
 	return func(name string) []mcp.Middleware {
-		return []mcp.Middleware{mcpsrv.NewAuthzMiddleware(name, decider, cfg.Headers)}
+		return []mcp.Middleware{
+			mcpsrv.NewAuthzMiddleware(name, decider, cfg.Headers, cfg.Input.FromHeaders),
+		}
 	}
 }
 
