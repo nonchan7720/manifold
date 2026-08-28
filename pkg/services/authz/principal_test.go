@@ -207,6 +207,65 @@ func TestPrincipalFromHeader_FromHeaders_TypeNumber_UnparseableOptional_StillDen
 	require.ErrorIs(t, err, ErrInvalidInputHeader)
 }
 
+func TestPrincipalFromHeader_FromHeaders_TypeNumber_NonJSONNumber_ErrInvalidInputHeader(
+	t *testing.T,
+) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "NaN", raw: "NaN"},
+		{name: "lowercase nan", raw: "nan"},
+		{name: "Inf", raw: "Inf"},
+		{name: "signed Infinity", raw: "-Infinity"},
+		{name: "leading plus", raw: "+1"},
+		{name: "hexadecimal float", raw: "0x1p-2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := identityHeader()
+			h.Set("x-seat-count", tt.raw)
+
+			fromHeaders := map[string]config.AuthzInputHeaderField{
+				"seat_count": {Header: "x-seat-count", Type: "number"},
+			}
+			_, err := PrincipalFromHeader(h, defaultHeaders(), fromHeaders)
+			require.ErrorIs(t, err, ErrInvalidInputHeader)
+			require.Contains(t, err.Error(), "seat_count")
+			require.Contains(t, err.Error(), "x-seat-count")
+		})
+	}
+}
+
+func TestPrincipalFromHeader_FromHeaders_TypeNumber_JSONNumbersAreAccepted(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "integer", raw: "42"},
+		{name: "negative fraction", raw: "-3.5"},
+		{name: "exponent", raw: "6.02e23"},
+		{name: "integer beyond float64 precision", raw: "12345678901234567890"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := identityHeader()
+			h.Set("x-seat-count", tt.raw)
+
+			fromHeaders := map[string]config.AuthzInputHeaderField{
+				"seat_count": {Header: "x-seat-count", Type: "number"},
+			}
+			p, err := PrincipalFromHeader(h, defaultHeaders(), fromHeaders)
+			require.NoError(t, err)
+			require.Equal(t, map[string]any{"seat_count": json.Number(tt.raw)}, p.Extra)
+
+			encoded, err := json.Marshal(p.Extra)
+			require.NoError(t, err)
+			require.JSONEq(t, fmt.Sprintf(`{"seat_count":%s}`, tt.raw), string(encoded))
+		})
+	}
+}
+
 func TestPrincipalFromHeader_FromHeaders_OneMissing_ErrMissingInputHeader(t *testing.T) {
 	h := identityHeader()
 	h.Set("x-tenant-id", "acme")

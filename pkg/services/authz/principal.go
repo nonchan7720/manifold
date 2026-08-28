@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -86,10 +85,12 @@ func splitGroups(raw string) []string {
 // resolveInputHeaderValue converts h's spec.Header value to spec.Type's Go
 // representation. It reports ok=false when the header carries no usable
 // value (absent, empty, or a list whose every element was blank), leaving
-// the required/optional decision to the caller. A number that fails to parse
-// is an error regardless of spec.IsRequired, since the value is present but
-// unusable. json.Number keeps the raw digits instead of rounding through
-// float64.
+// the required/optional decision to the caller. A number is checked against
+// the JSON number grammar rather than strconv, which would also accept
+// NaN/Inf and hex floats that later fail to marshal into the decision input;
+// a value that fails is an error regardless of spec.IsRequired, since the
+// value is present but unusable. json.Number keeps the raw digits instead of
+// rounding through float64.
 func resolveInputHeaderValue(
 	field string, spec config.AuthzInputHeaderField, h http.Header,
 ) (value any, ok bool, err error) {
@@ -105,7 +106,7 @@ func resolveInputHeaderValue(
 		if raw == "" {
 			return nil, false, nil
 		}
-		if _, parseErr := strconv.ParseFloat(raw, 64); parseErr != nil {
+		if _, marshalErr := json.Marshal(json.Number(raw)); marshalErr != nil {
 			return nil, false, fmt.Errorf(
 				"%w: field %q from header %q is not a number", ErrInvalidInputHeader,
 				field, spec.Header,
