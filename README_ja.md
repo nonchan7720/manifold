@@ -311,7 +311,21 @@ OpenTelemetry によるトレース・メトリクス・ログの出力設定で
 | `metrics`         | object | メトリクス設定（`enabled`, `exporterType`: `push` / `pull`, `http`, `grpc`） |
 | `logs`            | object | ログ設定（`enabled`, `http`, `grpc`）                              |
 
-`http` / `grpc` エクスポーターには `addr`（ホスト:ポート）または `url` を指定します。`grpc` は `insecure` も指定できます。`metrics.exporterType: pull` の場合は OTLP push の代わりに `/metrics` エンドポイントで Prometheus 形式のメトリクスを公開します。
+`http` / `grpc` エクスポーターには `addr`（ホスト:ポート）または `url`、加えて任意の `headers`（追加の HTTP ヘッダーの map）を指定できます。`Authorization` ヘッダーを要求する SaaS の OTLP エンドポイントなどで使います。`grpc` は `insecure` も指定できます。`metrics.exporterType: pull` の場合は OTLP push の代わりに `/metrics` エンドポイントで Prometheus 形式のメトリクスを公開します。
+
+`headers` は入れ子の YAML map の代わりに、JSON オブジェクトを 1 つの環境変数に入れて丸ごと渡すこともできます。トークンなどの値を `config.yaml` に書かずデプロイ時に注入したい場合に使います。
+
+```yaml
+telemetry:
+  trace:
+    http:
+      url: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS_JSON}
+```
+
+```sh
+export OTEL_EXPORTER_OTLP_HEADERS_JSON='{"Authorization":"Basic xxxxx"}'
+```
 
 ```yaml
 telemetry:

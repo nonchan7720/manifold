@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,6 +143,80 @@ func TestLoadInternal_Authz_EnvOverride_HeadersBypass(t *testing.T) {
 	cfg, err := loadInternal(t.Context(), "")
 	require.NoError(t, err)
 	require.Equal(t, "x-acme-bypass", cfg.Authz.Headers.Bypass)
+}
+
+func TestLoadInternal_Authz_EnvOverride_Timeout(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// 回帰確認: 独自の DecodeHook を合成しても viper 既定の
+	// StringToTimeDurationHookFunc が引き続き効いていること
+	t.Setenv("AUTHZ_TIMEOUT", "5s")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Second, cfg.Authz.Timeout)
+}
+
+// --- telemetry: headers を JSON 文字列の環境変数から注入 ---
+
+func TestConfigDecodeHook_HeadersFromJSONEnvVar(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS_JSON", `{"Authorization":"Bearer test-token"}`)
+
+	const yamlDoc = `
+telemetry:
+  trace:
+    http:
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS_JSON}
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yamlDoc)))
+	require.NoError(t, expandEnvVars(v))
+
+	var conf Config
+	require.NoError(t, v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())))
+	require.NotNil(t, conf.Telemetry.Trace.HTTP)
+	require.Equal(
+		t,
+		map[string]string{"Authorization": "Bearer test-token"},
+		conf.Telemetry.Trace.HTTP.Headers,
+	)
+}
+
+func TestConfigDecodeHook_HeadersFromJSONEnvVar_UnsetIsEmpty(t *testing.T) {
+	const yamlDoc = `
+telemetry:
+  trace:
+    http:
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS_JSON}
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yamlDoc)))
+	require.NoError(t, expandEnvVars(v))
+
+	var conf Config
+	require.NoError(t, v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())))
+	require.Empty(t, conf.Telemetry.Trace.HTTP.Headers)
+}
+
+func TestConfigDecodeHook_HeadersFromJSONEnvVar_InvalidJSON(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS_JSON", `{"Authorization": invalid}`)
+
+	const yamlDoc = `
+telemetry:
+  trace:
+    http:
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS_JSON}
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yamlDoc)))
+	require.NoError(t, expandEnvVars(v))
+
+	var conf Config
+	err := v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook()))
+	require.Error(t, err)
 }
 
 // --- reverse origin 正規化 ---

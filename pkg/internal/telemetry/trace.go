@@ -100,6 +100,9 @@ func newHTTPTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrac
 	if gzipCompression {
 		traceOpts = append(traceOpts, otlptracehttp.WithCompression(otlptracehttp.GzipCompression))
 	}
+	if len(endpoint.Headers) > 0 {
+		traceOpts = append(traceOpts, otlptracehttp.WithHeaders(endpoint.Headers))
+	}
 	traceClient := otlptracehttp.NewClient(traceOpts...)
 	return traceClient, nil
 }
@@ -121,6 +124,9 @@ func newGRPCTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrac
 	}
 	if gzipCompression {
 		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
+	}
+	if len(endpoint.Headers) > 0 {
+		opts = append(opts, otlptracegrpc.WithHeaders(endpoint.Headers))
 	}
 	traceClient := otlptracegrpc.NewClient(opts...)
 	return traceClient, nil

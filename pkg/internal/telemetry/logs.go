@@ -71,6 +71,9 @@ func newHTTPLogExporter(
 	if gzipCompression {
 		opts = append(opts, otlploghttp.WithCompression(otlploghttp.GzipCompression))
 	}
+	if len(endpoint.Headers) > 0 {
+		opts = append(opts, otlploghttp.WithHeaders(endpoint.Headers))
+	}
 	return otlploghttp.New(ctx, opts...)
 }
 
@@ -95,6 +98,9 @@ func newGRPCLogExporter(
 	}
 	if gzipCompression {
 		opts = append(opts, otlploggrpc.WithCompressor("gzip"))
+	}
+	if len(endpoint.Headers) > 0 {
+		opts = append(opts, otlploggrpc.WithHeaders(endpoint.Headers))
 	}
 	return otlploggrpc.New(ctx, opts...)
 }

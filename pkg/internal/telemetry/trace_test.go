@@ -185,6 +185,65 @@ func TestNewTracerProvider_GRPC_NoEndpoint(t *testing.T) {
 	require.Nil(t, cleanup)
 }
 
+func TestNewTracerProvider_HTTP_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Trace: telemetry.Trace{
+			Enabled: true,
+			HTTP: &telemetry.HTTP{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4318",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	tp, cleanup, err := telemetry.NewTracerProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, tp)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
+func TestNewTracerProvider_HTTP_NoHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Trace: telemetry.Trace{
+			Enabled: true,
+			HTTP: &telemetry.HTTP{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4318",
+				},
+			},
+		},
+	}
+	tp, cleanup, err := telemetry.NewTracerProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, tp)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
+func TestNewTracerProvider_GRPC_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Trace: telemetry.Trace{
+			Enabled: true,
+			GRPC: &telemetry.GRPC{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4317",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	tp, cleanup, err := telemetry.NewTracerProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, tp)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
 func TestNewTracerProvider_GRPC_GzipCompression(t *testing.T) {
 	ctx := context.Background()
 	cfg := &telemetry.Config{

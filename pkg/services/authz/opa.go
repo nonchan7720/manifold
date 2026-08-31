@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
 )
@@ -53,7 +54,10 @@ func NewOPADecider(cfg config.AuthzConfig, httpClient *http.Client) *OPADecider 
 
 // post sends {"input": input} to path and decodes the response body into
 // out. A non-200 response is reported as an error without decoding.
-func (d *OPADecider) post(ctx context.Context, path string, input, out any) error {
+func (d *OPADecider) post(ctx context.Context, path string, input, out any) (rErr error) {
+	ctx = trace.StartSpan(ctx, "authz/OPADecider/post")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	body, err := json.Marshal(map[string]any{"input": input})
 	if err != nil {
 		return fmt.Errorf("authz: encode OPA request: %w", err)
@@ -103,7 +107,10 @@ func withExtra(input map[string]any, p Principal) (map[string]any, error) {
 	return input, nil
 }
 
-func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (bool, error) {
+func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (_ bool, rErr error) {
+	ctx = trace.StartSpan(ctx, "authz/OPADecider/Allow")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	input := map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,
@@ -127,7 +134,10 @@ func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (bool, e
 
 func (d *OPADecider) AllowedTools(
 	ctx context.Context, p Principal, tools []ToolRef,
-) ([]ToolRef, error) {
+) (_ []ToolRef, rErr error) {
+	ctx = trace.StartSpan(ctx, "authz/OPADecider/AllowedTools")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	if len(tools) == 0 {
 		return []ToolRef{}, nil
 	}
@@ -176,7 +186,10 @@ func (d *OPADecider) AllowedTools(
 
 // AllowCatalog reports whether p may read the unfiltered tool catalog
 // (GET /mcp/list?tools=true).
-func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (bool, error) {
+func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (_ bool, rErr error) {
+	ctx = trace.StartSpan(ctx, "authz/OPADecider/AllowCatalog")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	input := map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,

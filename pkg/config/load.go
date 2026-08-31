@@ -2,14 +2,17 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/compose-spec/compose-go/v2/template"
 	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -43,6 +46,59 @@ func Load(ctx context.Context, configName string) (*Config, error) {
 		cachedConfig, errLoad = loadInternal(ctx, configName)
 	})
 	return cachedConfig, errLoad
+}
+
+// expandEnvVars substitutes ${VAR} / ${VAR:-default} references in every
+// string value viper has loaded, using template.Substitute against the
+// process environment.
+func expandEnvVars(v *viper.Viper) error {
+	for _, key := range v.AllKeys() {
+		val := v.GetString(key)
+		if !strings.Contains(val, "$") {
+			continue
+		}
+		expanded, err := template.Substitute(val, os.LookupEnv)
+		if err != nil {
+			return err
+		}
+		v.Set(key, expanded)
+	}
+	return nil
+}
+
+// configDecodeHook returns the mapstructure.DecodeHookFunc used to unmarshal
+// the loaded config. It composes viper's default hooks (time.Duration and
+// comma-separated slice decoding) with stringToJSONMapHookFunc, since
+// supplying viper.DecodeHook replaces viper's defaults entirely.
+func configDecodeHook() mapstructure.DecodeHookFunc {
+	return mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		stringToJSONMapHookFunc(),
+	)
+}
+
+// stringToJSONMapHookFunc decodes a string source into a map by parsing it as
+// JSON, so a map-typed field (e.g. telemetry headers) can be supplied whole
+// through a single ${VAR} environment variable expansion.
+func stringToJSONMapHookFunc() mapstructure.DecodeHookFunc {
+	return func(f, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String || t.Kind() != reflect.Map {
+			return data, nil
+		}
+		raw, ok := data.(string)
+		if !ok {
+			return data, nil
+		}
+		if raw == "" {
+			return reflect.Zero(t).Interface(), nil
+		}
+		out := reflect.New(t)
+		if err := json.Unmarshal([]byte(raw), out.Interface()); err != nil {
+			return nil, fmt.Errorf("decoding JSON into %s: %w", t, err)
+		}
+		return out.Elem().Interface(), nil
+	}
 }
 
 func loadInternal(ctx context.Context, configName string) (*Config, error) {
@@ -97,19 +153,12 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	}
 
 	// Expand shell variables for string values loaded from yaml, supporting ${VAR:-default}
-	for _, key := range v.AllKeys() {
-		val := v.GetString(key)
-		if strings.Contains(val, "$") {
-			expanded, err := template.Substitute(val, os.LookupEnv)
-			if err != nil {
-				return nil, err
-			}
-			v.Set(key, expanded)
-		}
+	if err := expandEnvVars(v); err != nil {
+		return nil, err
 	}
 
 	var conf Config
-	if err := v.Unmarshal(&conf); err != nil {
+	if err := v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
 
