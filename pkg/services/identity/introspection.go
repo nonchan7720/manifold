@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
@@ -86,7 +87,10 @@ func newIntrospectionResolver(
 func (r *introspectionResolver) Resolve(
 	ctx context.Context,
 	req *http.Request,
-) (domainedge.IdentityKey, error) {
+) (_ domainedge.IdentityKey, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/introspectionResolver/Resolve")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	credential := req.Header.Get(r.credentialHeader)
 	if credential == "" {
 		return "", ErrUnauthenticated
@@ -129,7 +133,10 @@ func (r *introspectionResolver) result(
 func (r *introspectionResolver) refresh(
 	ctx context.Context,
 	cacheKey, credential string,
-) (introspectionCacheEntry, error) {
+) (_ introspectionCacheEntry, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/introspectionResolver/refresh")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	resp, err := r.introspect(ctx, credential)
 	if err != nil {
 		if stale, ok := r.lookupStale(cacheKey); ok {
@@ -152,7 +159,10 @@ func (r *introspectionResolver) refresh(
 func (r *introspectionResolver) introspect(
 	ctx context.Context,
 	credential string,
-) (introspectionResponse, error) {
+) (_ introspectionResponse, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/introspectionResolver/introspect")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	form := url.Values{"token": {credential}}
 	req, err := http.NewRequestWithContext(
 		ctx, http.MethodPost, r.url, strings.NewReader(form.Encode()),

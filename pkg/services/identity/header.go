@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 )
@@ -58,9 +59,12 @@ func newHeaderResolver(
 }
 
 func (r *headerResolver) Resolve(
-	_ context.Context,
+	ctx context.Context,
 	req *http.Request,
-) (domainedge.IdentityKey, error) {
+) (_ domainedge.IdentityKey, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/headerResolver/Resolve")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	v := req.Header.Get(r.header)
 	if v == "" {
 		return "", ErrUnauthenticated

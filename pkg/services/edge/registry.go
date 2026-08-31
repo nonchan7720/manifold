@@ -6,6 +6,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/domain/edge"
 )
 
@@ -33,10 +34,13 @@ func bindingKey(identityKey edge.IdentityKey, origin string) string {
 
 // Bind implements edge.Registry.
 func (r *InMemoryRegistry) Bind(
-	_ context.Context,
+	ctx context.Context,
 	binding edge.Binding,
 	handle any,
 ) (previous any, hadPrevious bool) {
+	ctx = trace.StartSpan(ctx, "edge/InMemoryRegistry/Bind")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -51,10 +55,13 @@ func (r *InMemoryRegistry) Bind(
 
 // Unbind implements edge.Registry.
 func (r *InMemoryRegistry) Unbind(
-	_ context.Context,
+	ctx context.Context,
 	identityKey edge.IdentityKey,
 	origin, appSession string,
 ) (handle any, ok bool) {
+	ctx = trace.StartSpan(ctx, "edge/InMemoryRegistry/Unbind")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -69,10 +76,13 @@ func (r *InMemoryRegistry) Unbind(
 
 // Resolve implements edge.Registry.
 func (r *InMemoryRegistry) Resolve(
-	_ context.Context,
+	ctx context.Context,
 	identityKey edge.IdentityKey,
 	origin string,
 ) (handle any, ok bool) {
+	ctx = trace.StartSpan(ctx, "edge/InMemoryRegistry/Resolve")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -84,7 +94,13 @@ func (r *InMemoryRegistry) Resolve(
 }
 
 // DropConnection implements edge.Registry.
-func (r *InMemoryRegistry) DropConnection(_ context.Context, connID string) []edge.DroppedBinding {
+func (r *InMemoryRegistry) DropConnection(
+	ctx context.Context,
+	connID string,
+) []edge.DroppedBinding {
+	ctx = trace.StartSpan(ctx, "edge/InMemoryRegistry/DropConnection")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 )
@@ -41,7 +42,10 @@ func NewResolver(
 	profileName string,
 	profile *config.IdentityProfile,
 	encryptKey []byte,
-) (Resolver, error) {
+) (_ Resolver, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/NewResolver")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	switch profile.Source {
 	case config.IdentitySourceJWT:
 		return newJWTResolver(ctx, profileName, profile)
@@ -62,7 +66,10 @@ func NewResolvers(
 	ctx context.Context,
 	profiles map[string]*config.IdentityProfile,
 	encryptKey []byte,
-) (map[string]Resolver, error) {
+) (_ map[string]Resolver, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/NewResolvers")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	resolvers := make(map[string]Resolver, len(profiles))
 	for name, profile := range profiles {
 		r, err := NewResolver(ctx, name, profile, encryptKey)

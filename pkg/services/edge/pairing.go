@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 )
@@ -91,7 +92,10 @@ func NewPairingService(storeClient store.Client) *PairingService {
 func (s *PairingService) IssueCode(
 	ctx context.Context,
 	identityKey domainedge.IdentityKey,
-) (string, error) {
+) (_ string, rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/IssueCode")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	rateLimitKey := rateLimitKeyPrefix + string(identityKey)
 	if _, err := s.store.Get(ctx, rateLimitKey); err == nil {
 		return "", ErrRateLimited
@@ -122,7 +126,10 @@ func (s *PairingService) IssueCode(
 // docs/design/webmcp-reverse-gateway-phase2.ja.md). An unexpected store
 // failure resolving the current count is propagated rather than silently
 // restarting the counter at 1.
-func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) error {
+func (s *PairingService) RateLimitPairAttempt(ctx context.Context, ip string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/RateLimitPairAttempt")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	s.rateLimitMu.Lock()
 	defer s.rateLimitMu.Unlock()
 
@@ -171,7 +178,10 @@ func (s *PairingService) ExchangeCode(
 	ctx context.Context,
 	code string,
 	existingToken string,
-) (string, error) {
+) (_ string, rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/ExchangeCode")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	if s.isPairCodeBlocked(ctx, code) {
 		return "", ErrInvalidCode
 	}
@@ -228,7 +238,10 @@ func (s *PairingService) appendBinding(
 	ctx context.Context,
 	token string,
 	identityKey string,
-) (string, error) {
+) (_ string, rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/appendBinding")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	s.appendMu.Lock()
 	defer s.appendMu.Unlock()
 
@@ -263,6 +276,9 @@ func (s *PairingService) appendBinding(
 // currently exists under that value — a guess that later collides with a
 // legitimately (re)issued code must still be rejected.
 func (s *PairingService) isPairCodeBlocked(ctx context.Context, code string) bool {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/isPairCodeBlocked")
+	defer func() { trace.EndSpan(ctx, nil) }()
+
 	raw, err := s.store.Get(ctx, pairFailureKeyPrefix+code)
 	if err != nil {
 		return false
@@ -277,7 +293,10 @@ func (s *PairingService) isPairCodeBlocked(ctx context.Context, code string) boo
 // harmless — the counter key just expires with the TTL (持ち越し判断事項 #4).
 // An unexpected store failure resolving the current count is propagated
 // rather than silently restarting the counter at 1.
-func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) error {
+func (s *PairingService) recordExchangeFailure(ctx context.Context, code string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/recordExchangeFailure")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	s.failureMu.Lock()
 	defer s.failureMu.Unlock()
 
@@ -306,7 +325,10 @@ func (s *PairingService) recordExchangeFailure(ctx context.Context, code string)
 func (s *PairingService) Authenticate(
 	ctx context.Context,
 	token string,
-) ([]domainedge.IdentityKey, error) {
+) (_ []domainedge.IdentityKey, rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/Authenticate")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	key := edgeTokenKeyPrefix + token
 	raw, err := s.store.Get(ctx, key)
 	if err != nil {
@@ -337,7 +359,10 @@ func (s *PairingService) Authenticate(
 }
 
 // Revoke invalidates an edge token immediately.
-func (s *PairingService) Revoke(ctx context.Context, token string) error {
+func (s *PairingService) Revoke(ctx context.Context, token string) (rErr error) {
+	ctx = trace.StartSpan(ctx, "edge/PairingService/Revoke")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	return s.store.Del(ctx, edgeTokenKeyPrefix+token)
 }
 

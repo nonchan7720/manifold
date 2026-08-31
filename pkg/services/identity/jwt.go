@@ -8,6 +8,7 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
@@ -40,7 +41,10 @@ func newJWTResolver(
 	ctx context.Context,
 	profileName string,
 	p *config.IdentityProfile,
-) (*jwtResolver, error) {
+) (_ *jwtResolver, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/newJWTResolver")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	failFast := false // fail here instead of retrying JWKS fetch in the background when unreachable
 	kf, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{p.JWKSURL}, keyfunc.Override{
 		Client:                    client.HTTPClient(),
@@ -63,7 +67,10 @@ func newJWTResolver(
 func (r *jwtResolver) Resolve(
 	ctx context.Context,
 	req *http.Request,
-) (domainedge.IdentityKey, error) {
+) (_ domainedge.IdentityKey, rErr error) {
+	ctx = trace.StartSpan(ctx, "identity/jwtResolver/Resolve")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	tokenString, ok := bearerToken(req)
 	if !ok {
 		return "", ErrUnauthenticated
