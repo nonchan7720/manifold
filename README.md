@@ -311,7 +311,21 @@ Output settings for traces, metrics, and logs via OpenTelemetry.
 | `metrics`         | object | Metrics settings (`enabled`, `exporterType`: `push` / `pull`, `http`, `grpc`) |
 | `logs`            | object | Log settings (`enabled`, `http`, `grpc`)                                      |
 
-For the `http` / `grpc` exporters, specify `addr` (host:port) or `url`. `grpc` also accepts `insecure`. With `metrics.exporterType: pull`, Prometheus-format metrics are exposed at the `/metrics` endpoint instead of OTLP push.
+For the `http` / `grpc` exporters, specify `addr` (host:port) or `url`, plus an optional `headers` map of extra request headers (e.g. for a SaaS OTLP endpoint that requires an `Authorization` header). `grpc` also accepts `insecure`. With `metrics.exporterType: pull`, Prometheus-format metrics are exposed at the `/metrics` endpoint instead of OTLP push.
+
+`headers` can also be supplied as a single environment variable holding a JSON object, instead of a nested YAML map — useful when the value (e.g. a bearer token) is injected at deploy time rather than checked into `config.yaml`:
+
+```yaml
+telemetry:
+  trace:
+    http:
+      url: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
+      headers: ${OTEL_EXPORTER_OTLP_HEADERS_JSON}
+```
+
+```sh
+export OTEL_EXPORTER_OTLP_HEADERS_JSON='{"Authorization":"Basic xxxxx"}'
+```
 
 ```yaml
 telemetry:
