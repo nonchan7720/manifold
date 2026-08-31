@@ -84,6 +84,50 @@ func TestNewMeterProvider_Push_GRPC(t *testing.T) {
 	defer cleanup()
 }
 
+func TestNewMeterProvider_Push_HTTP_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Metrics: telemetry.MetricsConfig{
+			Enabled:      true,
+			ExporterType: telemetry.ExporterTypePush,
+			HTTP: &telemetry.HTTP{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4318",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	mp, handler, cleanup, err := telemetry.NewMeterProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, mp)
+	require.Nil(t, handler)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
+func TestNewMeterProvider_Push_GRPC_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Metrics: telemetry.MetricsConfig{
+			Enabled:      true,
+			ExporterType: telemetry.ExporterTypePush,
+			GRPC: &telemetry.GRPC{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4317",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	mp, handler, cleanup, err := telemetry.NewMeterProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, mp)
+	require.Nil(t, handler)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
 func TestNewMeterProvider_Push_NoEndpoint(t *testing.T) {
 	ctx := context.Background()
 	cfg := &telemetry.Config{

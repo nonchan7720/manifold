@@ -39,8 +39,9 @@ type LogsConfig struct {
 }
 
 type Endpoint struct {
-	Endpoint    string `mapstructure:"addr"`
-	EndpointURL string `mapstructure:"url"`
+	Endpoint    string            `mapstructure:"addr"`
+	EndpointURL string            `mapstructure:"url"`
+	Headers     map[string]string `mapstructure:"headers"`
 }
 
 type HTTP struct {

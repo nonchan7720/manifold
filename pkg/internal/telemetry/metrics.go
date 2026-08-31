@@ -125,6 +125,9 @@ func newHTTPMetricExporter(
 	if gzipCompression {
 		opts = append(opts, otlpmetrichttp.WithCompression(otlpmetrichttp.GzipCompression))
 	}
+	if len(endpoint.Headers) > 0 {
+		opts = append(opts, otlpmetrichttp.WithHeaders(endpoint.Headers))
+	}
 	return otlpmetrichttp.New(ctx, opts...)
 }
 
@@ -149,6 +152,9 @@ func newGRPCMetricExporter(
 	}
 	if gzipCompression {
 		opts = append(opts, otlpmetricgrpc.WithCompressor("gzip"))
+	}
+	if len(endpoint.Headers) > 0 {
+		opts = append(opts, otlpmetricgrpc.WithHeaders(endpoint.Headers))
 	}
 	return otlpmetricgrpc.New(ctx, opts...)
 }

@@ -63,6 +63,46 @@ func TestNewLoggerProvider_GRPC(t *testing.T) {
 	defer cleanup()
 }
 
+func TestNewLoggerProvider_HTTP_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Logs: telemetry.LogsConfig{
+			Enabled: true,
+			HTTP: &telemetry.HTTP{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4318",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	lp, cleanup, err := telemetry.NewLoggerProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, lp)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
+func TestNewLoggerProvider_GRPC_WithHeaders(t *testing.T) {
+	ctx := context.Background()
+	cfg := &telemetry.Config{
+		Logs: telemetry.LogsConfig{
+			Enabled: true,
+			GRPC: &telemetry.GRPC{
+				Endpoint: telemetry.Endpoint{
+					Endpoint: "localhost:4317",
+					Headers:  map[string]string{"Authorization": "Basic dGVzdDp0ZXN0"},
+				},
+			},
+		},
+	}
+	lp, cleanup, err := telemetry.NewLoggerProvider(ctx, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, lp)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+}
+
 func TestNewLoggerProvider_NoEndpoint(t *testing.T) {
 	ctx := context.Background()
 	cfg := &telemetry.Config{
