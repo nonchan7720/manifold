@@ -15,7 +15,7 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.15
 	github.com/getkin/kin-openapi v0.147.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.4.1
-	github.com/go-viper/mapstructure/v2 v2.4.0
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -49,7 +49,7 @@ require (
 	golang.org/x/net v0.57.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
-	modernc.org/sqlite v1.56.0
+	modernc.org/sqlite v1.57.0
 )
 
 require (
