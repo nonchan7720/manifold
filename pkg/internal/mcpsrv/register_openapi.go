@@ -69,7 +69,9 @@ func registerFromGeneratedToolsFile(
 ) (*MCPToolRegistry, error) {
 	source, catalog, err := oastomcptool.LoadGeneratedSpecSource(ctx, path)
 	if err != nil {
-		return nil, fmt.Errorf("load generated tools file %q: %w", path, err)
+		return nil, fmt.Errorf(
+			`load generated tools file %q: %w (run "manifold openapi generate")`, path, err,
+		)
 	}
 	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers)
 	if err != nil {

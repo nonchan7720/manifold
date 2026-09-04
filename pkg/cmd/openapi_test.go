@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -307,4 +310,244 @@ func TestOpenAPITools_LoadFailure_OtherServersStillPrint(t *testing.T) {
 	require.Contains(t, stdout, "petstore")
 	require.Contains(t, stdout, "addpet")
 	require.NotContains(t, stdout, "broken")
+}
+
+// --- generate ---
+
+func TestOpenAPIGenerate_AllServers_WritesToolsFile(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath := filepath.Join(t.TempDir(), "generated", "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, `server "petstore": wrote `+outPath+` (3 tools)`)
+
+	f, err := os.Open(outPath)
+	require.NoError(t, err)
+	defer f.Close()
+	g, err := oastomcptool.ReadGeneratedCatalog(f)
+	require.NoError(t, err)
+	require.Equal(t, 1, g.Version)
+	require.Equal(t, oastomcptool.SpecFormatOpenAPI3, g.Format)
+	require.Equal(t, specPath, g.Source.Spec)
+
+	names := make([]string, len(g.Tools))
+	for i, tl := range g.Tools {
+		names[i] = tl.Name
+	}
+	sorted := slices.Clone(names)
+	sort.Strings(sorted)
+	require.Equal(t, sorted, names)
+	require.Equal(t, []string{"addpet", "getpetbyid", "uploadfile"}, names)
+
+	_, _, err = oastomcptool.LoadGeneratedSpecSource(t.Context(), outPath)
+	require.NoError(t, err)
+}
+
+func TestOpenAPIGenerate_ServerFlagWithOutput_CreatesParentDirs(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath := filepath.Join(t.TempDir(), "a", "b", "c", "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{Spec: specPath, BaseURL: "http://example.local"},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate", "--server", "petstore", "-o", outPath)
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, "wrote "+outPath)
+
+	_, err = os.Stat(outPath)
+	require.NoError(t, err)
+}
+
+func TestOpenAPIGenerate_OutputWithoutServer_Error(t *testing.T) {
+	withGlobalConfig(t, &config.Config{MCPServer: config.Servers{}})
+
+	_, _, err := execOpenAPITools(t, "generate", "-o", "./out.yaml")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--output requires --server")
+}
+
+func TestOpenAPIGenerate_ServerWithoutToolsFileAndNoOutput_Error(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{Spec: specPath, BaseURL: "http://example.local"},
+		},
+	})
+
+	_, stderr, err := execOpenAPITools(t, "generate", "--server", "petstore")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore"`)
+	require.Contains(t, stderr, "no tools.file configured")
+}
+
+func TestOpenAPIGenerate_AllServers_SkipsServerWithoutToolsFile(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath := filepath.Join(t.TempDir(), "generated", "withfile.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"withfile": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+			"nofile": &config.Server{Spec: specPath, BaseURL: "http://example.local"},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+	require.Contains(t, stderr, `server "nofile": no tools.file configured, skipping`)
+	require.Contains(t, stdout, `server "withfile": wrote `+outPath)
+
+	_, err = os.Stat(outPath)
+	require.NoError(t, err, "withfile's generated file should have been written")
+}
+
+func TestOpenAPIGenerate_Swagger2Skipped(t *testing.T) {
+	specPath := writeSpecFile(t, "legacy.json", swagger2SpecJSON)
+	outPath := filepath.Join(t.TempDir(), "generated", "legacy.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"legacy": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err, "a skipped swagger2 server must not fail the command")
+	require.Contains(t, stderr, `server "legacy"`)
+	require.Contains(t, stderr, "does not support Swagger 2.x")
+	require.NotContains(t, stdout, "legacy")
+
+	_, err = os.Stat(outPath)
+	require.True(t, os.IsNotExist(err), "no file should have been written for a swagger2 server")
+}
+
+func TestOpenAPIGenerate_DeterministicExceptFetchedAt(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "run1.yaml")
+	path2 := filepath.Join(dir, "run2.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{Spec: specPath, BaseURL: "http://example.local"},
+		},
+	})
+
+	_, _, err := execOpenAPITools(t, "generate", "--server", "petstore", "-o", path1)
+	require.NoError(t, err)
+	_, _, err = execOpenAPITools(t, "generate", "--server", "petstore", "-o", path2)
+	require.NoError(t, err)
+
+	b1, err := os.ReadFile(path1)
+	require.NoError(t, err)
+	b2, err := os.ReadFile(path2)
+	require.NoError(t, err)
+
+	blankFetchedAt := func(b []byte) string {
+		lines := strings.Split(string(b), "\n")
+		for i, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), "fetchedAt:") {
+				lines[i] = "fetchedAt: BLANKED"
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	require.Equal(t, blankFetchedAt(b1), blankFetchedAt(b2))
+	// sanity check the two runs actually did have distinct fetchedAt values
+	// captured (otherwise the blanking above wouldn't be exercising anything)
+	require.NotEqual(t, string(b1), "")
+}
+
+// --- tools reading a generated file ---
+
+func TestOpenAPITools_GeneratedFile_MatchesFromSpec(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	genPath := filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	fromFile, stderr1, err := execOpenAPITools(t, "tools")
+	require.NoError(t, err)
+	require.Empty(t, stderr1)
+
+	fromSpec, stderr2, err := execOpenAPITools(t, "tools", "--from-spec")
+	require.NoError(t, err)
+	require.Empty(t, stderr2)
+
+	require.Equal(t, fromSpec, fromFile)
+}
+
+func TestOpenAPITools_GeneratedFileMissing_FailsWithGenerateHint(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	genPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+
+	_, stderr, err := execOpenAPITools(t, "tools")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore"`)
+	require.Contains(t, stderr, `manifold openapi generate`)
+
+	fromSpec, stderr2, err := execOpenAPITools(t, "tools", "--from-spec")
+	require.NoError(t, err)
+	require.Empty(t, stderr2)
+	require.Contains(t, fromSpec, "addpet")
+}
+
+func TestOpenAPITools_StaleGeneratedFile_FailsWithStale(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	genPath := filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	raw, err := os.ReadFile(genPath)
+	require.NoError(t, err)
+	edited := strings.Replace(
+		string(raw), "description: Find pet by ID", "description: mutated description", 1,
+	)
+	require.NotEqual(t, string(raw), edited, "expected to find the tools-section description")
+	require.NoError(t, os.WriteFile(genPath, []byte(edited), 0o600))
+
+	_, stderr, err := execOpenAPITools(t, "tools")
+	require.Error(t, err)
+	require.Contains(t, stderr, "stale")
 }
