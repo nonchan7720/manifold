@@ -2,7 +2,7 @@
 
 OpenAPI モードで「どんな MCP ツールが生成されるのか」を実行前に確認でき、その結果をファイルとして生成し、ゲートウェイに読み込ませて起動できるようにする。本書はその Phase 1 の設計と、Phase 2（Go コード生成）へ持ち越す判断事項をまとめる。
 
-> **実装状況**: 「実装の進め方」のステップ 1〜3（入手・構築分離、`manifold openapi tools`、生成物形式・`tools.file` からの起動・`manifold openapi generate`）は本 PR で実装済み。ステップ 4（`--check`）は未実装で、後続の別 PR で対応する。
+> **実装状況**: 「実装の進め方」のステップ 1〜3（入手・構築分離、`manifold openapi tools`、生成物形式・`tools.file` からの起動・`manifold openapi generate`）は先行 PR で実装済み。ステップ 4（`--check`）は後続の別 PR（本 PR）で実装済み。実装は本メモの「`--check`」節の記述と一部異なる（後述）。
 
 ## 背景と動機
 
@@ -108,10 +108,12 @@ manifold openapi generate -c config --check
 `--check`:
 
 1. 上の 1〜3 をメモリ上で実行する
-2. `source.sha256` がディスク上のものと一致すれば差分なしとして終了
-3. 一致しなければ `tools` 単位で added / removed / changed（description または inputSchema の差）を列挙して exit 1。`fetchedAt` と `generatedBy` は比較対象から外す
+2. ディスク上のファイルを読み、`source.sha256` と `tools` をそれぞれ突き合わせる。`fetchedAt` と `generatedBy` は比較対象から外す
+3. 差分があれば（`source.sha256` の不一致、または `tools` の added / removed / changed のいずれか）exit 1
 
 `tools.file` 未指定のサーバーは `--check` の対象外（動的モードのまま）。
+
+> 実装上の補足: 当初案では `source.sha256` が一致すれば `tools` の比較を早期打ち切りしていたが、実装では常に両方比較する。`tools` の集合が同じでも `sha256` が変わっていれば drift として報告する（`spec` は `tools` セクションだけでなくランタイムのリクエスト構築 — multipart の扱いなど — にも使われるため、`tools` が同じでも spec 自体の変更は無視してよいものではない）。
 
 ## 生成物の形式
 

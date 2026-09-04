@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +70,214 @@ const swagger2SpecJSON = `{
       "get": {
         "operationId": "getLegacy",
         "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+
+// petstoreSpecJSONInfoDescriptionChanged is petstoreSpecJSON with only
+// info.description added — the spec bytes (and thus source.sha256) change,
+// but every operation is untouched, so the derived tool list is identical.
+const petstoreSpecJSONInfoDescriptionChanged = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0", "description": "now with a description"},
+  "paths": {
+    "/pet": {
+      "post": {
+        "operationId": "addPet",
+        "summary": "Add a new pet to the store",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Find pet by ID",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}/uploadImage": {
+      "post": {
+        "operationId": "uploadFile",
+        "summary": "uploads an image",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// petstoreSpecJSONToolAdded is petstoreSpecJSON with an extra DELETE
+// /pet/{petId} operation ("deletepet"), everything else unchanged.
+const petstoreSpecJSONToolAdded = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "paths": {
+    "/pet": {
+      "post": {
+        "operationId": "addPet",
+        "summary": "Add a new pet to the store",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Find pet by ID",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      },
+      "delete": {
+        "operationId": "deletePet",
+        "summary": "Deletes a pet",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}/uploadImage": {
+      "post": {
+        "operationId": "uploadFile",
+        "summary": "uploads an image",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// petstoreSpecJSONToolRemoved is petstoreSpecJSON with the
+// /pet/{petId}/uploadImage operation ("uploadfile") dropped entirely.
+const petstoreSpecJSONToolRemoved = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "paths": {
+    "/pet": {
+      "post": {
+        "operationId": "addPet",
+        "summary": "Add a new pet to the store",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Find pet by ID",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+
+// petstoreSpecJSONDescriptionChanged is petstoreSpecJSON with only
+// getPetById's summary changed, so only its derived description differs.
+const petstoreSpecJSONDescriptionChanged = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "paths": {
+    "/pet": {
+      "post": {
+        "operationId": "addPet",
+        "summary": "Add a new pet to the store",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Find a pet by its ID",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}/uploadImage": {
+      "post": {
+        "operationId": "uploadFile",
+        "summary": "uploads an image",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// petstoreSpecJSONSchemaChanged is petstoreSpecJSON with getPetById's petId
+// parameter changed from an integer to a string, so only its derived
+// inputSchema differs.
+const petstoreSpecJSONSchemaChanged = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "paths": {
+    "/pet": {
+      "post": {
+        "operationId": "addPet",
+        "summary": "Add a new pet to the store",
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}": {
+      "get": {
+        "operationId": "getPetById",
+        "summary": "Find pet by ID",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/pet/{petId}/uploadImage": {
+      "post": {
+        "operationId": "uploadFile",
+        "summary": "uploads an image",
+        "parameters": [
+          {"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+          }
+        }
       }
     }
   }
@@ -550,4 +759,232 @@ func TestOpenAPITools_StaleGeneratedFile_FailsWithStale(t *testing.T) {
 	_, stderr, err := execOpenAPITools(t, "tools")
 	require.Error(t, err)
 	require.Contains(t, stderr, "stale")
+}
+
+// --- generate --check ---
+
+// setupCheckServer generates outPath for "petstore" (source specPath) and
+// returns the config, ready for a "generate --check" test to mutate
+// specPath and re-check.
+func setupCheckServer(t *testing.T) (specPath, outPath string) {
+	t.Helper()
+	specPath = writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath = filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+	return specPath, outPath
+}
+
+func TestOpenAPIGenerateCheck_UpToDate_FileUntouched(t *testing.T) {
+	_, outPath := setupCheckServer(t)
+
+	before, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+
+	stdout, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Equal(t, fmt.Sprintf("server \"petstore\": up to date (%s)\n", outPath), stdout)
+
+	after, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "--check must never write")
+}
+
+func TestOpenAPIGenerateCheck_MissingFile(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Empty(t, stderr)
+	require.Contains(
+		t, stdout,
+		fmt.Sprintf(`server "petstore": %s is missing (run "manifold openapi generate")`, outPath),
+	)
+	require.Contains(t, err.Error(), "drift detected in 1 server(s)")
+
+	_, statErr := os.Stat(outPath)
+	require.True(t, os.IsNotExist(statErr), "--check must never create the file")
+}
+
+func TestOpenAPIGenerateCheck_SpecChanged_ToolsIdentical(t *testing.T) {
+	specPath, outPath := setupCheckServer(t)
+	before, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+
+	require.NoError(
+		t, os.WriteFile(specPath, []byte(petstoreSpecJSONInfoDescriptionChanged), 0o600),
+	)
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "drift detected in 1 server(s)")
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Regexp(t, `spec changed \(sha256 [0-9a-f]{8}… → [0-9a-f]{8}…\)`, stdout)
+	require.NotContains(t, stdout, "+ added")
+	require.NotContains(t, stdout, "- removed")
+	require.NotContains(t, stdout, "~ changed")
+	require.Contains(t, stdout, `run "manifold openapi generate" to update`)
+
+	after, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "--check must never write")
+}
+
+func TestOpenAPIGenerateCheck_ToolAdded(t *testing.T) {
+	specPath, outPath := setupCheckServer(t)
+	before, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONToolAdded), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Contains(t, stdout, "+ added: deletepet (DELETE /pet/{petId})")
+	require.NotContains(t, stdout, "- removed")
+	require.NotContains(t, stdout, "~ changed")
+
+	after, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "--check must never write")
+}
+
+func TestOpenAPIGenerateCheck_ToolRemoved(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONToolRemoved), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Contains(t, stdout, "- removed: uploadfile (POST /pet/{petId}/uploadImage)")
+	require.NotContains(t, stdout, "+ added")
+	require.NotContains(t, stdout, "~ changed")
+}
+
+func TestOpenAPIGenerateCheck_DescriptionChanged(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONDescriptionChanged), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Contains(t, stdout, "~ changed: getpetbyid (description)")
+	require.NotContains(t, stdout, "+ added")
+	require.NotContains(t, stdout, "- removed")
+}
+
+func TestOpenAPIGenerateCheck_InputSchemaChanged(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONSchemaChanged), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Contains(t, stdout, "~ changed: getpetbyid (inputSchema)")
+	require.NotContains(t, stdout, "+ added")
+	require.NotContains(t, stdout, "- removed")
+}
+
+func TestOpenAPIGenerateCheck_OutputWithServer_ComparesAgainstOutputPath(t *testing.T) {
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	outPath := filepath.Join(t.TempDir(), "custom.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{Spec: specPath, BaseURL: "http://example.local"},
+		},
+	})
+
+	_, _, err := execOpenAPITools(t, "generate", "--server", "petstore", "-o", outPath)
+	require.NoError(t, err)
+
+	stdout, stderr, err := execOpenAPITools(
+		t, "generate", "--check", "--server", "petstore", "-o", outPath,
+	)
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, fmt.Sprintf("up to date (%s)", outPath))
+}
+
+func TestOpenAPIGenerateCheck_OutputWithoutServer_Error(t *testing.T) {
+	withGlobalConfig(t, &config.Config{MCPServer: config.Servers{}})
+
+	_, _, err := execOpenAPITools(t, "generate", "--check", "-o", "./out.yaml")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--output requires --server")
+}
+
+func TestOpenAPIGenerateCheck_MultipleServers_OneUpToDateOneDrifts(t *testing.T) {
+	specPathAlpha := writeSpecFile(t, "alpha.json", petstoreSpecJSON)
+	specPathZebra := writeSpecFile(t, "zebra.json", petstoreSpecJSON)
+	outPathAlpha := filepath.Join(t.TempDir(), "alpha.yaml")
+	outPathZebra := filepath.Join(t.TempDir(), "zebra.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"alpha": &config.Server{
+				Spec: specPathAlpha, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPathAlpha},
+			},
+			"zebra": &config.Server{
+				Spec: specPathZebra, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPathZebra},
+			},
+		},
+	})
+
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(specPathZebra, []byte(petstoreSpecJSONToolAdded), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "drift detected in 1 server(s)")
+	require.Contains(t, stdout, fmt.Sprintf(`server "alpha": up to date (%s)`, outPathAlpha))
+	require.Contains(t, stdout, fmt.Sprintf(`server "zebra": drift detected (%s)`, outPathZebra))
+	require.Contains(t, stdout, "+ added: deletepet (DELETE /pet/{petId})")
+}
+
+func TestOpenAPIGenerateCheck_Swagger2Skipped(t *testing.T) {
+	path := writeSpecFile(t, "legacy.json", swagger2SpecJSON)
+	outPath := filepath.Join(t.TempDir(), "legacy.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"legacy": &config.Server{
+				Spec: path, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.NoError(t, err, "a skipped swagger2 server must not fail the command")
+	require.Contains(t, stderr, `server "legacy"`)
+	require.Contains(t, stderr, "does not support Swagger 2.x")
+	require.NotContains(t, stdout, "legacy")
+
+	_, statErr := os.Stat(outPath)
+	require.True(
+		t, os.IsNotExist(statErr), "no file should have been touched for a swagger2 server",
+	)
 }

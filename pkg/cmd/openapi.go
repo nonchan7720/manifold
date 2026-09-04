@@ -331,14 +331,20 @@ func newOpenAPIGenerateCmd() *cobra.Command {
 	var (
 		serverFilter string
 		output       string
+		check        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Write the generated tools file for OpenAPI-mode servers",
 		Long: "Builds the same catalog the gateway builds at startup, always from the live " +
 			"spec (an existing generated file is never read as input), and writes it to each " +
-			"server's tools.file — or to --output, which requires --server.",
+			"server's tools.file — or to --output, which requires --server. With --check, " +
+			"nothing is written: the would-be catalog is compared against what's on disk and " +
+			"any drift is reported (exit non-zero), for CI.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if check {
+				return runOpenAPIGenerateCheck(cmd, serverFilter, output)
+			}
 			return runOpenAPIGenerate(cmd, serverFilter, output)
 		},
 	}
@@ -346,6 +352,11 @@ func newOpenAPIGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVarP(
 		&output, "output", "o", "",
 		"output path (requires --server; default: the server's tools.file)",
+	)
+	cmd.Flags().BoolVar(
+		&check, "check", false,
+		"check whether the generated tools file is up to date instead of writing it "+
+			"(exit non-zero on drift)",
 	)
 	return cmd
 }
@@ -436,32 +447,42 @@ func loadGenerateSource(ctx context.Context, srv *config.Server) (*oastomcptool.
 	return source, nil
 }
 
-// generateOne loads srv's live spec, builds its catalog, and writes the
-// resulting generated tools file to outPath, returning the tool count on
-// success.
-func generateOne(ctx context.Context, srv *config.Server, outPath string) (int, error) {
+// buildGeneratedCatalog loads srv's live spec and builds the would-be
+// generated catalog for it — the same "load spec, build catalog, wrap as a
+// GeneratedCatalog" steps "generate" writes to disk and "generate --check"
+// diffs against what's on disk, factored out so the two commands cannot
+// diverge. Returns errSwagger2NotSupported for a Swagger 2.x spec.
+func buildGeneratedCatalog(
+	ctx context.Context, srv *config.Server, generatedAt time.Time,
+) (*oastomcptool.GeneratedCatalog, error) {
 	source, err := loadGenerateSource(ctx, srv)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	registry, err := mcpsrv.BuildCatalog(ctx, &http.Client{}, source, srv.BaseURL, srv.ExtraHeaders)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	defs := registry.Definitions()
 
-	g, err := oastomcptool.NewGeneratedCatalog(
-		ctx, source, mcpsrv.GeneratedTools(defs), "manifold "+version.Version, time.Now(),
+	return oastomcptool.NewGeneratedCatalog(
+		ctx, source, mcpsrv.GeneratedTools(registry.Definitions()), "manifold "+version.Version,
+		generatedAt,
 	)
+}
+
+// generateOne loads srv's live spec, builds its catalog, and writes the
+// resulting generated tools file to outPath, returning the tool count on
+// success.
+func generateOne(ctx context.Context, srv *config.Server, outPath string) (int, error) {
+	g, err := buildGeneratedCatalog(ctx, srv, time.Now())
 	if err != nil {
 		return 0, err
 	}
-
 	if err := writeGeneratedFileAtomic(outPath, g); err != nil {
 		return 0, err
 	}
-	return len(defs), nil
+	return len(g.Tools), nil
 }
 
 // writeGeneratedFileAtomic encodes g as the generated tools file at path: it
@@ -503,4 +524,168 @@ func writeGeneratedFileAtomic(path string, g *oastomcptool.GeneratedCatalog) (rE
 		return fmt.Errorf("rename temp file into place: %w", err)
 	}
 	return nil
+}
+
+// --- generate --check ---
+
+// generatedCatalogDrift describes how the would-be generated catalog (built
+// fresh from the live spec by buildGeneratedCatalog) differs from what's on
+// disk at a server's output path, for "generate --check". A missing file is
+// reported as Missing, with the other fields left zero.
+type generatedCatalogDrift struct {
+	Missing              bool
+	SpecChanged          bool
+	OldSHA256, NewSHA256 string
+	Tools                mcpsrv.GeneratedToolsDiff
+}
+
+// empty reports whether d found no drift at all: no missing file, no spec
+// change, and no tool differences. A spec change with an identical tool
+// list still counts as drift — the embedded spec drives runtime request
+// building (e.g. multipart handling), not only the tools section.
+func (d generatedCatalogDrift) empty() bool {
+	return !d.Missing && !d.SpecChanged && d.Tools.Empty()
+}
+
+// checkOne builds the would-be generated catalog for srv from its live spec
+// and compares it against the existing file at outPath, ignoring
+// generatedBy and source.fetchedAt. Returns errSwagger2NotSupported for a
+// Swagger 2.x spec, same as generateOne.
+func checkOne(
+	ctx context.Context, srv *config.Server, outPath string,
+) (generatedCatalogDrift, error) {
+	next, err := buildGeneratedCatalog(ctx, srv, time.Now())
+	if err != nil {
+		return generatedCatalogDrift{}, err
+	}
+
+	f, err := os.Open(outPath) //nolint: gosec // outPath comes from config/flags, not a request
+	if err != nil {
+		if os.IsNotExist(err) {
+			return generatedCatalogDrift{Missing: true}, nil
+		}
+		return generatedCatalogDrift{}, fmt.Errorf("read %s: %w", outPath, err)
+	}
+	defer f.Close()
+
+	current, err := oastomcptool.ReadGeneratedCatalog(f)
+	if err != nil {
+		return generatedCatalogDrift{}, fmt.Errorf("read %s: %w", outPath, err)
+	}
+
+	drift := generatedCatalogDrift{Tools: mcpsrv.DiffGeneratedTools(current.Tools, next.Tools)}
+	if current.Source.SHA256 != next.Source.SHA256 {
+		drift.SpecChanged = true
+		drift.OldSHA256 = current.Source.SHA256
+		drift.NewSHA256 = next.Source.SHA256
+	}
+	return drift, nil
+}
+
+// runOpenAPIGenerateCheck drives "manifold openapi generate --check": for
+// every selected OpenAPI-mode server it builds the would-be generated
+// catalog from the live spec (never writing it) and compares it against the
+// file at its output path, printing an "up to date" or "drift detected"
+// line per server. Server selection, --output/--server validation, the
+// "no tools.file configured" skip, and the Swagger 2.x skip all match
+// "generate" exactly (see resolveGenerateOutput and runOpenAPIGenerate).
+// Returns a non-nil (joined) error if any server had drift or failed to
+// load.
+func runOpenAPIGenerateCheck(cmd *cobra.Command, serverFilter, output string) error {
+	if output != "" && serverFilter == "" {
+		return fmt.Errorf("--output requires --server")
+	}
+
+	ctx := cmd.Context()
+	names, err := selectOpenAPIServers(globalConfig, serverFilter)
+	if err != nil {
+		return err
+	}
+
+	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	var errs []error
+	driftCount := 0
+	for _, name := range names {
+		srv := globalConfig.MCPServer[name]
+
+		outPath, skip, err := resolveGenerateOutput(srv, serverFilter, output)
+		if err != nil {
+			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
+			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
+			continue
+		}
+		if skip {
+			fmt.Fprintf(stderr, "server %q: no tools.file configured, skipping\n", name)
+			continue
+		}
+
+		drift, err := checkOne(ctx, srv, outPath)
+		switch {
+		case errors.Is(err, errSwagger2NotSupported):
+			fmt.Fprintf(stderr, "server %q: %v, skipping\n", name, err)
+		case err != nil:
+			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
+			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
+		case drift.Missing:
+			driftCount++
+			fmt.Fprintf(
+				stdout,
+				"server %q: %s is missing (run \"manifold openapi generate\")\n",
+				name, outPath,
+			)
+		case drift.empty():
+			fmt.Fprintf(stdout, "server %q: up to date (%s)\n", name, outPath)
+		default:
+			driftCount++
+			writeDriftReport(stdout, name, outPath, drift)
+		}
+	}
+
+	if driftCount > 0 {
+		errs = append(errs, fmt.Errorf("drift detected in %d server(s)", driftCount))
+	}
+	return errors.Join(errs...)
+}
+
+// writeDriftReport prints the "drift detected" header for name/outPath
+// followed by one indented line per difference — spec change first, then
+// added/removed/changed tools each sorted by name — and a final line
+// pointing at "generate" to fix it.
+func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogDrift) {
+	fmt.Fprintf(w, "server %q: drift detected (%s)\n", name, outPath)
+	if drift.SpecChanged {
+		fmt.Fprintf(
+			w, "  spec changed (sha256 %s… → %s…)\n",
+			shortSHA256(drift.OldSHA256), shortSHA256(drift.NewSHA256),
+		)
+	}
+
+	added := slices.Clone(drift.Tools.Added)
+	sort.Slice(added, func(i, j int) bool { return added[i].Name < added[j].Name })
+	for _, t := range added {
+		fmt.Fprintf(w, "  + added: %s (%s)\n", t.Name, t.Operation)
+	}
+
+	removed := slices.Clone(drift.Tools.Removed)
+	sort.Slice(removed, func(i, j int) bool { return removed[i].Name < removed[j].Name })
+	for _, t := range removed {
+		fmt.Fprintf(w, "  - removed: %s (%s)\n", t.Name, t.Operation)
+	}
+
+	changed := slices.Clone(drift.Tools.Changed)
+	sort.Slice(changed, func(i, j int) bool { return changed[i].Name < changed[j].Name })
+	for _, c := range changed {
+		fmt.Fprintf(w, "  ~ changed: %s (%s)\n", c.Name, strings.Join(c.Fields, ", "))
+	}
+
+	fmt.Fprintln(w, `  run "manifold openapi generate" to update`)
+}
+
+// shortSHA256 returns the first 8 hex characters of a sha256 hex digest, for
+// the compact "sha256 <old8>… → <new8>…" drift line.
+func shortSHA256(sum string) string {
+	if len(sum) > 8 {
+		return sum[:8]
+	}
+	return sum
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -367,6 +368,136 @@ func TestVerifyGeneratedTools_DuplicateToolName(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, `"getwidget"`)
 	require.ErrorContains(t, err, "duplicate tool")
+}
+
+// --- DiffGeneratedTools ---
+
+func TestDiffGeneratedTools_Identical_Empty(t *testing.T) {
+	tools := []oastomcptool.GeneratedTool{
+		{
+			Name: "getwidget", Operation: "GET /widgets/{id}", Description: "Get a widget",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		{Name: "createwidget", Operation: "POST /widgets", Description: "Create a widget"},
+	}
+	diff := DiffGeneratedTools(tools, slices.Clone(tools))
+	require.True(t, diff.Empty())
+	require.Empty(t, diff.Added)
+	require.Empty(t, diff.Removed)
+	require.Empty(t, diff.Changed)
+}
+
+func TestDiffGeneratedTools_Added(t *testing.T) {
+	current := []oastomcptool.GeneratedTool{{Name: "getwidget", Operation: "GET /widgets/{id}"}}
+	next := []oastomcptool.GeneratedTool{
+		{Name: "getwidget", Operation: "GET /widgets/{id}"},
+		{Name: "createwidget", Operation: "POST /widgets"},
+	}
+	diff := DiffGeneratedTools(current, next)
+	require.False(t, diff.Empty())
+	require.Empty(t, diff.Removed)
+	require.Empty(t, diff.Changed)
+	require.Len(t, diff.Added, 1)
+	require.Equal(t, "createwidget", diff.Added[0].Name)
+	require.Equal(t, "POST /widgets", diff.Added[0].Operation)
+}
+
+func TestDiffGeneratedTools_Removed(t *testing.T) {
+	current := []oastomcptool.GeneratedTool{
+		{Name: "getwidget", Operation: "GET /widgets/{id}"},
+		{Name: "deletewidget", Operation: "DELETE /widgets/{id}"},
+	}
+	next := []oastomcptool.GeneratedTool{{Name: "getwidget", Operation: "GET /widgets/{id}"}}
+	diff := DiffGeneratedTools(current, next)
+	require.False(t, diff.Empty())
+	require.Empty(t, diff.Added)
+	require.Empty(t, diff.Changed)
+	require.Len(t, diff.Removed, 1)
+	require.Equal(t, "deletewidget", diff.Removed[0].Name)
+	require.Equal(t, "DELETE /widgets/{id}", diff.Removed[0].Operation)
+}
+
+func TestDiffGeneratedTools_Changed_EachFieldKind(t *testing.T) {
+	current := []oastomcptool.GeneratedTool{
+		{
+			Name: "operationchanged", Operation: "GET /widgets/{id}", Description: "same",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		{
+			Name: "descriptionchanged", Operation: "GET /widgets", Description: "old description",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		{
+			Name: "binarychanged", Operation: "GET /widgets/download", Description: "same",
+			BinaryResponse: false,
+		},
+		{
+			Name: "schemachanged", Operation: "POST /widgets", Description: "same",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
+			Name: "multiplechanged", Operation: "GET /old", Description: "old",
+			InputSchema: map[string]any{"type": "object"},
+		},
+	}
+	next := []oastomcptool.GeneratedTool{
+		{
+			Name: "operationchanged", Operation: "GET /widgets/{widgetId}", Description: "same",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		{
+			Name: "descriptionchanged", Operation: "GET /widgets", Description: "new description",
+			InputSchema: map[string]any{"type": "object"},
+		},
+		{
+			Name: "binarychanged", Operation: "GET /widgets/download", Description: "same",
+			BinaryResponse: true,
+		},
+		{
+			Name: "schemachanged", Operation: "POST /widgets", Description: "same",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			Name: "multiplechanged", Operation: "GET /new", Description: "new",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+	}
+
+	diff := DiffGeneratedTools(current, next)
+	require.False(t, diff.Empty())
+	require.Empty(t, diff.Added)
+	require.Empty(t, diff.Removed)
+	require.Len(t, diff.Changed, 5)
+
+	byName := make(map[string]GeneratedToolChange, len(diff.Changed))
+	for _, c := range diff.Changed {
+		byName[c.Name] = c
+	}
+	require.Equal(t, []string{"operation"}, byName["operationchanged"].Fields)
+	require.Equal(t, []string{"description"}, byName["descriptionchanged"].Fields)
+	require.Equal(t, []string{"binaryResponse"}, byName["binarychanged"].Fields)
+	require.Equal(t, []string{"inputSchema"}, byName["schemachanged"].Fields)
+	require.Equal(
+		t, []string{"operation", "description", "inputSchema"}, byName["multiplechanged"].Fields,
+	)
+}
+
+func TestDiffGeneratedTools_InputSchema_NumericTypeMismatchIsNotAChange(t *testing.T) {
+	// YAML decodes small integers as int; encoding/json decodes them as
+	// float64. equalAsJSON (canonical JSON) must treat these as equal.
+	current := []oastomcptool.GeneratedTool{
+		{Name: "t", InputSchema: map[string]any{"minimum": int(1)}},
+	}
+	next := []oastomcptool.GeneratedTool{
+		{Name: "t", InputSchema: map[string]any{"minimum": float64(1)}},
+	}
+	diff := DiffGeneratedTools(current, next)
+	require.True(t, diff.Empty())
 }
 
 // 実物に近い Petstore fixture で「生成 → 書き出し → tools.file から起動」を往復させ、
