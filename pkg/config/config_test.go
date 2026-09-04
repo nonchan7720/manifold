@@ -200,6 +200,32 @@ func TestConfig_ValidateWithContext_Authz_Enabled_DefaultsValid(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- oauth.cimd ---
+
+func TestConfig_ValidateWithContext_OAuthCIMD_Disabled_Valid(t *testing.T) {
+	cfg := newValidConfigWithServers(nil)
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+	require.False(t, cfg.OAuth.CIMD.Enabled)
+}
+
+func TestConfig_ValidateWithContext_OAuthCIMD_Enabled_DefaultsValid(t *testing.T) {
+	cfg := newValidConfigWithServers(nil)
+	cfg.OAuth = OAuthConfig{CIMD: CIMDConfig{Enabled: true}}
+	err := cfg.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestConfig_ValidateWithContext_OAuthCIMD_Enabled_InvalidOrigin_Invalid(t *testing.T) {
+	cfg := newValidConfigWithServers(nil)
+	cfg.OAuth = OAuthConfig{CIMD: CIMDConfig{
+		Enabled:        true,
+		AllowedOrigins: []string{"client.example.com"},
+	}}
+	err := cfg.ValidateWithContext(t.Context())
+	require.Error(t, err)
+}
+
 func TestConfig_ValidateWithContext_Reverse_RemotePairing_WithIdentities_Valid(t *testing.T) {
 	cfg := newValidConfigWithServers(Servers{
 		"app1": {

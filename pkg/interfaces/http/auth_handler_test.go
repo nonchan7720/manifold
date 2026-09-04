@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -782,6 +783,30 @@ func TestRegisterClientEndpoint_InvalidRedirectURIScheme(t *testing.T) {
 	require.Equal(t, "invalid_redirect_uri", body["error"])
 }
 
+func TestRegisterClientEndpoint_StoresDCRSource(t *testing.T) {
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{})
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/test/auth/clients",
+		strings.NewReader(`{"redirect_uris": ["https://app.example.com/callback"]}`),
+	)
+	rw := httptest.NewRecorder()
+
+	h.RegisterClientEndpoint(rw, req, &config.Server{Name: "test"})
+	require.Equal(t, http.StatusCreated, rw.Code)
+
+	var reg ClientRegistration
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &reg))
+	stored, ok := st.data[dcrClientKeyPrefix+reg.ClientID]
+	require.True(t, ok)
+	var storeReg StoreClientRegistration
+	require.NoError(t, json.Unmarshal([]byte(stored), &storeReg))
+	require.Equal(t, ClientSourceDCR, storeReg.Source)
+	require.Equal(t, "test", storeReg.MCPServerName)
+}
+
 func TestRegisterClientEndpoint_LocalhostAllowed(t *testing.T) {
 	st := newMockStore(map[string]string{})
 	h := NewAuthHandler(st, config.Servers{})
@@ -952,6 +977,294 @@ func TestEncryptDecryptToken_TamperDetected(t *testing.T) {
 	enc[len(enc)-1] ^= 0xFF
 	_, err = h.decryptToken(string(enc))
 	require.Error(t, err, "tampered ciphertext should fail decryption")
+}
+
+// --- resolveUpstreamClient ---
+
+func TestResolveUpstreamClient(t *testing.T) {
+	mapped := []config.OAuth2Client{{
+		DownstreamClientID: "client1",
+		ClientID:           "mapped-client",
+		ClientSecret:       "mapped-secret",
+	}}
+	tests := []struct {
+		name       string
+		oauth2     *config.OAuth2
+		downstream string
+		wantID     string
+		wantSecret string
+		wantErr    bool
+	}{
+		{
+			name:       "マッピング済み",
+			oauth2:     &config.OAuth2{ClientID: "shared", Clients: mapped},
+			downstream: "client1",
+			wantID:     "mapped-client",
+			wantSecret: "mapped-secret",
+		},
+		{
+			name:       "未登録は既定で拒否",
+			oauth2:     &config.OAuth2{ClientID: "shared", Clients: mapped},
+			downstream: "other",
+			wantErr:    true,
+		},
+		{
+			name: "未登録でも default なら共用クライアント",
+			oauth2: &config.OAuth2{
+				ClientID:      "shared",
+				ClientSecret:  "shared-secret",
+				UnknownClient: config.OAuth2UnknownClientDefault,
+				Clients:       mapped,
+			},
+			downstream: "other",
+			wantID:     "shared",
+			wantSecret: "shared-secret",
+		},
+		{
+			name:       "clients 未設定なら共用クライアント",
+			oauth2:     &config.OAuth2{ClientID: "shared", ClientSecret: "shared-secret"},
+			downstream: "client1",
+			wantID:     "shared",
+			wantSecret: "shared-secret",
+		},
+		{
+			name: "clients 未設定でも明示的に拒否できる",
+			oauth2: &config.OAuth2{
+				ClientID:      "shared",
+				UnknownClient: config.OAuth2UnknownClientReject,
+			},
+			downstream: "client1",
+			wantErr:    true,
+		},
+		{
+			name:       "oauth2 未設定",
+			oauth2:     nil,
+			downstream: "client1",
+			wantErr:    true,
+		},
+	}
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := &config.Server{Name: "myserver", OAuth2: tt.oauth2}
+			gotID, gotSecret, err := h.resolveUpstreamClient(srv, tt.downstream)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantID, gotID)
+			require.Equal(t, tt.wantSecret, gotSecret)
+		})
+	}
+}
+
+// --- LoginEndpoint: 下流クライアント → 上流クライアントのマッピング ---
+
+// newMappedLoginHandler は client1 を DCR 済みクライアントとして持つハンドラを返す。
+func newMappedLoginHandler(t *testing.T) (*AuthHandler, *mockStore) {
+	t.Helper()
+	regJSON, err := json.Marshal(ClientRegistration{
+		ClientID:     "client1",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+	})
+	require.NoError(t, err)
+	st := newMockStore(map[string]string{"oauth_client:client1": string(regJSON)})
+	return NewAuthHandler(st, config.Servers{}), st
+}
+
+func mappedLoginServer(oauth2 *config.OAuth2) *config.Server {
+	return &config.Server{Name: "myserver", OAuth2: oauth2}
+}
+
+func mappedLoginRequest(t *testing.T) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/login?client_id=client1"+
+			"&redirect_uri=https://app.example.com/callback"+
+			"&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req.Host = "gateway.example.com"
+	return req
+}
+
+// upstreamAuthQuery は Location ヘッダーの上流認可 URL のクエリを返す。
+func upstreamAuthQuery(t *testing.T, rw *httptest.ResponseRecorder) url.Values {
+	t.Helper()
+	loc, err := url.Parse(rw.Header().Get("Location"))
+	require.NoError(t, err)
+	return loc.Query()
+}
+
+// storedAuthSession は store に保存された唯一の認証セッションを返す。
+func storedAuthSession(t *testing.T, st *mockStore) AuthSession {
+	t.Helper()
+	for k, v := range st.data {
+		if !strings.HasPrefix(k, "auth_session:") {
+			continue
+		}
+		var session AuthSession
+		require.NoError(t, json.Unmarshal([]byte(v), &session))
+		return session
+	}
+	t.Fatal("auth_session should be stored")
+	return AuthSession{}
+}
+
+func TestLoginEndpoint_MappedUpstreamClient(t *testing.T) {
+	h, st := newMappedLoginHandler(t)
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:     "shared",
+		ClientSecret: "shared-secret",
+		AuthURL:      "https://auth.example.com/auth",
+		TokenURL:     "https://auth.example.com/token",
+		Clients: []config.OAuth2Client{{
+			DownstreamClientID: "client1",
+			ClientID:           "mapped-client",
+			ClientSecret:       "mapped-secret",
+		}},
+	})
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	require.Equal(t, "mapped-client", upstreamAuthQuery(t, rw).Get("client_id"))
+
+	session := storedAuthSession(t, st)
+	require.Equal(t, "mapped-client", session.OAuth2ClientID)
+	require.Equal(t, "mapped-secret", session.OAuth2ClientSecret)
+}
+
+func TestLoginEndpoint_UnmappedUpstreamClientRejected(t *testing.T) {
+	h, _ := newMappedLoginHandler(t)
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:     "shared",
+		ClientSecret: "shared-secret",
+		AuthURL:      "https://auth.example.com/auth",
+		TokenURL:     "https://auth.example.com/token",
+		Clients: []config.OAuth2Client{{
+			DownstreamClientID: "other",
+			ClientID:           "mapped-client",
+		}},
+	})
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
+}
+
+func TestLoginEndpoint_UnmappedUpstreamClientDefault(t *testing.T) {
+	h, _ := newMappedLoginHandler(t)
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:      "shared",
+		ClientSecret:  "shared-secret",
+		AuthURL:       "https://auth.example.com/auth",
+		TokenURL:      "https://auth.example.com/token",
+		UnknownClient: config.OAuth2UnknownClientDefault,
+		Clients: []config.OAuth2Client{{
+			DownstreamClientID: "other",
+			ClientID:           "mapped-client",
+		}},
+		AuthParams: map[string]string{"prompt": "consent"},
+	})
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	q := upstreamAuthQuery(t, rw)
+	require.Equal(t, "shared", q.Get("client_id"))
+	require.Equal(t, "consent", q.Get("prompt"))
+}
+
+func TestLoginEndpoint_NoAuthParams(t *testing.T) {
+	h, _ := newMappedLoginHandler(t)
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:     "shared",
+		ClientSecret: "shared-secret",
+		AuthURL:      "https://auth.example.com/auth",
+		TokenURL:     "https://auth.example.com/token",
+	})
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	require.NotContains(t, upstreamAuthQuery(t, rw), "prompt")
+}
+
+// マッピングした上流クライアントは、コールバックで作られる refresh_session まで届く。
+func TestLoginEndpoint_MappedUpstreamClientReachesRefreshSession(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "upstream-access-token",
+			"token_type":    "Bearer",
+			"refresh_token": "upstream-refresh-token",
+		})
+	}))
+	defer tokenSrv.Close()
+
+	regJSON, err := json.Marshal(ClientRegistration{
+		ClientID:     "client1",
+		RedirectURIs: []string{"https://app.example.com/callback"},
+	})
+	require.NoError(t, err)
+	st := newMockStore(map[string]string{"oauth_client:client1": string(regJSON)})
+	h := NewAuthHandler(st, config.Servers{},
+		WithEncryptKey(make([]byte, 32)), WithHTTPClient(http.DefaultClient))
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:     "shared",
+		ClientSecret: "shared-secret",
+		AuthURL:      "https://auth.example.com/auth",
+		TokenURL:     tokenSrv.URL + "/token",
+		Clients: []config.OAuth2Client{{
+			DownstreamClientID: "client1",
+			ClientID:           "mapped-client",
+			ClientSecret:       "mapped-secret",
+		}},
+	})
+
+	rw := httptest.NewRecorder()
+	h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+	require.Equal(t, http.StatusFound, rw.Code)
+	sessionID := upstreamAuthQuery(t, rw).Get("state")
+	require.NotEmpty(t, sessionID)
+
+	cbReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/callback?state="+sessionID+"&code=upstream-code", nil)
+	cbReq.Host = "gateway.example.com"
+	cbRW := httptest.NewRecorder()
+	h.CallbackEndpoint(cbRW, cbReq, srv)
+	require.Equal(t, http.StatusFound, cbRW.Code)
+
+	encrypted, ok := st.data["refresh_session:upstream-refresh-token"]
+	require.True(t, ok, "refresh_session should be stored")
+	rtSessionJSON, err := h.decryptToken(encrypted)
+	require.NoError(t, err)
+	var rtSession RefreshTokenSession
+	require.NoError(t, json.Unmarshal(rtSessionJSON, &rtSession))
+	require.Equal(t, "mapped-client", rtSession.OAuth2ClientID)
+	require.Equal(t, "mapped-secret", rtSession.OAuth2ClientSecret)
+}
+
+// manifold 側に同意済みスキップの経路は無く、同じ client_id でも毎回上流へ送る。
+func TestLoginEndpoint_AlwaysRedirectsUpstream(t *testing.T) {
+	h, _ := newMappedLoginHandler(t)
+	srv := mappedLoginServer(&config.OAuth2{
+		ClientID:     "shared",
+		ClientSecret: "shared-secret",
+		AuthURL:      "https://auth.example.com/auth",
+		TokenURL:     "https://auth.example.com/token",
+	})
+
+	for range 2 {
+		rw := httptest.NewRecorder()
+		h.LoginEndpoint(rw, mappedLoginRequest(t), srv)
+		require.Equal(t, http.StatusFound, rw.Code)
+		require.Contains(t, rw.Header().Get("Location"), "https://auth.example.com/auth")
+	}
 }
 
 // --- LoginEndpoint: MCPServerName がセッションに保存される ---
