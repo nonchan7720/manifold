@@ -51,8 +51,25 @@ func Load(ctx context.Context, configName string) (*Config, error) {
 // expandEnvVars substitutes ${VAR} / ${VAR:-default} references in every
 // string value viper has loaded, using template.Substitute against the
 // process environment.
+//
+// viper.AllKeys does not descend into sequences, so a list-valued setting is
+// reached as a single leaf and its elements are substituted by walking the
+// value itself (see substituteEnvVars). The value is only written back when a
+// substitution actually happened, so that settings left untouched here keep
+// resolving through viper's normal precedence (AutomaticEnv over the config
+// file) instead of being pinned into the override layer.
 func expandEnvVars(v *viper.Viper) error {
 	for _, key := range v.AllKeys() {
+		if elems, ok := v.Get(key).([]any); ok {
+			expanded, changed, err := substituteEnvVars(elems)
+			if err != nil {
+				return err
+			}
+			if changed {
+				v.Set(key, expanded)
+			}
+			continue
+		}
 		val := v.GetString(key)
 		if !strings.Contains(val, "$") {
 			continue
@@ -66,32 +83,85 @@ func expandEnvVars(v *viper.Viper) error {
 	return nil
 }
 
+// substituteEnvVars walks value, substituting ${VAR} references in every
+// string it contains, and reports whether anything changed.
+func substituteEnvVars(value any) (any, bool, error) {
+	switch typed := value.(type) {
+	case string:
+		if !strings.Contains(typed, "$") {
+			return value, false, nil
+		}
+		expanded, err := template.Substitute(typed, os.LookupEnv)
+		if err != nil {
+			return nil, false, err
+		}
+		return expanded, expanded != typed, nil
+	case []any:
+		out := make([]any, len(typed))
+		changed := false
+		for i, elem := range typed {
+			expanded, elemChanged, err := substituteEnvVars(elem)
+			if err != nil {
+				return nil, false, err
+			}
+			out[i] = expanded
+			changed = changed || elemChanged
+		}
+		return out, changed, nil
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		changed := false
+		for key, elem := range typed {
+			expanded, elemChanged, err := substituteEnvVars(elem)
+			if err != nil {
+				return nil, false, err
+			}
+			out[key] = expanded
+			changed = changed || elemChanged
+		}
+		return out, changed, nil
+	default:
+		return value, false, nil
+	}
+}
+
 // configDecodeHook returns the mapstructure.DecodeHookFunc used to unmarshal
 // the loaded config. It composes viper's default hooks (time.Duration and
-// comma-separated slice decoding) with stringToJSONMapHookFunc, since
+// comma-separated slice decoding) with stringToJSONHookFunc, since
 // supplying viper.DecodeHook replaces viper's defaults entirely.
+// stringToJSONHookFunc runs before StringToSliceHookFunc so that a JSON array
+// reaches it as a string rather than being split on commas first.
 func configDecodeHook() mapstructure.DecodeHookFunc {
 	return mapstructure.ComposeDecodeHookFunc(
 		mapstructure.StringToTimeDurationHookFunc(),
+		stringToJSONHookFunc(),
 		mapstructure.StringToSliceHookFunc(","),
-		stringToJSONMapHookFunc(),
 	)
 }
 
-// stringToJSONMapHookFunc decodes a string source into a map by parsing it as
-// JSON, so a map-typed field (e.g. telemetry headers) can be supplied whole
-// through a single ${VAR} environment variable expansion.
-func stringToJSONMapHookFunc() mapstructure.DecodeHookFunc {
+// stringToJSONHookFunc decodes a string source into a map or slice by parsing
+// it as JSON, so a whole map- or slice-typed field (e.g. telemetry headers or
+// oauth2 clients) can be supplied through a single ${VAR} environment variable
+// expansion. A slice is only decoded when the value looks like a JSON array,
+// leaving comma-separated values to StringToSliceHookFunc.
+func stringToJSONHookFunc() mapstructure.DecodeHookFunc {
 	return func(f, t reflect.Type, data any) (any, error) {
-		if f.Kind() != reflect.String || t.Kind() != reflect.Map {
+		if f.Kind() != reflect.String {
 			return data, nil
 		}
 		raw, ok := data.(string)
 		if !ok {
 			return data, nil
 		}
-		if raw == "" {
+		if t.Kind() == reflect.Map && raw == "" {
 			return reflect.Zero(t).Interface(), nil
+		}
+		// スライスは JSON 配列に見えるときだけ扱う。カンマ区切りの値は
+		// StringToSliceHookFunc に任せる。
+		isJSONSlice := t.Kind() == reflect.Slice &&
+			strings.HasPrefix(strings.TrimSpace(raw), "[")
+		if t.Kind() != reflect.Map && !isJSONSlice {
+			return data, nil
 		}
 		out := reflect.New(t)
 		if err := json.Unmarshal([]byte(raw), out.Interface()); err != nil {
@@ -148,6 +218,14 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("authz.input.tools", DefaultAuthzInputTools)
 	v.SetDefault("authz.input.toolName", DefaultAuthzInputToolName)
 
+	// Same reasoning as fileFetch above — also makes OAUTH_CIMD_ENABLED,
+	// OAUTH_CIMD_ALLOWEDORIGINS, OAUTH_CIMD_CACHETTL and
+	// OAUTH_CIMD_MAXDOCUMENTSIZE effective overrides.
+	v.SetDefault("oauth.cimd.enabled", false)
+	v.SetDefault("oauth.cimd.allowedOrigins", []string{})
+	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
+	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
+
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
@@ -165,6 +243,7 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
 	conf.FileFetch = conf.FileFetch.WithDefaults()
+	conf.OAuth.CIMD = conf.OAuth.CIMD.WithDefaults()
 
 	for name, srv := range conf.MCPServer {
 		srv.Name = name

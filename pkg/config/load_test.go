@@ -247,6 +247,206 @@ func TestNormalizeReverseOrigins_IgnoresNonReverseServers(t *testing.T) {
 	require.Equal(t, "http://example.com", servers["http-backend"].URL)
 }
 
+// --- oauth.cimd ---
+
+func TestLoadInternal_OAuthCIMD_Defaults(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	// プロジェクトの config.yaml に oauth セクションは無いので既定値が適用される
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.False(t, cfg.OAuth.CIMD.Enabled)
+	require.Equal(t, DefaultCIMDCacheTTL, cfg.OAuth.CIMD.CacheTTL)
+	require.Equal(t, DefaultCIMDMaxDocumentSize, cfg.OAuth.CIMD.MaxDocumentSize)
+	require.Empty(t, cfg.OAuth.CIMD.AllowedOrigins)
+}
+
+func TestLoadInternal_OAuthCIMD_EnvOverride(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("OAUTH_CIMD_ENABLED", "true")
+	t.Setenv("OAUTH_CIMD_CACHETTL", "5m")
+	t.Setenv("OAUTH_CIMD_MAXDOCUMENTSIZE", "1024")
+	t.Setenv("OAUTH_CIMD_ALLOWEDORIGINS", "https://a.example.com,https://b.example.com")
+
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.True(t, cfg.OAuth.CIMD.Enabled)
+	require.Equal(t, 5*time.Minute, cfg.OAuth.CIMD.CacheTTL)
+	require.EqualValues(t, 1024, cfg.OAuth.CIMD.MaxDocumentSize)
+	require.Equal(
+		t,
+		[]string{"https://a.example.com", "https://b.example.com"},
+		cfg.OAuth.CIMD.AllowedOrigins,
+	)
+}
+
+// --- mcpServers.<name>.oauth2.clients: 設定ファイル経由でキーが変質しないこと ---
+
+// loadFromYAML は yamlDoc を config.yaml として一時ディレクトリに書き出し、
+// 実際の設定ファイル読み込み経路（loadInternal）を通して読み込む。
+// 構造体リテラルや JSON 環境変数からの組み立ては viper のキー処理を通らないため、
+// 設定ファイル経由でしか起きない変質を検出できない。
+func loadFromYAML(t *testing.T, yamlDoc string) (*Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(yamlDoc), 0o600))
+	t.Chdir(dir)
+	return loadInternal(t.Context(), "")
+}
+
+const downstreamCIMDClientID = "https://client-a.example.com/oauth-client.json"
+
+// DCR が発行する client_id 相当の、大文字小文字が混在する文字列。
+const downstreamDCRClientID = "x1Xe6XPajiLzj7cjYAe6ja9LbzzrwC9J"
+
+const downstreamMixedCasePathClientID = "https://client-b.example.com/OAuth/ClientMetadata.json"
+
+// viper は設定ファイルの map キーを小文字化し（insensitiviseMap）、さらに
+// expandEnvVars の viper.Set がキーをドットで分割して入れ子の map にしてしまう。
+// そのため下流 client_id を map のキーに置くと完全一致では保持できない。
+// clients はリストにして client_id を値の位置へ移してあるので、キー処理の
+// 影響を受けないことをこのテストで固定する。
+
+func TestLoadInternal_OAuth2Clients_KeysAreNotNormalized(t *testing.T) {
+	t.Setenv("CLIENT_A_SECRET", "secret-a")
+
+	cfg, err := loadFromYAML(t, `
+gateway:
+  encryptKey: `+validEncryptKey+`
+sqlite:
+  path: ":memory:"
+mcpServers:
+  mapped:
+    description: mapped backend
+    spec: https://example.com/openapi.json
+    baseURL: https://example.com
+    oauth2:
+      authURL: https://example.com/oauth/authorize
+      tokenURL: https://example.com/oauth/token
+      clients:
+        - downstreamClientID: "`+downstreamCIMDClientID+`"
+          clientID: upstream-a
+          clientSecret: ${CLIENT_A_SECRET}
+        - downstreamClientID: "`+downstreamDCRClientID+`"
+          clientID: upstream-dcr
+        - downstreamClientID: "`+downstreamMixedCasePathClientID+`"
+          clientID: upstream-b
+`)
+	require.NoError(t, err)
+
+	oauth2 := cfg.MCPServer["mapped"].OAuth2
+	require.NotNil(t, oauth2)
+	require.Len(t, oauth2.Clients, 3)
+
+	// ドットを含む HTTPS URL がそのまま引けること
+	got, ok := oauth2.UpstreamClient(downstreamCIMDClientID)
+	require.True(t, ok, "dotted HTTPS client_id must resolve; got %+v", oauth2.Clients)
+	require.Equal(t, "upstream-a", got.ClientID)
+	require.Equal(t, "secret-a", got.ClientSecret)
+
+	// 大文字小文字混在の DCR 発行 ID がそのまま引けること
+	got, ok = oauth2.UpstreamClient(downstreamDCRClientID)
+	require.True(t, ok, "mixed-case client_id must resolve; got %+v", oauth2.Clients)
+	require.Equal(t, "upstream-dcr", got.ClientID)
+
+	// パスに大文字を含む URL がそのまま引けること
+	got, ok = oauth2.UpstreamClient(downstreamMixedCasePathClientID)
+	require.True(t, ok, "mixed-case path must resolve; got %+v", oauth2.Clients)
+	require.Equal(t, "upstream-b", got.ClientID)
+
+	// 小文字化された形では引けないこと（完全一致であることの確認）
+	_, ok = oauth2.UpstreamClient(strings.ToLower(downstreamDCRClientID))
+	require.False(t, ok, "lower-cased client_id must not resolve")
+}
+
+// authParams のパラメータ名も同じ経路を通るため、設定ファイル経由で保持されることを確認する。
+func TestLoadInternal_OAuth2AuthParams_FromConfigFile(t *testing.T) {
+	cfg, err := loadFromYAML(t, `
+gateway:
+  encryptKey: `+validEncryptKey+`
+sqlite:
+  path: ":memory:"
+mcpServers:
+  mapped:
+    description: mapped backend
+    spec: https://example.com/openapi.json
+    baseURL: https://example.com
+    oauth2:
+      clientID: shared
+      clientSecret: shared-secret
+      authURL: https://example.com/oauth/authorize
+      tokenURL: https://example.com/oauth/token
+      authParams:
+        prompt: consent
+        access_type: offline
+`)
+	require.NoError(t, err)
+
+	oauth2 := cfg.MCPServer["mapped"].OAuth2
+	require.NotNil(t, oauth2)
+	require.Equal(
+		t,
+		map[string]string{"prompt": "consent", "access_type": "offline"},
+		oauth2.AuthParams,
+	)
+}
+
+// --- mcpServers.<name>.oauth2: clients / authParams を JSON 文字列の環境変数から注入 ---
+
+func TestConfigDecodeHook_OAuth2MapsFromJSONEnvVar(t *testing.T) {
+	t.Setenv("OAUTH2_CLIENTS_JSON",
+		`[{"downstreamClientID":"https://client.example.com/Meta.json",`+
+			`"clientID":"up","clientSecret":"sec"}]`)
+	t.Setenv("OAUTH2_AUTH_PARAMS_JSON", `{"prompt":"consent"}`)
+
+	const yamlDoc = `
+mcpServers:
+  api:
+    oauth2:
+      clients: ${OAUTH2_CLIENTS_JSON}
+      authParams: ${OAUTH2_AUTH_PARAMS_JSON}
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yamlDoc)))
+	require.NoError(t, expandEnvVars(v))
+
+	var conf Config
+	require.NoError(t, v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())))
+	oauth2 := conf.MCPServer["api"].OAuth2
+	require.NotNil(t, oauth2)
+	require.Equal(
+		t,
+		[]OAuth2Client{{
+			DownstreamClientID: "https://client.example.com/Meta.json",
+			ClientID:           "up",
+			ClientSecret:       "sec",
+		}},
+		oauth2.Clients,
+	)
+	require.Equal(t, map[string]string{"prompt": "consent"}, oauth2.AuthParams)
+}
+
+// カンマ区切りの環境変数から []string を組み立てる既存の経路が、
+// JSON デコードフックをスライスへ広げた後も壊れていないこと。
+func TestConfigDecodeHook_CommaSeparatedSliceStillWorks(t *testing.T) {
+	t.Setenv("ALLOWED_HOSTS", "a.example.com,b.example.com")
+
+	const yamlDoc = `
+fileFetch:
+  allowedHosts: ${ALLOWED_HOSTS}
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yamlDoc)))
+	require.NoError(t, expandEnvVars(v))
+
+	var conf Config
+	require.NoError(t, v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())))
+	require.Equal(t, []string{"a.example.com", "b.example.com"}, conf.FileFetch.AllowedHosts)
+}
+
 func TestFileFetchConfig_WithDefaults(t *testing.T) {
 	tests := []struct {
 		name string
