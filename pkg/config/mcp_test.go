@@ -30,6 +30,187 @@ func TestTokenExchange_ValidateWithContext_AcceptsAbsoluteURL(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- OAuth2.UnknownClientMode ---
+
+func TestOAuth2_UnknownClientMode(t *testing.T) {
+	tests := []struct {
+		name string
+		in   OAuth2
+		want string
+	}{
+		{
+			name: "clients 未設定なら共用クライアントへフォールバック",
+			in:   OAuth2{},
+			want: OAuth2UnknownClientDefault,
+		},
+		{
+			name: "clients 設定時は既定で拒否",
+			in: OAuth2{
+				Clients: []OAuth2Client{{DownstreamClientID: "a", ClientID: "up"}},
+			},
+			want: OAuth2UnknownClientReject,
+		},
+		{
+			name: "明示指定が優先される",
+			in: OAuth2{
+				UnknownClient: OAuth2UnknownClientDefault,
+				Clients:       []OAuth2Client{{DownstreamClientID: "a", ClientID: "up"}},
+			},
+			want: OAuth2UnknownClientDefault,
+		},
+		{
+			name: "clients 無しでも明示的に拒否できる",
+			in:   OAuth2{UnknownClient: OAuth2UnknownClientReject},
+			want: OAuth2UnknownClientReject,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.in.UnknownClientMode())
+		})
+	}
+}
+
+// --- OAuth2.ValidateWithContext ---
+
+func baseValidOAuth2() OAuth2 {
+	return OAuth2{
+		ClientID:     "id",
+		ClientSecret: "secret",
+		AuthURL:      "https://example.com/auth",
+		TokenURL:     "https://example.com/token",
+	}
+}
+
+func TestOAuth2_ValidateWithContext_SharedClientOnly_Valid(t *testing.T) {
+	c := baseValidOAuth2()
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_SharedClientMissingClientID_Invalid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.ClientID = ""
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_ClientsOnly_Valid(t *testing.T) {
+	// whitelist だけで上流クライアントが解決できるので共用クライアントは任意
+	c := OAuth2{
+		AuthURL:  "https://example.com/auth",
+		TokenURL: "https://example.com/token",
+		Clients: []OAuth2Client{{
+			DownstreamClientID: "https://client.example.com/meta.json",
+			ClientID:           "up",
+			ClientSecret:       "s",
+		}},
+	}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_ClientsWithDefaultMissingClientID_Invalid(t *testing.T) {
+	c := OAuth2{
+		AuthURL:       "https://example.com/auth",
+		TokenURL:      "https://example.com/token",
+		UnknownClient: OAuth2UnknownClientDefault,
+		Clients: []OAuth2Client{{
+			DownstreamClientID: "https://client.example.com/meta.json",
+			ClientID:           "up",
+		}},
+	}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_ClientsWithDefaultAndSharedClient_Valid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.UnknownClient = OAuth2UnknownClientDefault
+	c.Clients = []OAuth2Client{{
+		DownstreamClientID: "https://client.example.com/meta.json",
+		ClientID:           "up",
+	}}
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_UnknownClientValue_Invalid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.UnknownClient = "allow"
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_ClientEntryWithoutClientID_Invalid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.Clients = []OAuth2Client{{DownstreamClientID: "https://client.example.com/meta.json"}}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_EmptyDownstreamClientID_Invalid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.Clients = []OAuth2Client{{ClientID: "up"}}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_DuplicateDownstreamClientID_Invalid(t *testing.T) {
+	c := baseValidOAuth2()
+	c.Clients = []OAuth2Client{
+		{DownstreamClientID: "https://client.example.com/meta.json", ClientID: "up1"},
+		{DownstreamClientID: "https://client.example.com/meta.json", ClientID: "up2"},
+	}
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+// --- OAuth2.UpstreamClient ---
+
+func TestOAuth2_UpstreamClient(t *testing.T) {
+	c := OAuth2{Clients: []OAuth2Client{
+		{DownstreamClientID: "https://client-a.example.com/meta.json", ClientID: "up-a"},
+		{DownstreamClientID: "x1Xe6XPajiLzj7cjYAe6ja9LbzzrwC9J", ClientID: "up-dcr"},
+	}}
+
+	got, ok := c.UpstreamClient("https://client-a.example.com/meta.json")
+	require.True(t, ok)
+	require.Equal(t, "up-a", got.ClientID)
+
+	got, ok = c.UpstreamClient("x1Xe6XPajiLzj7cjYAe6ja9LbzzrwC9J")
+	require.True(t, ok)
+	require.Equal(t, "up-dcr", got.ClientID)
+
+	// 完全一致のみ。大文字小文字が違うものは一致しない
+	_, ok = c.UpstreamClient("x1xe6xpajilzj7cjyae6ja9lbzzrwc9j")
+	require.False(t, ok)
+
+	_, ok = c.UpstreamClient("unknown")
+	require.False(t, ok)
+}
+
+func TestOAuth2_ValidateWithContext_AuthParams(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  map[string]string
+		wantErr bool
+	}{
+		{name: "prompt", params: map[string]string{"prompt": "consent"}, wantErr: false},
+		{name: "empty key", params: map[string]string{"": "v"}, wantErr: true},
+		{name: "reserved client_id", params: map[string]string{"client_id": "x"}, wantErr: true},
+		{name: "reserved state", params: map[string]string{"state": "x"}, wantErr: true},
+		{
+			name:    "reserved code_challenge",
+			params:  map[string]string{"code_challenge": "x"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidOAuth2()
+			c.AuthParams = tt.params
+			err := c.ValidateWithContext(t.Context())
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // --- Server.ValidateWithContext: AuthValue/OAuth2/TokenExchange の排他性 ---
 
 func baseValidServer() Server {
