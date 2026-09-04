@@ -100,6 +100,44 @@ func TestNormalizeSwaggerJSON_InvalidJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNormalizeSwaggerJSON_YAML_UnquotedResponseCode(t *testing.T) {
+	// "200:" is a bare integer YAML map key (not valid JSON) — yaml.v3
+	// decodes it into map[interface{}]interface{}, which is exactly what
+	// the oasdiff/yaml conversion path exists to turn into map[string]any.
+	input := `
+definitions:
+  Pet:
+    required: true
+    properties:
+      name:
+        type: string
+responses:
+  200:
+    description: ok
+`
+	result, err := normalizeSwaggerJSON([]byte(input))
+	require.NoError(t, err)
+
+	var normalized map[string]any
+	require.NoError(t, json.Unmarshal(result, &normalized))
+
+	responses := normalized["responses"].(map[string]any)
+	require.Contains(t, responses, "200")
+
+	defs := normalized["definitions"].(map[string]any)
+	pet := defs["Pet"].(map[string]any)
+	_, hasRequired := pet["required"]
+	require.False(t, hasRequired, "boolean required should be removed from schema")
+}
+
+func TestNormalizeSwaggerJSON_YAML_NonObjectTopLevel(t *testing.T) {
+	// A bare YAML scalar decodes fine but isn't a spec — the JSON error from
+	// the first (failed) attempt should still be returned, not swallowed by
+	// the loosely-typed YAML fallback.
+	_, err := normalizeSwaggerJSON([]byte("just a scalar string"))
+	require.Error(t, err)
+}
+
 // --- removeBoolRequiredFromSchemas ---
 
 func TestRemoveBoolRequiredFromSchemas_Array(t *testing.T) {
@@ -188,6 +226,29 @@ func TestLoadSwaggerSpec(t *testing.T) {
 func TestLoadSwaggerSpec_NotFound(t *testing.T) {
 	_, err := LoadSwaggerSpec(context.Background(), "nonexistent_swagger.json")
 	require.Error(t, err)
+}
+
+func TestParseSwaggerSpec_YAML(t *testing.T) {
+	input := `
+swagger: "2.0"
+info:
+  title: Inline
+  version: "1.0.0"
+paths:
+  /ping:
+    get:
+      operationId: ping
+      responses:
+        200:
+          description: ok
+`
+	spec, err := ParseSwaggerSpec(context.Background(), []byte(input))
+	require.NoError(t, err)
+	require.NotNil(t, spec)
+	pathItem, ok := spec.Paths["/ping"]
+	require.True(t, ok)
+	require.NotNil(t, pathItem.Get)
+	require.Equal(t, "ping", pathItem.Get.OperationID)
 }
 
 // --- resolveSwaggerParamRef ---

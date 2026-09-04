@@ -27,6 +27,7 @@ import (
 // output ("manifold openapi tools" default format).
 const maxDescriptionRunes = 80
 
+// newOpenAPICmd builds the "manifold openapi" command group.
 func newOpenAPICmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "openapi",
@@ -37,6 +38,7 @@ func newOpenAPICmd() *cobra.Command {
 	return cmd
 }
 
+// newOpenAPIToolsCmd builds the "manifold openapi tools" command.
 func newOpenAPIToolsCmd() *cobra.Command {
 	var (
 		serverFilter string
@@ -324,6 +326,7 @@ var errSwagger2NotSupported = errors.New(
 	`generate does not support Swagger 2.x specs (Phase 1 is OpenAPI 3.x only)`,
 )
 
+// newOpenAPIGenerateCmd builds the "manifold openapi generate" command.
 func newOpenAPIGenerateCmd() *cobra.Command {
 	var (
 		serverFilter string

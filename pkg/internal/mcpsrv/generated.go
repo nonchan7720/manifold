@@ -41,6 +41,11 @@ func VerifyGeneratedTools(registry *MCPToolRegistry, g *oastomcptool.GeneratedCa
 
 	seen := make(map[string]struct{}, len(g.Tools))
 	for _, gt := range g.Tools {
+		if _, dup := seen[gt.Name]; dup {
+			return fmt.Errorf(
+				"generated tools are stale: duplicate tool %q in generated file", gt.Name,
+			)
+		}
 		seen[gt.Name] = struct{}{}
 		d, ok := byName[gt.Name]
 		if !ok {

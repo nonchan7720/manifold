@@ -351,6 +351,24 @@ func TestVerifyGeneratedTools_ExtraToolNotProducedBySpec(t *testing.T) {
 	require.ErrorContains(t, err, "not produced by spec")
 }
 
+func TestVerifyGeneratedTools_DuplicateToolName(t *testing.T) {
+	registry := verifyTestRegistry(t)
+	tools := GeneratedTools(registry.Definitions())
+	// "getwidget" をもう一つ同名で追加し、手編集で二重登録された生成物を模す。
+	var dup oastomcptool.GeneratedTool
+	for _, tool := range tools {
+		if tool.Name == "getwidget" {
+			dup = tool
+			break
+		}
+	}
+	tools = append(tools, dup)
+	err := VerifyGeneratedTools(registry, &oastomcptool.GeneratedCatalog{Tools: tools})
+	require.Error(t, err)
+	require.ErrorContains(t, err, `"getwidget"`)
+	require.ErrorContains(t, err, "duplicate tool")
+}
+
 // 実物に近い Petstore fixture で「生成 → 書き出し → tools.file から起動」を往復させ、
 // 突き合わせが通ることを確認する。required の順序が map 走査に依存していた頃は
 // ここが確率的に失敗していたため、複数回繰り返す。

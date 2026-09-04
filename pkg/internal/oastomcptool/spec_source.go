@@ -9,6 +9,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	yaml "go.yaml.in/yaml/v3"
 )
 
 // SpecFormat is the detected format of a fetched spec.
@@ -34,11 +35,14 @@ type SpecSource struct {
 	Swagger  *openapi2.T
 }
 
-// LoadSpecSource fetches the spec at specPath, determines whether it is an
-// OpenAPI 3.x or Swagger 2.x document, and loads it with the corresponding
-// loader (LoadOpenAPI3Spec / LoadSwaggerSpec). This is the "spec 入手" phase
-// that RegisterOpenAPI performed inline before it was split out so it can be
-// reused (e.g. by a future CLI) independently of catalog building.
+// LoadSpecSource fetches the spec at specPath exactly once, determines
+// whether it is an OpenAPI 3.x or Swagger 2.x document, and parses those
+// same fetched bytes with the corresponding loader (LoadOpenAPI3SpecFromData
+// / ParseSwaggerSpec) — so the returned Hash always describes the exact
+// document that was parsed, even for a remote spec that could otherwise
+// change between a hashing fetch and a parsing fetch. This is the "spec 入
+// 手" phase that RegisterOpenAPI performed inline before it was split out so
+// it can be reused (e.g. by a future CLI) independently of catalog building.
 func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr error) {
 	ctx = trace.StartSpan(ctx, "oastomcptool/LoadSpecSource")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -49,14 +53,8 @@ func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr e
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
 
-	// バージョン判定のため最小限の JSON デコード
-	var versionProbe struct {
-		Swagger string `json:"swagger"`
-	}
-	_ = json.Unmarshal(raw, &versionProbe)
-
-	if versionProbe.Swagger != "" {
-		spec, err := LoadSwaggerSpec(ctx, specPath)
+	if isSwaggerVersionProbe(raw) {
+		spec, err := ParseSwaggerSpec(ctx, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -68,7 +66,7 @@ func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr e
 		}, nil
 	}
 
-	spec, err := LoadOpenAPI3Spec(specPath)
+	spec, err := LoadOpenAPI3SpecFromData(raw, specPath)
 	if err != nil {
 		return nil, err
 	}
@@ -78,4 +76,23 @@ func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr e
 		Hash:     hash,
 		OpenAPI:  spec,
 	}, nil
+}
+
+// isSwaggerVersionProbe reports whether raw looks like a Swagger 2.x
+// document (a non-empty top-level "swagger" field), trying JSON first and
+// falling back to YAML so a YAML Swagger 2.x document is routed to the
+// Swagger loader rather than the OpenAPI 3 loader. A document that decodes
+// as neither is left for the OpenAPI 3 loader to produce the actual parse
+// error for, matching the previous (JSON-only, error-ignoring) behavior.
+func isSwaggerVersionProbe(raw []byte) bool {
+	var probe struct {
+		Swagger string `json:"swagger" yaml:"swagger"`
+	}
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		return probe.Swagger != ""
+	}
+	if err := yaml.Unmarshal(raw, &probe); err == nil {
+		return probe.Swagger != ""
+	}
+	return false
 }
