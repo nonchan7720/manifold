@@ -35,5 +35,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 	rootCmd.AddCommand(
 		newGatewayCmd(),
+		newOpenAPICmd(),
 	)
 }
