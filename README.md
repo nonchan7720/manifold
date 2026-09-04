@@ -41,6 +41,7 @@ Server
 ## Features
 
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
+- **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
@@ -103,6 +104,55 @@ docker compose up -d
 ```
 
 Ready-to-run configuration examples are available in the [`examples/`](examples/) directory.
+
+### Inspect and generate MCP tools
+
+For OpenAPI-mode servers (`spec` configured), `manifold openapi` shows what the gateway would register, and can write it to a file the gateway starts from — without ever fetching the spec at boot.
+
+```bash
+# Print the tools every OpenAPI-mode server would register (no gateway started)
+manifold openapi tools -c config
+
+# One server, with the full inputSchema
+manifold openapi tools -c config --server petstore --json
+
+# Write the generated tools file for every server that has tools.file configured
+manifold openapi generate -c config
+```
+
+`openapi tools` output:
+
+```text
+SERVER    TOOL          OPERATION          DESCRIPTION
+petstore  addpet        POST /pet          Add a new pet to the store.
+petstore  getpetbyid    GET /pet/{petId}   Find pet by ID.
+```
+
+The generated file (`tools.file`) is YAML, with a diffable `tools` section followed by the resolved spec:
+
+```yaml
+version: 1
+generatedBy: manifold 1.12.0
+source:
+  spec: https://petstore3.swagger.io/api/v3/openapi.json
+  sha256: "..."
+  fetchedAt: "2026-09-04T00:00:00Z"
+format: openapi3
+tools:
+  - name: getpetbyid
+    operation: GET /pet/{petId}
+    description: Find pet by ID.
+    binaryResponse: false
+    inputSchema: { ... }
+spec: { ... }   # openapi3 document, external $refs internalized
+```
+
+Recommended workflow:
+
+1. Add `tools.file` to the server's config (see [`mcpServers.<name>.tools`](#mcpservernametools)) and run `manifold openapi generate -c config`.
+2. Commit the generated file. Its `tools` section makes upstream spec changes reviewable as a normal PR diff.
+3. Start the gateway (`manifold gateway -c config`) — it reads the tools from the file, with no network access to `spec` at startup.
+4. After the upstream spec changes, re-run `manifold openapi generate -c config` and commit the update. A stale file (spec changed but the file wasn't regenerated) fails gateway startup with an error telling you to regenerate.
 
 ## Configuration
 
@@ -215,8 +265,30 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
+| `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpservernametools)). When set, the gateway starts from this file instead of fetching `spec` |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
+
+#### `mcpServers.<name>.tools`
+
+`tools.file` points at a generated tools file (written by `manifold openapi generate`, see [Inspect and generate MCP tools](#inspect-and-generate-mcp-tools)). When it is set, the gateway does not fetch `spec` at startup or during `specRefresh` — it loads the tools and the (already-resolved) spec straight from the file, with no network access.
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json   # still required — recorded as source.spec
+    baseURL: https://petstore3.swagger.io/api/v3
+    tools:
+      file: ./generated/petstore.yaml
+```
+
+- `spec` and `baseURL` are still required even when `tools.file` is set: `spec` is recorded in the file as its source, and `baseURL` is not derived from the generated spec.
+- At startup, Manifold rebuilds the tool catalog from the spec embedded in the file and compares it against the file's `tools` section. If they don't match (the file is out of date relative to its own embedded spec, or was hand-edited), startup fails, e.g. `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`.
+- `tools.file` and a positive `specRefreshInterval` are mutually exclusive, and a server with `tools.file` is excluded from `gateway.specRefresh` — there is no live spec to refresh from.
+- `tools.file` must be a local path; a URL is rejected.
+- Phase 1 supports OpenAPI 3.x specs only. `tools.file` cannot be used with a Swagger 2.x `spec`.
+- The generated file embeds the full resolved spec, including any internal hostnames or example values it contains. Review it before committing to a public repository.
 
 #### `mcpServers.<name>.oauth2`
 

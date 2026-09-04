@@ -8,6 +8,9 @@ mcpServers:
     description: Swagger Petstore sample API
     spec: https://petstore3.swagger.io/api/v3/openapi.json
     baseURL: https://petstore3.swagger.io/api/v3
+    # Run `manifold openapi generate -c config` once, then uncomment to start from the file instead of fetching spec.
+    # tools:
+    #   file: ./generated/petstore.yaml
 
 sqlite:
   path: ./tmp/manifold.db
