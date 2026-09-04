@@ -35,7 +35,7 @@ typed な Go 構造体が欲しい人には oapi-codegen と MCP SDK を直接�
 
 - ツール名の変更・除外・description 上書き（overrides）。生成物を「手で編集する」形にしたくなる要望が出るはずだが、Phase 1 では生成物は機械生成のみとし、編集は config 側の overrides として別途設計する（「後続: overrides」節）
 - Go コード生成、typed struct、ライブラリとしての組み込み（Phase 2）
-- Swagger 2.x の外部 `$ref` 解決（現状も解決していない。後述）
+- **Swagger 2.x**。Phase 1 は OpenAPI 3.x のみ対応する。Swagger 2.x のサーバーに `tools.file` を指定した場合は `Init` で明示的なエラーにし、`openapi tools` / `openapi generate` は対象外として警告を出してスキップする。Swagger 2.x 側は現状の `LoadSwaggerSpec` が外部 `$ref` を解決していないなど前提が異なるため、要望が出てから別途設計する
 
 ## 設計方針
 
@@ -99,7 +99,7 @@ manifold openapi generate -c config --check
 処理:
 
 1. `spec` を取得（`FetchSpecBytes`）し `source.sha256` を計算
-2. 形式判定 → ロード → OpenAPI 3.x は `InternalizeRefs` で外部 `$ref` を内部化
+2. 形式判定（`swagger` キーがあれば Swagger 2.x として警告しスキップ）→ ロード → `InternalizeRefs` で外部 `$ref` を内部化
 3. カタログを構築して `tools` セクションを生成
 4. `tools.file`（または `-o`）へ YAML で書き出す。キー順を安定させ、diff が読めるよう整形出力
 
@@ -147,17 +147,15 @@ spec:
 | --- | --- |
 | `version` | 形式のバージョン。ローダーは未知の版を拒否する |
 | `source` | 生成元の記録。`sha256` は `--check` の早期判定に使う |
-| `format` | `openapi3` または `swagger2`。ローダーはこれで `LoadOpenAPI3Spec` 相当 / `LoadSwaggerSpec` 相当を切り替える（現在は `swagger` キーの有無で判定しているが、明示する） |
-| `spec` | **ランタイムが実際に使う正本**。OpenAPI 3.x は外部 `$ref` を内部化した状態で保存する |
+| `format` | Phase 1 では `openapi3` のみ。ローダーは他の値を拒否する。将来 Swagger 2.x を足すときの拡張点として残す |
+| `spec` | **ランタイムが実際に使う正本**。外部 `$ref` を内部化した状態で保存する |
 | `tools` | `spec` から導出したツール一覧。**人が読むためのセクション**であり、ローダーは起動時に `spec` から再計算した結果と突き合わせ、不一致なら「生成物が古い」としてエラーにする |
 
 `tools` は導出データなので二重化になるが、「どんなツールが生成されるか」を PR の diff で読めることが本機能の目的そのものなので、整合性検査つきで持つ（判断事項 1）。書き出しは `gopkg.in/yaml.v3` のエンコーダで行い、`inputSchema` のような `map[string]any` はキーをソートして出す（既定でソートされるが、`spec` は `openapi3.T` の JSON 化を経由するので一度 `map[string]any` に落としてから YAML 化する）。ユーザーが `tools` を手で書き換えても起動時に弾かれる。編集したい場合は後続の overrides で対応する。
 
 ### 外部 `$ref` の内部化
 
-OpenAPI 3.x は `openapi3.T.InternalizeRefs` を使う。ロード後の `openapi3.T` をそのままシリアライズすると `Ref` が立っている箇所は `$ref` のまま出力されるため、外部参照が残ってしまう。`InternalizeRefs` で `components` 配下へ移してから書き出す。参照名の衝突（別ドキュメントに同名スキーマがある場合）はライブラリ側の命名解決に任せるが、フィクスチャで挙動を確認しておく（判断事項 4）。
-
-Swagger 2.x は現状の `LoadSwaggerSpec` が生ドキュメントを `json.Unmarshal` しているだけで外部 `$ref` を解決していない。生成物でも `normalizeSwaggerJSON` 適用後のドキュメントをそのまま保存し、外部参照は未対応のままとする。
+`openapi3.T.InternalizeRefs` を使う。ロード後の `openapi3.T` をそのままシリアライズすると `Ref` が立っている箇所は `$ref` のまま出力されるため、外部参照が残ってしまう。`InternalizeRefs` で `components` 配下へ移してから書き出す。参照名の衝突（別ドキュメントに同名スキーマがある場合）はライブラリ側の命名解決に任せるが、フィクスチャで挙動を確認しておく（判断事項 4）。
 
 ## config
 
@@ -182,6 +180,7 @@ mcpServers:
 - `tools.file` は `spec` と同時指定必須。`spec` は生成元として必要であり、ファイルにも `source.spec` として記録される
 - `tools.file` と `specRefreshInterval > 0` は排他。`gateway.specRefresh.interval` が設定されていても、`tools.file` を持つサーバーは `EffectiveSpecRefreshInterval` が 0 を返す
 - `baseURL` の必須条件は変えない（`spec` 指定時に必須）。生成物内の `servers` からは導出しない
+- `spec` が Swagger 2.x の場合、`tools.file` は指定できない。ただし config ロード時点では spec を取得しないため判定できず、実際の拒否は `Init` と `openapi generate` の形式判定で行う
 
 ## ランタイム挙動
 
@@ -196,7 +195,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 
 起動時（`Init`）:
 
-- `tools.file` があればファイルを読み、`version` と `format` を検証
+- `tools.file` があればファイルを読み、`version` と `format`（`openapi3` のみ）を検証
 - カタログを構築して `tools` セクションと突き合わせる。不一致なら `generated tools are stale for server "petstore": run "manifold openapi generate"` で起動失敗
 - `specHash` には生成物ファイルの sha256 を入れる（`specRefresh` は走らないが、状態としては保持する）
 
@@ -208,7 +207,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 | --- | --- |
 | `pkg/config/mcp.go` | `Tools.File` フィールドと上記バリデーション。`EffectiveSpecRefreshInterval` の分岐 |
 | `pkg/internal/oastomcptool`（新規 `generated.go`） | 生成物の型、`Write` / `Read`、`InternalizeRefs` 呼び出し、`tools` 突き合わせ |
-| `pkg/internal/mcpsrv/register_openapi.go` | 入手と構築の分離。構築結果（名前・operation・description・inputSchema・binaryResponse）を CLI からも取り出せる形で返す |
+| `pkg/internal/mcpsrv/register_openapi.go` | 入手と構築の分離（OpenAPI 3.x 経路のみ。Swagger 2.x 経路は現状のまま）。構築結果（名前・operation・description・inputSchema・binaryResponse）を CLI からも取り出せる形で返す |
 | `pkg/internal/mcpsrv/spec_refresh.go` | `tools.file` サーバーをリフレッシュ対象から外す（`EffectiveSpecRefreshInterval` 経由で自然に外れる想定。明示チェックも入れる） |
 | `pkg/cmd`（新規 `openapi.go`） | `openapi tools`（`--server` / `--tool` / `--json` / `--from-spec`）、`openapi generate`（`--server` / `-o` / `--check`） |
 | README / README_ja / `examples/openapi-backend` | 設定リファレンスに `tools.file` を追加。example に `openapi tools` の実行例と、`generated/` を commit して CI で `--check` を回す例を追加。example README の「初回リクエスト時に遅延取得」という記述は現状の `Init` 挙動（起動時取得）と合っていないので合わせて修正する |
@@ -224,7 +223,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 - **結合**
   - spec URL が到達不能（httptest サーバー停止）な状態で `tools.file` から `Init` が成功し、`tools/list` と `tools/call` がバックエンド（httptest）に対して動くこと
   - `openapi tools --json` の出力と、起動したゲートウェイの `tools/list` の結果が一致すること
-  - Swagger 2.x で同じ経路を通すこと
+  - Swagger 2.x の spec を持つサーバーに `tools.file` を指定すると `Init` が明示的なエラーで失敗し、`openapi generate` が警告してスキップすること
   - `specRefresh` を有効にした config で `tools.file` サーバーの refresh goroutine が起動しないこと
 
 ## 判断事項と懸念
@@ -234,7 +233,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 3. **`spec` を必須のままにするか**: する。「`tools.file` だけ書けば動く」方が手軽だが、生成元が config に無いと `--check` が成り立たず、再生成手順も自明でなくなる
 4. **`InternalizeRefs` の命名**: 別ドキュメントに同名スキーマがある場合の衝突解決はライブラリ依存。フィクスチャで確認し、問題があれば `RefNameResolver` を差し替える
 5. **秘匿情報**: spec には内部ホスト名や、稀に例として書かれたトークン様の値が含まれることがある。生成物を公開リポジトリに置く際の注意としてドキュメントに明記する
-6. **Swagger 2.x の外部 `$ref`**: 現状も未解決なので Phase 1 では扱わない。制限としてドキュメントに書く
+6. **Swagger 2.x**: Phase 1 では非対応。`format` フィールドを残しているので、対応するときは生成物形式を変えずに `swagger2` を足せる
 7. **コマンド名**: `generate` は Phase 2 の Go コード生成と名前が重なる。Phase 2 では `generate --lang go` のようにフラグで分けるか、`codegen` を別コマンドにする。Phase 1 の時点では `generate` = YAML 生成物のみ
 8. **YAML の表現**: description に複数行文字列や `#` が含まれるとき、エンコーダのクォート・ブロックスカラー選択が diff を不安定にすることがある。golden テストで代表的な spec（Petstore と、複数行 description を含む自前フィクスチャ）の出力を固定し、yaml.v3 のバージョン更新時に差分が出ないことを確認する
 
