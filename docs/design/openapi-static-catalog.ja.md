@@ -26,7 +26,7 @@ typed な Go 構造体が欲しい人には oapi-codegen と MCP SDK を直接�
 **含む**
 
 - `manifold openapi tools`: 生成されるツール一覧を標準出力に表示する（ファイルは書かない）
-- `manifold openapi generate`: 生成結果をファイルに書き出す
+- `manifold openapi generate`: 生成結果を YAML ファイルに書き出す
 - `mcpServers.<name>.tools.file` によるファイルからの起動（ネットワークアクセス無し）
 - `manifold openapi generate --check` による CI 上の drift 検出
 - `specRefresh` との排他
@@ -45,7 +45,7 @@ typed な Go 構造体が欲しい人には oapi-codegen と MCP SDK を直接�
 flowchart LR
     subgraph src["spec の入手（差し替わる部分）"]
         R["remote / file<br/>spec: に指定された URL・パス"]
-        S["生成物<br/>tools.file: に指定されたファイル"]
+        S["生成物 (YAML)<br/>tools.file: に指定されたファイル"]
     end
     subgraph build["カタログ構築（共通・既存）"]
         B["BuildInputSchema<br/>CreateToolFunction"]
@@ -81,7 +81,7 @@ petstore  getpetbyid       GET /pet/{petId}     Find pet by ID
 petstore  uploadfile       POST /pet/{petId}/uploadImage   uploads an image   [binary]
 ```
 
-`--json` は次節の生成物の `tools` セクションと同じ構造を出す。`--tool` は該当ツールの inputSchema を整形して表示する。spec の取得元は config の `spec`。`tools.file` が設定されているサーバーは、`--from-spec` を付けない限り生成物から読む（「今ゲートウェイが使うもの」を見せる）。
+`--json` は次節の生成物の `tools` セクションと同じ構造を JSON で出す（スクリプトや `jq` 向け。生成物そのものは YAML）。`--tool` は該当ツールの inputSchema を整形して表示する。spec の取得元は config の `spec`。`tools.file` が設定されているサーバーは、`--from-spec` を付けない限り生成物から読む（「今ゲートウェイが使うもの」を見せる）。
 
 ### `manifold openapi generate`: 生成物を書き出す
 
@@ -90,7 +90,7 @@ petstore  uploadfile       POST /pet/{petId}/uploadImage   uploads an image   [b
 manifold openapi generate -c config
 
 # 1 サーバーだけ、出力先を明示
-manifold openapi generate -c config --server petstore -o ./generated/petstore.json
+manifold openapi generate -c config --server petstore -o ./generated/petstore.yaml
 
 # CI: 再生成した結果とディスク上のファイルを比較し、差分があれば exit 1
 manifold openapi generate -c config --check
@@ -101,7 +101,7 @@ manifold openapi generate -c config --check
 1. `spec` を取得（`FetchSpecBytes`）し `source.sha256` を計算
 2. 形式判定 → ロード → OpenAPI 3.x は `InternalizeRefs` で外部 `$ref` を内部化
 3. カタログを構築して `tools` セクションを生成
-4. `tools.file`（または `-o`）へ書き出す。キー順を安定させ、diff が読めるよう整形出力
+4. `tools.file`（または `-o`）へ YAML で書き出す。キー順を安定させ、diff が読めるよう整形出力
 
 `--check`:
 
@@ -113,30 +113,35 @@ manifold openapi generate -c config --check
 
 ## 生成物の形式
 
-1 サーバーにつき 1 ファイル。JSON、拡張子は `.json`。
+1 サーバーにつき 1 ファイル。**YAML**、拡張子は `.yaml`。config が YAML なので揃え、人が読む `tools` セクションを diff で追いやすくする。JSON は YAML のサブセットなので、生成元 spec が JSON でも同じローダーで読める。
 
-```json
-{
-  "version": 1,
-  "generatedBy": "manifold 1.12.0",
-  "source": {
-    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
-    "sha256": "…取得した生バイト列の sha256…",
-    "fetchedAt": "2026-09-04T00:00:00Z"
-  },
-  "format": "openapi3",
-  "spec": { "openapi": "3.0.2", "paths": { … }, "components": { … } },
-  "tools": [
-    {
-      "name": "getpetbyid",
-      "operation": "GET /pet/{petId}",
-      "description": "Find pet by ID",
-      "inputSchema": { "type": "object", "properties": { … } },
-      "binaryResponse": false
-    }
-  ]
-}
+```yaml
+version: 1
+generatedBy: manifold 1.12.0
+source:
+  spec: https://petstore3.swagger.io/api/v3/openapi.json
+  sha256: "…取得した生バイト列の sha256…"
+  fetchedAt: "2026-09-04T00:00:00Z"
+format: openapi3
+tools:
+  - name: getpetbyid
+    operation: GET /pet/{petId}
+    description: Find pet by ID
+    binaryResponse: false
+    inputSchema:
+      type: object
+      properties:
+        petId:
+          type: integer
+          description: ID of pet to return
+      required: [petId]
+spec:
+  openapi: 3.0.2
+  paths: { … }
+  components: { … }
 ```
+
+`tools` を `spec` より前に置く。ファイルを開いたときに、まず「どんなツールが生成されるか」が見え、内部化された spec は末尾に来る。
 
 | フィールド | 役割 |
 | --- | --- |
@@ -146,11 +151,11 @@ manifold openapi generate -c config --check
 | `spec` | **ランタイムが実際に使う正本**。OpenAPI 3.x は外部 `$ref` を内部化した状態で保存する |
 | `tools` | `spec` から導出したツール一覧。**人が読むためのセクション**であり、ローダーは起動時に `spec` から再計算した結果と突き合わせ、不一致なら「生成物が古い」としてエラーにする |
 
-`tools` は導出データなので二重化になるが、「どんなツールが生成されるか」を PR の diff で読めることが本機能の目的そのものなので、整合性検査つきで持つ（判断事項 1）。ユーザーが `tools` を手で書き換えても起動時に弾かれる。編集したい場合は後続の overrides で対応する。
+`tools` は導出データなので二重化になるが、「どんなツールが生成されるか」を PR の diff で読めることが本機能の目的そのものなので、整合性検査つきで持つ（判断事項 1）。書き出しは `gopkg.in/yaml.v3` のエンコーダで行い、`inputSchema` のような `map[string]any` はキーをソートして出す（既定でソートされるが、`spec` は `openapi3.T` の JSON 化を経由するので一度 `map[string]any` に落としてから YAML 化する）。ユーザーが `tools` を手で書き換えても起動時に弾かれる。編集したい場合は後続の overrides で対応する。
 
 ### 外部 `$ref` の内部化
 
-OpenAPI 3.x は `openapi3.T.InternalizeRefs` を使う。ロード後の `openapi3.T` をそのまま JSON 化すると `Ref` が立っている箇所は `$ref` のまま出力されるため、外部参照が残ってしまう。`InternalizeRefs` で `components` 配下へ移してから書き出す。参照名の衝突（別ドキュメントに同名スキーマがある場合）はライブラリ側の命名解決に任せるが、フィクスチャで挙動を確認しておく（判断事項 4）。
+OpenAPI 3.x は `openapi3.T.InternalizeRefs` を使う。ロード後の `openapi3.T` をそのままシリアライズすると `Ref` が立っている箇所は `$ref` のまま出力されるため、外部参照が残ってしまう。`InternalizeRefs` で `components` 配下へ移してから書き出す。参照名の衝突（別ドキュメントに同名スキーマがある場合）はライブラリ側の命名解決に任せるが、フィクスチャで挙動を確認しておく（判断事項 4）。
 
 Swagger 2.x は現状の `LoadSwaggerSpec` が生ドキュメントを `json.Unmarshal` しているだけで外部 `$ref` を解決していない。生成物でも `normalizeSwaggerJSON` 適用後のドキュメントをそのまま保存し、外部参照は未対応のままとする。
 
@@ -163,7 +168,7 @@ mcpServers:
     spec: https://petstore3.swagger.io/api/v3/openapi.json   # 生成元。tools.file 使用時もそのまま残す
     baseURL: https://petstore3.swagger.io/api/v3
     tools:
-      file: ./generated/petstore.json                        # 指定時は起動・リフレッシュで spec を取得しない
+      file: ./generated/petstore.yaml                        # 指定時は起動・リフレッシュで spec を取得しない
 ```
 
 | 追加フィールド | 型 | 説明 |
@@ -187,7 +192,7 @@ mcpServers:
 | remote/file（現状） | `spec` | 形式、パース済み spec、生バイト列の sha256 |
 | generated | `tools.file` | 形式、`spec` フィールドから復元した spec、生成物ファイルの sha256 |
 
-generated 実装は `openapi3.Loader.LoadFromData` を **外部参照禁止**（`IsExternalRefsAllowed = false`）で使い、万一内部化漏れがあればロードエラーにする。これにより生成物からの起動時にネットワークアクセスが構造的に無いことを保証する。
+generated 実装は生成物の `spec` を JSON に変換してから `openapi3.Loader.LoadFromData` を **外部参照禁止**（`IsExternalRefsAllowed = false`）で使い、万一内部化漏れがあればロードエラーにする。これにより生成物からの起動時にネットワークアクセスが構造的に無いことを保証する。
 
 起動時（`Init`）:
 
@@ -224,13 +229,14 @@ generated 実装は `openapi3.Loader.LoadFromData` を **外部参照禁止**（
 
 ## 判断事項と懸念
 
-1. **`tools` セクションを持つか**: 持つ。導出データの二重化は、起動時の突き合わせで「古い生成物」をエラーにすることで担保する。持たない案は diff が `spec` の JSON 差分になり、「どんなツールが生成されるか」が読めないため不採用
+1. **`tools` セクションを持つか**: 持つ。導出データの二重化は、起動時の突き合わせで「古い生成物」をエラーにすることで担保する。持たない案は diff が `spec` 本体の差分になり、「どんなツールが生成されるか」が読めないため不採用
 2. **縮約形式にするか**: しない。`spec` をそのまま保存して既存パスに流すことで、ランタイム変更をほぼゼロに抑える。ファイルサイズは大きくなるが git 上の扱いとして許容範囲。将来 `--without-spec` のような軽量出力を検討する余地は残す
 3. **`spec` を必須のままにするか**: する。「`tools.file` だけ書けば動く」方が手軽だが、生成元が config に無いと `--check` が成り立たず、再生成手順も自明でなくなる
 4. **`InternalizeRefs` の命名**: 別ドキュメントに同名スキーマがある場合の衝突解決はライブラリ依存。フィクスチャで確認し、問題があれば `RefNameResolver` を差し替える
 5. **秘匿情報**: spec には内部ホスト名や、稀に例として書かれたトークン様の値が含まれることがある。生成物を公開リポジトリに置く際の注意としてドキュメントに明記する
 6. **Swagger 2.x の外部 `$ref`**: 現状も未解決なので Phase 1 では扱わない。制限としてドキュメントに書く
-7. **コマンド名**: `generate` は Phase 2 の Go コード生成と名前が重なる。Phase 2 では `generate --lang go` のようにフラグで分けるか、`codegen` を別コマンドにする。Phase 1 の時点では `generate` = JSON 生成物のみ
+7. **コマンド名**: `generate` は Phase 2 の Go コード生成と名前が重なる。Phase 2 では `generate --lang go` のようにフラグで分けるか、`codegen` を別コマンドにする。Phase 1 の時点では `generate` = YAML 生成物のみ
+8. **YAML の表現**: description に複数行文字列や `#` が含まれるとき、エンコーダのクォート・ブロックスカラー選択が diff を不安定にすることがある。golden テストで代表的な spec（Petstore と、複数行 description を含む自前フィクスチャ）の出力を固定し、yaml.v3 のバージョン更新時に差分が出ないことを確認する
 
 ## 後続: overrides
 
@@ -238,7 +244,7 @@ generated 実装は `openapi3.Loader.LoadFromData` を **外部参照禁止**（
 
 ```yaml
     tools:
-      file: ./generated/petstore.json
+      file: ./generated/petstore.yaml
       exclude: [deletepet, "^updatepet.*"]
       rename: { getpetbyid: get_pet }
       description: { get_pet: "ID を指定してペットを 1 件取得する" }
