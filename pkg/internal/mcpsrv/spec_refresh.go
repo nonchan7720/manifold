@@ -72,6 +72,12 @@ func (s *MCPServer) StartSpecRefresh(ctx context.Context, global time.Duration) 
 	s.refreshCancel = cancel
 	targets := make(map[string]time.Duration, len(s.openAPIStates))
 	for name, state := range s.openAPIStates {
+		// tools.file を持つサーバーは生成物から起動しており、spec を取り直す対象では
+		// ない。EffectiveSpecRefreshInterval が既に 0 を返すので自然に外れるが、
+		// 「リフレッシュしない」という不変条件をここでも明示しておく。
+		if state.cfg.GeneratedToolsFile() != "" {
+			continue
+		}
 		if interval := state.cfg.EffectiveSpecRefreshInterval(global); interval > 0 {
 			targets[name] = interval
 		}

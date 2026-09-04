@@ -44,11 +44,41 @@ func RegisterOpenAPI(
 	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
+	if opt.generatedToolsFile != "" {
+		return registerFromGeneratedToolsFile(ctx, c, opt.generatedToolsFile, baseUrl, headers)
+	}
+
 	source, err := oastomcptool.LoadSpecSource(ctx, specPath)
 	if err != nil {
 		return nil, err
 	}
 	return BuildCatalog(ctx, c, source, baseUrl, headers)
+}
+
+// registerFromGeneratedToolsFile builds a catalog from a generated tools
+// file (tools.file) instead of fetching a spec: it loads path with no
+// network access (oastomcptool.LoadGeneratedSpecSource), builds the catalog
+// from the internalized spec it carries exactly like the live path does,
+// and verifies the result against the file's own "tools" section — a
+// mismatch means the file is stale relative to what its spec now produces.
+func registerFromGeneratedToolsFile(
+	ctx context.Context,
+	c *http.Client,
+	path, baseUrl string,
+	headers map[string]string,
+) (*MCPToolRegistry, error) {
+	source, catalog, err := oastomcptool.LoadGeneratedSpecSource(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("load generated tools file %q: %w", path, err)
+	}
+	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyGeneratedTools(registry, catalog); err != nil {
+		return nil, fmt.Errorf(`%w (run "manifold openapi generate")`, err)
+	}
+	return registry, nil
 }
 
 // BuildCatalog builds an MCPToolRegistry from an already-loaded spec. This is

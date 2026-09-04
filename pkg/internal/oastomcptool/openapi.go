@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -953,6 +954,9 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					bodyRequired = append(bodyRequired, name)
 				}
 			}
+			// schema.Properties は map なので走査順が実行ごとに変わる。生成物（tools.file）
+			// との突き合わせや diff を安定させるため required はソートしておく。
+			slices.Sort(bodyRequired)
 			properties["body"] = map[string]any{
 				"type":        "object",
 				"description": build_body_description_openapi(baseDesc, schema),
@@ -980,6 +984,7 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				for _, r := range formSchema.Required {
 					schemaRequired[r] = true
 				}
+				formRequired := []string{}
 				for propName, propRef := range formSchema.Properties {
 					if propRef == nil || propRef.Value == nil {
 						continue
@@ -987,9 +992,12 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					name := sanitizeParamName(propName)
 					properties[name] = buildFormPropertySchema(propRef.Value)
 					if schemaRequired[propName] {
-						required = append(required, name)
+						formRequired = append(formRequired, name)
 					}
 				}
+				// map 走査由来の部分だけソートし、パラメータ由来の並び（spec の宣言順）は保つ
+				slices.Sort(formRequired)
+				required = append(required, formRequired...)
 			}
 		}
 	}

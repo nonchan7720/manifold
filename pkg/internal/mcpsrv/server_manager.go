@@ -114,7 +114,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				s.mediaUploader,
 				registerOpenAPIOptions(server)...)
 			if err != nil {
-				return err
+				// tools.file が古い場合のエラーはここでオペレーターがどのサーバーを
+				// 直せばいいか分かるよう、サーバー名を必ず含める。
+				return fmt.Errorf("server %q: %w", name, err)
 			}
 			s.openAPIStates[name] = &openAPIServerState{
 				srv:       srv,
@@ -178,11 +180,15 @@ func (s *MCPServer) Close() {
 }
 
 func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
-	return []RegisterOpenAPIOption{
+	opts := []RegisterOpenAPIOption{
 		WithAuth(server.AuthValue),
 		WithOAuth2(server.OAuth2),
 		WithTokenExchange(server.TokenExchange),
 	}
+	if file := server.GeneratedToolsFile(); file != "" {
+		opts = append(opts, WithGeneratedToolsFile(file))
+	}
+	return opts
 }
 
 // registerAPI builds the tools of an OpenAPI mode server and registers them on

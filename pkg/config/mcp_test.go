@@ -447,3 +447,103 @@ func TestIsReverseBackend(t *testing.T) {
 		})
 	}
 }
+
+// --- Server.Tools / GeneratedToolsFile / EffectiveSpecRefreshInterval ---
+
+func baseValidOpenAPIServer() Server {
+	return Server{
+		Description: "test openapi server",
+		Spec:        "http://example.com/openapi.json",
+		BaseURL:     "http://example.com",
+	}
+}
+
+func TestServer_GeneratedToolsFile_Unset(t *testing.T) {
+	s := Server{}
+	require.Equal(t, "", s.GeneratedToolsFile())
+}
+
+func TestServer_GeneratedToolsFile_Set(t *testing.T) {
+	s := Server{Tools: &ToolsConfig{File: "./generated/petstore.yaml"}}
+	require.Equal(t, "./generated/petstore.yaml", s.GeneratedToolsFile())
+}
+
+func TestServer_EffectiveSpecRefreshInterval_ToolsFileOverridesGlobal(t *testing.T) {
+	s := Server{
+		Spec:  "http://example.com/openapi.json",
+		Tools: &ToolsConfig{File: "./generated/petstore.yaml"},
+	}
+	require.Equal(t, time.Duration(0), s.EffectiveSpecRefreshInterval(5*time.Minute))
+}
+
+func TestServer_ValidateWithContext_ToolsFile_Valid(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	s.Tools = &ToolsConfig{File: "./generated/petstore.yaml"}
+	err := s.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestServer_ValidateWithContext_ToolsFile_RequiresSpec(t *testing.T) {
+	s := Server{
+		Description: "mcp backend",
+		Transport:   MCPTransportHTTP,
+		URL:         "http://example.com",
+		Tools:       &ToolsConfig{File: "./generated/backend.yaml"},
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "tools.file requires spec to be set")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_RejectsReverseServer(t *testing.T) {
+	s := Server{
+		Description: "reverse server",
+		Transport:   MCPTransportReverse,
+		Origin:      "https://app1.example.com",
+		Tools:       &ToolsConfig{File: "./generated/reverse.yaml"},
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "tools.file requires spec to be set")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_RejectsHTTPURL(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	s.Tools = &ToolsConfig{File: "https://example.com/generated/petstore.yaml"}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "tools.file must be a local path")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_RejectsHTTPSURL(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	s.Tools = &ToolsConfig{File: "http://example.com/generated/petstore.yaml"}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "tools.file must be a local path")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_ExclusiveWithSpecRefreshInterval(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	s.Tools = &ToolsConfig{File: "./generated/petstore.yaml"}
+	interval := 5 * time.Minute
+	s.SpecRefreshInterval = &interval
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "mutually exclusive")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_ZeroSpecRefreshIntervalOK(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	s.Tools = &ToolsConfig{File: "./generated/petstore.yaml"}
+	zero := time.Duration(0)
+	s.SpecRefreshInterval = &zero
+	err := s.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestServer_ValidateWithContext_ToolsUnset_NoError(t *testing.T) {
+	s := baseValidOpenAPIServer()
+	err := s.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}

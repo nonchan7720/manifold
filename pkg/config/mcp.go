@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
@@ -33,6 +34,10 @@ type Server struct {
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
 	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
 
+	// Tools は静的ツールカタログ（生成物）関連の設定。File が指定されると、
+	// 起動・リフレッシュで spec を取得せず生成物ファイルからツールを読み込む。
+	Tools *ToolsConfig `mapstructure:"tools"`
+
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
@@ -59,11 +64,25 @@ func (s Server) CallTimeoutOrDefault() time.Duration {
 	return s.CallTimeout
 }
 
+// GeneratedToolsFile returns tools.file, or "" when unset (or Tools itself
+// is unset).
+func (s Server) GeneratedToolsFile() string {
+	if s.Tools == nil {
+		return ""
+	}
+	return s.Tools.File
+}
+
 // EffectiveSpecRefreshInterval returns the refresh interval for this server,
 // falling back to the gateway-wide default. Only OpenAPI mode servers refresh;
-// others always return 0.
+// others always return 0. A server with tools.file set never refreshes
+// (it starts from the generated file, not the live spec), regardless of the
+// gateway-wide default.
 func (s Server) EffectiveSpecRefreshInterval(global time.Duration) time.Duration {
 	if s.Spec == "" {
+		return 0
+	}
+	if s.GeneratedToolsFile() != "" {
 		return 0
 	}
 	if s.SpecRefreshInterval != nil {
@@ -172,7 +191,32 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			}
 			return nil
 		})),
+		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
 	)
+}
+
+// validateToolsFile implements the tools.file rules from the design memo
+// (「config」節): it requires spec to be set (so MCP backend / reverse
+// servers, which have Spec == "", are rejected), rejects a URL (local paths
+// only), and is mutually exclusive with a positive specRefreshInterval.
+// Split out of ValidateWithContext to keep that function's branching down.
+func (s Server) validateToolsFile(value any) error {
+	file := s.GeneratedToolsFile()
+	if file == "" {
+		return nil
+	}
+	// spec 未指定（MCP バックエンド／reverse）は Spec == "" で弾く。
+	// 生成物には source.spec として記録するため、生成元が config に必要。
+	if s.Spec == "" {
+		return fmt.Errorf("tools.file requires spec to be set")
+	}
+	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
+		return fmt.Errorf("tools.file must be a local path, not a URL")
+	}
+	if s.SpecRefreshInterval != nil && *s.SpecRefreshInterval > 0 {
+		return fmt.Errorf("tools.file and specRefreshInterval are mutually exclusive")
+	}
+	return nil
 }
 
 // IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す。
@@ -185,6 +229,14 @@ func (s *Server) IsMCPBackend() bool {
 // IsReverseBackend はこの Server が WebMCP reverse connection gateway 経由かどうかを返す。
 func (s *Server) IsReverseBackend() bool {
 	return s.Transport == MCPTransportReverse
+}
+
+// ToolsConfig groups static tool catalog (生成物) settings under
+// mcpServers.<name>.tools. File is the only field in Phase 1; it is an
+// object (rather than tools.file directly) so overrides (exclude/rename/
+// description) can be added alongside it later without a breaking change.
+type ToolsConfig struct {
+	File string `mapstructure:"file"`
 }
 
 type OAuth2 struct {
