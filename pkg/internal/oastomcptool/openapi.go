@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -93,21 +95,51 @@ func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error)
 	return os.ReadFile(specPath) //nolint: gosec
 }
 
-// LoadOpenAPI3Spec loads an OpenAPI 3.x spec with automatic $ref resolution.
-func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
+// newOpenAPI3Loader builds the openapi3.Loader shared by LoadOpenAPI3Spec and
+// LoadOpenAPI3SpecFromData, with HTTP and file access enabled for resolving
+// external $refs.
+func newOpenAPI3Loader() *openapi3.Loader {
 	loader := openapi3.NewLoader()
 	loader.ReadFromURIFunc = openapi3.URIMapCache(
 		openapi3.ReadFromURIs(openapi3.ReadFromHTTP(client.HTTPClient()), openapi3.ReadFromFile),
 	)
 	loader.IsExternalRefsAllowed = true
+	return loader
+}
+
+// openAPI3SpecLocation builds the *url.URL kin-openapi's loader uses as a
+// document's location for specPath, replicating what LoadFromURI (for an
+// http(s) specPath) and LoadFromFile (for a local path) construct internally,
+// so relative external $refs resolve identically whether the spec bytes were
+// just fetched or are being reused from an earlier fetch.
+func openAPI3SpecLocation(specPath string) (*url.URL, error) {
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
-		u, err := url.Parse(specPath)
-		if err != nil {
-			return nil, err
-		}
-		return loader.LoadFromURI(u)
+		return url.Parse(specPath)
 	}
-	return loader.LoadFromFile(specPath)
+	return &url.URL{Path: filepath.ToSlash(specPath)}, nil
+}
+
+// LoadOpenAPI3SpecFromData parses raw as an OpenAPI 3.x spec, resolving
+// relative external $refs against specPath exactly as LoadOpenAPI3Spec would
+// for the same specPath — without fetching specPath again. Use this when raw
+// was already fetched (e.g. by FetchSpecBytes) and must be the exact bytes
+// that get parsed and hashed.
+func LoadOpenAPI3SpecFromData(raw []byte, specPath string) (*openapi3.T, error) {
+	location, err := openAPI3SpecLocation(specPath)
+	if err != nil {
+		return nil, err
+	}
+	return newOpenAPI3Loader().LoadFromDataWithPath(raw, location)
+}
+
+// LoadOpenAPI3Spec fetches specPath and loads it as an OpenAPI 3.x spec with
+// automatic $ref resolution.
+func LoadOpenAPI3Spec(specPath string) (*openapi3.T, error) {
+	raw, err := FetchSpecBytes(context.Background(), specPath)
+	if err != nil {
+		return nil, err
+	}
+	return LoadOpenAPI3SpecFromData(raw, specPath)
 }
 
 // GetBaseUrlFromOpenAPI3 extracts base URL from an OpenAPI 3.x typed spec.
@@ -953,6 +985,9 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					bodyRequired = append(bodyRequired, name)
 				}
 			}
+			// schema.Properties は map なので走査順が実行ごとに変わる。生成物（tools.file）
+			// との突き合わせや diff を安定させるため required はソートしておく。
+			slices.Sort(bodyRequired)
 			properties["body"] = map[string]any{
 				"type":        "object",
 				"description": build_body_description_openapi(baseDesc, schema),
@@ -980,6 +1015,7 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 				for _, r := range formSchema.Required {
 					schemaRequired[r] = true
 				}
+				formRequired := []string{}
 				for propName, propRef := range formSchema.Properties {
 					if propRef == nil || propRef.Value == nil {
 						continue
@@ -987,9 +1023,12 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					name := sanitizeParamName(propName)
 					properties[name] = buildFormPropertySchema(propRef.Value)
 					if schemaRequired[propName] {
-						required = append(required, name)
+						formRequired = append(formRequired, name)
 					}
 				}
+				// map 走査由来の部分だけソートし、パラメータ由来の並び（spec の宣言順）は保つ
+				slices.Sort(formRequired)
+				required = append(required, formRequired...)
 			}
 		}
 	}

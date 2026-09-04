@@ -2,17 +2,22 @@ package mcpsrv
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi2"
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
+// RegisterOpenAPI fetches and loads specPath, then builds an MCPToolRegistry
+// from it. It is "spec の入手" (LoadSpecSource) followed by "カタログ構築"
+// (BuildCatalog) — the two are split out so a caller that already holds a
+// *oastomcptool.SpecSource (e.g. a future CLI) can reuse BuildCatalog
+// directly without refetching/reparsing the spec.
 func RegisterOpenAPI(
 	ctx context.Context,
 	specPath string,
@@ -38,28 +43,79 @@ func RegisterOpenAPI(
 	}
 	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
 	defer func() { trace.EndSpan(ctx, rErr) }()
-	register := NewMCPToolRegistry()
 
-	// バージョン判定のため最小限の JSON デコード
-	raw, err := oastomcptool.FetchSpecBytes(ctx, specPath)
+	if opt.generatedToolsFile != "" {
+		return registerFromGeneratedToolsFile(ctx, c, opt.generatedToolsFile, baseUrl, headers)
+	}
+
+	source, err := oastomcptool.LoadSpecSource(ctx, specPath)
 	if err != nil {
 		return nil, err
 	}
-	register.setSpecHash(fmt.Sprintf("%x", sha256.Sum256(raw)))
-	var versionProbe struct {
-		Swagger string `json:"swagger"`
-	}
-	_ = json.Unmarshal(raw, &versionProbe)
-	isSwagger := versionProbe.Swagger != ""
+	return BuildCatalog(ctx, c, source, baseUrl, headers)
+}
 
-	if isSwagger {
-		if err := swagger(ctx, c, register, specPath, baseUrl, headers); err != nil {
+// registerFromGeneratedToolsFile builds a catalog from a generated tools
+// file (tools.file) instead of fetching a spec: it loads path with no
+// network access (oastomcptool.LoadGeneratedSpecSource), builds the catalog
+// from the internalized spec it carries exactly like the live path does,
+// and verifies the result against the file's own "tools" section — a
+// mismatch means the file is stale relative to what its spec now produces.
+func registerFromGeneratedToolsFile(
+	ctx context.Context,
+	c *http.Client,
+	path, baseUrl string,
+	headers map[string]string,
+) (*MCPToolRegistry, error) {
+	source, catalog, err := oastomcptool.LoadGeneratedSpecSource(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf(
+			`load generated tools file %q: %w (run "manifold openapi generate")`, path, err,
+		)
+	}
+	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyGeneratedTools(registry, catalog); err != nil {
+		return nil, fmt.Errorf(`%w (run "manifold openapi generate")`, err)
+	}
+	return registry, nil
+}
+
+// BuildCatalog builds an MCPToolRegistry from an already-loaded spec. This is
+// the "カタログ構築" phase of RegisterOpenAPI (the former body of the
+// openapi()/swagger() loops), factored out so it can be driven by a spec
+// loaded from anywhere (today: RegisterOpenAPI via LoadSpecSource; later: a
+// CLI reading the same spec once to both display and build the catalog).
+func BuildCatalog(
+	ctx context.Context,
+	client *http.Client,
+	source *oastomcptool.SpecSource,
+	baseUrl string,
+	headers map[string]string,
+) (_ *MCPToolRegistry, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/BuildCatalog")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	register := NewMCPToolRegistry()
+	register.setSpecHash(source.Hash)
+
+	switch source.Format {
+	case oastomcptool.SpecFormatSwagger2:
+		if err := swagger(
+			ctx, client, register, source.Swagger, source.SpecPath, baseUrl, headers,
+		); err != nil {
 			return nil, err
 		}
-	} else {
-		if err := openapi(ctx, c, register, specPath, baseUrl, headers); err != nil {
+	case oastomcptool.SpecFormatOpenAPI3:
+		if err := openapi(
+			ctx, client, register, source.OpenAPI, source.SpecPath, baseUrl, headers,
+		); err != nil {
 			return nil, err
 		}
+	default:
+		return nil, fmt.Errorf("unsupported spec format: %q", source.Format)
 	}
 	return register, nil
 }
@@ -68,6 +124,7 @@ func swagger(
 	ctx context.Context,
 	client *http.Client,
 	register *MCPToolRegistry,
+	spec *openapi2.T,
 	specPath string,
 	baseUrl string,
 	headers map[string]string,
@@ -75,10 +132,6 @@ func swagger(
 	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	spec, err := oastomcptool.LoadSwaggerSpec(ctx, specPath)
-	if err != nil {
-		return err
-	}
 	if baseUrl == "" {
 		baseUrl = oastomcptool.GetBaseUrlFromSwagger(ctx, spec, specPath)
 	}
@@ -119,7 +172,13 @@ func swagger(
 				headers,
 			)
 
-			register.RegisterTool(baseToolName, description, inputSchema, ToolFunc(toolFunc))
+			register.RegisterTool(
+				baseToolName,
+				description,
+				inputSchema,
+				ToolFunc(toolFunc),
+				WithRegisterToolOperation(method, path),
+			)
 		}
 	}
 	return nil
@@ -129,6 +188,7 @@ func openapi(
 	ctx context.Context,
 	client *http.Client,
 	register *MCPToolRegistry,
+	spec *openapi3.T,
 	specPath string,
 	baseUrl string,
 	headers map[string]string,
@@ -136,10 +196,6 @@ func openapi(
 	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	spec, err := oastomcptool.LoadOpenAPI3Spec(specPath)
-	if err != nil {
-		return err
-	}
 	if baseUrl == "" {
 		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(ctx, spec, specPath)
 	}
@@ -176,6 +232,7 @@ func openapi(
 				isBinaryResponse,
 			)
 			opts := make([]RegisterToolOptions, 0, 10)
+			opts = append(opts, WithRegisterToolOperation(method, path))
 			if isBinaryResponse {
 				opts = append(opts, WithRegisterToolMeta(map[string]any{
 					"manifold": map[string]any{

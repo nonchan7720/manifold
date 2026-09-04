@@ -71,6 +71,26 @@ func TestMCPToolRegistry_ListTools(t *testing.T) {
 	require.Len(t, tools, 3)
 }
 
+func TestMCPToolRegistry_ListTools_SortedByName(t *testing.T) {
+	r := NewMCPToolRegistry()
+
+	handler := func(ctx context.Context, input map[string]any) ([]byte, string, error) {
+		return nil, "", nil
+	}
+
+	// 登録順とアルファベット順が一致しないようにする
+	r.RegisterTool("zebra", "Zebra", nil, handler)
+	r.RegisterTool("apple", "Apple", nil, handler)
+	r.RegisterTool("mango", "Mango", nil, handler)
+
+	tools := r.ListTools()
+	names := make([]string, len(tools))
+	for i, tool := range tools {
+		names[i] = tool.tool.Name
+	}
+	require.Equal(t, []string{"apple", "mango", "zebra"}, names)
+}
+
 func TestMCPToolRegistry_RegisterOverwrite(t *testing.T) {
 	r := NewMCPToolRegistry()
 

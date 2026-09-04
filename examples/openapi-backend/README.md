@@ -11,7 +11,15 @@ export ENCRYPT_KEY=${ENCRYPT_KEY:-$(openssl rand -base64 32)}
 manifold gateway
 ```
 
-Manifold fetches the OpenAPI spec lazily on the first request and generates one MCP tool per operation. Tool names are the lowercased `operationId` (`getpetbyid`, `findpetsbystatus`, ...).
+Manifold fetches the OpenAPI spec at startup (`Init`) and generates one MCP tool per operation; a fetch or parse failure fails startup. Tool names are the lowercased `operationId` (`getpetbyid`, `findpetsbystatus`, ...).
+
+## See which tools will be generated
+
+Before starting the gateway, `manifold openapi tools` prints the same catalog Manifold would register — no network access beyond fetching the spec, and no gateway process:
+
+```bash
+manifold openapi tools -c config
+```
 
 ## Try it
 
@@ -28,6 +36,27 @@ claude mcp add --transport http petstore http://localhost:9999/mcp/petstore
 ```
 
 Then ask something like *"Find available pets in the petstore"*.
+
+## Start from a generated file
+
+Instead of fetching the spec at every startup, generate a tools file once and have Manifold start from it:
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore sample API
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    baseURL: https://petstore3.swagger.io/api/v3
+    tools:
+      file: ./generated/petstore.yaml
+```
+
+```bash
+manifold openapi generate -c config
+manifold gateway -c config
+```
+
+The gateway now starts from `./generated/petstore.yaml` with no network access to `spec`. See [Configuration reference](../../README.md#mcpserversnametools) for details, including what happens when the file goes stale.
 
 ## Adapting to your own API
 

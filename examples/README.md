@@ -6,7 +6,7 @@ Ready-to-run configuration examples for Manifold. Each directory contains a `con
 
 | Example | What it shows |
 | ------- | ------------- |
-| [`openapi-backend/`](openapi-backend/) | Convert a public OpenAPI spec (Swagger Petstore) into MCP tools — the fastest way to try Manifold |
+| [`openapi-backend/`](openapi-backend/) | Convert a public OpenAPI spec (Swagger Petstore) into MCP tools — the fastest way to try Manifold. Also shows `manifold openapi tools` / `generate` |
 | [`mcp-backend/`](mcp-backend/) | Proxy an external MCP server (stdio and HTTP transports) |
 | [`oauth2-backend/`](oauth2-backend/) | Expose an OAuth-protected REST API (Google Calendar) as MCP tools |
 | [`opa/`](opa/) | Authorize `tools/call` / `tools/list` per caller group with an OPA sidecar |

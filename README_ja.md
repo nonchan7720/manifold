@@ -41,6 +41,7 @@ Server
 ## 主な機能
 
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
+- **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
@@ -103,6 +104,106 @@ docker compose up -d
 ```
 
 すぐに動かせる設定例は [`examples/`](examples/) ディレクトリにあります。
+
+### 生成される MCP ツールの確認と生成
+
+OpenAPI モードのサーバー（`spec` を設定したサーバー）について、`manifold openapi` サブコマンドでゲートウェイが登録するツールを確認でき、起動時に spec を取得しないファイルへ書き出すこともできます。
+
+```bash
+# 全 OpenAPI モードサーバーで登録されるツールを表示する（ゲートウェイは起動しない）
+manifold openapi tools -c config
+
+# 1 サーバーだけ、inputSchema まで含めて表示する
+manifold openapi tools -c config --server petstore --json
+
+# tools.file が設定されている全サーバーの生成物ファイルを書き出す
+manifold openapi generate -c config
+```
+
+`openapi tools` の出力例:
+
+```text
+SERVER    TOOL          OPERATION          DESCRIPTION
+petstore  addpet        POST /pet          Add a new pet to the store.
+petstore  getpetbyid    GET /pet/{petId}   Find pet by ID.
+```
+
+生成物ファイル（`tools.file`）は YAML で、diff しやすい `tools` セクションのあとに解決済みの spec が続きます。
+
+```yaml
+version: 1
+generatedBy: manifold 1.12.0
+source:
+  spec: https://petstore3.swagger.io/api/v3/openapi.json
+  sha256: "..."
+  fetchedAt: "2026-09-04T00:00:00Z"
+format: openapi3
+tools:
+  - name: getpetbyid
+    operation: GET /pet/{petId}
+    description: Find pet by ID.
+    binaryResponse: false
+    inputSchema: { ... }
+spec: { ... }   # openapi3 ドキュメント（外部 $ref を内部化済み）
+```
+
+#### バイナリのフィールドとレスポンス
+
+`multipart/form-data` または `application/x-www-form-urlencoded` のプロパティで `format: binary` のものは、単なる文字列としては公開されない。文字列（base64 の内容、またはファイルを取得する URL）か、入力元を明示するオブジェクト（`url` / `base64` / `text` / `content` のいずれか 1 つと、任意の `filename` / `contentType`）を受け付ける `oneOf` になり、クライアントがファイル入力と判別できるよう `_meta.manifold.file: true` が付く。成功レスポンスがバイナリ（`image/png` や `application/octet-stream` など）の operation は `binaryResponse: true` になり、実行時のレスポンスはバイナリとして扱われ、`storage` を設定していれば resource link として返される（[`storage`](#storage) 参照）。アップロード 1 つとダウンロード 1 つを持つ spec から生成した例:
+
+```yaml
+tools:
+  - name: uploadfile
+    operation: POST /files
+    description: Upload a file
+    binaryResponse: false
+    inputSchema:
+      properties:
+        file:
+          _meta:
+            manifold:
+              file: true
+              fileInputHint: 'Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from. For explicit control, an object may be passed instead with one of these keys: {url:"..."} ...'
+          description: File to upload
+          oneOf:
+            - description: Base64-encoded file content, or a URL (e.g. a presigned URL) to download the file from.
+              type: string
+            - description: Explicit file source; provide exactly one of url/base64/text/content.
+              properties:
+                base64: { type: string, description: Base64-encoded file content. }
+                url: { type: string, description: URL to download the file content from. }
+                text: { type: string, description: Raw (non-base64-encoded) text file content. }
+                content: { type: string, description: Legacy auto-detected base64 or URL content. }
+                filename: { type: string, description: Filename to use for the upload. }
+                contentType: { type: string, description: MIME content type to use for the upload. }
+              type: object
+        label:
+          _meta: {}
+          description: ""
+          type: string
+      required:
+        - file
+      type: object
+  - name: downloadfile
+    operation: GET /files/{fileId}/content
+    description: Download a file
+    binaryResponse: true
+    inputSchema:
+      properties:
+        fileId:
+          description: ""
+          type: string
+      required:
+        - fileId
+      type: object
+```
+
+推奨するワークフロー:
+
+1. サーバーの設定に `tools.file` を追加し（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）、`manifold openapi generate -c config` を実行する
+2. 生成物ファイルをコミットする。`tools` セクションにより、上流 spec の変更が通常の PR diff としてレビューできる
+3. ゲートウェイを起動する（`manifold gateway -c config`）。起動時にファイルからツールを読み込み、`spec` へのネットワークアクセスは発生しない
+4. 上流の spec が変わったら `manifold openapi generate -c config` を再実行してコミットし直す。spec は変わったのにファイルを再生成し忘れると、ゲートウェイの起動が「再生成してください」というエラーで失敗する
 
 ## 設定
 
@@ -215,8 +316,30 @@ gateway:
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
+| `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
+
+#### `mcpServers.<name>.tools`
+
+`tools.file` は `manifold openapi generate` が書き出す生成物ファイルを指す（[生成される MCP ツールの確認と生成](#生成される-mcp-ツールの確認と生成) 参照）。設定すると、ゲートウェイは起動時にも `specRefresh` でも `spec` を取得しない。ツールと（すでに解決済みの）spec をファイルから直接読み込み、ネットワークアクセスは発生しない。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json   # tools.file 使用時も必須。生成物に source.spec として記録される
+    baseURL: https://petstore3.swagger.io/api/v3
+    tools:
+      file: ./generated/petstore.yaml
+```
+
+- `tools.file` を設定していても `spec` と `baseURL` は引き続き必須。`spec` は生成物に生成元として記録され、`baseURL` は生成物内の spec から導出されない
+- 起動時、Manifold はファイルに埋め込まれた spec からツールカタログを再構築し、ファイルの `tools` セクションと突き合わせる。一致しない場合（ファイルが埋め込まれた spec に対して古い、あるいは手で編集された場合）、起動は失敗する。例: `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`
+- `tools.file` と正の値の `specRefreshInterval` は排他。`tools.file` を持つサーバーは `gateway.specRefresh` の対象からも除外される — 取り直す元の spec が無いため
+- `tools.file` はローカルパスのみ指定可能。URL は拒否される
+- Phase 1 では OpenAPI 3.x の spec のみ対応。`spec` が Swagger 2.x の場合、`tools.file` は使用できない
+- 生成物ファイルには解決済みの spec がそのまま埋め込まれるため、内部ホスト名や spec 中の例示値も含まれる。公開リポジトリへコミットする前に内容を確認すること
 
 #### `mcpServers.<name>.oauth2`
 

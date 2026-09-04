@@ -16,9 +16,11 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
+	oasyaml "github.com/oasdiff/yaml"
 )
 
-// LoadSwaggerSpec loads a Swagger 2.x spec from a file path or URL.
+// LoadSwaggerSpec fetches specPath and parses it as a Swagger 2.x spec (JSON
+// or YAML).
 func LoadSwaggerSpec(ctx context.Context, specPath string) (_ *openapi2.T, rErr error) {
 	ctx = trace.StartSpan(ctx, "oastomcptool/LoadSwaggerSpec")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -27,9 +29,19 @@ func LoadSwaggerSpec(ctx context.Context, specPath string) (_ *openapi2.T, rErr 
 	if err != nil {
 		return nil, err
 	}
+	return ParseSwaggerSpec(ctx, data)
+}
+
+// ParseSwaggerSpec parses raw as a Swagger 2.x spec (JSON or YAML). Use this
+// when raw was already fetched (e.g. by FetchSpecBytes) and must be the
+// exact bytes that get parsed and hashed.
+func ParseSwaggerSpec(ctx context.Context, raw []byte) (_ *openapi2.T, rErr error) {
+	ctx = trace.StartSpan(ctx, "oastomcptool/ParseSwaggerSpec")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	// Some real-world Swagger specs use "required": false/true on property schemas,
 	// which is invalid for openapi2.Schema (expects []string). Normalize before parsing.
-	data, err = normalizeSwaggerJSON(data)
+	data, err := normalizeSwaggerJSON(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -42,13 +54,37 @@ func LoadSwaggerSpec(ctx context.Context, specPath string) (_ *openapi2.T, rErr 
 
 // normalizeSwaggerJSON removes boolean "required" fields from schema objects.
 // Parameter objects (identified by having an "in" key) are left untouched.
+// data may be JSON or YAML: when it doesn't decode as a JSON object it is
+// converted from YAML first (via the oasdiff/yaml converter kin-openapi
+// itself relies on, which turns YAML's non-string map keys, e.g. a bare
+// "200:" response code, into strings so the result is valid JSON) and
+// re-tried; a document that decodes as neither returns the original JSON
+// error.
 func normalizeSwaggerJSON(data []byte) ([]byte, error) {
 	var raw any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
+	jsonErr := json.Unmarshal(data, &raw)
+	if jsonErr != nil || !isJSONObject(raw) {
+		if converted, yamlErr := oasyaml.YAMLToJSON(data); yamlErr == nil {
+			var yamlRaw any
+			if err := json.Unmarshal(converted, &yamlRaw); err == nil && isJSONObject(yamlRaw) {
+				raw, jsonErr = yamlRaw, nil
+			}
+		}
+	}
+	if jsonErr != nil {
+		return nil, jsonErr
 	}
 	removeBoolRequiredFromSchemas(raw)
 	return json.Marshal(raw)
+}
+
+// isJSONObject reports whether v is a JSON object, i.e. what json.Unmarshal
+// produces for a map[string]any target. A Swagger/OpenAPI document is always
+// an object at the top level, so this distinguishes an actual spec from a
+// YAML document that happens to parse as some other scalar or sequence.
+func isJSONObject(v any) bool {
+	_, ok := v.(map[string]any)
+	return ok
 }
 
 // removeBoolRequiredFromSchemas walks the JSON tree and removes "required": bool
