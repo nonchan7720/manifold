@@ -147,6 +147,57 @@ tools:
 spec: { ... }   # openapi3 ドキュメント（外部 $ref を内部化済み）
 ```
 
+#### バイナリのフィールドとレスポンス
+
+`multipart/form-data` または `application/x-www-form-urlencoded` のプロパティで `format: binary` のものは、単なる文字列としては公開されない。文字列（base64 の内容、またはファイルを取得する URL）か、入力元を明示するオブジェクト（`url` / `base64` / `text` / `content` のいずれか 1 つと、任意の `filename` / `contentType`）を受け付ける `oneOf` になり、クライアントがファイル入力と判別できるよう `_meta.manifold.file: true` が付く。成功レスポンスがバイナリ（`image/png` や `application/octet-stream` など）の operation は `binaryResponse: true` になり、実行時のレスポンスはバイナリとして扱われ、`storage` を設定していれば resource link として返される（[`storage`](#storage) 参照）。アップロード 1 つとダウンロード 1 つを持つ spec から生成した例:
+
+```yaml
+tools:
+  - name: uploadfile
+    operation: POST /files
+    description: Upload a file
+    binaryResponse: false
+    inputSchema:
+      properties:
+        file:
+          _meta:
+            manifold:
+              file: true
+              fileInputHint: 'Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from. For explicit control, an object may be passed instead with one of these keys: {url:"..."} ...'
+          description: File to upload
+          oneOf:
+            - description: Base64-encoded file content, or a URL (e.g. a presigned URL) to download the file from.
+              type: string
+            - description: Explicit file source; provide exactly one of url/base64/text/content.
+              properties:
+                base64: { type: string, description: Base64-encoded file content. }
+                url: { type: string, description: URL to download the file content from. }
+                text: { type: string, description: Raw (non-base64-encoded) text file content. }
+                content: { type: string, description: Legacy auto-detected base64 or URL content. }
+                filename: { type: string, description: Filename to use for the upload. }
+                contentType: { type: string, description: MIME content type to use for the upload. }
+              type: object
+        label:
+          _meta: {}
+          description: ""
+          type: string
+      required:
+        - file
+      type: object
+  - name: downloadfile
+    operation: GET /files/{fileId}/content
+    description: Download a file
+    binaryResponse: true
+    inputSchema:
+      properties:
+        fileId:
+          description: ""
+          type: string
+      required:
+        - fileId
+      type: object
+```
+
 推奨するワークフロー:
 
 1. サーバーの設定に `tools.file` を追加し（[`mcpServers.<name>.tools`](#mcpservernametools) 参照）、`manifold openapi generate -c config` を実行する
