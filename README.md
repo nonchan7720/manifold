@@ -209,7 +209,7 @@ Recommended workflow:
 4. After the upstream spec changes, re-run `manifold openapi generate -c config` and commit the update. A stale file (spec changed but the file wasn't regenerated) fails gateway startup with an error telling you to regenerate.
 5. Add `manifold openapi generate -c config --check` as a CI step, so a PR that changes the upstream spec without regenerating the file fails before merge.
 
-**CI**: `--check` rebuilds each server's catalog from the live spec, compares it against the committed file (ignoring `generatedBy` and `source.fetchedAt`), and exits non-zero on any difference — including a spec change that leaves the tool list untouched, since the embedded spec also drives runtime request building. It never writes. Example GitHub Actions step:
+**CI**: `--check` only checks servers with `tools.file` configured — a server without one is skipped with a stderr note, and `--server` restricts the check to a single server. For each, it rebuilds the catalog from the live spec and compares it against the committed file: `source.sha256` (the upstream spec's raw bytes), the `tools` section, and the embedded `spec` section (the internalized document the gateway actually runs from) — `generatedBy` and `source.fetchedAt` are not compared. It exits non-zero on any difference, including a spec change that leaves the tool list untouched, since the embedded spec also drives runtime request building. It never writes. Example GitHub Actions step:
 
 ```yaml
 - name: Check generated OpenAPI tools files are up to date

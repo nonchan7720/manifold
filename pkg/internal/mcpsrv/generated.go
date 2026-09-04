@@ -60,7 +60,7 @@ func VerifyGeneratedTools(registry *MCPToolRegistry, g *oastomcptool.GeneratedCa
 		if gt.BinaryResponse != d.BinaryResponse {
 			return fmt.Errorf("generated tools are stale: tool %q binaryResponse differs", gt.Name)
 		}
-		same, err := equalAsJSON(gt.InputSchema, d.InputSchema)
+		same, err := EqualAsJSON(gt.InputSchema, d.InputSchema)
 		if err != nil {
 			return fmt.Errorf("generated tools are stale: tool %q inputSchema: %w", gt.Name, err)
 		}
@@ -110,7 +110,7 @@ func (d GeneratedToolsDiff) Empty() bool {
 // a tool only in next is Added, a tool only in current is Removed, and a
 // tool in both whose operation, description, binaryResponse, or inputSchema
 // differ is Changed (naming which fields differ). inputSchema is compared
-// by canonical JSON encoding (see equalAsJSON), so a YAML-decoded int and
+// by canonical JSON encoding (see EqualAsJSON), so a YAML-decoded int and
 // the float64 encoding/json produces for the same number don't register as
 // a difference. A duplicate name within either slice is resolved by taking
 // the last occurrence, matching how a map keyed by name would see it.
@@ -162,16 +162,20 @@ func changedGeneratedToolFields(a, b oastomcptool.GeneratedTool) []string {
 	if a.BinaryResponse != b.BinaryResponse {
 		fields = append(fields, "binaryResponse")
 	}
-	if same, err := equalAsJSON(a.InputSchema, b.InputSchema); err != nil || !same {
+	if same, err := EqualAsJSON(a.InputSchema, b.InputSchema); err != nil || !same {
 		fields = append(fields, "inputSchema")
 	}
 	return fields
 }
 
-// equalAsJSON compares a and b by their canonical JSON encoding (which sorts
+// EqualAsJSON compares a and b by their canonical JSON encoding (which sorts
 // object keys), so YAML-decoded numeric types (int) and the float64 that
 // encoding/json produces for the same value don't cause a false mismatch.
-func equalAsJSON(a, b any) (bool, error) {
+// Exported so other packages comparing YAML/JSON-decoded document trees
+// (e.g. pkg/cmd's "generate --check" comparing a generated file's embedded
+// spec against a freshly built one) can reuse the same comparison instead of
+// reimplementing it.
+func EqualAsJSON(a, b any) (bool, error) {
 	ab, err := json.Marshal(a)
 	if err != nil {
 		return false, err

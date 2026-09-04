@@ -209,7 +209,7 @@ tools:
 4. 上流の spec が変わったら `manifold openapi generate -c config` を再実行してコミットし直す。spec は変わったのにファイルを再生成し忘れると、ゲートウェイの起動が「再生成してください」というエラーで失敗する
 5. CI に `manifold openapi generate -c config --check` を追加する。上流 spec を変更したのに再生成し忘れた PR をマージ前に検出できる
 
-**CI**: `--check` は各サーバーのカタログをライブの spec から再構築し、コミット済みファイルと比較する（`generatedBy` と `source.fetchedAt` は比較対象から除く）。差分があれば（`tools` の一覧が同じでも spec 自体が変わっていれば、それだけで）exit 1 になる。埋め込まれた spec は `tools` セクションだけでなくランタイムのリクエスト構築にも使われるため。ファイルへの書き込みは一切行わない。GitHub Actions のステップ例:
+**CI**: `--check` は `tools.file` が設定されているサーバーのみをチェックする（未設定のサーバーは stderr にメモを出してスキップされ、`--server` で 1 台に絞り込める）。各サーバーについてライブの spec からカタログを再構築し、コミット済みファイルと比較する: `source.sha256`（上流 spec の生バイト列）、`tools` セクション、そして埋め込まれた `spec` セクション（ゲートウェイが実際に実行時に使う internalize 済みドキュメント）—— `generatedBy` と `source.fetchedAt` は比較対象から除く。差分があれば（`tools` の一覧が同じでも spec 自体が変わっていれば、それだけで）exit 1 になる。埋め込まれた spec は `tools` セクションだけでなくランタイムのリクエスト構築にも使われるため。ファイルへの書き込みは一切行わない。GitHub Actions のステップ例:
 
 ```yaml
 - name: Check generated OpenAPI tools files are up to date

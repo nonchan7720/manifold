@@ -536,15 +536,23 @@ type generatedCatalogDrift struct {
 	Missing              bool
 	SpecChanged          bool
 	OldSHA256, NewSHA256 string
-	Tools                mcpsrv.GeneratedToolsDiff
+	// EmbeddedSpecChanged reports whether the file's "spec" section (the
+	// internalized document LoadGeneratedSpecSource/BuildCatalog actually
+	// run from at gateway startup) differs from what the live spec produces
+	// now, even when source.sha256 (the raw upstream bytes) and the "tools"
+	// section are unchanged — e.g. the "spec" section was hand-edited, or
+	// written by a manifold version whose internalization differs.
+	EmbeddedSpecChanged bool
+	Tools               mcpsrv.GeneratedToolsDiff
 }
 
 // empty reports whether d found no drift at all: no missing file, no spec
-// change, and no tool differences. A spec change with an identical tool
-// list still counts as drift — the embedded spec drives runtime request
-// building (e.g. multipart handling), not only the tools section.
+// change, no embedded-spec change, and no tool differences. A spec change
+// with an identical tool list still counts as drift — the embedded spec
+// drives runtime request building (e.g. multipart handling), not only the
+// tools section.
 func (d generatedCatalogDrift) empty() bool {
-	return !d.Missing && !d.SpecChanged && d.Tools.Empty()
+	return !d.Missing && !d.SpecChanged && !d.EmbeddedSpecChanged && d.Tools.Empty()
 }
 
 // checkOne builds the would-be generated catalog for srv from its live spec
@@ -579,6 +587,21 @@ func checkOne(
 		drift.OldSHA256 = current.Source.SHA256
 		drift.NewSHA256 = next.Source.SHA256
 	}
+
+	// The embedded "spec" section is what LoadGeneratedSpecSource →
+	// BuildCatalog → CreateToolFunction actually run from at gateway
+	// startup, so it must be compared even when source.sha256 and the tools
+	// section both match — a hand edit of "spec:", or a different manifold
+	// version's internalization, would otherwise go unnoticed. Compared by
+	// canonical JSON (like mcpsrv.EqualAsJSON's other callers) so a
+	// YAML-decoded int and the float64 encoding/json produces for the same
+	// number don't register as a difference.
+	sameSpec, err := mcpsrv.EqualAsJSON(current.Spec, next.Spec)
+	if err != nil {
+		return generatedCatalogDrift{}, fmt.Errorf("compare embedded spec: %w", err)
+	}
+	drift.EmbeddedSpecChanged = !sameSpec
+
 	return drift, nil
 }
 
@@ -658,6 +681,9 @@ func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogD
 			w, "  spec changed (sha256 %s… → %s…)\n",
 			shortSHA256(drift.OldSHA256), shortSHA256(drift.NewSHA256),
 		)
+	}
+	if drift.EmbeddedSpecChanged {
+		fmt.Fprintln(w, "  embedded spec differs from what the live spec produces")
 	}
 
 	added := slices.Clone(drift.Tools.Added)

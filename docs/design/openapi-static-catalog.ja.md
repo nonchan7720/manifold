@@ -108,12 +108,12 @@ manifold openapi generate -c config --check
 `--check`:
 
 1. 上の 1〜3 をメモリ上で実行する
-2. ディスク上のファイルを読み、`source.sha256` と `tools` をそれぞれ突き合わせる。`fetchedAt` と `generatedBy` は比較対象から外す
-3. 差分があれば（`source.sha256` の不一致、または `tools` の added / removed / changed のいずれか）exit 1
+2. ディスク上のファイルを読み、`source.sha256`・`tools`・埋め込まれた `spec` セクション（ゲートウェイが実際に実行時に使う internalize 済みドキュメント）をそれぞれ突き合わせる。`fetchedAt` と `generatedBy` は比較対象から外す
+3. 差分があれば（`source.sha256` の不一致、`tools` の added / removed / changed のいずれか、または埋め込み `spec` セクションの差分）exit 1
 
 `tools.file` 未指定のサーバーは `--check` の対象外（動的モードのまま）。
 
-> 実装上の補足: 当初案では `source.sha256` が一致すれば `tools` の比較を早期打ち切りしていたが、実装では常に両方比較する。`tools` の集合が同じでも `sha256` が変わっていれば drift として報告する（`spec` は `tools` セクションだけでなくランタイムのリクエスト構築 — multipart の扱いなど — にも使われるため、`tools` が同じでも spec 自体の変更は無視してよいものではない）。
+> 実装上の補足: 当初案では `source.sha256` が一致すれば `tools` の比較を早期打ち切りしていたが、実装では常に両方比較する。`tools` の集合が同じでも `sha256` が変わっていれば drift として報告する（`spec` は `tools` セクションだけでなくランタイムのリクエスト構築 — multipart の扱いなど — にも使われるため、`tools` が同じでも spec 自体の変更は無視してよいものではない）。さらに、埋め込まれた `spec` セクション自体も比較する — `source.sha256` と `tools` の両方が一致していても、`spec` セクションが手編集や別バージョンの internalize で変わっていれば drift として報告する。
 
 ## 生成物の形式
 

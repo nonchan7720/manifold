@@ -489,7 +489,7 @@ func TestDiffGeneratedTools_Changed_EachFieldKind(t *testing.T) {
 
 func TestDiffGeneratedTools_InputSchema_NumericTypeMismatchIsNotAChange(t *testing.T) {
 	// YAML decodes small integers as int; encoding/json decodes them as
-	// float64. equalAsJSON (canonical JSON) must treat these as equal.
+	// float64. EqualAsJSON (canonical JSON) must treat these as equal.
 	current := []oastomcptool.GeneratedTool{
 		{Name: "t", InputSchema: map[string]any{"minimum": int(1)}},
 	}

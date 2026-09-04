@@ -848,6 +848,69 @@ func TestOpenAPIGenerateCheck_SpecChanged_ToolsIdentical(t *testing.T) {
 	require.Equal(t, before, after, "--check must never write")
 }
 
+// TestOpenAPIGenerateCheck_EmbeddedSpecEdited_DriftDetected covers Finding 1:
+// hand-editing only the generated file's "spec" section (the internalized
+// document LoadGeneratedSpecSource/BuildCatalog actually run from at gateway
+// startup) — with the upstream spec bytes and the "tools" section both left
+// alone — must still be reported as drift, not "up to date".
+func TestOpenAPIGenerateCheck_EmbeddedSpecEdited_DriftDetected(t *testing.T) {
+	_, outPath := setupCheckServer(t)
+
+	raw, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	edited := strings.Replace(string(raw), "description: ok", "description: ok, edited by hand", 1)
+	require.NotEqual(
+		t, string(raw), edited, "expected to find a response description in the embedded spec",
+	)
+	require.NoError(t, os.WriteFile(outPath, []byte(edited), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "drift detected in 1 server(s)")
+	require.Contains(t, stdout, `server "petstore": drift detected`)
+	require.Contains(t, stdout, "  embedded spec differs from what the live spec produces")
+	require.NotContains(t, stdout, "spec changed (sha256")
+	require.NotContains(t, stdout, "+ added")
+	require.NotContains(t, stdout, "- removed")
+	require.NotContains(t, stdout, "~ changed")
+	require.Contains(t, stdout, `run "manifold openapi generate" to update`)
+
+	after, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, edited, string(after), "--check must never write")
+}
+
+// TestOpenAPIGenerateCheck_UpToDate_RealFixture guards against a false
+// positive from the new embedded-spec comparison (Finding 1): a fresh
+// generate immediately followed by --check must report "up to date" even
+// for a large, real-world spec that exercises InternalizeRefs and a full
+// YAML round trip (petstore_oas.json, shared with pkg/internal/mcpsrv's own
+// tests), not just the small inline fixtures above.
+func TestOpenAPIGenerateCheck_UpToDate_RealFixture(t *testing.T) {
+	fixture, err := os.ReadFile(
+		filepath.Join("..", "internal", "mcpsrv", "fixtures", "petstore_oas.json"),
+	)
+	require.NoError(t, err)
+	specPath := writeSpecFile(t, "petstore_oas.json", string(fixture))
+	outPath := filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: outPath},
+			},
+		},
+	})
+
+	_, _, err = execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	stdout, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Equal(t, fmt.Sprintf("server \"petstore\": up to date (%s)\n", outPath), stdout)
+}
+
 func TestOpenAPIGenerateCheck_ToolAdded(t *testing.T) {
 	specPath, outPath := setupCheckServer(t)
 	before, err := os.ReadFile(outPath)
