@@ -58,6 +58,12 @@ manifold gateway -c config
 
 The gateway now starts from `./generated/petstore.yaml` with no network access to `spec`. See [Configuration reference](../../README.md#mcpserversnametools) for details, including what happens when the file goes stale.
 
+Check that the committed file still matches the upstream spec — e.g. in CI — without writing anything:
+
+```bash
+manifold openapi generate -c config --check
+```
+
 ## Adapting to your own API
 
 Replace `spec` and `baseURL` with your own API. If it needs a static API key, add `authValue`:
