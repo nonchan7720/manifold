@@ -150,6 +150,57 @@ tools:
 spec: { ... }   # openapi3 document, external $refs internalized
 ```
 
+#### Binary fields and responses
+
+A `multipart/form-data` or `application/x-www-form-urlencoded` property with `format: binary` is not exposed as a plain string. It becomes a `oneOf` that accepts either a string (base64 content or a URL to fetch the file from) or an object naming the source explicitly (`url` / `base64` / `text` / `content`, plus optional `filename` and `contentType`), and carries `_meta.manifold.file: true` so clients can recognize it as a file input. An operation whose success response is binary (e.g. `image/png`, `application/octet-stream`) is marked `binaryResponse: true`; at runtime such responses are handled as binary content and, when `storage` is configured, returned as resource links (see [`storage`](#storage)). From a spec with one upload and one download operation:
+
+```yaml
+tools:
+  - name: uploadfile
+    operation: POST /files
+    description: Upload a file
+    binaryResponse: false
+    inputSchema:
+      properties:
+        file:
+          _meta:
+            manifold:
+              file: true
+              fileInputHint: 'Provide the file content as a base64-encoded string, or as a URL (e.g. a presigned URL) to download the file from. For explicit control, an object may be passed instead with one of these keys: {url:"..."} ...'
+          description: File to upload
+          oneOf:
+            - description: Base64-encoded file content, or a URL (e.g. a presigned URL) to download the file from.
+              type: string
+            - description: Explicit file source; provide exactly one of url/base64/text/content.
+              properties:
+                base64: { type: string, description: Base64-encoded file content. }
+                url: { type: string, description: URL to download the file content from. }
+                text: { type: string, description: Raw (non-base64-encoded) text file content. }
+                content: { type: string, description: Legacy auto-detected base64 or URL content. }
+                filename: { type: string, description: Filename to use for the upload. }
+                contentType: { type: string, description: MIME content type to use for the upload. }
+              type: object
+        label:
+          _meta: {}
+          description: ""
+          type: string
+      required:
+        - file
+      type: object
+  - name: downloadfile
+    operation: GET /files/{fileId}/content
+    description: Download a file
+    binaryResponse: true
+    inputSchema:
+      properties:
+        fileId:
+          description: ""
+          type: string
+      required:
+        - fileId
+      type: object
+```
+
 Recommended workflow:
 
 1. Add `tools.file` to the server's config (see [`mcpServers.<name>.tools`](#mcpservernametools)) and run `manifold openapi generate -c config`.
