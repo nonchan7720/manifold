@@ -56,7 +56,7 @@ manifold openapi generate -c config
 manifold gateway -c config
 ```
 
-The gateway now starts from `./generated/petstore.yaml` with no network access to `spec`. See [Configuration reference](../../README.md#mcpservernametools) for details, including what happens when the file goes stale.
+The gateway now starts from `./generated/petstore.yaml` with no network access to `spec`. See [Configuration reference](../../README.md#mcpserversnametools) for details, including what happens when the file goes stale.
 
 ## Adapting to your own API
 
