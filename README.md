@@ -43,7 +43,7 @@ Server
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
-- **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support
+- **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
@@ -354,13 +354,30 @@ mcpServers:
 
 #### `mcpServers.<name>.oauth2`
 
-| Field          | Type     | Description                                         |
-| -------------- | -------- | --------------------------------------------------- |
-| `clientID`     | string   | Client ID (**required**)                            |
-| `clientSecret` | string   | Client secret (**required**)                        |
-| `authURL`      | string   | Authorization endpoint (**required**; absolute URL) |
-| `tokenURL`     | string   | Token endpoint (**required**; absolute URL)         |
-| `scopes`       | []string | Scopes to request                                   |
+| Field           | Type              | Description                                                                                     |
+| --------------- | ----------------- | ----------------------------------------------------------------------------------------------- |
+| `clientID`      | string            | Client ID of the shared upstream client (**required** unless every downstream client is mapped in `clients`) |
+| `clientSecret`  | string            | Client secret of the shared upstream client (same requirement as `clientID`)                    |
+| `authURL`       | string            | Authorization endpoint (**required**; absolute URL)                                             |
+| `tokenURL`      | string            | Token endpoint (**required**; absolute URL)                                                     |
+| `scopes`        | []string          | Scopes to request                                                                               |
+| `clients`       | []object          | Maps a downstream `client_id` to the upstream client used for it (see [Downstream client registration](#downstream-client-registration)) |
+| `unknownClient` | string            | How to treat a downstream client absent from `clients`: `reject` or `default`                   |
+| `authParams`    | map[string]string | Extra query parameters added to the upstream authorization request                              |
+
+Each `clients` entry takes `downstreamClientID`, `clientID` and `clientSecret`. `downstreamClientID` is compared against the downstream `client_id` exactly, with no normalization, and must not be repeated. `unknownClient` defaults to `reject` when `clients` is non-empty, and to `default` when it is empty — so a configuration without `clients` keeps behaving as before. `authParams` may not set the parameters Manifold builds itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`).
+
+`clients` can also be supplied whole as a JSON array through a single environment variable, and `authParams` as a JSON object:
+
+```yaml
+mcpServers:
+  my-api:
+    oauth2:
+      clients: ${UPSTREAM_CLIENTS_JSON}
+```
+
+> **Note**
+> Parameter names in `authParams` written in the configuration file are lower-cased by the config loader, so use lower-case names (which is what OAuth 2.0 and OpenID Connect define). To keep a name's casing exactly, supply the whole map as JSON through an environment variable.
 
 #### `mcpServers.<name>.tokenExchange`
 
@@ -369,6 +386,17 @@ Exchanges the API key received from the client for an OAuth token at the specifi
 | Field | Type   | Description                                                |
 | ----- | ------ | ---------------------------------------------------------- |
 | `url` | string | Absolute URL of the token exchange endpoint (**required**) |
+
+#### `oauth.cimd`
+
+Accepts downstream clients that present an HTTPS `client_id` resolving to a client ID metadata document, instead of registering through DCR (see [Downstream client registration](#downstream-client-registration)). Disabled by default.
+
+| Field             | Type     | Description                                                                                          |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`         | bool     | Enable CIMD client registration (default: `false`)                                                   |
+| `allowedOrigins`  | []string | When non-empty, only `client_id` URLs on these origins are accepted. Applied before the document is fetched |
+| `cacheTTL`        | duration | Upper bound on how long a resolved client is cached (default: `1h`). A shorter `Cache-Control: max-age` wins |
+| `maxDocumentSize` | int      | Maximum number of bytes read from the document (default: `65536`)                                    |
 
 #### `redis`
 
@@ -481,6 +509,96 @@ telemetry:
       addr: localhost:4317
       insecure: true
 ```
+
+## Downstream client registration
+
+Manifold acts as an OAuth 2.1 authorization server for the MCP clients in front of it, and as an OAuth client towards the backend it proxies. A downstream client becomes known to Manifold in one of two ways:
+
+- **Dynamic client registration (RFC 7591)** — the client posts its metadata to `/{server_name}/auth/clients` and receives a generated `client_id`. Always available.
+- **Client ID metadata document (CIMD)** — the client presents an HTTPS URL as its `client_id`, and Manifold fetches the metadata document from that URL. Enabled with `oauth.cimd.enabled`.
+
+```mermaid
+flowchart LR
+  C[MCP client] -->|client_id| L[Authorization endpoint]
+  L --> R{Resolve client}
+  R -->|registered via DCR| OK[Client registration]
+  R -->|HTTPS URL and CIMD enabled| D[Fetch metadata document]
+  D --> OK
+  R -->|otherwise| E[401 invalid_client]
+  OK --> U{Resolve upstream client}
+  U -->|mapped in clients| A[Redirect to upstream authorization endpoint]
+  U -->|unmapped and unknownClient is default| A
+  U -->|unmapped and unknownClient is reject| E
+```
+
+### Client ID metadata documents
+
+```yaml
+oauth:
+  cimd:
+    enabled: true
+    allowedOrigins:
+      - https://client-a.example.com
+    cacheTTL: 1h
+    maxDocumentSize: 65536
+```
+
+When enabled, `/.well-known/oauth-authorization-server/mcp/{server_name}` advertises `client_id_metadata_document_supported: true`, and a `client_id` that is not a registered DCR client is treated as a document URL. It is accepted only when all of the following hold:
+
+- `https` scheme, a host name that is neither an IP literal nor `localhost`, a path other than `/`, and no fragment or userinfo
+- its origin is in `allowedOrigins` (when that list is non-empty)
+- the response is `200` with `Content-Type: application/json`, no larger than `maxDocumentSize`, and reached without following a redirect
+- the document's `client_id` equals the requested `client_id` byte for byte (no normalization)
+- `redirect_uris` is non-empty and every entry uses `https` or `http://localhost`
+- `token_endpoint_auth_method` is absent or `none` (CIMD clients are public clients)
+- `grant_types`, when present, includes `authorization_code`
+
+A resolved client is cached for the shorter of `cacheTTL` and the response's `Cache-Control: max-age`; `no-store` / `no-cache` disables caching. Anything else is rejected as `invalid_client`, with the reason recorded in the log only. A CIMD client is not bound to a single MCP server, so it must reach the authorization endpoint that carries a server name (`/{server_name}/auth/login`) rather than the `/authorize` alias.
+
+`private_key_jwt` and `jwks_uri` are not supported.
+
+### Mapping downstream clients to upstream clients
+
+Without a mapping, every downstream client shares one upstream client, so the upstream consent screen always shows Manifold. If the user already has an upstream session for that client, another downstream client can obtain an authorization code without the user consenting to it (confused deputy). Manifold has no consent page of its own; instead, each downstream `client_id` can be mapped to its own upstream client, so the upstream authorization server renders the consent screen under that client's registered name and tracks consent per client.
+
+```yaml
+mcpServers:
+  my-api:
+    spec: https://example.com/api/openapi.json
+    baseURL: https://example.com
+    oauth2:
+      authURL: https://example.com/oauth/authorize
+      tokenURL: https://example.com/oauth/token
+      scopes: [read, write]
+
+      clients:
+        - downstreamClientID: "https://client-a.example.com/oauth-client.json"
+          clientID: client-a
+          clientSecret: ${CLIENT_A_SECRET}
+        - downstreamClientID: "https://client-b.example.com/.well-known/oauth-client"
+          clientID: client-b
+          clientSecret: ${CLIENT_B_SECRET}
+
+      unknownClient: reject
+```
+
+`clients` is a list rather than a map keyed by the downstream `client_id`, because the configuration loader lower-cases map keys and splits them on `.` — neither of which a CIMD URL or a DCR-issued `client_id` survives. Keeping the value in `downstreamClientID` preserves it byte for byte.
+
+The mapping doubles as a whitelist: with `unknownClient: reject` (the default once `clients` is set), a downstream client without a mapping is refused with `invalid_client`, and the rejected `client_id`, client name, and server name are logged for auditing. Manifold never skips the upstream redirect, so consent is always decided upstream.
+
+`unknownClient: default` keeps the previous behavior for unmapped clients, falling back to the shared `clientID` / `clientSecret`:
+
+```yaml
+      unknownClient: default
+      clientID: manifold
+      clientSecret: ${MANIFOLD_SECRET}
+      authParams:
+        prompt: consent
+```
+
+Note that `default` cannot fully prevent the confused deputy problem — unmapped clients still appear upstream as Manifold. Adding `prompt: consent` through `authParams` mitigates it, but `prompt` is an OpenID Connect parameter and plain OAuth 2.0 authorization servers may ignore it. For production, prefer `reject` with an explicit `clients` whitelist.
+
+Automatic OAuth 2.1 discovery (used for MCP backends without an `oauth2` block) registers Manifold itself through DCR and always uses that single shared client; `clients` does not apply to it.
 
 ## Tool authorization (OPA sidecar)
 

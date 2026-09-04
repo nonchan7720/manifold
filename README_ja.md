@@ -43,7 +43,7 @@ Server
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
-- **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵
+- **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
@@ -354,13 +354,30 @@ mcpServers:
 
 #### `mcpServers.<name>.oauth2`
 
-| フィールド     | 型       | 説明                                          |
-| -------------- | -------- | --------------------------------------------- |
-| `clientID`     | string   | クライアント ID（**必須**）                   |
-| `clientSecret` | string   | クライアントシークレット（**必須**）          |
-| `authURL`      | string   | Authorization Endpoint（**必須**。絶対 URL）  |
-| `tokenURL`     | string   | Token Endpoint（**必須**。絶対 URL）          |
-| `scopes`       | []string | リクエストするスコープ                        |
+| フィールド      | 型                | 説明                                                                                    |
+| --------------- | ----------------- | --------------------------------------------------------------------------------------- |
+| `clientID`      | string            | 共用の上流クライアント ID（`clients` で全ての下流クライアントをマッピングしない限り**必須**） |
+| `clientSecret`  | string            | 共用の上流クライアントシークレット（必須条件は `clientID` と同じ）                       |
+| `authURL`       | string            | Authorization Endpoint（**必須**。絶対 URL）                                            |
+| `tokenURL`      | string            | Token Endpoint（**必須**。絶対 URL）                                                    |
+| `scopes`        | []string          | リクエストするスコープ                                                                  |
+| `clients`       | []object          | 下流 `client_id` と、それに使う上流クライアントの対応（[下流クライアントの登録](#下流クライアントの登録)を参照） |
+| `unknownClient` | string            | `clients` に無い下流クライアントの扱い。`reject` または `default`                        |
+| `authParams`    | map[string]string | 上流の認可リクエストに追加するクエリパラメータ                                          |
+
+`clients` の各要素は `downstreamClientID` / `clientID` / `clientSecret` を取ります。`downstreamClientID` は下流 `client_id` と完全一致で照合し（正規化しません）、重複は指定できません。`unknownClient` の既定は、`clients` が指定されていれば `reject`、無ければ `default` です — つまり `clients` を書かない設定は従来どおり動作します。`authParams` には Manifold 自身が組み立てるパラメータ（`client_id` / `redirect_uri` / `response_type` / `scope` / `state` / `code_challenge` / `code_challenge_method`）を指定できません。
+
+`clients` は JSON 配列として、`authParams` は JSON オブジェクトとして、1 つの環境変数からまとめて注入することもできます。
+
+```yaml
+mcpServers:
+  my-api:
+    oauth2:
+      clients: ${UPSTREAM_CLIENTS_JSON}
+```
+
+> **Note**
+> 設定ファイルに書いた `authParams` のパラメータ名は設定ローダーによって小文字化されるため、小文字の名前（OAuth 2.0 / OpenID Connect が定めている形）を使ってください。大文字小文字をそのまま保ちたい場合は、環境変数から JSON でまとめて渡してください。
 
 #### `mcpServers.<name>.tokenExchange`
 
@@ -369,6 +386,17 @@ mcpServers:
 | フィールド | 型     | 説明                                             |
 | ---------- | ------ | ------------------------------------------------ |
 | `url`      | string | トークン交換エンドポイントの絶対 URL（**必須**） |
+
+#### `oauth.cimd`
+
+DCR で登録する代わりに、Client ID Metadata Document を指す HTTPS の `client_id` を提示した下流クライアントを受け入れます（[下流クライアントの登録](#下流クライアントの登録)を参照）。既定は無効です。
+
+| フィールド        | 型       | 説明                                                                                     |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------- |
+| `enabled`         | bool     | CIMD によるクライアント登録を有効にする（既定: `false`）                                 |
+| `allowedOrigins`  | []string | 指定時は、この origin の `client_id` URL のみ受け入れる。ドキュメント取得前に適用される  |
+| `cacheTTL`        | duration | 解決済みクライアントをキャッシュする上限（既定: `1h`）。より短い `Cache-Control: max-age` があればそちらを優先 |
+| `maxDocumentSize` | int      | ドキュメントから読み取る最大バイト数（既定: `65536`）                                    |
 
 #### `redis`
 
@@ -481,6 +509,96 @@ telemetry:
       addr: localhost:4317
       insecure: true
 ```
+
+## 下流クライアントの登録
+
+Manifold は、前段の MCP クライアントに対しては OAuth 2.1 認可サーバーとして、プロキシ先のバックエンドに対しては OAuth クライアントとして振る舞います。下流クライアントを Manifold に認識させる方法は 2 つあります。
+
+- **動的クライアント登録（RFC 7591）** — クライアントが `/{server_name}/auth/clients` にメタデータを POST し、生成された `client_id` を受け取る。常に利用可能
+- **Client ID Metadata Document（CIMD）** — クライアントが HTTPS URL を `client_id` として提示し、Manifold がその URL からメタデータドキュメントを取得する。`oauth.cimd.enabled` で有効化
+
+```mermaid
+flowchart LR
+  C[MCP クライアント] -->|client_id| L[認可エンドポイント]
+  L --> R{クライアント解決}
+  R -->|DCR 登録済み| OK[クライアント登録情報]
+  R -->|HTTPS URL かつ CIMD 有効| D[メタデータドキュメント取得]
+  D --> OK
+  R -->|それ以外| E[401 invalid_client]
+  OK --> U{上流クライアント解決}
+  U -->|clients に一致| A[上流の認可エンドポイントへリダイレクト]
+  U -->|不一致かつ unknownClient が default| A
+  U -->|不一致かつ unknownClient が reject| E
+```
+
+### Client ID Metadata Document
+
+```yaml
+oauth:
+  cimd:
+    enabled: true
+    allowedOrigins:
+      - https://client-a.example.com
+    cacheTTL: 1h
+    maxDocumentSize: 65536
+```
+
+有効にすると `/.well-known/oauth-authorization-server/mcp/{server_name}` が `client_id_metadata_document_supported: true` を広告し、DCR 登録済みでない `client_id` はドキュメント URL として扱われます。受け入れるのは以下をすべて満たす場合だけです。
+
+- `https` スキームで、ホストが IP リテラルでも `localhost` でもないホスト名、パスが `/` 以外、fragment と userinfo が無い
+- `allowedOrigins` が指定されている場合、その origin に含まれる
+- レスポンスが `200` かつ `Content-Type: application/json` で、`maxDocumentSize` 以下、リダイレクトを追従せずに取得できる
+- ドキュメントの `client_id` が要求された `client_id` と文字列として完全一致する（正規化しない）
+- `redirect_uris` が非空で、各要素が `https` または `http://localhost` を使う
+- `token_endpoint_auth_method` が未指定または `none`（CIMD クライアントはパブリッククライアント）
+- `grant_types` が指定されている場合、`authorization_code` を含む
+
+解決したクライアントは `cacheTTL` とレスポンスの `Cache-Control: max-age` の短い方の期間キャッシュされます（`no-store` / `no-cache` ならキャッシュしません）。それ以外はすべて `invalid_client` として拒否し、理由はログにのみ記録します。CIMD クライアントは特定の MCP サーバーに紐づかないため、`/authorize` エイリアスではなくサーバー名を含む認可エンドポイント（`/{server_name}/auth/login`）へアクセスする必要があります。
+
+`private_key_jwt` と `jwks_uri` には対応していません。
+
+### 下流クライアントと上流クライアントのマッピング
+
+マッピングが無い場合、すべての下流クライアントが 1 つの上流クライアントを共用するため、上流の同意画面には常に Manifold として表示されます。そのクライアントに対する上流セッションが既にあると、別の下流クライアントがユーザーの同意なしに認可コードを取得できてしまいます（confused deputy）。Manifold 自身は同意ページを持たないため、代わりに下流 `client_id` ごとに専用の上流クライアントを割り当て、上流の認可サーバーにそのクライアント名で同意画面を出させ、同意状態もクライアント単位で管理させます。
+
+```yaml
+mcpServers:
+  my-api:
+    spec: https://example.com/api/openapi.json
+    baseURL: https://example.com
+    oauth2:
+      authURL: https://example.com/oauth/authorize
+      tokenURL: https://example.com/oauth/token
+      scopes: [read, write]
+
+      clients:
+        - downstreamClientID: "https://client-a.example.com/oauth-client.json"
+          clientID: client-a
+          clientSecret: ${CLIENT_A_SECRET}
+        - downstreamClientID: "https://client-b.example.com/.well-known/oauth-client"
+          clientID: client-b
+          clientSecret: ${CLIENT_B_SECRET}
+
+      unknownClient: reject
+```
+
+`clients` を下流 `client_id` をキーにした map ではなくリストにしているのは、設定ローダーが map のキーを小文字化し、さらに `.` で分割してしまうためです。CIMD の URL も DCR が発行する `client_id` もそのままでは残らないので、値の位置（`downstreamClientID`）に置いて 1 バイトも変えずに保持しています。
+
+このマッピングは whitelist も兼ねます。`unknownClient: reject`（`clients` を指定した時点での既定値）では、マッピングの無い下流クライアントは `invalid_client` で拒否され、拒否した `client_id` ・クライアント名・サーバー名が監査用にログへ出力されます。Manifold が上流へのリダイレクトを省略する経路は無く、同意の判断は常に上流で行われます。
+
+`unknownClient: default` を指定すると、マッピングの無いクライアントは従来どおり共用の `clientID` / `clientSecret` にフォールバックします。
+
+```yaml
+      unknownClient: default
+      clientID: manifold
+      clientSecret: ${MANIFOLD_SECRET}
+      authParams:
+        prompt: consent
+```
+
+ただし `default` では confused deputy を完全には防げません（マッピングの無いクライアントは上流から見ると Manifold のままです）。`authParams` で `prompt: consent` を付与すると軽減できますが、`prompt` は OpenID Connect のパラメータであり、純粋な OAuth 2.0 認可サーバーでは無視されることがあります。本番用途では `reject` と明示的な `clients` の whitelist を推奨します。
+
+なお、`oauth2` を書かない MCP バックエンド向けの OAuth 2.1 自動検出は、Manifold 自身を DCR で登録して常にその 1 つの共用クライアントを使います。`clients` は自動検出の結果には適用されません。
 
 ## ツール認可（OPA サイドカー）
 
