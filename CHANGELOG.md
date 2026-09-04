@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.13.0](https://github.com/nonchan7720/manifold/compare/v1.12.0...v1.13.0) (2026-09-04)
+
+
+### Features
+
+* **telemetry:** OTLP エクスポーターに任意のヘッダーを設定できるようにする ([#153](https://github.com/nonchan7720/manifold/issues/153)) ([a82c163](https://github.com/nonchan7720/manifold/commit/a82c163bce4603a826d1fbe9c7ff664e3bd56835))
+
+
+### Bug Fixes
+
+* **deps:** update go minor dependencies ([#137](https://github.com/nonchan7720/manifold/issues/137)) ([8192a48](https://github.com/nonchan7720/manifold/commit/8192a48520d6452443484eb3f03df1c42dbbb187))
+* **deps:** update go minor dependencies ([#159](https://github.com/nonchan7720/manifold/issues/159)) ([e845339](https://github.com/nonchan7720/manifold/commit/e845339b9f2b3eefc7e4dcdc54c94b81e67f632b))
+* **deps:** update go patch dependencies ([#158](https://github.com/nonchan7720/manifold/issues/158)) ([30d9af8](https://github.com/nonchan7720/manifold/commit/30d9af820924de1b74a4b73956ce497c4de27feb))
+* **deps:** update module golang.org/x/net to v0.58.0 ([#139](https://github.com/nonchan7720/manifold/issues/139)) ([120662c](https://github.com/nonchan7720/manifold/commit/120662c30295845f4ddb74d5a0828bfbe1606cde))
+* **deps:** update opentelemetry ([#135](https://github.com/nonchan7720/manifold/issues/135)) ([6e193af](https://github.com/nonchan7720/manifold/commit/6e193af5620c2b9ca331f40be03b06b63deb79c3))
+* **deps:** update opentelemetry ([#157](https://github.com/nonchan7720/manifold/issues/157)) ([dc67ffb](https://github.com/nonchan7720/manifold/commit/dc67ffbf1018d8e47d165e0bb86ed929b0873876))
+
+
+### Miscellaneous
+
+* **deps:** update golang to 1.27.0 (pin patch version, update go.mod) ([#156](https://github.com/nonchan7720/manifold/issues/156)) ([57917ed](https://github.com/nonchan7720/manifold/commit/57917edb8ee97265c79a80fe35752ba7381dc72c))
+
 ## [1.12.0](https://github.com/nonchan7720/manifold/compare/v1.11.0...v1.12.0) (2026-08-28)
 
 
