@@ -203,7 +203,7 @@ tools:
 
 推奨するワークフロー:
 
-1. サーバーの設定に `tools.file` を追加し（[`mcpServers.<name>.tools`](#mcpservernametools) 参照）、`manifold openapi generate -c config` を実行する
+1. サーバーの設定に `tools.file` を追加し（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）、`manifold openapi generate -c config` を実行する
 2. 生成物ファイルをコミットする。`tools` セクションにより、上流 spec の変更が通常の PR diff としてレビューできる
 3. ゲートウェイを起動する（`manifold gateway -c config`）。起動時にファイルからツールを読み込み、`spec` へのネットワークアクセスは発生しない
 4. 上流の spec が変わったら `manifold openapi generate -c config` を再実行してコミットし直す。spec は変わったのにファイルを再生成し忘れると、ゲートウェイの起動が「再生成してください」というエラーで失敗する
@@ -327,7 +327,7 @@ gateway:
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
-| `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpservernametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
+| `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 

@@ -203,7 +203,7 @@ tools:
 
 Recommended workflow:
 
-1. Add `tools.file` to the server's config (see [`mcpServers.<name>.tools`](#mcpservernametools)) and run `manifold openapi generate -c config`.
+1. Add `tools.file` to the server's config (see [`mcpServers.<name>.tools`](#mcpserversnametools)) and run `manifold openapi generate -c config`.
 2. Commit the generated file. Its `tools` section makes upstream spec changes reviewable as a normal PR diff.
 3. Start the gateway (`manifold gateway -c config`) — it reads the tools from the file, with no network access to `spec` at startup.
 4. After the upstream spec changes, re-run `manifold openapi generate -c config` and commit the update. A stale file (spec changed but the file wasn't regenerated) fails gateway startup with an error telling you to regenerate.
@@ -327,7 +327,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
-| `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpservernametools)). When set, the gateway starts from this file instead of fetching `spec` |
+| `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 
