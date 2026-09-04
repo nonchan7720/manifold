@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.14.0](https://github.com/nonchan7720/manifold/compare/v1.13.0...v1.14.0) (2026-09-04)
+
+
+### Features
+
+* **openapi:** `manifold openapi generate --check` で生成物の drift を検出する ([#162](https://github.com/nonchan7720/manifold/issues/162)) ([c5a191d](https://github.com/nonchan7720/manifold/commit/c5a191d6d57f7122a8f7c9da86ddd95e05205c8f))
+* **openapi:** 生成される MCP ツールの表示と、生成物 YAML からの起動に対応する ([#161](https://github.com/nonchan7720/manifold/issues/161)) ([7ab5eaa](https://github.com/nonchan7720/manifold/commit/7ab5eaa9587eff8e2b83c45494b3b5e4bb1a94fc))
+
 ## [1.13.0](https://github.com/nonchan7720/manifold/compare/v1.12.0...v1.13.0) (2026-09-04)
 
 
