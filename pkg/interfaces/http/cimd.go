@@ -166,7 +166,7 @@ func fetchCIMDDocument(
 	c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	// codeql[go/request-forgery]: 上記と同じ
+	// codeql[go/request-forgery]
 	resp, err := c.Do(req) //nolint: gosec // G704: 上記と同じ
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: fetch document: %w", errInvalidClient, err)
