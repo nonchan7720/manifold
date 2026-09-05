@@ -356,7 +356,7 @@ mcpServers:
 
 | フィールド      | 型                | 説明                                                                                    |
 | --------------- | ----------------- | --------------------------------------------------------------------------------------- |
-| `clientID`      | string            | 共用の上流クライアント ID（`clients` で全ての下流クライアントをマッピングしない限り**必須**） |
+| `clientID`      | string            | 共用の上流クライアント ID（実効的な `unknownClient` が `default` のとき**必須**。下記参照） |
 | `clientSecret`  | string            | 共用の上流クライアントシークレット（必須条件は `clientID` と同じ）                       |
 | `authURL`       | string            | Authorization Endpoint（**必須**。絶対 URL）                                            |
 | `tokenURL`      | string            | Token Endpoint（**必須**。絶対 URL）                                                    |
@@ -365,7 +365,16 @@ mcpServers:
 | `unknownClient` | string            | `clients` に無い下流クライアントの扱い。`reject` または `default`                        |
 | `authParams`    | map[string]string | 上流の認可リクエストに追加するクエリパラメータ                                          |
 
-`clients` の各要素は `downstreamClientID` / `clientID` / `clientSecret` を取ります。`downstreamClientID` は下流 `client_id` と完全一致で照合し（正規化しません）、重複は指定できません。`unknownClient` の既定は、`clients` が指定されていれば `reject`、無ければ `default` です — つまり `clients` を書かない設定は従来どおり動作します。`authParams` には Manifold 自身が組み立てるパラメータ（`client_id` / `redirect_uri` / `response_type` / `scope` / `state` / `code_challenge` / `code_challenge_method`）を指定できません。
+`clients` の各要素は `downstreamClientID` / `clientID` / `clientSecret` を取ります。`downstreamClientID` は下流 `client_id` と完全一致で照合し（正規化しません）、重複は指定できません。`authParams` には Manifold 自身が組み立てるパラメータ（`client_id` / `redirect_uri` / `response_type` / `scope` / `state` / `code_challenge` / `code_challenge_method`）を指定できません。
+
+`unknownClient` を省略した場合、`clients` が非空なら `reject`、空なら `default` になります。つまり `clients` を書かない設定は従来どおり動作します。共用の `clientID` / `clientSecret` は、実効値が `default` のときにちょうど必須になります。`clients` で全ての下流クライアントを網羅していても `unknownClient: default` を明示していれば必須のままで、欠けていると起動時に落ちます。
+
+| `unknownClient` | `clients` | 共用 `clientID` / `clientSecret` |
+| --------------- | --------- | -------------------------------- |
+| `default`（明示） | 問わない  | 必須                             |
+| `reject`（明示）  | 問わない  | 不要                             |
+| 未指定          | 非空      | 不要（実効 `reject`）            |
+| 未指定          | 空        | 必須（実効 `default`）           |
 
 `clients` は JSON 配列として、`authParams` は JSON オブジェクトとして、1 つの環境変数からまとめて注入することもできます。
 
@@ -549,7 +558,7 @@ oauth:
 - `allowedOrigins` が指定されている場合、その origin に含まれる
 - レスポンスが `200` かつ `Content-Type: application/json` で、`maxDocumentSize` 以下、リダイレクトを追従せずに取得できる
 - ドキュメントの `client_id` が要求された `client_id` と文字列として完全一致する（正規化しない）
-- `redirect_uris` が非空で、各要素が `https` または `http://localhost` を使う
+- `redirect_uris` が非空で、各要素が `https` を使うか、`http` の場合はホストが loopback（`localhost` / `127.0.0.1` / `[::1]`。ポートは任意）であること
 - `token_endpoint_auth_method` が未指定または `none`（CIMD クライアントはパブリッククライアント）
 - `grant_types` が指定されている場合、`authorization_code` を含む
 

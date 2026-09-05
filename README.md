@@ -356,7 +356,7 @@ mcpServers:
 
 | Field           | Type              | Description                                                                                     |
 | --------------- | ----------------- | ----------------------------------------------------------------------------------------------- |
-| `clientID`      | string            | Client ID of the shared upstream client (**required** unless every downstream client is mapped in `clients`) |
+| `clientID`      | string            | Client ID of the shared upstream client (**required** whenever the effective `unknownClient` is `default`, see below) |
 | `clientSecret`  | string            | Client secret of the shared upstream client (same requirement as `clientID`)                    |
 | `authURL`       | string            | Authorization endpoint (**required**; absolute URL)                                             |
 | `tokenURL`      | string            | Token endpoint (**required**; absolute URL)                                                     |
@@ -365,7 +365,16 @@ mcpServers:
 | `unknownClient` | string            | How to treat a downstream client absent from `clients`: `reject` or `default`                   |
 | `authParams`    | map[string]string | Extra query parameters added to the upstream authorization request                              |
 
-Each `clients` entry takes `downstreamClientID`, `clientID` and `clientSecret`. `downstreamClientID` is compared against the downstream `client_id` exactly, with no normalization, and must not be repeated. `unknownClient` defaults to `reject` when `clients` is non-empty, and to `default` when it is empty — so a configuration without `clients` keeps behaving as before. `authParams` may not set the parameters Manifold builds itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`).
+Each `clients` entry takes `downstreamClientID`, `clientID` and `clientSecret`. `downstreamClientID` is compared against the downstream `client_id` exactly, with no normalization, and must not be repeated. `authParams` may not set the parameters Manifold builds itself (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`).
+
+When `unknownClient` is omitted it is `reject` if `clients` is non-empty and `default` if `clients` is empty, so a configuration without `clients` keeps behaving as before. The shared `clientID` / `clientSecret` are required exactly when the effective value is `default` — including when you write `unknownClient: default` explicitly while mapping every client in `clients`. A missing shared client in that case fails at startup.
+
+| `unknownClient` | `clients` | Shared `clientID` / `clientSecret` |
+| --------------- | --------- | ---------------------------------- |
+| `default` (explicit) | any       | required                      |
+| `reject` (explicit)  | any       | not required                  |
+| omitted         | non-empty | not required (effective `reject`)  |
+| omitted         | empty     | required (effective `default`)     |
 
 `clients` can also be supplied whole as a JSON array through a single environment variable, and `authParams` as a JSON object:
 
@@ -549,7 +558,7 @@ When enabled, `/.well-known/oauth-authorization-server/mcp/{server_name}` advert
 - its origin is in `allowedOrigins` (when that list is non-empty)
 - the response is `200` with `Content-Type: application/json`, no larger than `maxDocumentSize`, and reached without following a redirect
 - the document's `client_id` equals the requested `client_id` byte for byte (no normalization)
-- `redirect_uris` is non-empty and every entry uses `https` or `http://localhost`
+- `redirect_uris` is non-empty and every entry either uses `https`, or uses `http` with a loopback host (`localhost`, `127.0.0.1` or `[::1]`; any port)
 - `token_endpoint_auth_method` is absent or `none` (CIMD clients are public clients)
 - `grant_types`, when present, includes `authorization_code`
 
