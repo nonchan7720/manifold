@@ -2075,3 +2075,138 @@ func TestGetAuthMetadata_Success_SpanNoError(t *testing.T) {
 	require.True(t, found, "span not found")
 	require.Equal(t, codes.Unset, span.Status.Code)
 }
+
+// --- DCR クライアントと登録元 MCP サーバーの束縛 ---
+
+func TestClientAllowedForServer(t *testing.T) {
+	tests := []struct {
+		name          string
+		source        string
+		mcpServerName string
+		srv           *config.Server
+		want          bool
+	}{
+		{"dcr client on its own server", ClientSourceDCR, "server-a",
+			&config.Server{Name: "server-a"}, true},
+		{"dcr client on another server", ClientSourceDCR, "server-a",
+			&config.Server{Name: "server-b"}, false},
+		{"cimd client", ClientSourceCIMD, "",
+			&config.Server{Name: "server-b"}, true},
+		{"dcr client without a recorded server", ClientSourceDCR, "",
+			&config.Server{Name: "server-b"}, true},
+		{"server resolved from the registration", ClientSourceDCR, "server-a", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := &StoreClientRegistration{Source: tt.source, MCPServerName: tt.mcpServerName}
+			require.Equal(t, tt.want, clientAllowedForServer(reg, tt.srv))
+		})
+	}
+}
+
+// --- LoginEndpoint: DCR クライアントと登録元 MCP サーバーの束縛 ---
+
+// newBoundClientHandler は server-a で DCR 登録された client1 を持つハンドラを返す。
+func newBoundClientHandler(t *testing.T, source string) (*AuthHandler, *mockStore) {
+	t.Helper()
+	regJSON, err := json.Marshal(StoreClientRegistration{
+		ClientRegistration: ClientRegistration{
+			ClientID:     "client1",
+			ClientName:   "Client One",
+			RedirectURIs: []string{"https://app.example.com/callback"},
+		},
+		MCPServerName: "server-a",
+		Source:        source,
+	})
+	require.NoError(t, err)
+	st := newMockStore(map[string]string{"oauth_client:client1": string(regJSON)})
+	return NewAuthHandler(st, config.Servers{}), st
+}
+
+func boundClientServer(name string) *config.Server {
+	return &config.Server{
+		Name: name,
+		OAuth2: &config.OAuth2{
+			ClientID:     "upstream",
+			ClientSecret: "upstream-secret",
+			AuthURL:      "https://auth.example.com/auth",
+			TokenURL:     "https://auth.example.com/token",
+		},
+	}
+}
+
+func boundClientLoginRequest(t *testing.T, serverName string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		fmt.Sprintf("/%s/auth/login?client_id=client1"+
+			"&redirect_uri=https://app.example.com/callback"+
+			"&code_challenge=abc&code_challenge_method=S256&state=st", serverName), nil)
+	req.Host = "gateway.example.com"
+	return req
+}
+
+func TestLoginEndpoint_DCRClientRejectedOnAnotherServer(t *testing.T) {
+	h, _ := newBoundClientHandler(t, ClientSourceDCR)
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, boundClientLoginRequest(t, "server-b"), boundClientServer("server-b"))
+
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.Contains(t, rw.Body.String(), "invalid_client")
+	require.Empty(t, rw.Header().Get("Location"),
+		"登録元以外のサーバーの上流認可エンドポイントへ進んではいけない")
+}
+
+func TestLoginEndpoint_DCRClientAllowedOnRegisteringServer(t *testing.T) {
+	h, st := newBoundClientHandler(t, ClientSourceDCR)
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, boundClientLoginRequest(t, "server-a"), boundClientServer("server-a"))
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	require.Contains(t, rw.Header().Get("Location"), "https://auth.example.com/auth")
+	require.Equal(t, "server-a", storedAuthSession(t, st).MCPServerName)
+}
+
+// 束縛の検証は redirect_uri の照合より前に行うため、未登録の redirect_uri でも
+// 400 invalid_redirect_uri ではなく 401 invalid_client になる。
+func TestLoginEndpoint_DCRClientBindingCheckedBeforeRedirectURI(t *testing.T) {
+	h, _ := newBoundClientHandler(t, ClientSourceDCR)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/server-b/auth/login?client_id=client1"+
+			"&redirect_uri=https://evil.example.com/cb"+
+			"&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, boundClientServer("server-b"))
+
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.Contains(t, rw.Body.String(), "invalid_client")
+}
+
+// Source を持たない古い登録レコードは resolveClient が DCR とみなすため、束縛も効く。
+func TestLoginEndpoint_LegacyRegistrationWithoutSourceIsBound(t *testing.T) {
+	h, _ := newBoundClientHandler(t, "")
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, boundClientLoginRequest(t, "server-b"), boundClientServer("server-b"))
+
+	require.Equal(t, http.StatusUnauthorized, rw.Code)
+	require.Contains(t, rw.Body.String(), "invalid_client")
+}
+
+// CIMD で解決したクライアントは MCPServerName を持たず、MCP サーバーを横断して使える。
+func TestLoginEndpoint_CIMDClientIsNotBoundToServer(t *testing.T) {
+	h, _, _ := newCIMDTestHandler(t, cimdEnabled(), cimdDocumentHandler(validCIMDDocument()))
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(
+		rw,
+		cimdLoginRequest(t, testCIMDClientID, testCIMDRedirectURI),
+		boundClientServer("server-b"),
+	)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	require.Contains(t, rw.Header().Get("Location"), "https://auth.example.com/auth")
+}

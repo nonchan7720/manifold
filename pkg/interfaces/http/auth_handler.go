@@ -481,6 +481,18 @@ func (h *AuthHandler) resolveUpstreamClient(
 	return srv.OAuth2.ClientID, srv.OAuth2.ClientSecret, nil
 }
 
+// clientAllowedForServer は解決したクライアントが srv の認可エンドポイントを使ってよいかを返す。
+// DCR の登録は無認証なので、登録元以外のサーバーで使えると、任意の redirect_uri を持つ
+// クライアントで他サーバーの上流トークンを奪える。CIMD クライアントは MCPServerName を
+// 持たず、MCP サーバー横断で使えることが前提。srv が nil の経路は呼び出し側が
+// MCPServerName からサーバーを解決するため必ず一致する。
+func clientAllowedForServer(clientReg *StoreClientRegistration, srv *config.Server) bool {
+	if srv == nil || clientReg.Source != ClientSourceDCR || clientReg.MCPServerName == "" {
+		return true
+	}
+	return clientReg.MCPServerName == srv.Name
+}
+
 func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/LoginEndpoint")
@@ -531,6 +543,15 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		slog.WarnContext(ctx, "unknown client_id in login request",
 			slog.String("client_id", util.SanitizeLog(clientID)),
 			slog.Any("error", err))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+	if !clientAllowedForServer(clientReg, srv) {
+		slog.WarnContext(ctx, "downstream client is not registered for this server",
+			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.String("client_name", util.SanitizeLog(clientReg.ClientName)),
+			slog.String("registered_mcp_server_name", util.SanitizeLog(clientReg.MCPServerName)),
+			slog.String("mcp_server_name", srv.Name))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
 		return
 	}
