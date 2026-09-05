@@ -152,7 +152,7 @@ func fetchCIMDDocument(
 	clientID string,
 	cfg config.CIMDConfig,
 ) (*ClientIDMetadataDocument, time.Duration, error) {
-	req, err := http.NewRequestWithContext( //nolint: gosec // G704: CIMD は client 提示の URL 取得が前提。validateCIMDClientID と SafeHTTPClient で緩和する
+	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
 		clientID,
@@ -168,7 +168,7 @@ func fetchCIMDDocument(
 		return http.ErrUseLastResponse
 	}
 	// codeql[go/request-forgery]
-	resp, err := c.Do(req) //nolint: gosec // G704: 上記と同じ
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: fetch document: %w", errInvalidClient, err)
 	}
