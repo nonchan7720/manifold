@@ -10,25 +10,15 @@ Clients resolved through a client ID metadata document (CIMD) are not affected: 
 
 ## Why the binding exists
 
-The registration endpoint is unauthenticated — that is what RFC 7591 asks for, and Manifold cannot require a credential a brand new client does not have yet. Without a binding, the `client_id` handed out by one server is accepted by every other server, and the registrant chooses its own `redirect_uris`. That is enough to pull another server's upstream tokens:
+Two reasons, both modest.
 
-```mermaid
-sequenceDiagram
-    participant A as Attacker
-    participant M as Manifold
-    participant U as Upstream authorization server of server-b
+**A registration belongs to the authorization server that issued it.** Manifold advertises a separate authorization server per MCP server: the metadata of `{server_name}` names `{base_url}/mcp/{server_name}` as its `issuer` and `/{server_name}/auth/clients` as its `registration_endpoint`. A `client_id` minted under one issuer has no meaning under another, so there is no reason to honor it there.
 
-    A->>M: POST /server-a/auth/clients<br/>redirect_uris: https://attacker.example/cb
-    M-->>A: client_id
-    A->>M: GET /server-b/auth/login?client_id=...
-    M->>U: authorization request for server-b
-    U-->>M: authorization code (server-b)
-    M-->>A: redirect to https://attacker.example/cb
-    A->>M: POST /server-b/auth/token
-    M-->>A: token backed by server-b's upstream token
-```
+**A `client_id` registered elsewhere becomes visible.** A rejection is logged with both server names, so bringing another server's `client_id` to this one shows up in the audit log instead of passing silently.
 
-The registered `redirect_uris` are validated, so this is not an open redirect — the code lands exactly where the registrant asked. The missing piece is that nothing checked whether the registrant was ever entitled to `server-b`.
+**On its own this does not prevent an attacker from obtaining another server's upstream token.** `POST /{server_name}/auth/clients` is registered on the same mux for every server, and the `middleware.MCPServerApp` in front of it (`pkg/interfaces/http/middleware/mcp_server.go`) only resolves the server from the path and puts it into the request context — it neither authenticates the caller nor restricts access. An attacker who wants `server-b` registers directly at `server-b`'s registration endpoint and passes the binding check. Closing "register at A, present at B" merely replaces it with "register at B, present at B".
+
+What actually restricts this is `mcpServers.<name>.oauth2.clients` together with `unknownClient: reject`. `resolveUpstreamClient` (`pkg/interfaces/http/auth_handler.go`) decides solely on whether the `client_id` appears in that mapping, regardless of where it was registered.
 
 ## What is checked
 
@@ -48,29 +38,7 @@ The `/authorize` alias carries no server name in its path. There, Manifold still
 
 ## Configurations affected
 
-Only setups that reuse one DCR-issued `client_id` across several `mcpServers` entries. Those requests now fail with `invalid_client` (401). Two ways to migrate:
-
-1. **Register once per server.** Let the client run dynamic client registration against each `/{server_name}/auth/clients` it uses. Each server hands back its own `client_id`, and each is bound to that server. This is the normal MCP client behavior and needs no configuration change.
-
-2. **Map the client explicitly.** If the client's identifier must stay the same across servers, declare it per server under `mcpServers.<name>.oauth2.clients` and give each server its own upstream client:
-
-   ```yaml
-   mcpServers:
-     server-a:
-       oauth2:
-         clients:
-           - downstreamClientID: "https://client.example.com/oauth-client.json"
-             clientID: client-for-server-a
-             clientSecret: ${SERVER_A_SECRET}
-     server-b:
-       oauth2:
-         clients:
-           - downstreamClientID: "https://client.example.com/oauth-client.json"
-             clientID: client-for-server-b
-             clientSecret: ${SERVER_B_SECRET}
-   ```
-
-   A stable cross-server identifier is what CIMD is for, so pair this with `oauth.cimd.enabled: true` and an HTTPS `client_id`. A CIMD client is not bound to a registering server, and `clients` plus `unknownClient` decide which servers actually accept it.
+Under RFC 7591 a client registers with each authorization server separately and keeps the returned `client_id` keyed by issuer, so a spec-compliant DCR client never presents one server's `client_id` to another. There is normally no affected configuration. Only an implementation that reuses a single DCR-issued `client_id` across several `mcpServers` entries now gets `invalid_client` (401).
 
 The default of `unknownClient` is unchanged: `reject` when `clients` is non-empty, `default` when it is empty.
 

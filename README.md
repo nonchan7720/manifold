@@ -595,7 +595,7 @@ mcpServers:
 
 The mapping doubles as a whitelist: with `unknownClient: reject` (the default once `clients` is set), a downstream client without a mapping is refused with `invalid_client`, and the rejected `client_id`, client name, and server name are logged for auditing. Manifold never skips the upstream redirect, so consent is always decided upstream.
 
-Independently of `clients` and `unknownClient`, a client registered through DCR may only use the MCP server it registered with, while a CIMD client stays usable across servers (see `docs/design/dcr-client-server-binding.md`, which also covers how to migrate a setup that shares one DCR `client_id` between servers).
+Independently of `clients` and `unknownClient`, a client registered through DCR may only use the MCP server it registered with, while a CIMD client stays usable across servers (see `docs/design/dcr-client-server-binding.md`).
 
 `unknownClient: default` keeps the previous behavior for unmapped clients, falling back to the shared `clientID` / `clientSecret`:
 

@@ -10,25 +10,15 @@
 
 ## 束縛が必要な理由
 
-登録エンドポイントは無認証です。RFC 7591 がそう定めており、まだ何の資格情報も持たない新規クライアントに認証を要求することはできません。束縛が無いと、あるサーバーが発行した `client_id` を他のすべてのサーバーが受け入れることになり、しかも `redirect_uris` は登録者が自分で決められます。これだけで他サーバーの上流トークンを引き出せます。
+理由は 2 つあり、いずれも控えめなものです。
 
-```mermaid
-sequenceDiagram
-    participant A as 攻撃者
-    participant M as Manifold
-    participant U as server-b の上流認可サーバー
+**登録は発行元の認可サーバーに属するものであるという正しさ。** Manifold は MCP サーバーごとに別の認可サーバーを名乗ります。`{server_name}` のメタデータは `issuer` に `{base_url}/mcp/{server_name}` を、`registration_endpoint` に `/{server_name}/auth/clients` を返します。ある issuer が発行した `client_id` は別の issuer では意味を持たないので、そこで受け付ける理由がありません。
 
-    A->>M: POST /server-a/auth/clients<br/>redirect_uris: https://attacker.example/cb
-    M-->>A: client_id
-    A->>M: GET /server-b/auth/login?client_id=...
-    M->>U: server-b の認可リクエスト
-    U-->>M: 認可コード（server-b）
-    M-->>A: https://attacker.example/cb へリダイレクト
-    A->>M: POST /server-b/auth/token
-    M-->>A: server-b の上流トークンに紐づくトークン
-```
+**別サーバーで登録された `client_id` の持ち込みを検知できること。** 拒否時には両方のサーバー名をログへ出力するため、他サーバーの `client_id` を持ち込む動きが黙って通らず監査ログに残ります。
 
-登録済みの `redirect_uris` は検証されているため、これはオープンリダイレクトではありません。認可コードは登録者が申告したとおりの場所に届きます。欠けていたのは「その登録者がそもそも server-b を使ってよいのか」という確認だけです。
+**これ単体では、攻撃者が別サーバーの上流トークンを取得することを防ぎません。** `POST /{server_name}/auth/clients` は全サーバー分が同じ mux に登録されており、その前段の `middleware.MCPServerApp`（`pkg/interfaces/http/middleware/mcp_server.go`）はパスからサーバーを解決して context に入れるだけで、呼び出し元の認証もアクセス制限も行いません。`server-b` を狙う攻撃者は `server-b` の登録エンドポイントで直接登録すればよく、束縛の照合は通ります。「A で登録して B に持ち込む」を塞いでも「最初から B で登録して B を叩く」に置き換えられるだけです。
+
+実効的な制限は `mcpServers.<name>.oauth2.clients` と `unknownClient: reject` です。`resolveUpstreamClient`（`pkg/interfaces/http/auth_handler.go`）は登録元に関係なく、`client_id` がそのマッピングに載っているかだけで判定します。
 
 ## 検証する内容
 
@@ -48,29 +38,7 @@ sequenceDiagram
 
 ## 影響を受ける構成
 
-影響を受けるのは、DCR で発行した 1 つの `client_id` を複数の `mcpServers` エントリで使い回している構成だけです。そうしたリクエストは `invalid_client`（401）になります。移行方法は 2 つあります。
-
-1. **サーバーごとに登録し直す。** クライアントに、使用する `/{server_name}/auth/clients` それぞれへ動的クライアント登録を実行させます。サーバーごとに別の `client_id` が発行され、それぞれがそのサーバーに束縛されます。MCP クライアントの通常の振る舞いであり、設定変更は不要です。
-
-2. **明示的にマッピングする。** クライアントの識別子をサーバー間で同じに保ちたい場合は、`mcpServers.<name>.oauth2.clients` でサーバーごとに宣言し、それぞれに上流クライアントを割り当てます。
-
-   ```yaml
-   mcpServers:
-     server-a:
-       oauth2:
-         clients:
-           - downstreamClientID: "https://client.example.com/oauth-client.json"
-             clientID: client-for-server-a
-             clientSecret: ${SERVER_A_SECRET}
-     server-b:
-       oauth2:
-         clients:
-           - downstreamClientID: "https://client.example.com/oauth-client.json"
-             clientID: client-for-server-b
-             clientSecret: ${SERVER_B_SECRET}
-   ```
-
-   サーバーを横断する安定した識別子は CIMD の担当領域なので、`oauth.cimd.enabled: true` と HTTPS の `client_id` を併用してください。CIMD クライアントは登録元サーバーに束縛されず、どのサーバーが受け入れるかは `clients` と `unknownClient` で決まります。
+RFC 7591 の DCR は、クライアントが認可サーバーごとに登録して `client_id` を受け取り、それを issuer をキーに保持するモデルです。仕様どおりの DCR クライアントがあるサーバーの `client_id` を別のサーバーへ出すことはないため、影響を受ける構成は通常存在しません。1 つの `client_id` を複数の `mcpServers` エントリで使い回している実装だけが `invalid_client`（401）になります。
 
 `unknownClient` の既定値は変更していません。`clients` が非空なら `reject`、空なら `default` のままです。
 

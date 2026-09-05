@@ -595,7 +595,7 @@ mcpServers:
 
 このマッピングは whitelist も兼ねます。`unknownClient: reject`（`clients` を指定した時点での既定値）では、マッピングの無い下流クライアントは `invalid_client` で拒否され、拒否した `client_id` ・クライアント名・サーバー名が監査用にログへ出力されます。Manifold が上流へのリダイレクトを省略する経路は無く、同意の判断は常に上流で行われます。
 
-`clients` / `unknownClient` とは独立に、DCR で登録したクライアントは登録元の MCP サーバーでしか使えません（CIMD クライアントは横断して使えます）。詳細と、1 つの DCR `client_id` を複数サーバーで使い回している構成の移行方法は `docs/design/dcr-client-server-binding.ja.md` を参照してください。
+`clients` / `unknownClient` とは独立に、DCR で登録したクライアントは登録元の MCP サーバーでしか使えません（CIMD クライアントは横断して使えます）。詳細は `docs/design/dcr-client-server-binding.ja.md` を参照してください。
 
 `unknownClient: default` を指定すると、マッピングの無いクライアントは従来どおり共用の `clientID` / `clientSecret` にフォールバックします。
 
