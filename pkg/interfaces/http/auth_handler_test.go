@@ -2210,3 +2210,44 @@ func TestLoginEndpoint_CIMDClientIsNotBoundToServer(t *testing.T) {
 	require.Equal(t, http.StatusFound, rw.Code)
 	require.Contains(t, rw.Header().Get("Location"), "https://auth.example.com/auth")
 }
+
+// --- LoginEndpoint: client_id 必須・サーバー解決 ---
+
+func TestLoginEndpoint_EmptyClientID(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/server-a/auth/login?redirect_uri=https://app.example.com/callback"+
+			"&code_challenge=abc&code_challenge_method=S256&state=st", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, req, boundClientServer("server-a"))
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+	require.Contains(t, rw.Body.String(), "invalid_client_id")
+}
+
+func TestLoginEndpoint_ServerResolvedFromRegistration(t *testing.T) {
+	h, _ := newBoundClientHandler(t, ClientSourceDCR)
+	h.servers = config.Servers{"server-a": boundClientServer("server-a")}
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, boundClientLoginRequest(t, "server-a"), nil)
+
+	require.Equal(t, http.StatusFound, rw.Code)
+	require.Contains(t, rw.Header().Get("Location"), "https://auth.example.com/auth")
+}
+
+func TestLoginEndpoint_OAuth2NotConfiguredForOpenAPIServer(t *testing.T) {
+	h, _ := newBoundClientHandler(t, ClientSourceDCR)
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(
+		rw,
+		boundClientLoginRequest(t, "server-a"),
+		&config.Server{Name: "server-a", Spec: "local/spec.json"},
+	)
+
+	require.Equal(t, http.StatusInternalServerError, rw.Code)
+	require.Contains(t, rw.Body.String(), "oauth2 not configured for this server")
+}
