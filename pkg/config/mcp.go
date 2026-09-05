@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -239,23 +240,132 @@ type ToolsConfig struct {
 	File string `mapstructure:"file"`
 }
 
+// OAuth2.UnknownClient が取る値。clients にマッピングの無い下流クライアントを
+// 拒否するか、共用クライアントで上流へ進めるかを決める。
+const (
+	OAuth2UnknownClientReject  = "reject"
+	OAuth2UnknownClientDefault = "default"
+)
+
+// oauth2ReservedAuthParams は認可リクエストの組み立てで Manifold 自身が
+// 設定するパラメータ。authParams で上書きすると認可フローが壊れる。
+var oauth2ReservedAuthParams = []string{
+	"client_id",
+	"redirect_uri",
+	"response_type",
+	"scope",
+	"state",
+	"code_challenge",
+	"code_challenge_method",
+}
+
+// OAuth2Client は 1 つの下流クライアントに割り当てる上流 OAuth2 クライアント。
+// 下流 client_id は map のキーではなくフィールドとして持つ。設定ローダーは
+// map キーを小文字化し、さらに環境変数展開時にドットで分割するため、
+// キーの位置では client_id を完全一致で保持できない。
+type OAuth2Client struct {
+	DownstreamClientID string `mapstructure:"downstreamClientID"`
+	ClientID           string `mapstructure:"clientID"`
+	ClientSecret       string `mapstructure:"clientSecret"`
+}
+
 type OAuth2 struct {
 	ClientID     string   `mapstructure:"clientID"`
 	ClientSecret string   `mapstructure:"clientSecret"`
 	AuthURL      string   `mapstructure:"authURL"`
 	TokenURL     string   `mapstructure:"tokenURL"`
 	Scopes       []string `mapstructure:"scopes"`
+
+	// Clients は下流 client_id（CIMD の URL または DCR で発行した ID）から
+	// 上流クライアントへのマッピング。downstreamClientID で完全一致照合する。
+	Clients []OAuth2Client `mapstructure:"clients"`
+
+	// UnknownClient は Clients にマッピングの無い下流クライアントの扱い。
+	// 空のときは UnknownClientMode を参照。
+	UnknownClient string `mapstructure:"unknownClient"`
+
+	// AuthParams は上流の認可リクエストに追加するクエリパラメータ。
+	AuthParams map[string]string `mapstructure:"authParams"`
+}
+
+// UpstreamClient は下流 client_id に完全一致するマッピングを返す。
+// 照合は正規化せずバイト単位で行う。
+func (c *OAuth2) UpstreamClient(downstreamClientID string) (OAuth2Client, bool) {
+	for _, client := range c.Clients {
+		if client.DownstreamClientID == downstreamClientID {
+			return client, true
+		}
+	}
+	return OAuth2Client{}, false
+}
+
+// UnknownClientMode は Clients にマッピングが無い下流クライアントの扱いを返す。
+// 明示指定が無い場合、Clients による whitelist があれば拒否し、無ければ
+// 共用クライアント（clientID / clientSecret）で上流へ進む。
+func (c *OAuth2) UnknownClientMode() string {
+	if c.UnknownClient != "" {
+		return c.UnknownClient
+	}
+	if len(c.Clients) > 0 {
+		return OAuth2UnknownClientReject
+	}
+	return OAuth2UnknownClientDefault
 }
 
 func (c *OAuth2) ValidateWithContext(ctx context.Context) error {
+	// 共用クライアントは、マッピングに無い下流クライアントを受け入れるときだけ必須。
+	sharedRequired := c.UnknownClientMode() == OAuth2UnknownClientDefault
 	return validation.ValidateStructWithContext(ctx, c,
-		validation.Field(&c.ClientID, validation.Required),
-		validation.Field(&c.ClientSecret, validation.Required),
+		validation.Field(&c.ClientID, validation.When(sharedRequired, validation.Required)),
+		validation.Field(&c.ClientSecret, validation.When(sharedRequired, validation.Required)),
 		// is.RequestURI はスキーム無しの相対パス（例: "/auth"）も許容してしまうため、
 		// スキーム付きの絶対 URL を要求する is.RequestURL を使う（TokenExchange.URL と同様）。
 		validation.Field(&c.AuthURL, validation.Required, is.RequestURL),
 		validation.Field(&c.TokenURL, validation.Required, is.RequestURL),
+		validation.Field(&c.UnknownClient, validation.In(
+			OAuth2UnknownClientReject, OAuth2UnknownClientDefault,
+		)),
+		validation.Field(&c.Clients, validation.By(validateOAuth2Clients)),
+		validation.Field(&c.AuthParams, validation.By(validateOAuth2AuthParams)),
 	)
+}
+
+func validateOAuth2Clients(value any) error {
+	clients, ok := value.([]OAuth2Client)
+	if !ok {
+		return fmt.Errorf("type error: %T", value)
+	}
+	seen := make(map[string]struct{}, len(clients))
+	for _, client := range clients {
+		if client.DownstreamClientID == "" {
+			return fmt.Errorf("downstreamClientID must not be empty")
+		}
+		if client.ClientID == "" {
+			return fmt.Errorf("clientID for %q must not be empty", client.DownstreamClientID)
+		}
+		if _, dup := seen[client.DownstreamClientID]; dup {
+			return fmt.Errorf("downstreamClientID %q is listed more than once",
+				client.DownstreamClientID)
+		}
+		seen[client.DownstreamClientID] = struct{}{}
+	}
+	return nil
+}
+
+func validateOAuth2AuthParams(value any) error {
+	params, ok := value.(map[string]string)
+	if !ok {
+		return fmt.Errorf("type error: %T", value)
+	}
+	for key := range params {
+		if key == "" {
+			return fmt.Errorf("parameter name must not be empty")
+		}
+		if slices.Contains(oauth2ReservedAuthParams, key) {
+			return fmt.Errorf("parameter %q is set by manifold and must not be overridden", key)
+		}
+	}
+	return nil
 }
 
 type AuthValue struct {

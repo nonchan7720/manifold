@@ -27,6 +27,8 @@ type Config struct {
 	Identities map[string]*IdentityProfile `mapstructure:"identities"`
 
 	Authz AuthzConfig `mapstructure:"authz"`
+
+	OAuth OAuthConfig `mapstructure:"oauth"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -83,6 +85,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Storage),
 		validation.Field(&c.Authz),
+		validation.Field(&c.OAuth),
 	)
 }
 

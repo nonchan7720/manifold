@@ -715,6 +715,47 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 	require.Contains(t, logBuf.String(), "http response")
 }
 
+// --- newAuthHandler ---
+
+// testEncryptKey は 32 バイトを base64 エンコードしたダミーの AES-256 鍵（テスト専用）。
+const testEncryptKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// authHandlerMetadata は認可サーバーメタデータを取り出す。CIMD 設定が
+// AuthHandler まで届いているかは、この広告の有無で外から確認できる。
+func authHandlerMetadata(t *testing.T, cfg *config.Config) map[string]any {
+	t.Helper()
+	storeClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storeClient.Close() })
+
+	h := newAuthHandler(cfg, storeClient)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/.well-known/oauth-authorization-server/mcp/srv", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+	h.MetadataEndpoint(rw, req, &config.Server{Name: "srv"})
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &body))
+	return body
+}
+
+func TestNewAuthHandler_CIMDDisabled_NotAdvertised(t *testing.T) {
+	body := authHandlerMetadata(t, &config.Config{
+		Gateway:   config.Gateway{EncryptKey: testEncryptKey},
+		MCPServer: config.Servers{},
+	})
+	require.NotContains(t, body, "client_id_metadata_document_supported")
+}
+
+func TestNewAuthHandler_CIMDEnabled_Advertised(t *testing.T) {
+	body := authHandlerMetadata(t, &config.Config{
+		Gateway:   config.Gateway{EncryptKey: testEncryptKey},
+		MCPServer: config.Servers{},
+		OAuth:     config.OAuthConfig{CIMD: config.CIMDConfig{Enabled: true}},
+	})
+	require.Equal(t, true, body["client_id_metadata_document_supported"])
+}
+
 // --- newAuthzDecider ---
 
 func TestNewAuthzDecider_Disabled_ReturnsNil(t *testing.T) {

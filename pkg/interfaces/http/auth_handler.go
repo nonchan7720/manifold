@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -72,6 +73,8 @@ type ClientRegistration struct {
 type StoreClientRegistration struct {
 	ClientRegistration
 	MCPServerName string `json:"mcp_server_name"`
+	// Source は登録経路（ClientSourceDCR / ClientSourceCIMD）。
+	Source string `json:"source,omitempty"`
 }
 
 // RefreshTokenSession リフレッシュトークン使用時に上流 OAuth2 設定を復元するためのデータ。
@@ -92,6 +95,7 @@ type AuthHandler struct {
 	mu          sync.RWMutex
 	tokenEncKey []byte
 	httpClient  *http.Client
+	cimd        config.CIMDConfig
 }
 
 type AuthHandlerOption func(h *AuthHandler)
@@ -110,6 +114,21 @@ func WithEncryptKeyByBase64(key string) AuthHandlerOption {
 	return WithEncryptKey(v)
 }
 
+// WithCIMD は下流クライアントの CIMD 受け入れ設定を差し替える。
+func WithCIMD(cfg config.CIMDConfig) AuthHandlerOption {
+	return func(h *AuthHandler) {
+		h.cimd = cfg.WithDefaults()
+	}
+}
+
+// WithHTTPClient は外部 URL 取得に使う HTTP クライアントを差し替える。
+// 既定は client.SafeHTTPClient()。
+func WithHTTPClient(c *http.Client) AuthHandlerOption {
+	return func(h *AuthHandler) {
+		h.httpClient = c
+	}
+}
+
 func NewAuthHandler(
 	storeClient store.Client,
 	servers config.Servers,
@@ -119,6 +138,7 @@ func NewAuthHandler(
 		store:      storeClient,
 		servers:    servers,
 		httpClient: client.SafeHTTPClient(),
+		cimd:       config.CIMDConfig{}.WithDefaults(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -238,6 +258,9 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 		},
 		"resource_indicators_supported": true,
 	}
+	if h.cimd.Enabled {
+		metadata["client_id_metadata_document_supported"] = true
+	}
 	if srv.OAuth2 != nil && len(srv.OAuth2.Scopes) > 0 {
 		metadata["scopes_supported"] = srv.OAuth2.Scopes
 	}
@@ -314,6 +337,7 @@ func (h *AuthHandler) RegisterClientEndpoint(
 	storeReg := StoreClientRegistration{
 		ClientRegistration: reg,
 		MCPServerName:      srv.Name,
+		Source:             ClientSourceDCR,
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
@@ -321,7 +345,7 @@ func (h *AuthHandler) RegisterClientEndpoint(
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	if err = h.store.Set(ctx, "oauth_client:"+clientID, regJSON, 90*24*time.Hour); err != nil {
+	if err = h.store.Set(ctx, dcrClientKeyPrefix+clientID, regJSON, 90*24*time.Hour); err != nil {
 		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
 		writeJSON(w, http.StatusInternalServerError, "server_error")
 		return
@@ -412,6 +436,7 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	storeReg := StoreClientRegistration{
 		ClientRegistration: reg,
 		MCPServerName:      mcpName,
+		Source:             ClientSourceDCR,
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
@@ -421,7 +446,7 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	}
 	if err = h.store.Set(
 		r.Context(),
-		"oauth_client:"+clientID,
+		dcrClientKeyPrefix+clientID,
 		regJSON,
 		90*24*time.Hour,
 	); err != nil {
@@ -433,6 +458,27 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(reg)
+}
+
+// resolveUpstreamClient は下流の client_id に割り当てられた上流 OAuth2 クライアントを返す。
+// マッピングは上流の同意画面を下流クライアント名で表示させるためのもので、
+// 同意状態は上流が管理する（manifold 側に同意スキップの経路は無い）。
+func (h *AuthHandler) resolveUpstreamClient(
+	srv *config.Server,
+	downstreamClientID string,
+) (clientID, clientSecret string, err error) {
+	if srv.OAuth2 == nil {
+		return "", "", fmt.Errorf("%w: oauth2 is not configured", errInvalidClient)
+	}
+	if upstream, ok := srv.OAuth2.UpstreamClient(downstreamClientID); ok {
+		return upstream.ClientID, upstream.ClientSecret, nil
+	}
+	if srv.OAuth2.UnknownClientMode() == config.OAuth2UnknownClientReject {
+		return "", "", fmt.Errorf(
+			"%w: no upstream client is mapped for this downstream client", errInvalidClient,
+		)
+	}
+	return srv.OAuth2.ClientID, srv.OAuth2.ClientSecret, nil
 }
 
 func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
@@ -466,38 +512,33 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		return
 	}
 
-	// client_id が提供された場合、登録済みの redirect_uri と照合してオープンリダイレクトを防ぐ
-	var clientReg StoreClientRegistration
-	if clientID != "" {
-		clientJSON, err := h.store.Get(ctx, "oauth_client:"+clientID)
-		if err != nil {
-			slog.WarnContext(
-				ctx,
-				"unknown client_id in login request",
+	if clientID == "" {
+		slog.ErrorContext(ctx, "failed to client_id is empty")
+		http.Error(w, "invalid_client_id", http.StatusBadRequest)
+		return
+	}
+	// 登録済み（DCR）または CIMD で解決したクライアントの redirect_uri と
+	// 照合してオープンリダイレクトを防ぐ
+	clientReg, err := h.resolveClient(ctx, clientID)
+	if err != nil {
+		if !errors.Is(err, errInvalidClient) {
+			slog.ErrorContext(ctx, "failed to resolve client",
 				slog.String("client_id", util.SanitizeLog(clientID)),
-			)
-			http.Error(w, "invalid_client", http.StatusUnauthorized)
-			return
-		}
-		if err = json.Unmarshal([]byte(clientJSON), &clientReg); err != nil {
-			slog.ErrorContext(
-				ctx,
-				"failed to unmarshal client registration",
-				slog.Any("error", err),
-			)
+				slog.Any("error", err))
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
-			slog.WarnContext(ctx, "redirect_uri not registered for client",
-				slog.String("client_id", util.SanitizeLog(clientID)),
-				slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
-			http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
-			return
-		}
-	} else {
-		slog.ErrorContext(ctx, "failed to client_id is empty")
-		http.Error(w, "invalid_client_id", http.StatusBadRequest)
+		slog.WarnContext(ctx, "unknown client_id in login request",
+			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.Any("error", err))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+	if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
+		slog.WarnContext(ctx, "redirect_uri not registered for client",
+			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
+		http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
 		return
 	}
 
@@ -527,6 +568,17 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		srv.OAuth2 = discovered
 	}
 
+	upstreamClientID, upstreamClientSecret, err := h.resolveUpstreamClient(srv, clientID)
+	if err != nil {
+		slog.WarnContext(ctx, "downstream client is not allowed for this server",
+			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.String("client_name", util.SanitizeLog(clientReg.ClientName)),
+			slog.String("mcp_server_name", srv.Name),
+			slog.Any("error", err))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return
+	}
+
 	sessionID := generateRandomString(32)
 	// 上流認可サーバー向けの PKCE verifier を生成（RFC 7636）
 	upstreamVerifier := generateRandomString(43)
@@ -538,8 +590,8 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 		CodeChallenge:        codeChallenge,
 		CodeChallengeMethod:  codeChallengeMethod,
 		Resource:             resource,
-		OAuth2ClientID:       srv.OAuth2.ClientID,
-		OAuth2ClientSecret:   srv.OAuth2.ClientSecret,
+		OAuth2ClientID:       upstreamClientID,
+		OAuth2ClientSecret:   upstreamClientSecret,
 		OAuth2TokenURL:       srv.OAuth2.TokenURL,
 		OAuth2Scopes:         srv.OAuth2.Scopes,
 		UpstreamCodeVerifier: upstreamVerifier,
@@ -557,8 +609,8 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 
 	oauthCfg := &oauth2.Config{
-		ClientID:     srv.OAuth2.ClientID,
-		ClientSecret: srv.OAuth2.ClientSecret,
+		ClientID:     upstreamClientID,
+		ClientSecret: upstreamClientSecret,
 		RedirectURL:  callbackURL,
 		Scopes:       srv.OAuth2.Scopes,
 		Endpoint: oauth2.Endpoint{
@@ -566,7 +618,11 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 			TokenURL: srv.OAuth2.TokenURL,
 		},
 	}
-	redirectURL := oauthCfg.AuthCodeURL(sessionID, oauth2.S256ChallengeOption(upstreamVerifier))
+	authCodeOpts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(upstreamVerifier)}
+	for name, value := range srv.OAuth2.AuthParams {
+		authCodeOpts = append(authCodeOpts, oauth2.SetAuthURLParam(name, value))
+	}
+	redirectURL := oauthCfg.AuthCodeURL(sessionID, authCodeOpts...)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 

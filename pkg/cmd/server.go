@@ -210,6 +210,17 @@ func mcpAuthMiddleware(
 	}
 }
 
+// newAuthHandler builds the OAuth 2.1 authorization server handler that cfg
+// exposes to downstream MCP clients.
+func newAuthHandler(cfg *config.Config, storeClient store.Client) *httphandler.AuthHandler {
+	return httphandler.NewAuthHandler(
+		storeClient,
+		cfg.MCPServer,
+		httphandler.WithEncryptKeyByBase64(cfg.Gateway.EncryptKey),
+		httphandler.WithCIMD(cfg.OAuth.CIMD),
+	)
+}
+
 // newAuthzDecider builds the single authz.Decider shared by every consumer
 // of cfg (authzMiddlewareFn and httphandler.NewMCPHandler's tool-catalog
 // check), or nil when tool authorization is disabled.
@@ -320,11 +331,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer logsCleanup()
 
-	authHandler := httphandler.NewAuthHandler(
-		storeClient,
-		globalConfig.MCPServer,
-		httphandler.WithEncryptKeyByBase64(globalConfig.Gateway.EncryptKey),
-	)
+	authHandler := newAuthHandler(globalConfig, storeClient)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzDecider := newAuthzDecider(globalConfig.Authz)
