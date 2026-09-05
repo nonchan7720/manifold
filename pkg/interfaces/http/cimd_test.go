@@ -1,7 +1,9 @@
 package httphandler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -243,6 +245,71 @@ func TestResolveClient_UnknownWithCIMDDisabled(t *testing.T) {
 
 	_, err := h.resolveClient(t.Context(), testCIMDClientID)
 	require.Error(t, err)
+}
+
+// failingStore は Get が常に ErrNotFound 以外のエラーを返す store。
+// バックエンド障害を模す。
+type failingStore struct {
+	*mockStore
+	err error
+}
+
+func (s *failingStore) Get(context.Context, string) (string, error) {
+	return "", s.err
+}
+
+// store の障害はキー不存在と区別され、CIMD 経路へ進まずに内部エラーになる。
+// ここを取り違えると、store が落ちているだけの状況が「クライアントが不正」として
+// 401 で返ってしまう。
+func TestResolveClient_StoreFailureIsNotTreatedAsUnknownClient(t *testing.T) {
+	h, _, fetches := newCIMDTestHandler(
+		t, cimdEnabled(), cimdDocumentHandler(validCIMDDocument()),
+	)
+	h.store = &failingStore{
+		mockStore: newMockStore(map[string]string{}),
+		err:       errors.New("redis: connection refused"),
+	}
+
+	_, err := h.resolveClient(t.Context(), testCIMDClientID)
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errInvalidClient,
+		"バックエンド障害を invalid_client として返してはいけない")
+	require.EqualValues(t, 0, fetches.Load(),
+		"CIMD document must not be fetched when the store lookup failed")
+}
+
+func TestLoginEndpoint_StoreFailureReturns500(t *testing.T) {
+	h, _, _ := newCIMDTestHandler(
+		t, cimdEnabled(), cimdDocumentHandler(validCIMDDocument()),
+	)
+	h.store = &failingStore{
+		mockStore: newMockStore(map[string]string{}),
+		err:       errors.New("redis: connection refused"),
+	}
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(
+		rw,
+		cimdLoginRequest(t, testCIMDClientID, testCIMDRedirectURI),
+		cimdTestServer(),
+	)
+
+	require.Equal(t, http.StatusInternalServerError, rw.Code)
+}
+
+// CIMD 無効時も同様に、store 障害は 401 ではなく 500 になる。
+func TestLoginEndpoint_StoreFailureReturns500_CIMDDisabled(t *testing.T) {
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	h.store = &failingStore{
+		mockStore: newMockStore(map[string]string{}),
+		err:       errors.New("redis: connection refused"),
+	}
+	rw := httptest.NewRecorder()
+
+	h.LoginEndpoint(rw, cimdLoginRequest(t, "dcr-client-id", testCIMDRedirectURI), cimdTestServer())
+
+	require.Equal(t, http.StatusInternalServerError, rw.Code)
 }
 
 func TestResolveClient_CorruptStoredRegistration(t *testing.T) {

@@ -566,10 +566,12 @@ func (m *mockStore) Set(_ context.Context, key string, value any, _ time.Duratio
 	return nil
 }
 
+// Get はキー不存在を store.ErrNotFound をラップして返す。実装（memory / sqlite）と
+// 同じ契約にしておかないと、呼び出し側の errors.Is による分岐をテストで検証できない。
 func (m *mockStore) Get(_ context.Context, key string) (string, error) {
 	v, ok := m.data[key]
 	if !ok {
-		return "", fmt.Errorf("key not found: %s", key)
+		return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
 	}
 	return v, nil
 }

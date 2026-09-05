@@ -20,6 +20,7 @@ import (
 
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/util"
 )
 
@@ -257,7 +258,7 @@ func (h *AuthHandler) cacheCIMDClient(
 }
 
 // resolveClient は下流の client_id をクライアント登録に解決する。
-// 動的クライアント登録済みのクライアントを優先し、見つからない場合のみ
+// 動的クライアント登録済みのクライアントを優先し、store に無い場合のみ
 // CIMD として解決する。
 func (h *AuthHandler) resolveClient(
 	ctx context.Context,
@@ -269,7 +270,9 @@ func (h *AuthHandler) resolveClient(
 	if clientID == "" {
 		return nil, fmt.Errorf("%w: client_id is empty", errInvalidClient)
 	}
-	if clientJSON, err := h.store.Get(ctx, dcrClientKeyPrefix+clientID); err == nil {
+	clientJSON, err := h.store.Get(ctx, dcrClientKeyPrefix+clientID)
+	switch {
+	case err == nil:
 		var reg StoreClientRegistration
 		if err := json.Unmarshal([]byte(clientJSON), &reg); err != nil {
 			return nil, fmt.Errorf("unmarshal client registration: %w", err)
@@ -278,6 +281,12 @@ func (h *AuthHandler) resolveClient(
 			reg.Source = ClientSourceDCR
 		}
 		return &reg, nil
+	case !errors.Is(err, store.ErrNotFound):
+		// バックエンド障害はクライアント起因ではないので errInvalidClient で
+		// ラップせずそのまま返し、呼び出し側に内部エラーとして扱わせる。
+		// ここで CIMD へフォールバックすると、store が落ちているだけの状態が
+		// 「登録されていないクライアント」として 401 で返ってしまう。
+		return nil, fmt.Errorf("look up client registration: %w", err)
 	}
 	if !h.cimd.Enabled {
 		return nil, fmt.Errorf("%w: client_id is not registered", errInvalidClient)
