@@ -127,7 +127,7 @@ func TestValidateCIMDClientID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateCIMDClientID(tt.clientID, cimdEnabled())
+			_, err := validateCIMDClientID(tt.clientID, cimdEnabled())
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -143,8 +143,31 @@ func TestValidateCIMDClientID_AllowedOrigins(t *testing.T) {
 		AllowedOrigins: []string{"https://client.example.com"},
 	}.WithDefaults()
 
-	require.NoError(t, validateCIMDClientID(testCIMDClientID, cfg))
-	require.Error(t, validateCIMDClientID("https://evil.example.com/meta.json", cfg))
+	_, err := validateCIMDClientID(testCIMDClientID, cfg)
+	require.NoError(t, err)
+	_, err = validateCIMDClientID("https://evil.example.com/meta.json", cfg)
+	require.Error(t, err)
+}
+
+// 検証済み client_id は正規化前の文字列を保持する。キャッシュキーとドキュメントの
+// client_id 比較は正規化しない文字列で行うため、url.URL が正規化した形に
+// 置き換わると両方の結果が変わる。
+func TestValidateCIMDClientID_KeepsRawClientID(t *testing.T) {
+	const clientID = "HTTPS://client.example.com/oauth/client-metadata.json"
+
+	validated, err := validateCIMDClientID(clientID, cimdEnabled())
+	require.NoError(t, err)
+	require.NotEqual(t, clientID, validated.url.String(),
+		"前提: url.URL は scheme を小文字に正規化する")
+
+	require.Equal(t, clientID, validated.String())
+	require.Equal(t, cimdClientCacheKey(clientID), cimdClientCacheKey(validated.String()))
+
+	doc := validCIMDDocument()
+	doc.ClientID = clientID
+	require.NoError(t, validateCIMDDocument(&doc, validated.String()))
+	doc.ClientID = validated.url.String()
+	require.Error(t, validateCIMDDocument(&doc, validated.String()))
 }
 
 // --- validateCIMDDocument ---

@@ -68,29 +68,50 @@ func cimdClientCacheKey(clientID string) string {
 	return cimdClientKeyPrefix + hex.EncodeToString(sum[:])
 }
 
+// validatedCIMDClientID は validateCIMDClientID の検査を通過した client_id。
+// fetchCIMDDocument はこの型しか受け取らないので、検査を経ていない値では
+// メタデータドキュメントを取得できない。
+type validatedCIMDClientID struct {
+	// raw は検査対象になった client_id 文字列そのもの。キャッシュキーと
+	// ドキュメントの client_id 比較は正規化しない文字列で行う必要がある。
+	raw string
+	// url は raw のパース結果。取得先は文字列から組み直さずこれを使う。
+	url *url.URL
+}
+
+// String は元の client_id 文字列を返す。
+func (c validatedCIMDClientID) String() string { return c.raw }
+
 // validateCIMDClientID はメタデータドキュメントを取得する前に client_id URL を検査する。
-func validateCIMDClientID(clientID string, cfg config.CIMDConfig) error {
+func validateCIMDClientID(
+	clientID string,
+	cfg config.CIMDConfig,
+) (validatedCIMDClientID, error) {
+	var zero validatedCIMDClientID
 	u, err := url.Parse(clientID)
 	if err != nil {
-		return fmt.Errorf("%w: client_id is not a URL", errInvalidClient)
+		return zero, fmt.Errorf("%w: client_id is not a URL", errInvalidClient)
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("%w: client_id must use https", errInvalidClient)
+		return zero, fmt.Errorf("%w: client_id must use https", errInvalidClient)
 	}
 	if u.Host == "" || u.Path == "" || u.Path == "/" {
-		return fmt.Errorf("%w: client_id must have a host and a path", errInvalidClient)
+		return zero, fmt.Errorf("%w: client_id must have a host and a path", errInvalidClient)
 	}
 	if u.Fragment != "" || u.User != nil {
-		return fmt.Errorf("%w: client_id must not contain a fragment or userinfo", errInvalidClient)
+		return zero, fmt.Errorf(
+			"%w: client_id must not contain a fragment or userinfo",
+			errInvalidClient,
+		)
 	}
 	host := u.Hostname()
 	if net.ParseIP(host) != nil || strings.EqualFold(host, "localhost") {
-		return fmt.Errorf("%w: client_id host must be a public host name", errInvalidClient)
+		return zero, fmt.Errorf("%w: client_id host must be a public host name", errInvalidClient)
 	}
 	if !cfg.AllowsOrigin(u.Scheme + "://" + u.Host) {
-		return fmt.Errorf("%w: client_id origin is not allowed", errInvalidClient)
+		return zero, fmt.Errorf("%w: client_id origin is not allowed", errInvalidClient)
 	}
-	return nil
+	return validatedCIMDClientID{raw: clientID, url: u}, nil
 }
 
 // validateCIMDDocument は取得したメタデータドキュメントの内容を検査する。
@@ -149,26 +170,20 @@ func cimdCacheTTL(cacheControl string, configured time.Duration) time.Duration {
 func fetchCIMDDocument(
 	ctx context.Context,
 	httpClient *http.Client,
-	clientID string,
+	clientID validatedCIMDClientID,
 	cfg config.CIMDConfig,
 ) (*ClientIDMetadataDocument, time.Duration, error) {
-	req, err := http.NewRequestWithContext( //nolint: gosec // G704: CIMD は client 提示の URL 取得が前提。validateCIMDClientID と SafeHTTPClient で緩和する
-		ctx,
-		http.MethodGet,
-		clientID,
-		nil,
-	)
-	if err != nil {
-		return nil, 0, fmt.Errorf("%w: build request: %w", errInvalidClient, err)
-	}
-	req.Header.Set("Accept", "application/json")
+	req := (&http.Request{
+		Method: http.MethodGet,
+		URL:    clientID.url,
+		Header: http.Header{"Accept": []string{"application/json"}},
+	}).WithContext(ctx)
 
 	c := *httpClient
 	c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	// codeql[go/request-forgery]
-	resp, err := c.Do(req) //nolint: gosec // G704: 上記と同じ
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%w: fetch document: %w", errInvalidClient, err)
 	}
@@ -203,10 +218,11 @@ func (h *AuthHandler) resolveCIMDClient(
 	ctx context.Context,
 	clientID string,
 ) (*StoreClientRegistration, error) {
-	if err := validateCIMDClientID(clientID, h.cimd); err != nil {
+	validated, err := validateCIMDClientID(clientID, h.cimd)
+	if err != nil {
 		return nil, err
 	}
-	cacheKey := cimdClientCacheKey(clientID)
+	cacheKey := cimdClientCacheKey(validated.String())
 	if cached, err := h.store.Get(ctx, cacheKey); err == nil {
 		var reg StoreClientRegistration
 		if err := json.Unmarshal([]byte(cached), &reg); err == nil {
@@ -216,11 +232,11 @@ func (h *AuthHandler) resolveCIMDClient(
 
 	fetchCtx, cancel := context.WithTimeout(ctx, cimdFetchTimeout)
 	defer cancel()
-	doc, ttl, err := fetchCIMDDocument(fetchCtx, h.httpClient, clientID, h.cimd)
+	doc, ttl, err := fetchCIMDDocument(fetchCtx, h.httpClient, validated, h.cimd)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateCIMDDocument(doc, clientID); err != nil {
+	if err := validateCIMDDocument(doc, validated.String()); err != nil {
 		return nil, err
 	}
 
@@ -235,7 +251,7 @@ func (h *AuthHandler) resolveCIMDClient(
 		Source:                  ClientSourceCIMD,
 	}
 	if ttl > 0 {
-		h.cacheCIMDClient(ctx, cacheKey, clientID, reg, ttl)
+		h.cacheCIMDClient(ctx, cacheKey, validated.String(), reg, ttl)
 	}
 	return reg, nil
 }

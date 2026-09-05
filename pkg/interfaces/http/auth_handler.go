@@ -481,67 +481,117 @@ func (h *AuthHandler) resolveUpstreamClient(
 	return srv.OAuth2.ClientID, srv.OAuth2.ClientSecret, nil
 }
 
-func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
-	ctx := r.Context()
-	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/LoginEndpoint")
-	var err error
-	defer func() { trace.EndSpan(ctx, err) }()
+// clientAllowedForServer は解決したクライアントが srv の認可エンドポイントを使ってよいかを返す。
+// Manifold は MCP サーバーごとに別の issuer を名乗るため、ある issuer で発行した client_id を
+// 別の issuer で受け付ける理由が無い。CIMD クライアントは MCPServerName を持たず、MCP サーバー
+// 横断で使えることが前提。srv が nil の経路は呼び出し側が MCPServerName からサーバーを解決する
+// ため必ず一致する。
+func clientAllowedForServer(clientReg *StoreClientRegistration, srv *config.Server) bool {
+	if srv == nil || clientReg.Source != ClientSourceDCR || clientReg.MCPServerName == "" {
+		return true
+	}
+	return clientReg.MCPServerName == srv.Name
+}
 
+type loginRequest struct {
+	codeChallenge       string
+	codeChallengeMethod string
+	clientID            string
+	redirectURI         string
+	state               string
+	resource            string
+}
+
+func loginRequestFromQuery(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+) (loginRequest, bool) {
 	q := r.URL.Query()
-	codeChallenge := q.Get("code_challenge")
-	codeChallengeMethod := q.Get("code_challenge_method")
-	clientID := q.Get("client_id")
-	redirectURI := q.Get("redirect_uri")
-	state := q.Get("state")
-	resource := q.Get("resource") // RFC 8707
+	req := loginRequest{
+		codeChallenge:       q.Get("code_challenge"),
+		codeChallengeMethod: q.Get("code_challenge_method"),
+		clientID:            q.Get("client_id"),
+		redirectURI:         q.Get("redirect_uri"),
+		state:               q.Get("state"),
+		resource:            q.Get("resource"), // RFC 8707
+	}
 
 	slog.InfoContext(ctx, "LoginEndpoint called",
-		slog.String("client_id", util.SanitizeLog(clientID)),
-		slog.String("redirect_uri", util.SanitizeLog(redirectURI)),
-		slog.String("state", util.SanitizeLog(state)),
-		slog.String("code_challenge", util.SanitizeLog(codeChallenge)),
+		slog.String("client_id", util.SanitizeLog(req.clientID)),
+		slog.String("redirect_uri", util.SanitizeLog(req.redirectURI)),
+		slog.String("state", util.SanitizeLog(req.state)),
+		slog.String("code_challenge", util.SanitizeLog(req.codeChallenge)),
 	)
 
-	if codeChallenge == "" || codeChallengeMethod != "S256" {
+	if req.codeChallenge == "" || req.codeChallengeMethod != "S256" {
 		slog.WarnContext(ctx, "invalid login request", slog.String("reason", "missing_pkce"))
 		http.Error(
 			w,
 			"invalid_request: code_challenge or code_challenge_method missing/invalid",
 			http.StatusBadRequest,
 		)
-		return
+		return loginRequest{}, false
 	}
 
-	if clientID == "" {
+	if req.clientID == "" {
 		slog.ErrorContext(ctx, "failed to client_id is empty")
 		http.Error(w, "invalid_client_id", http.StatusBadRequest)
-		return
+		return loginRequest{}, false
 	}
-	// 登録済み（DCR）または CIMD で解決したクライアントの redirect_uri と
-	// 照合してオープンリダイレクトを防ぐ
-	clientReg, err := h.resolveClient(ctx, clientID)
+
+	return req, true
+}
+
+// resolveLoginClient は登録済み（DCR）または CIMD で解決したクライアントの
+// redirect_uri と照合してオープンリダイレクトを防ぐ。
+func (h *AuthHandler) resolveLoginClient(
+	ctx context.Context,
+	w http.ResponseWriter,
+	req loginRequest,
+	srv *config.Server,
+) (*StoreClientRegistration, bool, error) {
+	clientReg, err := h.resolveClient(ctx, req.clientID)
 	if err != nil {
 		if !errors.Is(err, errInvalidClient) {
 			slog.ErrorContext(ctx, "failed to resolve client",
-				slog.String("client_id", util.SanitizeLog(clientID)),
+				slog.String("client_id", util.SanitizeLog(req.clientID)),
 				slog.Any("error", err))
 			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+			return nil, false, err
 		}
 		slog.WarnContext(ctx, "unknown client_id in login request",
-			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.String("client_id", util.SanitizeLog(req.clientID)),
 			slog.Any("error", err))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
-		return
+		return nil, false, err
 	}
-	if !slices.Contains(clientReg.RedirectURIs, redirectURI) {
+	if !clientAllowedForServer(clientReg, srv) {
+		slog.WarnContext(ctx, "downstream client is not registered for this server",
+			slog.String("client_id", util.SanitizeLog(req.clientID)),
+			slog.String("client_name", util.SanitizeLog(clientReg.ClientName)),
+			slog.String("registered_mcp_server_name", util.SanitizeLog(clientReg.MCPServerName)),
+			slog.String("mcp_server_name", srv.Name))
+		http.Error(w, "invalid_client", http.StatusUnauthorized)
+		return nil, false, nil
+	}
+	if !slices.Contains(clientReg.RedirectURIs, req.redirectURI) {
 		slog.WarnContext(ctx, "redirect_uri not registered for client",
-			slog.String("client_id", util.SanitizeLog(clientID)),
-			slog.String("redirect_uri", util.SanitizeLog(redirectURI)))
+			slog.String("client_id", util.SanitizeLog(req.clientID)),
+			slog.String("redirect_uri", util.SanitizeLog(req.redirectURI)))
 		http.Error(w, "invalid_redirect_uri", http.StatusBadRequest)
-		return
+		return nil, false, nil
 	}
+	return clientReg, true, nil
+}
 
+func (h *AuthHandler) resolveLoginServer(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	srv *config.Server,
+	clientReg *StoreClientRegistration,
+) *config.Server {
 	if srv == nil {
 		if v, ok := h.servers[clientReg.MCPServerName]; ok {
 			srv = v
@@ -549,34 +599,45 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 	if srv == nil {
 		http.Error(w, "server not found", http.StatusNotFound)
-		return
+		return nil
 	}
 
 	// OAuth2 設定がない HTTP MCP バックエンドは OAuth2.1 Auto-Discovery を試みる
 	if srv.OAuth2 == nil {
 		if !srv.IsMCPBackend() || srv.Transport != config.MCPTransportHTTP {
 			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
-			return
+			return nil
 		}
 		discovered, err := h.discoverOAuth2(ctx, srv, h.getBaseURL(r))
 		if err != nil {
 			slog.ErrorContext(ctx, "oauth2 discovery failed",
 				slog.String("server", srv.Name), slog.String("error", err.Error()))
 			http.Error(w, "oauth2 discovery failed: "+err.Error(), http.StatusInternalServerError)
-			return
+			return nil
 		}
 		srv.OAuth2 = discovered
 	}
 
-	upstreamClientID, upstreamClientSecret, err := h.resolveUpstreamClient(srv, clientID)
+	return srv
+}
+
+func (h *AuthHandler) startUpstreamAuthorization(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	req loginRequest,
+	clientReg *StoreClientRegistration,
+	srv *config.Server,
+) error {
+	upstreamClientID, upstreamClientSecret, err := h.resolveUpstreamClient(srv, req.clientID)
 	if err != nil {
 		slog.WarnContext(ctx, "downstream client is not allowed for this server",
-			slog.String("client_id", util.SanitizeLog(clientID)),
+			slog.String("client_id", util.SanitizeLog(req.clientID)),
 			slog.String("client_name", util.SanitizeLog(clientReg.ClientName)),
 			slog.String("mcp_server_name", srv.Name),
 			slog.Any("error", err))
 		http.Error(w, "invalid_client", http.StatusUnauthorized)
-		return
+		return err
 	}
 
 	sessionID := generateRandomString(32)
@@ -584,12 +645,12 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	upstreamVerifier := generateRandomString(43)
 
 	session := AuthSession{
-		ClientID:             clientID,
-		RedirectURI:          redirectURI,
-		State:                state,
-		CodeChallenge:        codeChallenge,
-		CodeChallengeMethod:  codeChallengeMethod,
-		Resource:             resource,
+		ClientID:             req.clientID,
+		RedirectURI:          req.redirectURI,
+		State:                req.state,
+		CodeChallenge:        req.codeChallenge,
+		CodeChallengeMethod:  req.codeChallengeMethod,
+		Resource:             req.resource,
 		OAuth2ClientID:       upstreamClientID,
 		OAuth2ClientSecret:   upstreamClientSecret,
 		OAuth2TokenURL:       srv.OAuth2.TokenURL,
@@ -605,7 +666,7 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	if err = h.store.Set(ctx, "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
 		slog.ErrorContext(ctx, "failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return err
 	}
 
 	oauthCfg := &oauth2.Config{
@@ -624,6 +685,33 @@ func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv 
 	}
 	redirectURL := oauthCfg.AuthCodeURL(sessionID, authCodeOpts...)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+	return nil
+}
+
+func (h *AuthHandler) LoginEndpoint(w http.ResponseWriter, r *http.Request, srv *config.Server) {
+	ctx := r.Context()
+	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/LoginEndpoint")
+	var err error
+	defer func() { trace.EndSpan(ctx, err) }()
+
+	req, ok := loginRequestFromQuery(ctx, w, r)
+	if !ok {
+		return
+	}
+
+	clientReg, ok, err := h.resolveLoginClient(ctx, w, req, srv)
+	if !ok {
+		return
+	}
+
+	srv = h.resolveLoginServer(ctx, w, r, srv, clientReg)
+	if srv == nil {
+		return
+	}
+
+	if err = h.startUpstreamAuthorization(ctx, w, r, req, clientReg, srv); err != nil {
+		return
+	}
 }
 
 func (h *AuthHandler) CallbackEndpoint(
