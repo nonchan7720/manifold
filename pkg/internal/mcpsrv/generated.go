@@ -8,9 +8,8 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
-// GeneratedTools converts a registry's ToolDefinition list into the
-// oastomcptool.GeneratedTool shape written to a generated tools file's
-// "tools" section (Operation is "METHOD path", e.g. "GET /pet/{petId}").
+// GeneratedTools converts defs into the GeneratedTool shape written to a
+// generated tools file's "tools" section.
 func GeneratedTools(defs []ToolDefinition) []oastomcptool.GeneratedTool {
 	tools := make([]oastomcptool.GeneratedTool, len(defs))
 	for i, d := range defs {
@@ -25,13 +24,8 @@ func GeneratedTools(defs []ToolDefinition) []oastomcptool.GeneratedTool {
 	return tools
 }
 
-// VerifyGeneratedTools compares the tools registry actually built from a
-// generated catalog's internalized spec against that catalog's "tools"
-// section (the human-readable listing a generated file carries alongside
-// its spec). Any difference — a tool only on one side, or a differing
-// operation/description/binaryResponse/inputSchema — means the file is
-// stale relative to what its own spec now produces, and is reported with
-// the specific reason so the operator knows what to look at.
+// VerifyGeneratedTools returns an error naming the first difference between
+// registry's built tools and g's "tools" section.
 func VerifyGeneratedTools(registry *MCPToolRegistry, g *oastomcptool.GeneratedCatalog) error {
 	built := registry.Definitions()
 	byName := make(map[string]ToolDefinition, len(built))
@@ -79,19 +73,14 @@ func VerifyGeneratedTools(registry *MCPToolRegistry, g *oastomcptool.GeneratedCa
 	return nil
 }
 
-// GeneratedToolChange is one tool present on both sides of a
-// DiffGeneratedTools comparison whose operation, description,
-// binaryResponse, or inputSchema differ. Fields names which, in check order
-// (operation, description, binaryResponse, inputSchema); at least one entry
-// is always present.
+// GeneratedToolChange is one tool whose operation, description,
+// binaryResponse, or inputSchema differ between two DiffGeneratedTools sides.
 type GeneratedToolChange struct {
 	Name   string
 	Fields []string
 }
 
-// GeneratedToolsDiff is the result of comparing two generated tool lists
-// (e.g. an on-disk generated file's "tools" section against a freshly built
-// catalog) tool-by-tool, matched by name.
+// GeneratedToolsDiff is the result of comparing two generated tool lists by name.
 type GeneratedToolsDiff struct {
 	// Added holds tools present in "next" but not "current".
 	Added []oastomcptool.GeneratedTool
@@ -106,16 +95,8 @@ func (d GeneratedToolsDiff) Empty() bool {
 	return len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0
 }
 
-// DiffGeneratedTools compares current against next, matching tools by name:
-// a tool only in next is Added, a tool only in current is Removed, and a
-// tool in both whose operation, description, binaryResponse, or inputSchema
-// differ is Changed (naming which fields differ). inputSchema is compared
-// by canonical JSON encoding (see EqualAsJSON), so a YAML-decoded int and
-// the float64 encoding/json produces for the same number don't register as
-// a difference. A duplicate name within either slice is resolved by taking
-// the last occurrence, matching how a map keyed by name would see it.
-// Results are not sorted; a caller that needs a deterministic order (e.g.
-// CLI output) should sort them itself.
+// DiffGeneratedTools compares current against next by name, returning the
+// tools added, removed, or changed; results are not sorted.
 func DiffGeneratedTools(current, next []oastomcptool.GeneratedTool) GeneratedToolsDiff {
 	curByName := make(map[string]oastomcptool.GeneratedTool, len(current))
 	for _, t := range current {
@@ -149,8 +130,7 @@ func DiffGeneratedTools(current, next []oastomcptool.GeneratedTool) GeneratedToo
 	return diff
 }
 
-// changedGeneratedToolFields returns which of operation, description,
-// binaryResponse, and inputSchema differ between a and b, in that order.
+// changedGeneratedToolFields returns which fields differ between a and b.
 func changedGeneratedToolFields(a, b oastomcptool.GeneratedTool) []string {
 	var fields []string
 	if a.Operation != b.Operation {
@@ -168,13 +148,8 @@ func changedGeneratedToolFields(a, b oastomcptool.GeneratedTool) []string {
 	return fields
 }
 
-// EqualAsJSON compares a and b by their canonical JSON encoding (which sorts
-// object keys), so YAML-decoded numeric types (int) and the float64 that
-// encoding/json produces for the same value don't cause a false mismatch.
-// Exported so other packages comparing YAML/JSON-decoded document trees
-// (e.g. pkg/cmd's "generate --check" comparing a generated file's embedded
-// spec against a freshly built one) can reuse the same comparison instead of
-// reimplementing it.
+// EqualAsJSON reports whether a and b are equal after canonical JSON
+// encoding, so YAML-decoded ints and JSON floats don't cause a false mismatch.
 func EqualAsJSON(a, b any) (bool, error) {
 	ab, err := json.Marshal(a)
 	if err != nil {

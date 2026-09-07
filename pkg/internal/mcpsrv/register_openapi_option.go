@@ -30,11 +30,7 @@ func WithTokenExchange(cfg *config.TokenExchange) RegisterOpenAPIOption {
 }
 
 // WithGeneratedToolsFile makes RegisterOpenAPI build its catalog from a
-// generated tools file (tools.file) instead of fetching specPath: it reads
-// path via oastomcptool.LoadGeneratedSpecSource (no network access) and
-// verifies the result against the file's own "tools" section before
-// returning. An empty path (the default) leaves the existing
-// fetch-specPath behavior unchanged.
+// generated tools file at path instead of fetching a live spec.
 func WithGeneratedToolsFile(path string) RegisterOpenAPIOption {
 	return func(opt *registerOpenAPIOption) {
 		opt.generatedToolsFile = path

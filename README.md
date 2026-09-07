@@ -107,7 +107,7 @@ Ready-to-run configuration examples are available in the [`examples/`](examples/
 
 ### Inspect and generate MCP tools
 
-For OpenAPI-mode servers (`spec` configured), `manifold openapi` shows what the gateway would register, and can write it to a file the gateway starts from — without ever fetching the spec at boot.
+For OpenAPI-mode servers (`spec` and/or `tools.file` configured), `manifold openapi` shows what the gateway would register, and can write it to a file the gateway starts from — without ever fetching the spec at boot.
 
 ```bash
 # Print the tools every OpenAPI-mode server would register (no gateway started)
@@ -117,6 +117,7 @@ manifold openapi tools -c config
 manifold openapi tools -c config --server petstore --json
 
 # Write the generated tools file for every server that has tools.file configured
+# (errors for a server that has no spec configured)
 manifold openapi generate -c config
 
 # CI: fail if the committed file doesn't match the live spec, without writing anything
@@ -320,8 +321,8 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `command`       | string            | Command for the stdio transport                                      |
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
-| `spec`          | string            | Path or URL of an OpenAPI/Swagger specification                      |
-| `baseURL`       | string            | API base URL in OpenAPI mode (required when `spec` is set)           |
+| `spec`          | string            | Path or URL of an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
+| `baseURL`       | string            | API base URL, required in OpenAPI mode (i.e. when `spec` or `tools.file` is set) |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
@@ -339,13 +340,14 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 mcpServers:
   petstore:
     description: Swagger Petstore
-    spec: https://petstore3.swagger.io/api/v3/openapi.json   # still required — recorded as source.spec
+    spec: https://petstore3.swagger.io/api/v3/openapi.json   # optional here — needed only for generate/--check/--from-spec
     baseURL: https://petstore3.swagger.io/api/v3
     tools:
       file: ./generated/petstore.yaml
 ```
 
-- `spec` and `baseURL` are still required even when `tools.file` is set: `spec` is recorded in the file as its source, and `baseURL` is not derived from the generated spec.
+- `baseURL` is still required. `spec` is optional when `tools.file` is set — the gateway never reads it, but `manifold openapi generate` (and `--check`) need it to rebuild the file, so keep it in the config if you use those commands.
+- `manifold openapi tools` reads the generated file when `tools.file` is set. `--from-spec` reads the live spec instead, and errors if `spec` isn't configured.
 - At startup, Manifold rebuilds the tool catalog from the spec embedded in the file and compares it against the file's `tools` section. If they don't match (the file is out of date relative to its own embedded spec, or was hand-edited), startup fails, e.g. `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`.
 - `tools.file` and a positive `specRefreshInterval` are mutually exclusive, and a server with `tools.file` is excluded from `gateway.specRefresh` — there is no live spec to refresh from.
 - `tools.file` must be a local path; a URL is rejected.

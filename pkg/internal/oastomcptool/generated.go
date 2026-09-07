@@ -15,14 +15,10 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
-// GeneratedVersion is the format version of the generated tools file this
-// package writes and reads. ReadGeneratedCatalog rejects any other value.
+// GeneratedVersion is the format version of the generated tools file this package writes and reads.
 const GeneratedVersion = 1
 
-// GeneratedTool is one entry of a generated catalog's "tools" section — a
-// human-readable, diffable projection of one MCP tool. It is derived data:
-// the authoritative source is Spec, and the loader re-derives the catalog
-// from it at load time and compares (see mcpsrv.VerifyGeneratedTools).
+// GeneratedTool is one entry of a generated catalog's "tools" section.
 type GeneratedTool struct {
 	Name           string         `yaml:"name"`
 	Operation      string         `yaml:"operation"`
@@ -31,21 +27,15 @@ type GeneratedTool struct {
 	InputSchema    map[string]any `yaml:"inputSchema"`
 }
 
-// GeneratedSource records where a generated catalog's spec came from and
-// what it looked like at generation time.
+// GeneratedSource records where a generated catalog's spec came from.
 type GeneratedSource struct {
 	Spec      string `yaml:"spec"`
 	SHA256    string `yaml:"sha256"`
 	FetchedAt string `yaml:"fetchedAt"`
 }
 
-// GeneratedCatalog is the in-memory form of a generated tools file (see
-// docs/design/openapi-static-catalog.ja.md, 「生成物の形式」). Field order
-// matches the struct field order (yaml.v3 preserves declaration order for
-// unkeyed structs): version, generatedBy, source, format, tools, spec.
-// Spec is the authoritative document (external $refs already internalized);
-// Tools is a derived, human-readable listing kept in sync by verification
-// at load time, never used to build the runtime catalog itself.
+// GeneratedCatalog is the in-memory form of a generated tools file. Spec is
+// the authoritative document; Tools is a derived listing verified against it.
 type GeneratedCatalog struct {
 	Version     int             `yaml:"version"`
 	GeneratedBy string          `yaml:"generatedBy"`
@@ -56,13 +46,7 @@ type GeneratedCatalog struct {
 }
 
 // NewGeneratedCatalog builds a GeneratedCatalog from an already-loaded
-// source: it internalizes source.OpenAPI's external $refs in place
-// (openapi3.T.InternalizeRefs with the library's default resolver), then
-// serializes the result through JSON into a plain map[string]any so it
-// round-trips through YAML as plain maps (rather than depending on
-// openapi3.T's own MarshalJSON at read time, which LoadGeneratedSpecSource
-// does not have access to). Phase 1 only supports OpenAPI 3.x; a
-// SpecFormatSwagger2 source is an error.
+// OpenAPI 3.x source, internalizing its external $refs in the process.
 func NewGeneratedCatalog(
 	ctx context.Context,
 	source *SpecSource,
@@ -80,9 +64,7 @@ func NewGeneratedCatalog(
 		)
 	}
 
-	// InternalizeRefs mutates the doc in place. This is fine here: the CLI
-	// (the only caller that builds generated catalogs) doesn't reuse source
-	// after this call.
+	// Mutates the doc in place; fine here since the caller doesn't reuse source.
 	source.OpenAPI.InternalizeRefs(ctx, nil)
 
 	raw, err := json.Marshal(source.OpenAPI)
@@ -120,9 +102,8 @@ func WriteGeneratedCatalog(w io.Writer, g *GeneratedCatalog) (rErr error) {
 	return enc.Encode(g)
 }
 
-// ReadGeneratedCatalog decodes a generated tools file from r and rejects an
-// unknown version or format up front, before any caller tries to use Spec
-// or Tools.
+// ReadGeneratedCatalog decodes a generated tools file from r, rejecting an
+// unknown version or format.
 func ReadGeneratedCatalog(r io.Reader) (*GeneratedCatalog, error) {
 	var g GeneratedCatalog
 	if err := yaml.NewDecoder(r).Decode(&g); err != nil {
@@ -144,15 +125,9 @@ func ReadGeneratedCatalog(r io.Reader) (*GeneratedCatalog, error) {
 }
 
 // LoadGeneratedSpecSource reads and validates the generated tools file at
-// path, and rebuilds a *SpecSource from its "spec" section: Format is
-// always openapi3, SpecPath is the recorded source.spec (for base URL
-// derivation, matching LoadSpecSource), Hash is the sha256 of the file's
-// own bytes (not source.sha256 — this is what the gateway compares across
-// refresh-free restarts), and OpenAPI is loaded with external $refs
-// disallowed. That last part is the structural guarantee that starting from
-// a generated file never reaches the network: any leftover external $ref
-// (internalization bug, hand-edited file) is a load error here rather than
-// a silent fetch.
+// path, and rebuilds a *SpecSource from its "spec" section.
+// External $refs are disallowed here so loading from a generated file can
+// never reach the network.
 func LoadGeneratedSpecSource(
 	ctx context.Context, path string,
 ) (_ *SpecSource, _ *GeneratedCatalog, rErr error) {

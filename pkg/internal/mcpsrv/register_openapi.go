@@ -14,10 +14,7 @@ import (
 )
 
 // RegisterOpenAPI fetches and loads specPath, then builds an MCPToolRegistry
-// from it. It is "spec の入手" (LoadSpecSource) followed by "カタログ構築"
-// (BuildCatalog) — the two are split out so a caller that already holds a
-// *oastomcptool.SpecSource (e.g. a future CLI) can reuse BuildCatalog
-// directly without refetching/reparsing the spec.
+// from it.
 func RegisterOpenAPI(
 	ctx context.Context,
 	specPath string,
@@ -30,12 +27,8 @@ func RegisterOpenAPI(
 		fn(opt)
 	}
 
-	// transport.go の httpClientRoundTripper を使い、AuthValue/OAuth2/TokenExchange の
-	// いずれが設定されていても正しい認証方式でトランスポートを組み立てる
-	// （以前は tokenExchange しか考慮しておらず、AuthValue/OAuth2 が無視されていた）。
-	// headers はここでは nil を渡す: openapi()/swagger() が生成する各ツール関数が
-	// effective_headers としてリクエストごとに headers を付加するため、トランスポート層でも
-	// 同じ headers を NewExtraHeaderRoundTripper で付加すると二重適用になってしまう。
+	// headers は nil を渡す: 各ツール関数がリクエストごとに付加するため、
+	// トランスポート層でも付加すると二重適用になってしまう。
 	rt := httpClientRoundTripper(opt.auth, opt.oauth2, opt.tokenExchange, nil)
 	c := &http.Client{
 		Timeout:   10 * time.Second,
@@ -55,12 +48,8 @@ func RegisterOpenAPI(
 	return BuildCatalog(ctx, c, source, baseUrl, headers)
 }
 
-// registerFromGeneratedToolsFile builds a catalog from a generated tools
-// file (tools.file) instead of fetching a spec: it loads path with no
-// network access (oastomcptool.LoadGeneratedSpecSource), builds the catalog
-// from the internalized spec it carries exactly like the live path does,
-// and verifies the result against the file's own "tools" section — a
-// mismatch means the file is stale relative to what its spec now produces.
+// registerFromGeneratedToolsFile builds and verifies a catalog from a
+// generated tools file (tools.file) instead of fetching a spec.
 func registerFromGeneratedToolsFile(
 	ctx context.Context,
 	c *http.Client,
@@ -83,11 +72,7 @@ func registerFromGeneratedToolsFile(
 	return registry, nil
 }
 
-// BuildCatalog builds an MCPToolRegistry from an already-loaded spec. This is
-// the "カタログ構築" phase of RegisterOpenAPI (the former body of the
-// openapi()/swagger() loops), factored out so it can be driven by a spec
-// loaded from anywhere (today: RegisterOpenAPI via LoadSpecSource; later: a
-// CLI reading the same spec once to both display and build the catalog).
+// BuildCatalog builds an MCPToolRegistry from an already-loaded spec.
 func BuildCatalog(
 	ctx context.Context,
 	client *http.Client,

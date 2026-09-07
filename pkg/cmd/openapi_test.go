@@ -16,9 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// petstoreSpecJSON is a minimal OpenAPI 3 spec with three operations: two
-// plain ones and one binary-response one, used to exercise "openapi tools"
-// end to end without a network fetch.
+// petstoreSpecJSON is a minimal OpenAPI 3 spec with two plain operations and
+// one binary-response operation.
 const petstoreSpecJSON = `{
   "openapi": "3.0.0",
   "info": {"title": "Petstore", "version": "1.0.0"},
@@ -60,8 +59,7 @@ const petstoreSpecJSON = `{
   }
 }`
 
-// swagger2SpecJSON is the minimal Swagger 2.x document needed for
-// oastomcptool.LoadSpecSource to detect the "swagger" format and skip it.
+// swagger2SpecJSON is a minimal Swagger 2.x document.
 const swagger2SpecJSON = `{
   "swagger": "2.0",
   "info": {"title": "Legacy", "version": "1.0.0"},
@@ -76,8 +74,7 @@ const swagger2SpecJSON = `{
 }`
 
 // petstoreSpecJSONInfoDescriptionChanged is petstoreSpecJSON with only
-// info.description added — the spec bytes (and thus source.sha256) change,
-// but every operation is untouched, so the derived tool list is identical.
+// info.description added, so the derived tool list is identical.
 const petstoreSpecJSONInfoDescriptionChanged = `{
   "openapi": "3.0.0",
   "info": {"title": "Petstore", "version": "1.0.0", "description": "now with a description"},
@@ -240,8 +237,7 @@ const petstoreSpecJSONDescriptionChanged = `{
 }`
 
 // petstoreSpecJSONSchemaChanged is petstoreSpecJSON with getPetById's petId
-// parameter changed from an integer to a string, so only its derived
-// inputSchema differs.
+// parameter changed from an integer to a string.
 const petstoreSpecJSONSchemaChanged = `{
   "openapi": "3.0.0",
   "info": {"title": "Petstore", "version": "1.0.0"},
@@ -291,17 +287,11 @@ func writeSpecFile(t *testing.T, name, content string) string {
 	return path
 }
 
-// execOpenAPITools dispatches args (e.g. "tools", "--json") into a freshly
-// built newOpenAPICmd() tree and returns its stdout/stderr/error.
+// execOpenAPITools dispatches args into a freshly built newOpenAPICmd() tree
+// and returns its stdout/stderr/error.
 //
-// It intentionally does NOT call cobra's Execute()/ExecuteC(): those invoke
-// the process-global cobra.OnInitialize(initialize) hook (registered once in
-// root.go's init()) on every call regardless of which command tree is being
-// executed, which reloads config.Load (cached for the whole test binary via
-// a package-level sync.Once) and reassigns globalConfig out from under the
-// value the test just installed via withGlobalConfig. Finding the target
-// subcommand, parsing its flags, and calling RunE directly exercises the
-// same flag definitions and RunE wiring while avoiding that global hook.
+// It avoids cobra's Execute()/ExecuteC() because cobra.OnInitialize is
+// process-global and would reload config over the test's globalConfig.
 func execOpenAPITools(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	root := newOpenAPICmd()
@@ -419,7 +409,6 @@ func TestOpenAPITools_ToolFlag_Found(t *testing.T) {
 	require.Contains(t, stdout, "description: Find pet by ID")
 	require.Contains(t, stdout, "binaryResponse: false")
 	require.Contains(t, stdout, `"type": "object"`)
-	// only the requested tool should appear
 	require.NotContains(t, stdout, "name: addpet")
 }
 
@@ -496,7 +485,6 @@ func TestOpenAPITools_Swagger2Skipped(t *testing.T) {
 		t, stderr,
 		`server "legacy": Swagger 2.x is not supported by "openapi tools", skipping`,
 	)
-	// no tools were printed for it
 	require.NotContains(t, stdout, "legacy")
 }
 
@@ -515,13 +503,10 @@ func TestOpenAPITools_LoadFailure_OtherServersStillPrint(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, stderr, `server "broken"`)
 
-	// the good server's tools were still printed
 	require.Contains(t, stdout, "petstore")
 	require.Contains(t, stdout, "addpet")
 	require.NotContains(t, stdout, "broken")
 }
-
-// --- generate ---
 
 func TestOpenAPIGenerate_AllServers_WritesToolsFile(t *testing.T) {
 	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
@@ -677,12 +662,9 @@ func TestOpenAPIGenerate_DeterministicExceptFetchedAt(t *testing.T) {
 		return strings.Join(lines, "\n")
 	}
 	require.Equal(t, blankFetchedAt(b1), blankFetchedAt(b2))
-	// sanity check the two runs actually did have distinct fetchedAt values
-	// captured (otherwise the blanking above wouldn't be exercising anything)
+	// distinct fetchedAt values were actually captured, so blanking above matters
 	require.NotEqual(t, string(b1), "")
 }
-
-// --- tools reading a generated file ---
 
 func TestOpenAPITools_GeneratedFile_MatchesFromSpec(t *testing.T) {
 	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
@@ -761,11 +743,101 @@ func TestOpenAPITools_StaleGeneratedFile_FailsWithStale(t *testing.T) {
 	require.Contains(t, stderr, "stale")
 }
 
-// --- generate --check ---
+// setupToolsFileOnlyServer generates a tools.file for "petstore", then
+// reinstalls the config with spec dropped entirely.
+func setupToolsFileOnlyServer(t *testing.T) (genPath string) {
+	t.Helper()
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	genPath = filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
 
-// setupCheckServer generates outPath for "petstore" (source specPath) and
-// returns the config, ready for a "generate --check" test to mutate
-// specPath and re-check.
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				BaseURL: "http://example.local",
+				Tools:   &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+	return genPath
+}
+
+func TestOpenAPITools_ToolsFileOnlyServer_NoSpec_ReadsGeneratedFile(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	stdout, stderr, err := execOpenAPITools(t, "tools")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, "addpet")
+	require.Contains(t, stdout, "getpetbyid")
+	require.Contains(t, stdout, "uploadfile")
+}
+
+func TestOpenAPITools_ToolsFileOnlyServer_FromSpec_Errors(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	_, stderr, err := execOpenAPITools(t, "tools", "--from-spec")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": --from-spec requires spec to be configured`)
+}
+
+func TestOpenAPIGenerate_ToolsFileOnlyServer_NoSpec_Errors(t *testing.T) {
+	genPath := setupToolsFileOnlyServer(t)
+
+	otherSpecPath := writeSpecFile(t, "other.json", petstoreSpecJSON)
+	otherOutPath := filepath.Join(t.TempDir(), "other.yaml")
+	globalConfig.MCPServer["other"] = &config.Server{
+		Spec: otherSpecPath, BaseURL: "http://example.local",
+		Tools: &config.ToolsConfig{File: otherOutPath},
+	}
+
+	stdout, stderr, err := execOpenAPITools(t, "generate")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": spec is required to generate the tools file`)
+	require.Contains(t, stdout, `server "other": wrote `+otherOutPath)
+
+	_, statErr := os.Stat(genPath)
+	require.NoError(t, statErr, "petstore's already-generated file must be left untouched")
+}
+
+func TestOpenAPIGenerateCheck_ToolsFileOnlyServer_NoSpec_Errors(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	_, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": spec is required to generate the tools file`)
+}
+
+func TestSelectOpenAPIServers_IncludesToolsFileOnlyServers(t *testing.T) {
+	cfg := &config.Config{
+		MCPServer: config.Servers{
+			"toolsfile-only": &config.Server{
+				BaseURL: "http://example.local",
+				Tools:   &config.ToolsConfig{File: "./generated/petstore.yaml"},
+			},
+			"spec-only": &config.Server{
+				Spec: "openapi.json", BaseURL: "http://example.local",
+			},
+			"mcp-backend": &config.Server{
+				Transport: config.MCPTransportHTTP, URL: "http://example.local",
+			},
+		},
+	}
+	names, err := selectOpenAPIServers(cfg, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"spec-only", "toolsfile-only"}, names)
+}
+
+// setupCheckServer generates outPath for "petstore" from specPath.
 func setupCheckServer(t *testing.T) (specPath, outPath string) {
 	t.Helper()
 	specPath = writeSpecFile(t, "petstore.json", petstoreSpecJSON)
@@ -848,11 +920,6 @@ func TestOpenAPIGenerateCheck_SpecChanged_ToolsIdentical(t *testing.T) {
 	require.Equal(t, before, after, "--check must never write")
 }
 
-// TestOpenAPIGenerateCheck_EmbeddedSpecEdited_DriftDetected covers Finding 1:
-// hand-editing only the generated file's "spec" section (the internalized
-// document LoadGeneratedSpecSource/BuildCatalog actually run from at gateway
-// startup) — with the upstream spec bytes and the "tools" section both left
-// alone — must still be reported as drift, not "up to date".
 func TestOpenAPIGenerateCheck_EmbeddedSpecEdited_DriftDetected(t *testing.T) {
 	_, outPath := setupCheckServer(t)
 
@@ -880,12 +947,8 @@ func TestOpenAPIGenerateCheck_EmbeddedSpecEdited_DriftDetected(t *testing.T) {
 	require.Equal(t, edited, string(after), "--check must never write")
 }
 
-// TestOpenAPIGenerateCheck_UpToDate_RealFixture guards against a false
-// positive from the new embedded-spec comparison (Finding 1): a fresh
-// generate immediately followed by --check must report "up to date" even
-// for a large, real-world spec that exercises InternalizeRefs and a full
-// YAML round trip (petstore_oas.json, shared with pkg/internal/mcpsrv's own
-// tests), not just the small inline fixtures above.
+// TestOpenAPIGenerateCheck_UpToDate_RealFixture uses a large, real-world
+// spec instead of the small inline fixtures above.
 func TestOpenAPIGenerateCheck_UpToDate_RealFixture(t *testing.T) {
 	fixture, err := os.ReadFile(
 		filepath.Join("..", "internal", "mcpsrv", "fixtures", "petstore_oas.json"),

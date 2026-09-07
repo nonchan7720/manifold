@@ -8,8 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- TokenExchange.ValidateWithContext ---
-
 func TestTokenExchange_ValidateWithContext_RequiresURL(t *testing.T) {
 	te := &TokenExchange{}
 	err := te.ValidateWithContext(t.Context())
@@ -29,8 +27,6 @@ func TestTokenExchange_ValidateWithContext_AcceptsAbsoluteURL(t *testing.T) {
 	err := te.ValidateWithContext(t.Context())
 	require.NoError(t, err)
 }
-
-// --- OAuth2.UnknownClientMode ---
 
 func TestOAuth2_UnknownClientMode(t *testing.T) {
 	tests := []struct {
@@ -70,8 +66,6 @@ func TestOAuth2_UnknownClientMode(t *testing.T) {
 		})
 	}
 }
-
-// --- OAuth2.ValidateWithContext ---
 
 func baseValidOAuth2() OAuth2 {
 	return OAuth2{
@@ -157,8 +151,6 @@ func TestOAuth2_ValidateWithContext_DuplicateDownstreamClientID_Invalid(t *testi
 	require.Error(t, c.ValidateWithContext(t.Context()))
 }
 
-// --- OAuth2.UpstreamClient ---
-
 func TestOAuth2_UpstreamClient(t *testing.T) {
 	c := OAuth2{Clients: []OAuth2Client{
 		{DownstreamClientID: "https://client-a.example.com/meta.json", ClientID: "up-a"},
@@ -210,8 +202,6 @@ func TestOAuth2_ValidateWithContext_AuthParams(t *testing.T) {
 		})
 	}
 }
-
-// --- Server.ValidateWithContext: AuthValue/OAuth2/TokenExchange の排他性 ---
 
 func baseValidServer() Server {
 	return Server{
@@ -301,8 +291,6 @@ func TestServer_ValidateWithContext_AllThree_Invalid(t *testing.T) {
 	require.Error(t, err)
 }
 
-// --- Server.ValidateWithContext: reverse transport ---
-
 func baseValidReverseServer() Server {
 	return Server{
 		Description: "reverse server",
@@ -313,10 +301,7 @@ func baseValidReverseServer() Server {
 }
 
 // reverseValidationContext returns a context carrying an "oauth" identity
-// profile, matching baseValidReverseServer's Identity reference. The default
-// edge.pairing.type (remote) requires reverse servers to reference a known
-// identity profile, so tests that aren't specifically exercising that
-// requirement need one in context to isolate the behavior they do target.
+// profile, matching baseValidReverseServer's Identity reference.
 func reverseValidationContext(t *testing.T) context.Context {
 	t.Helper()
 	return context.WithValue(t.Context(), identitiesContextKey{}, map[string]*IdentityProfile{
@@ -453,8 +438,6 @@ func TestServer_ValidateWithContext_Reverse_RejectsURL(t *testing.T) {
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsSpec(t *testing.T) {
-	// spec (OpenAPI mode) and transport: reverse must not both be set — the
-	// server would otherwise be ambiguous between the two backend kinds.
 	s := baseValidReverseServer()
 	s.Spec = "openapi.yaml"
 	s.BaseURL = "https://api.example.com"
@@ -590,12 +573,64 @@ func TestIsMCPBackend(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			name:     "tools.file only, no spec: OpenAPI mode, not MCP backend",
+			server:   Server{Tools: &ToolsConfig{File: "./generated/petstore.yaml"}},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.server.IsMCPBackend()
 			require.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestIsOpenAPI(t *testing.T) {
+	tests := []struct {
+		name     string
+		server   Server
+		expected bool
+	}{
+		{
+			name:     "spec set",
+			server:   Server{Spec: "http://example.com/openapi.json"},
+			expected: true,
+		},
+		{
+			name:     "tools.file set, no spec",
+			server:   Server{Tools: &ToolsConfig{File: "./generated/petstore.yaml"}},
+			expected: true,
+		},
+		{
+			name: "both spec and tools.file set",
+			server: Server{
+				Spec:  "http://example.com/openapi.json",
+				Tools: &ToolsConfig{File: "./generated/petstore.yaml"},
+			},
+			expected: true,
+		},
+		{
+			name:     "neither set",
+			server:   Server{},
+			expected: false,
+		},
+		{
+			name:     "MCP backend (transport only)",
+			server:   Server{Transport: MCPTransportHTTP, URL: "http://example.com"},
+			expected: false,
+		},
+		{
+			name:     "reverse (transport only)",
+			server:   Server{Transport: MCPTransportReverse, Origin: "https://app1.example.com"},
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.server.IsOpenAPI())
 		})
 	}
 }
@@ -628,8 +663,6 @@ func TestIsReverseBackend(t *testing.T) {
 		})
 	}
 }
-
-// --- Server.Tools / GeneratedToolsFile / EffectiveSpecRefreshInterval ---
 
 func baseValidOpenAPIServer() Server {
 	return Server{
@@ -664,7 +697,27 @@ func TestServer_ValidateWithContext_ToolsFile_Valid(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestServer_ValidateWithContext_ToolsFile_RequiresSpec(t *testing.T) {
+func TestServer_ValidateWithContext_ToolsFile_NoSpec_Valid(t *testing.T) {
+	s := Server{
+		Description: "petstore",
+		BaseURL:     "https://petstore3.swagger.io/api/v3",
+		Tools:       &ToolsConfig{File: "./generated/petstore.yaml"},
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.NoError(t, err)
+}
+
+func TestServer_ValidateWithContext_ToolsFile_NoSpec_RequiresBaseURL(t *testing.T) {
+	s := Server{
+		Description: "petstore",
+		Tools:       &ToolsConfig{File: "./generated/petstore.yaml"},
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "BaseURL")
+}
+
+func TestServer_ValidateWithContext_ToolsFile_RejectsMCPBackendTransport(t *testing.T) {
 	s := Server{
 		Description: "mcp backend",
 		Transport:   MCPTransportHTTP,
@@ -673,7 +726,7 @@ func TestServer_ValidateWithContext_ToolsFile_RequiresSpec(t *testing.T) {
 	}
 	err := s.ValidateWithContext(t.Context())
 	require.Error(t, err)
-	require.ErrorContains(t, err, "tools.file requires spec to be set")
+	require.ErrorContains(t, err, "tools.file does not support transport")
 }
 
 func TestServer_ValidateWithContext_ToolsFile_RejectsReverseServer(t *testing.T) {
@@ -683,9 +736,9 @@ func TestServer_ValidateWithContext_ToolsFile_RejectsReverseServer(t *testing.T)
 		Origin:      "https://app1.example.com",
 		Tools:       &ToolsConfig{File: "./generated/reverse.yaml"},
 	}
-	err := s.ValidateWithContext(t.Context())
+	err := s.ValidateWithContext(reverseValidationContext(t))
 	require.Error(t, err)
-	require.ErrorContains(t, err, "tools.file requires spec to be set")
+	require.ErrorContains(t, err, "tools.file")
 }
 
 func TestServer_ValidateWithContext_ToolsFile_RejectsHTTPURL(t *testing.T) {

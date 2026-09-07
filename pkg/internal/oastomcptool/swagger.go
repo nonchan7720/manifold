@@ -32,15 +32,12 @@ func LoadSwaggerSpec(ctx context.Context, specPath string) (_ *openapi2.T, rErr 
 	return ParseSwaggerSpec(ctx, data)
 }
 
-// ParseSwaggerSpec parses raw as a Swagger 2.x spec (JSON or YAML). Use this
-// when raw was already fetched (e.g. by FetchSpecBytes) and must be the
-// exact bytes that get parsed and hashed.
+// ParseSwaggerSpec parses already-fetched raw as a Swagger 2.x spec (JSON or YAML).
 func ParseSwaggerSpec(ctx context.Context, raw []byte) (_ *openapi2.T, rErr error) {
 	ctx = trace.StartSpan(ctx, "oastomcptool/ParseSwaggerSpec")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	// Some real-world Swagger specs use "required": false/true on property schemas,
-	// which is invalid for openapi2.Schema (expects []string). Normalize before parsing.
+	// Some real-world specs use "required": bool on property schemas, invalid for openapi2.Schema.
 	data, err := normalizeSwaggerJSON(raw)
 	if err != nil {
 		return nil, err
@@ -52,14 +49,8 @@ func ParseSwaggerSpec(ctx context.Context, raw []byte) (_ *openapi2.T, rErr erro
 	return &spec, nil
 }
 
-// normalizeSwaggerJSON removes boolean "required" fields from schema objects.
-// Parameter objects (identified by having an "in" key) are left untouched.
-// data may be JSON or YAML: when it doesn't decode as a JSON object it is
-// converted from YAML first (via the oasdiff/yaml converter kin-openapi
-// itself relies on, which turns YAML's non-string map keys, e.g. a bare
-// "200:" response code, into strings so the result is valid JSON) and
-// re-tried; a document that decodes as neither returns the original JSON
-// error.
+// normalizeSwaggerJSON removes boolean "required" fields from schema
+// objects, accepting either JSON or YAML input.
 func normalizeSwaggerJSON(data []byte) ([]byte, error) {
 	var raw any
 	jsonErr := json.Unmarshal(data, &raw)
@@ -78,10 +69,6 @@ func normalizeSwaggerJSON(data []byte) ([]byte, error) {
 	return json.Marshal(raw)
 }
 
-// isJSONObject reports whether v is a JSON object, i.e. what json.Unmarshal
-// produces for a map[string]any target. A Swagger/OpenAPI document is always
-// an object at the top level, so this distinguishes an actual spec from a
-// YAML document that happens to parse as some other scalar or sequence.
 func isJSONObject(v any) bool {
 	_, ok := v.(map[string]any)
 	return ok
