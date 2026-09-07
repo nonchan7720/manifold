@@ -95,9 +95,7 @@ func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error)
 	return os.ReadFile(specPath) //nolint: gosec
 }
 
-// newOpenAPI3Loader builds the openapi3.Loader shared by LoadOpenAPI3Spec and
-// LoadOpenAPI3SpecFromData, with HTTP and file access enabled for resolving
-// external $refs.
+// newOpenAPI3Loader builds a loader with HTTP and file access enabled for resolving external $refs.
 func newOpenAPI3Loader() *openapi3.Loader {
 	loader := openapi3.NewLoader()
 	loader.ReadFromURIFunc = openapi3.URIMapCache(
@@ -107,11 +105,8 @@ func newOpenAPI3Loader() *openapi3.Loader {
 	return loader
 }
 
-// openAPI3SpecLocation builds the *url.URL kin-openapi's loader uses as a
-// document's location for specPath, replicating what LoadFromURI (for an
-// http(s) specPath) and LoadFromFile (for a local path) construct internally,
-// so relative external $refs resolve identically whether the spec bytes were
-// just fetched or are being reused from an earlier fetch.
+// openAPI3SpecLocation builds the document location kin-openapi's loader
+// needs to resolve relative external $refs for specPath.
 func openAPI3SpecLocation(specPath string) (*url.URL, error) {
 	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
 		return url.Parse(specPath)
@@ -119,11 +114,8 @@ func openAPI3SpecLocation(specPath string) (*url.URL, error) {
 	return &url.URL{Path: filepath.ToSlash(specPath)}, nil
 }
 
-// LoadOpenAPI3SpecFromData parses raw as an OpenAPI 3.x spec, resolving
-// relative external $refs against specPath exactly as LoadOpenAPI3Spec would
-// for the same specPath — without fetching specPath again. Use this when raw
-// was already fetched (e.g. by FetchSpecBytes) and must be the exact bytes
-// that get parsed and hashed.
+// LoadOpenAPI3SpecFromData parses already-fetched raw as an OpenAPI 3.x
+// spec, resolving relative external $refs against specPath.
 func LoadOpenAPI3SpecFromData(raw []byte, specPath string) (*openapi3.T, error) {
 	location, err := openAPI3SpecLocation(specPath)
 	if err != nil {
@@ -985,8 +977,7 @@ func BuildInputSchema(operation *openapi3.Operation) map[string]any { //nolint: 
 					bodyRequired = append(bodyRequired, name)
 				}
 			}
-			// schema.Properties は map なので走査順が実行ごとに変わる。生成物（tools.file）
-			// との突き合わせや diff を安定させるため required はソートしておく。
+			// map 走査順は不定なので、出力を安定させるためソートする。
 			slices.Sort(bodyRequired)
 			properties["body"] = map[string]any{
 				"type":        "object",

@@ -35,8 +35,7 @@ type Server struct {
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
 	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
 
-	// Tools は静的ツールカタログ（生成物）関連の設定。File が指定されると、
-	// 起動・リフレッシュで spec を取得せず生成物ファイルからツールを読み込む。
+	// Tools は静的ツールカタログ（生成物）関連の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
 
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
@@ -65,8 +64,7 @@ func (s Server) CallTimeoutOrDefault() time.Duration {
 	return s.CallTimeout
 }
 
-// GeneratedToolsFile returns tools.file, or "" when unset (or Tools itself
-// is unset).
+// GeneratedToolsFile returns tools.file, or "" when unset.
 func (s Server) GeneratedToolsFile() string {
 	if s.Tools == nil {
 		return ""
@@ -74,19 +72,15 @@ func (s Server) GeneratedToolsFile() string {
 	return s.Tools.File
 }
 
-// IsOpenAPI reports whether this server is in OpenAPI mode: either a live
-// spec is configured, or tools.file is set so the gateway builds the catalog
-// from the generated file instead (spec is then only needed to (re)generate
-// that file, not to start the gateway).
+// IsOpenAPI reports whether this server is in OpenAPI mode (spec and/or
+// tools.file configured).
 func (s Server) IsOpenAPI() bool {
 	return s.Spec != "" || s.GeneratedToolsFile() != ""
 }
 
 // EffectiveSpecRefreshInterval returns the refresh interval for this server,
-// falling back to the gateway-wide default. Only a server with a live spec
-// refreshes; others (MCP backend, reverse, and tools.file-only servers, which
-// start from the generated file and never fetch a live spec) always return 0,
-// regardless of the gateway-wide default.
+// falling back to the gateway-wide default; servers without a live spec
+// always return 0.
 func (s Server) EffectiveSpecRefreshInterval(global time.Duration) time.Duration {
 	if s.Spec == "" {
 		return 0
@@ -212,16 +206,9 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 	)
 }
 
-// validateToolsFile implements the tools.file rules from the design memo
-// (「config」節): spec is no longer required — tools.file alone puts the
-// server in OpenAPI mode (see IsOpenAPI) and the gateway never reads spec
-// when tools.file is present; spec is only needed to (re)generate the file
-// via "manifold openapi generate" (enforced in pkg/cmd/openapi.go, not
-// here). tools.file is mutually exclusive with transport/url/command (an MCP
-// backend or reverse server must not also carry tools.file), must be a local
-// path (not a URL), and is mutually exclusive with a positive
-// specRefreshInterval. Split out of ValidateWithContext to keep that
-// function's branching down.
+// validateToolsFile validates tools.file: mutually exclusive with
+// transport/url/command and with a positive specRefreshInterval, and must be
+// a local path, not a URL.
 func (s Server) validateToolsFile(value any) error {
 	file := s.GeneratedToolsFile()
 	if file == "" {
@@ -244,10 +231,7 @@ func (s Server) validateToolsFile(value any) error {
 	return nil
 }
 
-// IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す。
-// OpenAPI モード（spec または tools.file のいずれかが設定済み）でなく、かつ
-// Transport が指定されている場合に MCP バックエンドモードとなる。
-// reverse は別経路（エッジレジストリ）で扱うため除く。
+// IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す（reverse を除く）。
 func (s *Server) IsMCPBackend() bool {
 	return !s.IsOpenAPI() && s.Transport != "" && s.Transport != MCPTransportReverse
 }
@@ -257,10 +241,7 @@ func (s *Server) IsReverseBackend() bool {
 	return s.Transport == MCPTransportReverse
 }
 
-// ToolsConfig groups static tool catalog (生成物) settings under
-// mcpServers.<name>.tools. File is the only field in Phase 1; it is an
-// object (rather than tools.file directly) so overrides (exclude/rename/
-// description) can be added alongside it later without a breaking change.
+// ToolsConfig groups static tool catalog settings under mcpServers.<name>.tools.
 type ToolsConfig struct {
 	File string `mapstructure:"file"`
 }

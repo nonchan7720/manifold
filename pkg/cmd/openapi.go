@@ -23,11 +23,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// maxDescriptionRunes is the truncation length for descriptions in the table
-// output ("manifold openapi tools" default format).
 const maxDescriptionRunes = 80
 
-// newOpenAPICmd builds the "manifold openapi" command group.
 func newOpenAPICmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "openapi",
@@ -38,7 +35,6 @@ func newOpenAPICmd() *cobra.Command {
 	return cmd
 }
 
-// newOpenAPIToolsCmd builds the "manifold openapi tools" command.
 func newOpenAPIToolsCmd() *cobra.Command {
 	var (
 		serverFilter string
@@ -67,12 +63,8 @@ func newOpenAPIToolsCmd() *cobra.Command {
 	return cmd
 }
 
-// runOpenAPITools drives "manifold openapi tools": it loads and builds the
-// catalog for every selected OpenAPI-mode server using exactly the same
-// code path as the gateway (oastomcptool.LoadSpecSource + mcpsrv.BuildCatalog),
-// then prints it. A server that fails to load, or an unknown --tool, makes
-// this return an error (and thus a non-zero exit) only after every other
-// server has still been processed and printed.
+// runOpenAPITools builds and prints the tool catalog for every selected
+// server, continuing past per-server failures and returning them joined.
 func runOpenAPITools(
 	cmd *cobra.Command, serverFilter, toolFilter string, jsonOutput, fromSpec bool,
 ) error {
@@ -112,10 +104,8 @@ func runOpenAPITools(
 	return loadErr
 }
 
-// selectOpenAPIServers returns the sorted names of every OpenAPI-mode
-// (config.Server.IsOpenAPI(): spec and/or tools.file set) server in cfg, or
-// just serverFilter (if non-empty and valid). An unknown server name, or a
-// server that exists but is not in OpenAPI mode, is an error.
+// selectOpenAPIServers returns the sorted names of every OpenAPI-mode server
+// in cfg, or just serverFilter if it is set and valid.
 func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, error) {
 	all := make([]string, 0, len(cfg.MCPServer))
 	for name, srv := range cfg.MCPServer {
@@ -141,20 +131,9 @@ func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, er
 	return nil, fmt.Errorf("unknown server %q", serverFilter)
 }
 
-// buildCatalogs loads and builds the catalog for each of names. A server
-// with tools.file configured is read from that generated file (no network
-// access, mcpsrv.RegisterOpenAPI with mcpsrv.WithGeneratedToolsFile — the
-// same load+build+verify path the gateway uses at startup) unless fromSpec
-// is set, in which case — and for every other server — it uses the exact
-// same live-spec path as the gateway: oastomcptool.LoadSpecSource followed
-// by mcpsrv.BuildCatalog with a plain *http.Client (the CLI never calls
-// tools, so auth transports don't matter here). Swagger 2.x specs are
-// skipped with a warning (Phase 1 is OpenAPI 3.x only, per the design memo).
-// --from-spec on a tools.file-only server with no spec configured is a
-// per-server error (there is no live spec to read). A server whose spec
-// fails to load, or whose generated file is missing or stale, is reported on
-// stderr and skipped, and its error is joined into the returned error so the
-// caller can fail the command after every server has been attempted.
+// buildCatalogs builds each named server's catalog from tools.file, or from
+// the live spec when fromSpec is set or no tools.file is configured,
+// skipping Swagger 2.x specs and joining any per-server errors.
 func buildCatalogs(
 	ctx context.Context, cfg *config.Config, names []string, stderr io.Writer, fromSpec bool,
 ) (map[string][]mcpsrv.ToolDefinition, error) {
@@ -211,8 +190,7 @@ func buildCatalogs(
 	return catalogs, errors.Join(errs...)
 }
 
-// filterByTool returns only the entries named tool from catalogs, keyed by
-// the servers that have one.
+// filterByTool returns only the entries named tool from catalogs.
 func filterByTool(
 	catalogs map[string][]mcpsrv.ToolDefinition, tool string,
 ) map[string][]mcpsrv.ToolDefinition {
@@ -227,10 +205,7 @@ func filterByTool(
 	return out
 }
 
-// writeToolsTable prints one line per tool as a tab-aligned table
-// (SERVER / TOOL / OPERATION / DESCRIPTION), iterating servers in names
-// order (already sorted) and tools in the order Definitions() returns them
-// (sorted by name).
+// writeToolsTable prints one tab-aligned table line per tool.
 func writeToolsTable(w io.Writer, catalogs map[string][]mcpsrv.ToolDefinition, names []string) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "SERVER\tTOOL\tOPERATION\tDESCRIPTION")
@@ -246,9 +221,7 @@ func writeToolsTable(w io.Writer, catalogs map[string][]mcpsrv.ToolDefinition, n
 	_ = tw.Flush()
 }
 
-// writeToolDetail prints the full detail (server, name, operation,
-// description, binaryResponse, pretty-printed inputSchema) for every tool in
-// catalogs, in names order. Used for --tool without --json.
+// writeToolDetail prints the full detail for every tool in catalogs.
 func writeToolDetail(w io.Writer, catalogs map[string][]mcpsrv.ToolDefinition, names []string) {
 	first := true
 	for _, name := range names {
@@ -271,9 +244,7 @@ func writeToolDetail(w io.Writer, catalogs map[string][]mcpsrv.ToolDefinition, n
 	}
 }
 
-// toolEntry is one tool in the --json output, matching the "tools" section
-// of the generated-file format from the design memo (name, operation,
-// description, binaryResponse, inputSchema — in that key order).
+// toolEntry is one tool in the --json output.
 type toolEntry struct {
 	Name           string         `json:"name"`
 	Operation      string         `json:"operation"`
@@ -282,9 +253,7 @@ type toolEntry struct {
 	InputSchema    map[string]any `json:"inputSchema"`
 }
 
-// writeToolsJSON writes catalogs as a JSON object keyed by server name, each
-// value the array of toolEntry for that server, pretty-printed with a
-// trailing newline.
+// writeToolsJSON writes catalogs as a JSON object keyed by server name.
 func writeToolsJSON(
 	w io.Writer, catalogs map[string][]mcpsrv.ToolDefinition, names []string,
 ) error {
@@ -313,9 +282,8 @@ func writeToolsJSON(
 	return enc.Encode(out)
 }
 
-// sanitizeDescription collapses all whitespace (including newlines and
-// tabs) to single spaces and truncates to maxDescriptionRunes with "…", so a
-// multi-line or overly long OpenAPI description can't break the table.
+// sanitizeDescription collapses whitespace to single spaces and truncates
+// to maxDescriptionRunes with "…".
 func sanitizeDescription(desc string) string {
 	desc = strings.Join(strings.Fields(desc), " ")
 	if utf8.RuneCountInString(desc) <= maxDescriptionRunes {
@@ -325,21 +293,14 @@ func sanitizeDescription(desc string) string {
 	return string(runes[:maxDescriptionRunes]) + "…"
 }
 
-// errSwagger2NotSupported is returned by loadGenerateSource for a Swagger
-// 2.x spec, so runOpenAPIGenerate can tell "skip with a warning" (Phase 1
-// generate is OpenAPI 3.x only, per the design memo) apart from a real
-// failure.
+// errSwagger2NotSupported marks a Swagger 2.x spec passed to generate.
 var errSwagger2NotSupported = errors.New(
 	`generate does not support Swagger 2.x specs (Phase 1 is OpenAPI 3.x only)`,
 )
 
-// errSpecRequiredForGenerate is returned by loadGenerateSource for a server
-// with no spec configured (tools.file-only OpenAPI mode): spec is optional
-// to start the gateway, but generate/--check must have one to rebuild the
-// tools file from.
+// errSpecRequiredForGenerate marks a server with no spec configured.
 var errSpecRequiredForGenerate = errors.New("spec is required to generate the tools file")
 
-// newOpenAPIGenerateCmd builds the "manifold openapi generate" command.
 func newOpenAPIGenerateCmd() *cobra.Command {
 	var (
 		serverFilter string
@@ -374,15 +335,9 @@ func newOpenAPIGenerateCmd() *cobra.Command {
 	return cmd
 }
 
-// runOpenAPIGenerate drives "manifold openapi generate": for every selected
-// OpenAPI-mode server it loads the live spec (never an existing generated
-// file), builds the catalog, and writes the generated tools file to
-// --output (only valid with --server) or the server's tools.file. A server
-// with neither is skipped with a stderr note when running over every
-// server, or an error when it was named explicitly with --server. Swagger
-// 2.x servers are skipped with a warning. A failure for one server is
-// reported on stderr and the rest still run; the command returns a non-nil
-// (joined) error at the end if any server failed or was misconfigured.
+// runOpenAPIGenerate builds each selected server's catalog from its live
+// spec and writes the generated tools file, continuing past per-server
+// failures and returning them joined.
 func runOpenAPIGenerate(cmd *cobra.Command, serverFilter, output string) error {
 	if output != "" && serverFilter == "" {
 		return fmt.Errorf("--output requires --server")
@@ -424,13 +379,8 @@ func runOpenAPIGenerate(cmd *cobra.Command, serverFilter, output string) error {
 	return errors.Join(errs...)
 }
 
-// resolveGenerateOutput picks the path a server's generated file should be
-// written to: --output (only ever set together with an explicit --server,
-// enforced by the caller) takes precedence, otherwise the server's
-// tools.file. A server with neither is reported via skip=true (a stderr
-// note, not a failure) when generate is running over every server, or as an
-// error when --server named it explicitly — silently doing nothing would be
-// surprising for a command invoked for exactly that one server.
+// resolveGenerateOutput picks the output path for srv: --output, else
+// tools.file, else skip=true (or an error if --server named it explicitly).
 func resolveGenerateOutput(
 	srv *config.Server, serverFilter, output string,
 ) (path string, skip bool, err error) {
@@ -446,11 +396,9 @@ func resolveGenerateOutput(
 	return "", true, nil
 }
 
-// loadGenerateSource fetches and loads srv.Spec (never an existing
-// tools.file — generate always regenerates from the live spec), returning
-// errSpecRequiredForGenerate when srv has no spec configured (a
-// tools.file-only server, valid to start the gateway with but not enough to
-// generate from) and errSwagger2NotSupported for a Swagger 2.x document.
+// loadGenerateSource fetches and loads srv.Spec, returning
+// errSpecRequiredForGenerate if unset or errSwagger2NotSupported for a
+// Swagger 2.x document.
 func loadGenerateSource(ctx context.Context, srv *config.Server) (*oastomcptool.SpecSource, error) {
 	if srv.Spec == "" {
 		return nil, errSpecRequiredForGenerate
@@ -466,10 +414,7 @@ func loadGenerateSource(ctx context.Context, srv *config.Server) (*oastomcptool.
 }
 
 // buildGeneratedCatalog loads srv's live spec and builds the would-be
-// generated catalog for it — the same "load spec, build catalog, wrap as a
-// GeneratedCatalog" steps "generate" writes to disk and "generate --check"
-// diffs against what's on disk, factored out so the two commands cannot
-// diverge. Returns errSwagger2NotSupported for a Swagger 2.x spec.
+// generated catalog for it, shared by "generate" and "generate --check".
 func buildGeneratedCatalog(
 	ctx context.Context, srv *config.Server, generatedAt time.Time,
 ) (*oastomcptool.GeneratedCatalog, error) {
@@ -489,9 +434,8 @@ func buildGeneratedCatalog(
 	)
 }
 
-// generateOne loads srv's live spec, builds its catalog, and writes the
-// resulting generated tools file to outPath, returning the tool count on
-// success.
+// generateOne builds srv's catalog and writes it to outPath, returning the
+// tool count.
 func generateOne(ctx context.Context, srv *config.Server, outPath string) (int, error) {
 	g, err := buildGeneratedCatalog(ctx, srv, time.Now())
 	if err != nil {
@@ -503,10 +447,8 @@ func generateOne(ctx context.Context, srv *config.Server, outPath string) (int, 
 	return len(g.Tools), nil
 }
 
-// writeGeneratedFileAtomic encodes g as the generated tools file at path: it
-// creates any missing parent directories, writes to a temp file in the same
-// directory (mode 0644), then renames it into place — so a failure partway
-// through writing never leaves a truncated or half-written file at path.
+// writeGeneratedFileAtomic writes g to path via a temp file + rename, so a
+// failure partway through never leaves a truncated file at path.
 func writeGeneratedFileAtomic(path string, g *oastomcptool.GeneratedCatalog) (rErr error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -531,10 +473,7 @@ func writeGeneratedFileAtomic(path string, g *oastomcptool.GeneratedCatalog) (rE
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	// Generated tools files are meant to be committed and read by anyone with
-	// repo access (see docs/design/openapi-static-catalog.ja.md), so 0644 —
-	// world-readable, not secret — is the correct mode here, not gosec's
-	// default 0600 recommendation for arbitrary file writes.
+	// 0644: generated tools files are committed and meant to be world-readable.
 	if err := os.Chmod(tmpPath, 0o644); err != nil { //nolint: gosec
 		return fmt.Errorf("set permissions on temp file: %w", err)
 	}
@@ -544,39 +483,25 @@ func writeGeneratedFileAtomic(path string, g *oastomcptool.GeneratedCatalog) (rE
 	return nil
 }
 
-// --- generate --check ---
-
-// generatedCatalogDrift describes how the would-be generated catalog (built
-// fresh from the live spec by buildGeneratedCatalog) differs from what's on
-// disk at a server's output path, for "generate --check". A missing file is
-// reported as Missing, with the other fields left zero.
+// generatedCatalogDrift describes how the would-be generated catalog differs
+// from what's on disk at a server's output path.
 type generatedCatalogDrift struct {
 	Missing              bool
 	SpecChanged          bool
 	OldSHA256, NewSHA256 string
-	// EmbeddedSpecChanged reports whether the file's "spec" section (the
-	// internalized document LoadGeneratedSpecSource/BuildCatalog actually
-	// run from at gateway startup) differs from what the live spec produces
-	// now, even when source.sha256 (the raw upstream bytes) and the "tools"
-	// section are unchanged — e.g. the "spec" section was hand-edited, or
-	// written by a manifold version whose internalization differs.
+	// EmbeddedSpecChanged catches a changed or hand-edited "spec" section
+	// even when source.sha256 and the tools section are unchanged.
 	EmbeddedSpecChanged bool
 	Tools               mcpsrv.GeneratedToolsDiff
 }
 
-// empty reports whether d found no drift at all: no missing file, no spec
-// change, no embedded-spec change, and no tool differences. A spec change
-// with an identical tool list still counts as drift — the embedded spec
-// drives runtime request building (e.g. multipart handling), not only the
-// tools section.
+// empty reports whether d found no drift at all.
 func (d generatedCatalogDrift) empty() bool {
 	return !d.Missing && !d.SpecChanged && !d.EmbeddedSpecChanged && d.Tools.Empty()
 }
 
-// checkOne builds the would-be generated catalog for srv from its live spec
-// and compares it against the existing file at outPath, ignoring
-// generatedBy and source.fetchedAt. Returns errSwagger2NotSupported for a
-// Swagger 2.x spec, same as generateOne.
+// checkOne builds the would-be generated catalog for srv and compares it
+// against the existing file at outPath.
 func checkOne(
 	ctx context.Context, srv *config.Server, outPath string,
 ) (generatedCatalogDrift, error) {
@@ -606,14 +531,8 @@ func checkOne(
 		drift.NewSHA256 = next.Source.SHA256
 	}
 
-	// The embedded "spec" section is what LoadGeneratedSpecSource →
-	// BuildCatalog → CreateToolFunction actually run from at gateway
-	// startup, so it must be compared even when source.sha256 and the tools
-	// section both match — a hand edit of "spec:", or a different manifold
-	// version's internalization, would otherwise go unnoticed. Compared by
-	// canonical JSON (like mcpsrv.EqualAsJSON's other callers) so a
-	// YAML-decoded int and the float64 encoding/json produces for the same
-	// number don't register as a difference.
+	// Compared as canonical JSON so YAML-decoded ints and JSON floats don't
+	// register as a difference.
 	sameSpec, err := mcpsrv.EqualAsJSON(current.Spec, next.Spec)
 	if err != nil {
 		return generatedCatalogDrift{}, fmt.Errorf("compare embedded spec: %w", err)
@@ -623,15 +542,9 @@ func checkOne(
 	return drift, nil
 }
 
-// runOpenAPIGenerateCheck drives "manifold openapi generate --check": for
-// every selected OpenAPI-mode server it builds the would-be generated
-// catalog from the live spec (never writing it) and compares it against the
-// file at its output path, printing an "up to date" or "drift detected"
-// line per server. Server selection, --output/--server validation, the
-// "no tools.file configured" skip, and the Swagger 2.x skip all match
-// "generate" exactly (see resolveGenerateOutput and runOpenAPIGenerate).
-// Returns a non-nil (joined) error if any server had drift or failed to
-// load.
+// runOpenAPIGenerateCheck compares each selected server's would-be generated
+// catalog against the file on disk without writing it, returning a non-nil
+// error if any server had drift or failed to load.
 func runOpenAPIGenerateCheck(cmd *cobra.Command, serverFilter, output string) error {
 	if output != "" && serverFilter == "" {
 		return fmt.Errorf("--output requires --server")
@@ -688,10 +601,8 @@ func runOpenAPIGenerateCheck(cmd *cobra.Command, serverFilter, output string) er
 	return errors.Join(errs...)
 }
 
-// writeDriftReport prints the "drift detected" header for name/outPath
-// followed by one indented line per difference — spec change first, then
-// added/removed/changed tools each sorted by name — and a final line
-// pointing at "generate" to fix it.
+// writeDriftReport prints the "drift detected" header and one line per
+// difference.
 func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogDrift) {
 	fmt.Fprintf(w, "server %q: drift detected (%s)\n", name, outPath)
 	if drift.SpecChanged {
@@ -725,8 +636,7 @@ func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogD
 	fmt.Fprintln(w, `  run "manifold openapi generate" to update`)
 }
 
-// shortSHA256 returns the first 8 hex characters of a sha256 hex digest, for
-// the compact "sha256 <old8>… → <new8>…" drift line.
+// shortSHA256 returns the first 8 hex characters of a sha256 hex digest.
 func shortSHA256(sum string) string {
 	if len(sum) > 8 {
 		return sum[:8]

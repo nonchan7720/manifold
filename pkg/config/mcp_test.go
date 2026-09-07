@@ -8,8 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- TokenExchange.ValidateWithContext ---
-
 func TestTokenExchange_ValidateWithContext_RequiresURL(t *testing.T) {
 	te := &TokenExchange{}
 	err := te.ValidateWithContext(t.Context())
@@ -29,8 +27,6 @@ func TestTokenExchange_ValidateWithContext_AcceptsAbsoluteURL(t *testing.T) {
 	err := te.ValidateWithContext(t.Context())
 	require.NoError(t, err)
 }
-
-// --- OAuth2.UnknownClientMode ---
 
 func TestOAuth2_UnknownClientMode(t *testing.T) {
 	tests := []struct {
@@ -70,8 +66,6 @@ func TestOAuth2_UnknownClientMode(t *testing.T) {
 		})
 	}
 }
-
-// --- OAuth2.ValidateWithContext ---
 
 func baseValidOAuth2() OAuth2 {
 	return OAuth2{
@@ -157,8 +151,6 @@ func TestOAuth2_ValidateWithContext_DuplicateDownstreamClientID_Invalid(t *testi
 	require.Error(t, c.ValidateWithContext(t.Context()))
 }
 
-// --- OAuth2.UpstreamClient ---
-
 func TestOAuth2_UpstreamClient(t *testing.T) {
 	c := OAuth2{Clients: []OAuth2Client{
 		{DownstreamClientID: "https://client-a.example.com/meta.json", ClientID: "up-a"},
@@ -210,8 +202,6 @@ func TestOAuth2_ValidateWithContext_AuthParams(t *testing.T) {
 		})
 	}
 }
-
-// --- Server.ValidateWithContext: AuthValue/OAuth2/TokenExchange の排他性 ---
 
 func baseValidServer() Server {
 	return Server{
@@ -301,8 +291,6 @@ func TestServer_ValidateWithContext_AllThree_Invalid(t *testing.T) {
 	require.Error(t, err)
 }
 
-// --- Server.ValidateWithContext: reverse transport ---
-
 func baseValidReverseServer() Server {
 	return Server{
 		Description: "reverse server",
@@ -313,10 +301,7 @@ func baseValidReverseServer() Server {
 }
 
 // reverseValidationContext returns a context carrying an "oauth" identity
-// profile, matching baseValidReverseServer's Identity reference. The default
-// edge.pairing.type (remote) requires reverse servers to reference a known
-// identity profile, so tests that aren't specifically exercising that
-// requirement need one in context to isolate the behavior they do target.
+// profile, matching baseValidReverseServer's Identity reference.
 func reverseValidationContext(t *testing.T) context.Context {
 	t.Helper()
 	return context.WithValue(t.Context(), identitiesContextKey{}, map[string]*IdentityProfile{
@@ -453,8 +438,6 @@ func TestServer_ValidateWithContext_Reverse_RejectsURL(t *testing.T) {
 }
 
 func TestServer_ValidateWithContext_Reverse_RejectsSpec(t *testing.T) {
-	// spec (OpenAPI mode) and transport: reverse must not both be set — the
-	// server would otherwise be ambiguous between the two backend kinds.
 	s := baseValidReverseServer()
 	s.Spec = "openapi.yaml"
 	s.BaseURL = "https://api.example.com"
@@ -681,8 +664,6 @@ func TestIsReverseBackend(t *testing.T) {
 	}
 }
 
-// --- Server.Tools / GeneratedToolsFile / EffectiveSpecRefreshInterval ---
-
 func baseValidOpenAPIServer() Server {
 	return Server{
 		Description: "test openapi server",
@@ -717,8 +698,6 @@ func TestServer_ValidateWithContext_ToolsFile_Valid(t *testing.T) {
 }
 
 func TestServer_ValidateWithContext_ToolsFile_NoSpec_Valid(t *testing.T) {
-	// spec is only needed to (re)generate the file; a tools.file-only server
-	// (with baseURL) is a valid, startable OpenAPI-mode server.
 	s := Server{
 		Description: "petstore",
 		BaseURL:     "https://petstore3.swagger.io/api/v3",

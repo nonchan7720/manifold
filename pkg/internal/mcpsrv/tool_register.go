@@ -19,16 +19,12 @@ type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, cont
 type Tool struct {
 	tool    mcp.Tool
 	handler ToolFunc
-	// method/path は WithRegisterToolOperation で設定される、生成元の
-	// operation（例: "GET", "/pet/{petId}"）。CLI からツール定義を読み出す
-	// Definitions() のためだけに保持し、mcp.Tool 自体には含めない。
+	// method/path hold the source operation for Definitions(), not mcp.Tool itself.
 	method string
 	path   string
 }
 
-// ToolInfo is the (name, description) pair of a registered tool, independent
-// of the input schema and handler — used to build the admin tool catalog
-// (MCPServer.ToolCatalog) without exposing mcp.Tool internals.
+// ToolInfo is the (name, description) pair of a registered tool.
 type ToolInfo struct {
 	Name        string
 	Description string
@@ -86,8 +82,7 @@ func (r *MCPToolRegistry) RegisterTool(
 	r.tools[name] = tool
 }
 
-// SpecHash returns the hash of the spec these tools were built from. It is
-// empty for registries that were not built from a spec.
+// SpecHash returns the hash of the spec these tools were built from.
 func (r *MCPToolRegistry) SpecHash() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -100,9 +95,7 @@ func (r *MCPToolRegistry) setSpecHash(hash string) {
 	r.specHash = hash
 }
 
-// ListTools returns all registered tools sorted by name. The sort makes tool
-// order deterministic for callers that display or diff it (e.g. the
-// `manifold openapi tools` CLI).
+// ListTools returns all registered tools sorted by name.
 func (r *MCPToolRegistry) ListTools() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -118,12 +111,7 @@ func (r *MCPToolRegistry) ListTools() []Tool {
 	return listTools
 }
 
-// ToolDefinition is a read-only, display-friendly view of a registered tool:
-// name, the operation it was generated from, description, inputSchema, and
-// whether it is treated as a binary response. It exists so a caller outside
-// this package (e.g. a future `manifold openapi tools` CLI) can read back
-// exactly what RegisterOpenAPI/BuildCatalog built, without depending on
-// mcp.Tool internals.
+// ToolDefinition is a read-only, display-friendly view of a registered tool.
 type ToolDefinition struct {
 	Name           string
 	Method         string // upper-case, e.g. "GET"
@@ -133,8 +121,7 @@ type ToolDefinition struct {
 	BinaryResponse bool
 }
 
-// Definitions returns the ToolDefinition for every registered tool, sorted
-// by name (see ListTools).
+// Definitions returns the ToolDefinition for every registered tool, sorted by name.
 func (r *MCPToolRegistry) Definitions() []ToolDefinition {
 	tools := r.ListTools()
 	defs := make([]ToolDefinition, len(tools))
@@ -152,9 +139,8 @@ func (r *MCPToolRegistry) Definitions() []ToolDefinition {
 	return defs
 }
 
-// toolBinaryResponse reports whether tool carries the same
-// _meta.manifold.binaryResponse marker WithRegisterToolMeta sets in the
-// openapi3 loop's binary-response case.
+// toolBinaryResponse reports whether tool carries the
+// _meta.manifold.binaryResponse marker.
 func toolBinaryResponse(tool mcp.Tool) bool {
 	manifoldMeta, ok := tool.Meta["manifold"].(map[string]any)
 	if !ok {

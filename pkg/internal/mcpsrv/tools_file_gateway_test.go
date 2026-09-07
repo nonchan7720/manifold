@@ -36,9 +36,7 @@ const toolsFileTestSpec = `{
 }`
 
 // writeGeneratedToolsFile builds a generated tools file for toolsFileTestSpec
-// (baseURL baked into the tool functions via BuildCatalog) and returns its
-// path. mutate, if non-nil, is applied to the catalog before it's written —
-// used to simulate a generated file that has gone stale relative to its spec.
+// and returns its path; mutate, if non-nil, is applied before it's written.
 func writeGeneratedToolsFile(
 	t *testing.T, baseURL string, mutate func(g *oastomcptool.GeneratedCatalog),
 ) string {
@@ -80,10 +78,6 @@ func connectSession(t *testing.T, srv *mcp.Server) *mcp.ClientSession {
 	return session
 }
 
-// TestMCPServer_Init_ToolsFile_UnreachableSpecStillStarts covers the core
-// promise of tools.file: Init succeeds (and tools/list + tools/call work
-// against the real backend) even though config.spec points nowhere
-// reachable, because Init never fetches it when tools.file is set.
 func TestMCPServer_Init_ToolsFile_UnreachableSpecStillStarts(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 
@@ -123,12 +117,6 @@ func TestMCPServer_Init_ToolsFile_UnreachableSpecStillStarts(t *testing.T) {
 	require.JSONEq(t, `{"id":"42","name":"widget-42"}`, text.Text)
 }
 
-// TestMCPServer_Init_ToolsFile_NoSpecStillStarts covers the config-level
-// decision that spec is entirely optional once tools.file is set (see
-// config.Server.IsOpenAPI): with no spec configured at all (not merely
-// unreachable), Init still succeeds, tools/list shows the tools, tools/call
-// still reaches the real backend, and StartSpecRefresh starts no refresh
-// goroutine for it.
 func TestMCPServer_Init_ToolsFile_NoSpecStillStarts(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 
@@ -166,11 +154,6 @@ func TestMCPServer_Init_ToolsFile_NoSpecStillStarts(t *testing.T) {
 	require.True(t, ok)
 	require.JSONEq(t, `{"id":"42","name":"widget-42"}`, text.Text)
 
-	// No spec at all means nothing to refresh from: EffectiveSpecRefreshInterval
-	// returns 0 for a server with Spec == "", so StartSpecRefresh must not
-	// start a goroutine for it, mirroring
-	// TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine (which
-	// uses a reachable-but-unused spec instead of no spec at all).
 	require.Equal(
 		t, time.Duration(0), servers["petstore"].EffectiveSpecRefreshInterval(20*time.Millisecond),
 	)
@@ -182,9 +165,6 @@ func TestMCPServer_Init_ToolsFile_NoSpecStillStarts(t *testing.T) {
 	require.True(t, cancelSet, "StartSpecRefresh always sets refreshCancel, even with no targets")
 }
 
-// TestMCPServer_Init_ToolsFile_Stale asserts Init fails, naming both the
-// server and the regeneration hint, when the generated file's "tools"
-// section no longer matches what its own spec produces.
 func TestMCPServer_Init_ToolsFile_Stale(t *testing.T) {
 	t.Setenv("TEST", "true")
 
@@ -213,12 +193,6 @@ func TestMCPServer_Init_ToolsFile_Stale(t *testing.T) {
 	require.ErrorContains(t, err, "manifold openapi generate")
 }
 
-// TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine asserts a
-// tools.file server never gets a refresh goroutine, even when
-// gateway.specRefresh.interval is set — observed the same way
-// spec_refresh_test.go observes "never refreshes": no fetch reaches the
-// spec URL, here made watchable by pointing spec at an httptest server
-// instead of a genuinely unreachable address.
 func TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine(t *testing.T) {
 	t.Setenv("TEST", "true")
 
@@ -245,7 +219,6 @@ func TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine(t *testing.T)
 		t, int64(0), spec.fetches.Load(), "Init must not fetch spec when tools.file is set",
 	)
 
-	// グローバル既定が正でも tools.file サーバーはリフレッシュ対象から外れる。
 	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
 	defer s.Close()
 
