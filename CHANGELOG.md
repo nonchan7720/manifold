@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.15.0](https://github.com/nonchan7720/manifold/compare/v1.14.0...v1.15.0) (2026-09-07)
+
+
+### Features
+
+* **auth:** OAuth Client ID Metadata Document (CIMD) に対応する ([#165](https://github.com/nonchan7720/manifold/issues/165)) ([d6ba89c](https://github.com/nonchan7720/manifold/commit/d6ba89cb6b88f7150a9dd15625f0bb8b034d18b8))
+* **openapi:** tools.file 設定時は spec を任意にする ([#169](https://github.com/nonchan7720/manifold/issues/169)) ([ba7928c](https://github.com/nonchan7720/manifold/commit/ba7928ccc80e6abffd1dc76bde59220a7a091413))
+
+
+### Bug Fixes
+
+* **auth:** DCR クライアントを登録元 MCP サーバーに束縛する ([#168](https://github.com/nonchan7720/manifold/issues/168)) ([740c1f7](https://github.com/nonchan7720/manifold/commit/740c1f78eed042788f395556c8613d354e8a1a52))
+
 ## [1.14.0](https://github.com/nonchan7720/manifold/compare/v1.13.0...v1.14.0) (2026-09-04)
 
 
