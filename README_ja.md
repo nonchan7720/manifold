@@ -107,7 +107,7 @@ docker compose up -d
 
 ### 生成される MCP ツールの確認と生成
 
-OpenAPI モードのサーバー（`spec` を設定したサーバー）について、`manifold openapi` サブコマンドでゲートウェイが登録するツールを確認でき、起動時に spec を取得しないファイルへ書き出すこともできます。
+OpenAPI モードのサーバー（`spec` および/または `tools.file` を設定したサーバー）について、`manifold openapi` サブコマンドでゲートウェイが登録するツールを確認でき、起動時に spec を取得しないファイルへ書き出すこともできます。
 
 ```bash
 # 全 OpenAPI モードサーバーで登録されるツールを表示する（ゲートウェイは起動しない）
@@ -320,8 +320,8 @@ gateway:
 | `command`       | string            | stdio トランスポートのコマンド                             |
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
-| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL               |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` 指定時は必須）   |
+| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）には必要 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` か `tools.file` のいずれかを設定した場合は必須） |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
@@ -339,13 +339,13 @@ gateway:
 mcpServers:
   petstore:
     description: Swagger Petstore
-    spec: https://petstore3.swagger.io/api/v3/openapi.json   # tools.file 使用時も必須。生成物に source.spec として記録される
+    spec: https://petstore3.swagger.io/api/v3/openapi.json   # ここでは任意 — generate/--check を使う場合のみ必要
     baseURL: https://petstore3.swagger.io/api/v3
     tools:
       file: ./generated/petstore.yaml
 ```
 
-- `tools.file` を設定していても `spec` と `baseURL` は引き続き必須。`spec` は生成物に生成元として記録され、`baseURL` は生成物内の spec から導出されない
+- `baseURL` は引き続き必須。`tools.file` を設定していれば `spec` は任意 — ゲートウェイは `spec` を一切読まないが、`manifold openapi generate`（および `--check`）がファイルを再生成する際に必要になるため、それらのコマンドを使うなら config に残しておくこと
 - 起動時、Manifold はファイルに埋め込まれた spec からツールカタログを再構築し、ファイルの `tools` セクションと突き合わせる。一致しない場合（ファイルが埋め込まれた spec に対して古い、あるいは手で編集された場合）、起動は失敗する。例: `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`
 - `tools.file` と正の値の `specRefreshInterval` は排他。`tools.file` を持つサーバーは `gateway.specRefresh` の対象からも除外される — 取り直す元の spec が無いため
 - `tools.file` はローカルパスのみ指定可能。URL は拒否される

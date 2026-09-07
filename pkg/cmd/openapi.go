@@ -113,13 +113,13 @@ func runOpenAPITools(
 }
 
 // selectOpenAPIServers returns the sorted names of every OpenAPI-mode
-// (Spec != "") server in cfg, or just serverFilter (if non-empty and valid).
-// An unknown server name, or a server that exists but is not in OpenAPI
-// mode, is an error.
+// (config.Server.IsOpenAPI(): spec and/or tools.file set) server in cfg, or
+// just serverFilter (if non-empty and valid). An unknown server name, or a
+// server that exists but is not in OpenAPI mode, is an error.
 func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, error) {
 	all := make([]string, 0, len(cfg.MCPServer))
 	for name, srv := range cfg.MCPServer {
-		if srv.Spec == "" {
+		if !srv.IsOpenAPI() {
 			continue
 		}
 		all = append(all, name)
@@ -134,7 +134,8 @@ func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, er
 	}
 	if _, ok := cfg.MCPServer[serverFilter]; ok {
 		return nil, fmt.Errorf(
-			"server %q is not configured in OpenAPI mode (no \"spec\")", serverFilter,
+			"server %q is not configured in OpenAPI mode (no \"spec\" or \"tools.file\")",
+			serverFilter,
 		)
 	}
 	return nil, fmt.Errorf("unknown server %q", serverFilter)
@@ -148,13 +149,12 @@ func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, er
 // same live-spec path as the gateway: oastomcptool.LoadSpecSource followed
 // by mcpsrv.BuildCatalog with a plain *http.Client (the CLI never calls
 // tools, so auth transports don't matter here). Swagger 2.x specs are
-// skipped with a warning (Phase 1 is OpenAPI 3.x only, per the design memo;
-// a server with tools.file is never Swagger 2.x, since config validation
-// requires spec for it and Init rejects a Swagger 2.x spec with tools.file).
-// A server whose spec fails to load, or whose generated file is missing or
-// stale, is reported on stderr and skipped, and its error is joined into the
-// returned error so the caller can fail the command after every server has
-// been attempted.
+// skipped with a warning (Phase 1 is OpenAPI 3.x only, per the design memo).
+// --from-spec on a tools.file-only server with no spec configured is a
+// per-server error (there is no live spec to read). A server whose spec
+// fails to load, or whose generated file is missing or stale, is reported on
+// stderr and skipped, and its error is joined into the returned error so the
+// caller can fail the command after every server has been attempted.
 func buildCatalogs(
 	ctx context.Context, cfg *config.Config, names []string, stderr io.Writer, fromSpec bool,
 ) (map[string][]mcpsrv.ToolDefinition, error) {
@@ -173,6 +173,13 @@ func buildCatalogs(
 				continue
 			}
 			catalogs[name] = registry.Definitions()
+			continue
+		}
+
+		if srv.Spec == "" {
+			err := fmt.Errorf("--from-spec requires spec to be configured")
+			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
+			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
 			continue
 		}
 
@@ -326,6 +333,12 @@ var errSwagger2NotSupported = errors.New(
 	`generate does not support Swagger 2.x specs (Phase 1 is OpenAPI 3.x only)`,
 )
 
+// errSpecRequiredForGenerate is returned by loadGenerateSource for a server
+// with no spec configured (tools.file-only OpenAPI mode): spec is optional
+// to start the gateway, but generate/--check must have one to rebuild the
+// tools file from.
+var errSpecRequiredForGenerate = errors.New("spec is required to generate the tools file")
+
 // newOpenAPIGenerateCmd builds the "manifold openapi generate" command.
 func newOpenAPIGenerateCmd() *cobra.Command {
 	var (
@@ -435,8 +448,13 @@ func resolveGenerateOutput(
 
 // loadGenerateSource fetches and loads srv.Spec (never an existing
 // tools.file — generate always regenerates from the live spec), returning
-// errSwagger2NotSupported for a Swagger 2.x document.
+// errSpecRequiredForGenerate when srv has no spec configured (a
+// tools.file-only server, valid to start the gateway with but not enough to
+// generate from) and errSwagger2NotSupported for a Swagger 2.x document.
 func loadGenerateSource(ctx context.Context, srv *config.Server) (*oastomcptool.SpecSource, error) {
+	if srv.Spec == "" {
+		return nil, errSpecRequiredForGenerate
+	}
 	source, err := oastomcptool.LoadSpecSource(ctx, srv.Spec)
 	if err != nil {
 		return nil, err

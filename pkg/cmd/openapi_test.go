@@ -761,6 +761,106 @@ func TestOpenAPITools_StaleGeneratedFile_FailsWithStale(t *testing.T) {
 	require.Contains(t, stderr, "stale")
 }
 
+// --- tools.file-only servers (no spec configured) ---
+
+// setupToolsFileOnlyServer generates a tools.file for "petstore" from a live
+// spec (so the file matches what that spec produces), then reinstalls the
+// config with spec dropped entirely — the case config.Server.IsOpenAPI now
+// allows for starting the gateway (spec is only needed to (re)generate the
+// file, enforced by the CLI, not the gateway).
+func setupToolsFileOnlyServer(t *testing.T) (genPath string) {
+	t.Helper()
+	specPath := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	genPath = filepath.Join(t.TempDir(), "petstore.yaml")
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: specPath, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				BaseURL: "http://example.local",
+				Tools:   &config.ToolsConfig{File: genPath},
+			},
+		},
+	})
+	return genPath
+}
+
+func TestOpenAPITools_ToolsFileOnlyServer_NoSpec_ReadsGeneratedFile(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	stdout, stderr, err := execOpenAPITools(t, "tools")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, "addpet")
+	require.Contains(t, stdout, "getpetbyid")
+	require.Contains(t, stdout, "uploadfile")
+}
+
+func TestOpenAPITools_ToolsFileOnlyServer_FromSpec_Errors(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	_, stderr, err := execOpenAPITools(t, "tools", "--from-spec")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": --from-spec requires spec to be configured`)
+}
+
+func TestOpenAPIGenerate_ToolsFileOnlyServer_NoSpec_Errors(t *testing.T) {
+	genPath := setupToolsFileOnlyServer(t)
+
+	// A second, spec-having server must still run despite petstore failing.
+	otherSpecPath := writeSpecFile(t, "other.json", petstoreSpecJSON)
+	otherOutPath := filepath.Join(t.TempDir(), "other.yaml")
+	globalConfig.MCPServer["other"] = &config.Server{
+		Spec: otherSpecPath, BaseURL: "http://example.local",
+		Tools: &config.ToolsConfig{File: otherOutPath},
+	}
+
+	stdout, stderr, err := execOpenAPITools(t, "generate")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": spec is required to generate the tools file`)
+	require.Contains(t, stdout, `server "other": wrote `+otherOutPath)
+
+	_, statErr := os.Stat(genPath)
+	require.NoError(t, statErr, "petstore's already-generated file must be left untouched")
+}
+
+func TestOpenAPIGenerateCheck_ToolsFileOnlyServer_NoSpec_Errors(t *testing.T) {
+	setupToolsFileOnlyServer(t)
+
+	_, stderr, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, stderr, `server "petstore": spec is required to generate the tools file`)
+}
+
+func TestSelectOpenAPIServers_IncludesToolsFileOnlyServers(t *testing.T) {
+	cfg := &config.Config{
+		MCPServer: config.Servers{
+			"toolsfile-only": &config.Server{
+				BaseURL: "http://example.local",
+				Tools:   &config.ToolsConfig{File: "./generated/petstore.yaml"},
+			},
+			"spec-only": &config.Server{
+				Spec: "openapi.json", BaseURL: "http://example.local",
+			},
+			"mcp-backend": &config.Server{
+				Transport: config.MCPTransportHTTP, URL: "http://example.local",
+			},
+		},
+	}
+	names, err := selectOpenAPIServers(cfg, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{"spec-only", "toolsfile-only"}, names)
+}
+
 // --- generate --check ---
 
 // setupCheckServer generates outPath for "petstore" (source specPath) and

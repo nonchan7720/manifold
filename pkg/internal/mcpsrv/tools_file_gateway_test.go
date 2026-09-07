@@ -123,6 +123,65 @@ func TestMCPServer_Init_ToolsFile_UnreachableSpecStillStarts(t *testing.T) {
 	require.JSONEq(t, `{"id":"42","name":"widget-42"}`, text.Text)
 }
 
+// TestMCPServer_Init_ToolsFile_NoSpecStillStarts covers the config-level
+// decision that spec is entirely optional once tools.file is set (see
+// config.Server.IsOpenAPI): with no spec configured at all (not merely
+// unreachable), Init still succeeds, tools/list shows the tools, tools/call
+// still reaches the real backend, and StartSpecRefresh starts no refresh
+// goroutine for it.
+func TestMCPServer_Init_ToolsFile_NoSpecStillStarts(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"42","name":"widget-42"}`))
+	}))
+	defer backend.Close()
+
+	genPath := writeGeneratedToolsFile(t, backend.URL, nil)
+
+	servers := config.Servers{
+		"petstore": &config.Server{
+			Name:    "petstore",
+			BaseURL: backend.URL,
+			Tools:   &config.ToolsConfig{File: genPath},
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(t.Context()))
+
+	srv, err := s.Server("petstore")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"getwidget"}, listToolNames(t, srv))
+
+	session := connectSession(t, srv)
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "getwidget",
+		Arguments: map[string]any{"id": "42"},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	text, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.JSONEq(t, `{"id":"42","name":"widget-42"}`, text.Text)
+
+	// No spec at all means nothing to refresh from: EffectiveSpecRefreshInterval
+	// returns 0 for a server with Spec == "", so StartSpecRefresh must not
+	// start a goroutine for it, mirroring
+	// TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine (which
+	// uses a reachable-but-unused spec instead of no spec at all).
+	require.Equal(
+		t, time.Duration(0), servers["petstore"].EffectiveSpecRefreshInterval(20*time.Millisecond),
+	)
+	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
+	defer s.Close()
+	s.mu.Lock()
+	cancelSet := s.refreshCancel != nil
+	s.mu.Unlock()
+	require.True(t, cancelSet, "StartSpecRefresh always sets refreshCancel, even with no targets")
+}
+
 // TestMCPServer_Init_ToolsFile_Stale asserts Init fails, naming both the
 // server and the regeneration hint, when the generated file's "tools"
 // section no longer matches what its own spec produces.

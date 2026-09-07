@@ -74,11 +74,19 @@ func (s Server) GeneratedToolsFile() string {
 	return s.Tools.File
 }
 
+// IsOpenAPI reports whether this server is in OpenAPI mode: either a live
+// spec is configured, or tools.file is set so the gateway builds the catalog
+// from the generated file instead (spec is then only needed to (re)generate
+// that file, not to start the gateway).
+func (s Server) IsOpenAPI() bool {
+	return s.Spec != "" || s.GeneratedToolsFile() != ""
+}
+
 // EffectiveSpecRefreshInterval returns the refresh interval for this server,
-// falling back to the gateway-wide default. Only OpenAPI mode servers refresh;
-// others always return 0. A server with tools.file set never refreshes
-// (it starts from the generated file, not the live spec), regardless of the
-// gateway-wide default.
+// falling back to the gateway-wide default. Only a server with a live spec
+// refreshes; others (MCP backend, reverse, and tools.file-only servers, which
+// start from the generated file and never fetch a live spec) always return 0,
+// regardless of the gateway-wide default.
 func (s Server) EffectiveSpecRefreshInterval(global time.Duration) time.Duration {
 	if s.Spec == "" {
 		return 0
@@ -97,11 +105,11 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		ctx,
 		&s,
 		validation.Field(&s.Description, validation.Required),
-		validation.Field(&s.BaseURL, validation.When(s.Spec != "", validation.Required)),
+		validation.Field(&s.BaseURL, validation.When(s.IsOpenAPI(), validation.Required)),
 		validation.Field(
 			&s.Transport,
 			validation.When(
-				s.Spec == "",
+				!s.IsOpenAPI(),
 				validation.In(MCPTransportHTTP, MCPTransportStdio, MCPTransportReverse),
 			),
 			validation.By(func(value any) error {
@@ -111,6 +119,10 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 				switch {
 				case s.Spec != "":
 					return fmt.Errorf("reverse transport does not support spec (OpenAPI mode)")
+				case s.GeneratedToolsFile() != "":
+					return fmt.Errorf(
+						"reverse transport does not support tools.file (OpenAPI mode)",
+					)
 				case s.AuthValue != nil, s.OAuth2 != nil, s.TokenExchange != nil:
 					return fmt.Errorf(
 						"reverse transport does not support authValue/oauth2/tokenExchange " +
@@ -127,11 +139,15 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(
 			&s.URL,
-			validation.When(s.Spec == "" && s.Transport == MCPTransportHTTP, validation.Required),
+			validation.When(
+				!s.IsOpenAPI() && s.Transport == MCPTransportHTTP, validation.Required,
+			),
 		),
 		validation.Field(
 			&s.Command,
-			validation.When(s.Spec == "" && s.Transport == MCPTransportStdio, validation.Required),
+			validation.When(
+				!s.IsOpenAPI() && s.Transport == MCPTransportStdio, validation.Required,
+			),
 		),
 		validation.Field(&s.Origin, validation.When(
 			s.Transport == MCPTransportReverse,
@@ -197,19 +213,27 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 }
 
 // validateToolsFile implements the tools.file rules from the design memo
-// (「config」節): it requires spec to be set (so MCP backend / reverse
-// servers, which have Spec == "", are rejected), rejects a URL (local paths
-// only), and is mutually exclusive with a positive specRefreshInterval.
-// Split out of ValidateWithContext to keep that function's branching down.
+// (「config」節): spec is no longer required — tools.file alone puts the
+// server in OpenAPI mode (see IsOpenAPI) and the gateway never reads spec
+// when tools.file is present; spec is only needed to (re)generate the file
+// via "manifold openapi generate" (enforced in pkg/cmd/openapi.go, not
+// here). tools.file is mutually exclusive with transport/url/command (an MCP
+// backend or reverse server must not also carry tools.file), must be a local
+// path (not a URL), and is mutually exclusive with a positive
+// specRefreshInterval. Split out of ValidateWithContext to keep that
+// function's branching down.
 func (s Server) validateToolsFile(value any) error {
 	file := s.GeneratedToolsFile()
 	if file == "" {
 		return nil
 	}
-	// spec 未指定（MCP バックエンド／reverse）は Spec == "" で弾く。
-	// 生成物には source.spec として記録するため、生成元が config に必要。
-	if s.Spec == "" {
-		return fmt.Errorf("tools.file requires spec to be set")
+	switch {
+	case s.Transport != "":
+		return fmt.Errorf("tools.file does not support transport (OpenAPI mode)")
+	case s.URL != "":
+		return fmt.Errorf("tools.file does not support url (OpenAPI mode)")
+	case s.Command != "":
+		return fmt.Errorf("tools.file does not support command (OpenAPI mode)")
 	}
 	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
 		return fmt.Errorf("tools.file must be a local path, not a URL")
@@ -221,10 +245,11 @@ func (s Server) validateToolsFile(value any) error {
 }
 
 // IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す。
-// Spec が空で Transport が指定されている場合に MCP バックエンドモードとなる。
+// OpenAPI モード（spec または tools.file のいずれかが設定済み）でなく、かつ
+// Transport が指定されている場合に MCP バックエンドモードとなる。
 // reverse は別経路（エッジレジストリ）で扱うため除く。
 func (s *Server) IsMCPBackend() bool {
-	return s.Spec == "" && s.Transport != "" && s.Transport != MCPTransportReverse
+	return !s.IsOpenAPI() && s.Transport != "" && s.Transport != MCPTransportReverse
 }
 
 // IsReverseBackend はこの Server が WebMCP reverse connection gateway 経由かどうかを返す。
