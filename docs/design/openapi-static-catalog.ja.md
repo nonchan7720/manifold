@@ -224,7 +224,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
   - `tools` 突き合わせ: description・inputSchema・ツール集合それぞれの不一致を検出すること
   - `--check`: added / removed / changed の各パターン、`source.sha256` 一致時に差分なしと判定すること
   - `openapi tools`: 表出力と `--json` 出力が同じカタログから作られること（golden テスト）
-  - config: `tools.file` と `specRefreshInterval` の排他、`tools.file` 単独指定の拒否
+  - config: `tools.file` と `specRefreshInterval` の排他、`tools.file` 単独指定は受理されること、`baseURL` は必須であること、`generate` / `--check` / `--from-spec` は `spec` 未設定だとエラーになること
 - **結合**
   - spec URL が到達不能（httptest サーバー停止）な状態で `tools.file` から `Init` が成功し、`tools/list` と `tools/call` がバックエンド（httptest）に対して動くこと
   - `openapi tools --json` の出力と、起動したゲートウェイの `tools/list` の結果が一致すること
@@ -235,7 +235,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 
 1. **`tools` セクションを持つか**: 持つ。導出データの二重化は、起動時の突き合わせで「古い生成物」をエラーにすることで担保する。持たない案は diff が `spec` 本体の差分になり、「どんなツールが生成されるか」が読めないため不採用
 2. **縮約形式にするか**: しない。`spec` をそのまま保存して既存パスに流すことで、ランタイム変更をほぼゼロに抑える。ファイルサイズは大きくなるが git 上の扱いとして許容範囲。将来 `--without-spec` のような軽量出力を検討する余地は残す
-3. **`spec` を必須のままにするか**: しない（決定を変更）。`spec` はゲートウェイの起動には不要で、`tools.file` があれば省略できる。ただし `manifold openapi generate` / `--check` は再生成の元になる `spec` が config に無いと実行できないため、その場合は明示的なエラーにする（サイレントスキップにはしない）
+3. **`spec` を必須のままにするか**: しない（決定を変更）。`spec` はゲートウェイの起動には不要で、`tools.file` があれば省略できる。ただし `manifold openapi generate` / `--check` / `openapi tools --from-spec` は再生成（または取得）の元になる `spec` が config に無いと実行できないため、その場合は明示的なエラーにする（サイレントスキップにはしない）
 4. **`InternalizeRefs` の命名**: 別ドキュメントに同名スキーマがある場合の衝突解決はライブラリ依存。フィクスチャで確認し、問題があれば `RefNameResolver` を差し替える
 5. **秘匿情報**: spec には内部ホスト名や、稀に例として書かれたトークン様の値が含まれることがある。生成物を公開リポジトリに置く際の注意としてドキュメントに明記する
 6. **Swagger 2.x**: Phase 1 では非対応。`format` フィールドを残しているので、対応するときは生成物形式を変えずに `swagger2` を足せる

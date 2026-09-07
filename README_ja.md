@@ -117,6 +117,7 @@ manifold openapi tools -c config
 manifold openapi tools -c config --server petstore --json
 
 # tools.file が設定されている全サーバーの生成物ファイルを書き出す
+# （spec が未設定のサーバーはエラーになる）
 manifold openapi generate -c config
 
 # CI: コミット済みファイルが最新の spec と一致するか確認する（何も書き込まない）
@@ -320,7 +321,7 @@ gateway:
 | `command`       | string            | stdio トランスポートのコマンド                             |
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
-| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）には必要 |
+| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
 | `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` か `tools.file` のいずれかを設定した場合は必須） |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
@@ -339,13 +340,14 @@ gateway:
 mcpServers:
   petstore:
     description: Swagger Petstore
-    spec: https://petstore3.swagger.io/api/v3/openapi.json   # ここでは任意 — generate/--check を使う場合のみ必要
+    spec: https://petstore3.swagger.io/api/v3/openapi.json   # ここでは任意 — generate/--check/--from-spec を使う場合のみ必要
     baseURL: https://petstore3.swagger.io/api/v3
     tools:
       file: ./generated/petstore.yaml
 ```
 
 - `baseURL` は引き続き必須。`tools.file` を設定していれば `spec` は任意 — ゲートウェイは `spec` を一切読まないが、`manifold openapi generate`（および `--check`）がファイルを再生成する際に必要になるため、それらのコマンドを使うなら config に残しておくこと
+- `manifold openapi tools` は `tools.file` が設定されていれば生成物ファイルを読む。`--from-spec` は代わりに live spec を読むが、`spec` が未設定だとエラーになる
 - 起動時、Manifold はファイルに埋め込まれた spec からツールカタログを再構築し、ファイルの `tools` セクションと突き合わせる。一致しない場合（ファイルが埋め込まれた spec に対して古い、あるいは手で編集された場合）、起動は失敗する。例: `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`
 - `tools.file` と正の値の `specRefreshInterval` は排他。`tools.file` を持つサーバーは `gateway.specRefresh` の対象からも除外される — 取り直す元の spec が無いため
 - `tools.file` はローカルパスのみ指定可能。URL は拒否される
