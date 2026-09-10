@@ -2,7 +2,7 @@
 
 # Tool authorization example — OPA sidecar
 
-Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of two example servers — the [`openapi-backend`](../openapi-backend/) Petstore example (OpenAPI mode) and the [`mcp-backend`](../mcp-backend/) `server-everything` reference server (MCP backend mode, stdio transport) — so that `tools/call` and `tools/list` on either are authorized per caller group. The policy is exactly the same for both modes: the OPA input's `server` field is just the `mcpServers` key and `tool` is the name the backend reports in `tools/list`, so `policy.rego` doesn't need to know or care whether a server is OpenAPI-backed or an MCP backend. See the [root README's "Tool authorization (OPA sidecar)"](../../README.md#tool-authorization-opa-sidecar) section for the full configuration reference.
+Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of two example servers — the [`openapi-backend`](../openapi-backend/) Petstore example (OpenAPI mode) and the [`mcp-backend`](../mcp-backend/) `server-everything` reference server (MCP backend mode, stdio transport) — so that `tools/call` and `tools/list` on either are authorized per caller group. The policy is the same for both modes: the OPA input's `server` field is just the `mcpServers` key and `tool` is the name the backend reports in `tools/list`, so `policy.rego` doesn't need to know or care whether a server is OpenAPI-backed or an MCP backend. See the [root README's "Tool authorization (OPA sidecar)"](../../README.md#tool-authorization-opa-sidecar) section for the full configuration reference.
 
 ## What's here
 

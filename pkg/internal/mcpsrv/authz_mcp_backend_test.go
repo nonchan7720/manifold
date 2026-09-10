@@ -69,6 +69,8 @@ type fakeOPAServer struct {
 	lastCall atomic.Pointer[opaCallInput]
 }
 
+// newFakeOPAServer starts the fake OPA on an httptest server that is closed
+// when t finishes.
 func newFakeOPAServer(t *testing.T) *fakeOPAServer {
 	t.Helper()
 	f := &fakeOPAServer{}
@@ -122,6 +124,7 @@ func newFakeOPAServer(t *testing.T) *fakeOPAServer {
 	return f
 }
 
+// callCount reports how many decision requests the fake OPA has received.
 func (f *fakeOPAServer) callCount() int32 { return f.calls.Load() }
 
 // newAuthzMCPBackendServer returns an httptest-served MCP backend exposing
@@ -171,6 +174,10 @@ func toolNames(tools []*mcp.Tool) []string {
 	return names
 }
 
+// TestAuthzMCPBackend_EndToEnd drives tools/list and tools/call through the
+// gateway's MCP backend server with the OPA-backed authz middleware wired in
+// exactly as pkg/cmd/server.go does, asserting allow, deny, list filtering,
+// and fail-closed behaviour without identity headers.
 func TestAuthzMCPBackend_EndToEnd(t *testing.T) {
 	// The shared internal transport (used for both the MCP backend
 	// connection and the OPADecider's OPA client) only allows dialing
