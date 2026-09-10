@@ -10,6 +10,12 @@
     "petstore-operators": {
       "tools": ["petstore/*"]
     },
+    "everything-readers": {
+      "tools": ["everything/echo", "everything/add"]
+    },
+    "everything-operators": {
+      "tools": ["everything/*"]
+    },
     "pet-lookup": {
       "tools": ["*/getpetbyid"]
     },

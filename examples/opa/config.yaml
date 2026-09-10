@@ -9,6 +9,20 @@ mcpServers:
     spec: https://petstore3.swagger.io/api/v3/openapi.json
     baseURL: https://petstore3.swagger.io/api/v3
 
+  # MCP backend server (stdio transport), mirroring examples/mcp-backend/config.yaml —
+  # shows that the same OPA policy authorizes an MCP backend just as it does
+  # an OpenAPI-mode server, since `server` is just the mcpServers key and
+  # `tool` is the name the backend reports in tools/list.
+  everything:
+    description: MCP "everything" reference server (stdio)
+    transport: stdio
+    command: npx
+    args:
+      - -y
+      # Pinned so the example stays reproducible — bump deliberately after
+      # checking the release notes (npm view @modelcontextprotocol/server-everything version)
+      - "@modelcontextprotocol/server-everything@2026.7.4"
+
 authz:
   enabled: true
   opaURL: http://localhost:8181

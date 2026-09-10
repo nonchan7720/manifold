@@ -2,19 +2,23 @@
 
 # Tool authorization example — OPA sidecar
 
-Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of the [`openapi-backend`](../openapi-backend/) Petstore example so that `tools/call` and `tools/list` on `petstore` are authorized per caller group. See the [root README's "Tool authorization (OPA sidecar)"](../../README.md#tool-authorization-opa-sidecar) section for the full configuration reference.
+Adds an [OPA](https://www.openpolicyagent.org/) sidecar in front of two example servers — the [`openapi-backend`](../openapi-backend/) Petstore example (OpenAPI mode) and the [`mcp-backend`](../mcp-backend/) `server-everything` reference server (MCP backend mode, stdio transport) — so that `tools/call` and `tools/list` on either are authorized per caller group. The policy is the same for both modes: the OPA input's `server` field is just the `mcpServers` key and `tool` is the name the backend reports in `tools/list`, so `policy.rego` doesn't need to know or care whether a server is OpenAPI-backed or an MCP backend. See the [root README's "Tool authorization (OPA sidecar)"](../../README.md#tool-authorization-opa-sidecar) section for the full configuration reference.
 
 ## What's here
 
-- `policy.rego` — the `allow` (single tool), `allowed_tools` (batch), and `allow_catalog` (`GET /mcp/list?tools=true`) rules Manifold queries
-- `data.json` — four example groups, each a group ID mapped to a list of `<server>/<tool>` glob patterns and/or a `catalog` flag. `catalog` is independent of `tools`: a group can hold either, both, or neither
+- `policy.rego` — the `allow` (single tool), `allowed_tools` (batch), and `allow_catalog` (`GET /mcp/list?tools=true`) rules Manifold queries; backend-agnostic, so no change was needed to add the `everything` server below
+- `data.json` — six example groups, each a group ID mapped to a list of `<server>/<tool>` glob patterns and/or a `catalog` flag. `catalog` is independent of `tools`: a group can hold either, both, or neither
 - `compose.yaml` — starts OPA with these files loaded as a `-b` bundle directory
-- `config.yaml` — the `petstore` server from `openapi-backend`, plus `authz.enabled: true`
+- `config.yaml` — the `petstore` server from `openapi-backend`, plus the `everything` stdio MCP backend server from `mcp-backend`, plus `authz.enabled: true`
+
+The `everything` server needs Node.js / `npx` (same prerequisite as [`examples/mcp-backend`](../mcp-backend/)) and, like that example, is started lazily on the first request to `/mcp/everything` — no need to start it up front.
 
 | Group ID | Grants |
 | -------- | ------ |
 | `petstore-readers` | Read-only: `getpetbyid`, `findpetsbystatus`, `getinventory` |
 | `petstore-operators` | All `petstore` tools (`petstore/*`) — no catalog access |
+| `everything-readers` | Read-only on the MCP backend: `echo`, `add` |
+| `everything-operators` | All `everything` tools (`everything/*`) |
 | `pet-lookup` | `getpetbyid` on any server (`*/getpetbyid`) — shows a cross-server pattern |
 | `policy-authors` | No tools at all — can't call or list anything, but can read the unfiltered tool catalog (`catalog: true`); for policy authors who need to see every `<server>/<tool>` pair without any execution rights |
 
@@ -73,6 +77,47 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: petstore-readers' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+```
+
+### Try it — MCP backend server
+
+The same requests work unchanged against `everything`, the stdio MCP backend server, proving the policy doesn't care which mode a server runs in.
+
+Read-only group, calling an allowed tool — succeeds:
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}'
+```
+
+Same group, calling a tool it was not granted — denied with a JSON-RPC error:
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"printEnv","arguments":{}}}'
+# {"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"tool not allowed by policy"}}
+```
+
+`tools/list` for the read-only group returns only `echo` and `add`; run it again with `x-user-groups: everything-operators` to see every `everything` tool (`printEnv`, `longRunningOperation`, `sampleLLM`, `getTinyImage`, and more):
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":8,"method":"tools/list"}'
 ```
 
 Writing a policy requires knowing every `<server>/<tool>` pair that exists — `GET /mcp/list?tools=true` returns that unfiltered catalog, gated by the `allow_catalog` rule instead of `allow` / `allowed_tools`. This is a separate grant from tool execution: the catalog-only group below can't call or list a single `petstore` tool but can read the catalog, while the group that can call every `petstore` tool (`petstore-operators`) is denied the catalog:
