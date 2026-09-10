@@ -2,19 +2,23 @@
 
 # ツール認可の例 — OPA サイドカー
 
-[`openapi-backend`](../openapi-backend/) の Petstore サンプルの手前に [OPA](https://www.openpolicyagent.org/) サイドカーを追加し、`petstore` の `tools/call` / `tools/list` を呼び出し元のグループ単位で認可する。設定の全リファレンスはルート README の [「Tool authorization (OPA sidecar)」](../../README.md#tool-authorization-opa-sidecar) を参照。
+[`openapi-backend`](../openapi-backend/) の Petstore サンプル（OpenAPI モード）と [`mcp-backend`](../mcp-backend/) の `server-everything` リファレンスサーバー（MCP バックエンドモード、stdio トランスポート）の 2 つの例の手前に [OPA](https://www.openpolicyagent.org/) サイドカーを追加し、それぞれの `tools/call` / `tools/list` を呼び出し元のグループ単位で認可する。ポリシーはどちらのモードでも全く同じ — OPA への入力の `server` フィールドは `mcpServers` のキーそのものであり、`tool` はバックエンドが `tools/list` で報告する名前でしかないため、`policy.rego` はサーバーが OpenAPI バックエンドか MCP バックエンドかを意識する必要がない。設定の全リファレンスはルート README の [「Tool authorization (OPA sidecar)」](../../README.md#tool-authorization-opa-sidecar) を参照。
 
 ## 構成
 
-- `policy.rego` — Manifold が問い合わせる `allow`（単一ツール）、`allowed_tools`（一括）、`allow_catalog`（`GET /mcp/list?tools=true`）のルール
-- `data.json` — 4 つのサンプルグループ。それぞれグループ ID を `<server>/<tool>` の glob パターン一覧と `catalog` フラグの一方または両方に対応付ける（`catalog` は `tools` とは独立しており、どちらか一方だけ・両方・どちらも無し、いずれの組み合わせも取れる）
+- `policy.rego` — Manifold が問い合わせる `allow`（単一ツール）、`allowed_tools`（一括）、`allow_catalog`（`GET /mcp/list?tools=true`）のルール。バックエンドの種類に依存しないため、下記の `everything` サーバー追加にあたって変更は不要だった
+- `data.json` — 6 つのサンプルグループ。それぞれグループ ID を `<server>/<tool>` の glob パターン一覧と `catalog` フラグの一方または両方に対応付ける（`catalog` は `tools` とは独立しており、どちらか一方だけ・両方・どちらも無し、いずれの組み合わせも取れる）
 - `compose.yaml` — これらのファイルを `-b` バンドルディレクトリとして読み込んで OPA を起動する
-- `config.yaml` — `openapi-backend` の `petstore` サーバーに `authz.enabled: true` を追加したもの
+- `config.yaml` — `openapi-backend` の `petstore` サーバーと `mcp-backend` の `everything`（stdio MCP バックエンド）サーバーに `authz.enabled: true` を追加したもの
+
+`everything` サーバーは Node.js / `npx` を必要とする（[`examples/mcp-backend`](../mcp-backend/) と同じ前提条件）。同サンプルと同様、`/mcp/everything` への最初のリクエスト時に遅延起動するため、事前に立ち上げておく必要はない。
 
 | グループ ID | 許可される操作 |
 | ----------- | -------------- |
 | `petstore-readers` | 読み取り専用: `getpetbyid`, `findpetsbystatus`, `getinventory` |
 | `petstore-operators` | `petstore` の全ツール（`petstore/*`）— ツール一覧の閲覧権限は無し |
+| `everything-readers` | MCP バックエンドの読み取り専用: `echo`, `add` |
+| `everything-operators` | `everything` の全ツール（`everything/*`） |
 | `pet-lookup` | 任意サーバーの `getpetbyid`（`*/getpetbyid`）— サーバー横断パターンの例 |
 | `policy-authors` | ツールは一切実行できないが、絞り込みのないツール一覧を読める（`catalog: true`）— ポリシー作成者向けに、実行権限を持たせずにツール一覧だけ見せたい場合の例 |
 
@@ -73,6 +77,47 @@ curl -s http://localhost:9999/mcp/petstore \
   -H 'x-user-id: user-001' \
   -H 'x-user-groups: petstore-readers' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+```
+
+### 試してみる — MCP バックエンドサーバー
+
+同じリクエストをそのまま stdio の MCP バックエンドサーバーである `everything` に対して実行しても動作する。ポリシーがサーバーの動作モードを区別していないことがわかる。
+
+読み取り専用グループが許可されたツールを呼ぶ — 成功:
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hi"}}}'
+```
+
+同じグループが許可されていないツールを呼ぶ — JSON-RPC エラーで拒否:
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"printEnv","arguments":{}}}'
+# {"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"tool not allowed by policy"}}
+```
+
+読み取り専用グループの `tools/list` は `echo` と `add` のみを返す。`x-user-groups` を `everything-operators` に変えて実行すると、`everything` の全ツール（`printEnv`, `longRunningOperation`, `sampleLLM`, `getTinyImage` など）が返る:
+
+```bash
+curl -s http://localhost:9999/mcp/everything \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer dummy-token' \
+  -H 'x-user-id: user-001' \
+  -H 'x-user-groups: everything-readers' \
+  -d '{"jsonrpc":"2.0","id":8,"method":"tools/list"}'
 ```
 
 ポリシーを書くには存在する全ての `<server>/<tool>` の組を把握する必要がある — `GET /mcp/list?tools=true` は絞り込みのないその一覧を返す。`allow` / `allowed_tools` ではなく `allow_catalog` ルールで判定する。これはツールの実行権限とは別の許可であり、下の例ではツールを一切実行できないグループが一覧を読める一方、`petstore` の全ツールを実行できるグループ（`petstore-operators`）は一覧の取得を拒否される:
