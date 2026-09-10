@@ -92,7 +92,7 @@ func newFakeOPAServer(t *testing.T) *fakeOPAServer {
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": allowed})
 	})
 
-	mux.HandleFunc("/v1/data/mcp/authz/allowed_tools", func(w http.ResponseWriter, r *http.Request) {
+	allowedTools := func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
 		var body struct {
 			Input struct {
@@ -114,7 +114,8 @@ func newFakeOPAServer(t *testing.T) *fakeOPAServer {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": result})
-	})
+	}
+	mux.HandleFunc("/v1/data/mcp/authz/allowed_tools", allowedTools)
 
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -271,7 +272,9 @@ func TestAuthzMCPBackend_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"echo", "secret"}, toolNames(opList.Tools))
 
-	secretResult, err := operatorSession.CallTool(t.Context(), &mcp.CallToolParams{Name: "secret"})
+	secretResult, err := operatorSession.CallTool(
+		t.Context(), &mcp.CallToolParams{Name: "secret"},
+	)
 	require.NoError(t, err)
 	require.False(t, secretResult.IsError)
 	secretText, ok := secretResult.Content[0].(*mcp.TextContent)
