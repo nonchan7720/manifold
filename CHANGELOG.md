@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.15.0](https://github.com/nonchan7720/manifold/compare/v1.14.0...v1.15.0) (2026-09-12)
+
+
+### Features
+
+* **auth:** OAuth Client ID Metadata Document (CIMD) に対応する ([#165](https://github.com/nonchan7720/manifold/issues/165)) ([d6ba89c](https://github.com/nonchan7720/manifold/commit/d6ba89cb6b88f7150a9dd15625f0bb8b034d18b8))
+* **openapi:** tools.file 設定時は spec を任意にする ([#169](https://github.com/nonchan7720/manifold/issues/169)) ([ba7928c](https://github.com/nonchan7720/manifold/commit/ba7928ccc80e6abffd1dc76bde59220a7a091413))
+
+
+### Bug Fixes
+
+* **auth:** DCR クライアントを登録元 MCP サーバーに束縛する ([#168](https://github.com/nonchan7720/manifold/issues/168)) ([740c1f7](https://github.com/nonchan7720/manifold/commit/740c1f78eed042788f395556c8613d354e8a1a52))
+* **deps:** update go patch dependencies ([#171](https://github.com/nonchan7720/manifold/issues/171)) ([29eaeeb](https://github.com/nonchan7720/manifold/commit/29eaeebe9f4bb19d209be3cfccfa331a71832215))
+* **deps:** update go patch dependencies ([#180](https://github.com/nonchan7720/manifold/issues/180)) ([51b120b](https://github.com/nonchan7720/manifold/commit/51b120b829a53a7a77cc6c35db6b5a8debe8a560))
+* **deps:** update golang.org/x ([#173](https://github.com/nonchan7720/manifold/issues/173)) ([939f03a](https://github.com/nonchan7720/manifold/commit/939f03a8fa1e5504838235876a58470b51aac523))
+* **deps:** update module github.com/getkin/kin-openapi to v0.149.0 ([#163](https://github.com/nonchan7720/manifold/issues/163)) ([b45b520](https://github.com/nonchan7720/manifold/commit/b45b52042cbe656c9328adaf4e933202393a1d4d))
+* **deps:** update module github.com/micahparks/keyfunc/v3 to v3.8.2 ([#181](https://github.com/nonchan7720/manifold/issues/181)) ([b6d1233](https://github.com/nonchan7720/manifold/commit/b6d1233dec038234082bb17c98e8e5e07746f460))
+* **deps:** update module modernc.org/sqlite to v1.58.0 ([#174](https://github.com/nonchan7720/manifold/issues/174)) ([8c2e736](https://github.com/nonchan7720/manifold/commit/8c2e736e205ad11e084b681a658c0d6d8672e71b))
+
+
+### Miscellaneous
+
+* **deps:** update aws-actions/configure-aws-credentials action to v6.2.4 ([#170](https://github.com/nonchan7720/manifold/issues/170)) ([a4b2a01](https://github.com/nonchan7720/manifold/commit/a4b2a01ad5751a073d35b03a975f5757218f7c53))
+* **deps:** update dependency golangci-lint to v2.13.2 ([#160](https://github.com/nonchan7720/manifold/issues/160)) ([4d1e2bd](https://github.com/nonchan7720/manifold/commit/4d1e2bd732bcf911ab57023149bf67918343b091))
+* **deps:** update docker/setup-qemu-action action to v4.3.0 ([#172](https://github.com/nonchan7720/manifold/issues/172)) ([789ddbf](https://github.com/nonchan7720/manifold/commit/789ddbf1e528b23771396887d8a2bc1a014a7fe1))
+
+
+### Documentation
+
+* **examples:** show OPA authz on an MCP backend server and add an e2e test ([#178](https://github.com/nonchan7720/manifold/issues/178)) ([a555163](https://github.com/nonchan7720/manifold/commit/a555163fbf82413d85ff2d78500c4575cd7cd319))
+
 ## [1.14.0](https://github.com/nonchan7720/manifold/compare/v1.13.0...v1.14.0) (2026-09-04)
 
 
