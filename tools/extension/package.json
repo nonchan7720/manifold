@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@mcp-b/transports": "4.0.0",
-    "@mcp-b/webmcp-ts-sdk": "4.0.0",
+    "@mcp-b/webmcp-ts-sdk": "5.1.0",
     "uuid": "14.0.2"
   },
   "devDependencies": {
