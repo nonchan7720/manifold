@@ -940,6 +940,8 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 
 ### テスト
 
+ConfigMap からの spec 読み込みテストは [envtest](https://book.kubebuilder.io/reference/envtest.html) を使用しており、`setup-envtest` で取得する `kube-apiserver`/`etcd` バイナリ一式が必要です。`mise install` を一度実行してください（`setup-envtest` は [`mise.toml`](mise.toml) に定義済み）。`make test` が `KUBEBUILDER_ASSETS` を自動的に解決します。
+
 ```bash
 make test
 ```
