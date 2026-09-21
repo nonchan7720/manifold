@@ -68,6 +68,42 @@ func NewMCPServer(
 	return s
 }
 
+// registerOpenAPIServer builds and stores the openAPIServerState for an
+// OpenAPI-mode server (file, URL, or configmap:// spec). A tools.file
+// (generated catalog) failure still aborts startup, since it means the
+// checked-in artifact is stale or missing and an operator needs to
+// regenerate it. Any other spec fetch/parse failure starts the server with
+// zero tools instead: the state is still recorded in openAPIStates so the
+// regular spec-refresh cycle (refreshServer) can pick up the spec once it
+// becomes available.
+func (s *MCPServer) registerOpenAPIServer(
+	ctx context.Context, name string, server *config.Server, srv *mcp.Server,
+) error {
+	toolInfos, specHash, err := registerAPI(
+		ctx,
+		server.Spec,
+		server.BaseURL,
+		server.ExtraHeaders,
+		srv,
+		s.mediaUploader,
+		registerOpenAPIOptions(server)...)
+	if err != nil {
+		if server.GeneratedToolsFile() != "" {
+			return fmt.Errorf("server %q: %w", name, err)
+		}
+		slog.WarnContext(ctx, "openapi spec fetch or parse failed; starting server with no tools",
+			slog.String("server", name), slog.Any("error", err))
+		toolInfos, specHash = nil, ""
+	}
+	s.openAPIStates[name] = &openAPIServerState{
+		srv:       srv,
+		cfg:       server,
+		toolInfos: toolInfos,
+		specHash:  specHash,
+	}
+	return nil
+}
+
 func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPServer/Init")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -105,24 +141,8 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 
 		if !server.IsMCPBackend() {
 			// OpenAPI モード
-			toolInfos, specHash, err := registerAPI(
-				ctx,
-				server.Spec,
-				server.BaseURL,
-				server.ExtraHeaders,
-				srv,
-				s.mediaUploader,
-				registerOpenAPIOptions(server)...)
-			if err != nil {
-				// tools.file が古い場合のエラーはここでオペレーターがどのサーバーを
-				// 直せばいいか分かるよう、サーバー名を必ず含める。
-				return fmt.Errorf("server %q: %w", name, err)
-			}
-			s.openAPIStates[name] = &openAPIServerState{
-				srv:       srv,
-				cfg:       server,
-				toolInfos: toolInfos,
-				specHash:  specHash,
+			if err := s.registerOpenAPIServer(ctx, name, server, srv); err != nil {
+				return err
 			}
 		}
 		s.appSrv[name] = srv

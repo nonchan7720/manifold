@@ -233,7 +233,9 @@ func TestMCPServer_Init_MCPBackendMode(t *testing.T) {
 	require.NotNil(t, bc)
 }
 
-func TestMCPServer_Init_InvalidSpec(t *testing.T) {
+// spec の取得・パースに失敗しても、tools.file を使っていない限り起動は失敗させず、
+// ツール 0 件でサーバーを登録する（ファイル・URL・configmap のいずれの spec 種別でも同じ）。
+func TestMCPServer_Init_InvalidSpec_StartsWithNoTools(t *testing.T) {
 	servers := config.Servers{
 		"invalid": &config.Server{
 			Spec: "fixtures/nonexistent.json",
@@ -242,7 +244,58 @@ func TestMCPServer_Init_InvalidSpec(t *testing.T) {
 	u, _ := url.Parse("https://example.com")
 	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
 	err := s.Init(context.Background())
+	require.NoError(t, err)
+
+	srv, err := s.Server("invalid")
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+	require.Empty(t, listToolNames(t, srv))
+
+	catalog, err := s.ToolCatalog(context.Background(), "invalid")
+	require.NoError(t, err)
+	require.Empty(t, catalog)
+}
+
+// tools.file（生成物）から起動する設定でのエラーは従来どおり起動を失敗させる。
+func TestMCPServer_Init_InvalidSpec_ToolsFileStillFails(t *testing.T) {
+	servers := config.Servers{
+		"invalid": &config.Server{
+			Spec:  "fixtures/nonexistent.json",
+			Tools: &config.ToolsConfig{File: "fixtures/nonexistent_generated.yaml"},
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	err := s.Init(context.Background())
 	require.Error(t, err)
+}
+
+// 起動時に失敗したサーバーも openAPIStates に登録されているので、spec が後から取得できる
+// ようになれば通常のリフレッシュ経路でツールが載る。
+func TestMCPServer_Init_InvalidSpec_RecoversOnRefresh(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	spec.setStatus(http.StatusInternalServerError)
+
+	servers := config.Servers{
+		"api": &config.Server{
+			Spec:    spec.URL + "/openapi.json",
+			BaseURL: spec.URL,
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	require.NoError(t, s.Init(context.Background()))
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.Empty(t, listToolNames(t, srv))
+
+	spec.setStatus(http.StatusOK)
+	changed, err := s.refreshServer(context.Background(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
 }
 
 func TestMCPServer_Server_NotFound(t *testing.T) {
