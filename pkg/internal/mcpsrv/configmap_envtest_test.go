@@ -66,6 +66,9 @@ func TestMain(m *testing.M) {
 			"start envtest environment: %v\n"+
 				"fetch the envtest binaries first: setup-envtest use %s\n",
 			err, envtestK8sVersion)
+		if stopErr := env.Stop(); stopErr != nil {
+			fmt.Fprintln(os.Stderr, "stop envtest environment:", stopErr)
+		}
 		os.Exit(1)
 	}
 	envtestAdmin.env = env
