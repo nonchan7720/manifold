@@ -941,7 +941,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a development environme
 
 ### Test
 
-The ConfigMap spec-loading tests use [envtest](https://book.kubebuilder.io/reference/envtest.html), which needs a `kube-apiserver`/`etcd` binary set fetched via `setup-envtest`. Run `mise install` once (`setup-envtest` is declared in [`mise.toml`](mise.toml)); `make test` then resolves `KUBEBUILDER_ASSETS` automatically.
+The ConfigMap spec-loading tests use [envtest](https://book.kubebuilder.io/reference/envtest.html), which needs a `kube-apiserver`/`etcd` binary set fetched via `setup-envtest`. Run `mise install` once (`setup-envtest` is declared in [`mise.toml`](mise.toml)). `make test` downloads the binaries before running the tests, and the tests find them in setup-envtest's default location without `KUBEBUILDER_ASSETS`. If you run `go test` directly, fetch them once first with `setup-envtest use 1.36.2`; the tests fail if they are missing.
 
 ```bash
 make test
