@@ -1146,7 +1146,12 @@ func TestNewMCPServer_StartsSpecRefresh(t *testing.T) {
 
 func TestNewMCPServer_InitError(t *testing.T) {
 	servers := config.Servers{
-		"api": {Name: "api", Description: "api", Spec: "nonexistent-spec.json"},
+		"api": {
+			Name:        "api",
+			Description: "api",
+			Spec:        "nonexistent-spec.json",
+			Tools:       &config.ToolsConfig{File: "nonexistent-generated.yaml"},
+		},
 	}
 	hostURL, err := url.Parse("https://example.com")
 	require.NoError(t, err)
