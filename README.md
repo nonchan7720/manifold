@@ -321,7 +321,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `command`       | string            | Command for the stdio transport                                      |
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
-| `spec`          | string            | Path or URL of an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
+| `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
 | `baseURL`       | string            | API base URL, required in OpenAPI mode (i.e. when `spec` or `tools.file` is set) |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
@@ -331,6 +331,38 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
+
+##### `spec` from a ConfigMap
+
+`spec: configmap://<namespace>/<name>/<key>` reads the spec from `data[<key>]` of a Kubernetes ConfigMap, fetched through the in-cluster Kubernetes API (`client-go`, in-cluster config — no separate kubeconfig setting). The gateway's ServiceAccount needs `get` RBAC permission on that ConfigMap:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: my-namespace
+  name: manifold-spec-reader
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["my-specs"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: my-namespace
+  name: manifold-spec-reader
+subjects:
+  - kind: ServiceAccount
+    name: manifold
+roleRef:
+  kind: Role
+  name: manifold-spec-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+If fetching or parsing `spec` fails at startup — whether it's a file, URL, or `configmap://` reference — the affected server still starts, with zero tools and a warning log naming the server and the error, instead of failing the whole gateway. `specRefreshInterval` / `gateway.specRefresh.interval` keeps retrying on the usual schedule, and the tools appear once the spec becomes fetchable. This does not apply to `tools.file`: a stale or unreadable generated tools file still fails startup (see below).
 
 #### `mcpServers.<name>.tools`
 
@@ -908,6 +940,8 @@ The HTTP endpoints exposed by Manifold.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a development environment and submit changes.
 
 ### Test
+
+The ConfigMap spec-loading tests use [envtest](https://book.kubebuilder.io/reference/envtest.html), which needs a `kube-apiserver`/`etcd` binary set fetched via `setup-envtest`. Run `mise install` once (`setup-envtest` is declared in [`mise.toml`](mise.toml)). `make test` downloads the binaries before running the tests, and the tests find them in setup-envtest's default location without `KUBEBUILDER_ASSETS`. If you run `go test` directly, fetch them once first with `setup-envtest use 1.36.2`; the tests fail if they are missing.
 
 ```bash
 make test

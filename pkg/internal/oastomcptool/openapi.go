@@ -68,7 +68,8 @@ func sanitize_path_parameter_value(param_value any, param_name string) (string, 
 	return url.PathEscape(value_str), nil
 }
 
-// FetchSpecBytes fetches spec bytes from a file path or URL.
+// FetchSpecBytes fetches spec bytes from a file path, an http(s) URL, or a
+// configmap://<namespace>/<name>/<key> reference to a Kubernetes ConfigMap's data.
 func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error) {
 	ctx = trace.StartSpan(ctx, "oastomcptool/FetchSpecBytes")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -88,6 +89,9 @@ func FetchSpecBytes(ctx context.Context, specPath string) (_ []byte, rErr error)
 			return nil, fmt.Errorf("HTTP error: %d %s", r.StatusCode, r.Status)
 		}
 		return io.ReadAll(r.Body)
+	}
+	if strings.HasPrefix(specPath, configMapSpecPrefix) {
+		return fetchConfigMapSpecBytes(ctx, specPath)
 	}
 	if _, err := os.Stat(specPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("OpenAPI spec not found at %s", specPath)

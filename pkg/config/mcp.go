@@ -29,7 +29,7 @@ type Server struct {
 	Name         string
 	Description  string            `mapstructure:"description"`
 	BaseURL      string            `mapstructure:"baseURL"`
-	Spec         string            `mapstructure:"spec"` // ファイル or http(s)（OpenAPI モード）
+	Spec         string            `mapstructure:"spec"` // ファイル or http(s) or configmap://<namespace>/<name>/<key>（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
 
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。

@@ -1,6 +1,7 @@
 .PHONY: test lint serve
 
 test: ## Run all tests with coverage
+	setup-envtest use 1.36.2 -p path > /dev/null
 	go test -coverprofile=coverage.out ./pkg/...
 	go tool cover -func=coverage.out | tail -1
 

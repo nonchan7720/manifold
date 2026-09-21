@@ -11,6 +11,9 @@ Thank you for your interest in contributing to Manifold! Contributions of all ki
 - Go 1.26+ (see [`.go-version`](.go-version))
 - Docker / Docker Compose (for Redis and integration tests)
 - [golangci-lint](https://golangci-lint.run/) (for linting)
+- [setup-envtest](https://book.kubebuilder.io/reference/envtest.html) (for the Kubernetes integration tests)
+
+golangci-lint and setup-envtest are declared in [`mise.toml`](mise.toml), so `mise install` installs both.
 
 ### Setup
 
@@ -31,6 +34,8 @@ go run main.go gateway
 mkdir -p coverage
 make test
 ```
+
+The ConfigMap spec-loading tests run against a real `kube-apiserver` and `etcd` via [envtest](https://book.kubebuilder.io/reference/envtest.html). `make test` downloads these binaries with `setup-envtest` before running the tests, and the tests find them in setup-envtest's default location without `KUBEBUILDER_ASSETS`. If you run `go test` directly, fetch the binaries once first with `setup-envtest use 1.36.2`; the tests fail if they are missing.
 
 ### Linting
 
