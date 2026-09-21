@@ -1,6 +1,8 @@
 [tool_alias]
 golangci-lint = "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+setup-envtest = "go:sigs.k8s.io/controller-runtime/tools/setup-envtest"
 
 [tools]
 go = "1.27.0"
 golangci-lint = "2.13.2"
+setup-envtest = "0.25.1"
