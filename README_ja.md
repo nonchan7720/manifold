@@ -321,7 +321,7 @@ gateway:
 | `command`       | string            | stdio トランスポートのコマンド                             |
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
-| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパスまたは URL。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
+| `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
 | `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` か `tools.file` のいずれかを設定した場合は必須） |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
@@ -331,6 +331,38 @@ gateway:
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
+
+##### ConfigMap から `spec` を読む
+
+`spec: configmap://<namespace>/<name>/<key>` は、Kubernetes の ConfigMap の `data[<key>]` から spec を取得します（in-cluster の Kubernetes API を `client-go` で呼び出す。別途 kubeconfig の設定は不要）。ゲートウェイの ServiceAccount には、その ConfigMap への `get` 権限（RBAC）が必要です。
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: my-namespace
+  name: manifold-spec-reader
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["my-specs"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: my-namespace
+  name: manifold-spec-reader
+subjects:
+  - kind: ServiceAccount
+    name: manifold
+roleRef:
+  kind: Role
+  name: manifold-spec-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+起動時に `spec` の取得・パースに失敗した場合（ファイル・URL・`configmap://` のいずれでも）、そのサーバーはゲートウェイ全体を起動失敗させることなく、ツール 0 件・サーバー名とエラーを含む警告ログで起動します。以後は通常どおり `specRefreshInterval` / `gateway.specRefresh.interval` の間隔で再取得を試み、spec が取得できるようになった時点でツールが反映されます。`tools.file` にはこの挙動は適用されません。生成物ファイルが古い・読めない場合は従来どおり起動が失敗します（後述）。
 
 #### `mcpServers.<name>.tools`
 
