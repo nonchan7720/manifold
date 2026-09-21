@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -30,6 +31,13 @@ func SetConfigMapClientset(cs kubernetes.Interface) {
 	configMapClientset = cs
 }
 
+// applyConfigMapClientTimeout bounds cfg's requests to the same timeout as
+// the http(s) spec path (client.HTTPClient()), so a stuck apiserver cannot
+// block a ConfigMap fetch forever.
+func applyConfigMapClientTimeout(cfg *rest.Config) {
+	cfg.Timeout = client.HTTPClient().Timeout
+}
+
 // getConfigMapClientset returns the clientset used to fetch ConfigMap-backed
 // specs, building it from in-cluster config on first use and caching it for
 // subsequent calls.
@@ -43,6 +51,7 @@ func getConfigMapClientset() (kubernetes.Interface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build in-cluster kubernetes config: %w", err)
 	}
+	applyConfigMapClientTimeout(cfg)
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build kubernetes clientset: %w", err)

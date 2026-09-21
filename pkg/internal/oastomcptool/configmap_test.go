@@ -4,10 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 // resetConfigMapClientset clears the package-level clientset override/cache
@@ -170,4 +172,15 @@ func TestGetBaseUrlFromOpenAPI3_ConfigMapSpecPath_NoServers_ReturnsEmpty(t *test
 		context.Background(), spec, "configmap://default/my-specs/openapi.json",
 	)
 	require.Empty(t, got)
+}
+
+// --- applyConfigMapClientTimeout ---
+
+func TestApplyConfigMapClientTimeout_MatchesHTTPClientTimeout(t *testing.T) {
+	cfg := &rest.Config{}
+
+	applyConfigMapClientTimeout(cfg)
+
+	require.NotZero(t, cfg.Timeout)
+	require.Equal(t, client.HTTPClient().Timeout, cfg.Timeout)
 }
