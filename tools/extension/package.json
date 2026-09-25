@@ -19,7 +19,7 @@
     "@types/chrome": "0.2.6",
     "jsdom": "30.0.1",
     "typescript": "7.0.2",
-    "vite": "8.2.2",
+    "vite": "8.3.0",
     "vite-plugin-web-extension": "4.5.1",
     "vitest": "4.1.11"
   }
