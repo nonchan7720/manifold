@@ -1,6 +1,6 @@
 module github.com/nonchan7720/manifold
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/MicahParks/jwkset v0.11.3
