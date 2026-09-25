@@ -16,8 +16,8 @@
     "uuid": "14.0.2"
   },
   "devDependencies": {
-    "@types/chrome": "0.2.6",
-    "jsdom": "30.0.1",
+    "@types/chrome": "0.3.0",
+    "jsdom": "30.1.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vite-plugin-web-extension": "4.5.1",
