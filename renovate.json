@@ -2,5 +2,79 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>nonchan7720/renovate-config:golang"
+  ],
+  "postUpdateOptions": [
+    "pnpmDedupe"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 9am on monday"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "mise で管理している Go のバージョンも Dockerfile 等と同じ golang version グループにまとめる",
+      "matchManagers": [
+        "mise"
+      ],
+      "matchPackageNames": [
+        "go"
+      ],
+      "groupName": "golang version"
+    },
+    {
+      "description": "JS パッケージの PR に共通ラベルを付ける",
+      "matchManagers": [
+        "npm"
+      ],
+      "addLabels": [
+        "renovate/javascript"
+      ]
+    },
+    {
+      "description": "JS パッケージの minor / patch 更新を 1 つにまとめる（JS は CI で検証していないため自動マージしない。下の個別グループが優先）",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "js non-major dependencies"
+    },
+    {
+      "description": "webmcp-e2e スキルのスクリプト依存（Playwright / MCP SDK / jose）は E2E 確認用なので major も含めてまとめる",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchFileNames": [
+        ".claude/skills/webmcp-e2e/scripts/**"
+      ],
+      "groupName": "webmcp-e2e scripts"
+    },
+    {
+      "description": "@mcp-b パッケージは同一 monorepo でバージョンが揃っている必要があるので major も含めてまとめる",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchPackageNames": [
+        "@mcp-b/**"
+      ],
+      "groupName": "@mcp-b"
+    },
+    {
+      "description": "Vite / Vitest と関連プラグインは互換性が連動するので major も含めてまとめる",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchPackageNames": [
+        "vite",
+        "vitest",
+        "@vitest/**",
+        "vite-plugin-web-extension"
+      ],
+      "groupName": "vite"
+    }
   ]
 }
