@@ -14,13 +14,20 @@
   },
   "packageRules": [
     {
-      "description": "mise で管理している Go のバージョンも Dockerfile 等と同じ golang version グループにまとめる",
+      "description": "go.mod の go ディレクティブと mise の Go を Docker の golang イメージのタグ基準で更新し、Dockerfile と同じ golang version グループにまとめる（Docker イメージの公開が Go 本体のリリースより遅れるため、Docker 側に揃える）",
       "matchManagers": [
+        "gomod",
         "mise"
       ],
-      "matchPackageNames": [
+      "matchDepNames": [
         "go"
       ],
+      "overrideDatasource": "docker",
+      "overridePackageName": "golang",
+      "versioning": "docker",
+      "extractVersion": "^(?<version>\\S+)$",
+      "rangeStrategy": "bump",
+      "pinDigests": false,
       "groupName": "golang version"
     },
     {
