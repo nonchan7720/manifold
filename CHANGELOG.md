@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.15.1](https://github.com/nonchan7720/manifold/compare/v1.15.0...v1.15.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @modelcontextprotocol/sdk to v1.30.1 ([#196](https://github.com/nonchan7720/manifold/issues/196)) ([20569dd](https://github.com/nonchan7720/manifold/commit/20569dd3262e94addb8eda64b71754c97b2f5e7f))
+* **deps:** update go minor dependencies ([#197](https://github.com/nonchan7720/manifold/issues/197)) ([9c4deb3](https://github.com/nonchan7720/manifold/commit/9c4deb30dbabcc6170082aac55df23b4114ded52))
+* **deps:** update go patch dependencies ([#189](https://github.com/nonchan7720/manifold/issues/189)) ([7bc5560](https://github.com/nonchan7720/manifold/commit/7bc5560a49ac8b468bb05a249415b4b27079c671))
+* **deps:** update go patch dependencies ([#195](https://github.com/nonchan7720/manifold/issues/195)) ([aa0ff96](https://github.com/nonchan7720/manifold/commit/aa0ff96592d78e5acd937e64ea71996c08e7a505))
+* **deps:** update webmcp-e2e scripts ([#192](https://github.com/nonchan7720/manifold/issues/192)) ([a134fda](https://github.com/nonchan7720/manifold/commit/a134fda2e65c4e73d7205289e9752d92a6b7765a))
+
+
+### Miscellaneous
+
+* **deps:** update all github-actions minor update ([#193](https://github.com/nonchan7720/manifold/issues/193)) ([4ff0e32](https://github.com/nonchan7720/manifold/commit/4ff0e32e6f067e1165507872bea053f3cdfe9722))
+* **deps:** update gcr.io/distroless/static:nonroot docker digest to e2e927e ([#194](https://github.com/nonchan7720/manifold/issues/194)) ([ab56175](https://github.com/nonchan7720/manifold/commit/ab561757ae7376f78229b6c9aae22a03b5bc40f7))
+* **deps:** update golang version to v1.27.1 ([#176](https://github.com/nonchan7720/manifold/issues/176)) ([193949f](https://github.com/nonchan7720/manifold/commit/193949f0da57ee3523f54e4d4c32443bc81fc6e2))
+* **deps:** update js non-major dependencies ([#200](https://github.com/nonchan7720/manifold/issues/200)) ([7ca2680](https://github.com/nonchan7720/manifold/commit/7ca2680c6d0dc61e7c196f9b5ad94fbea7a2f4d5))
+* **renovate:** group JS package updates ([#191](https://github.com/nonchan7720/manifold/issues/191)) ([45350fa](https://github.com/nonchan7720/manifold/commit/45350fab7af23c12401bb38aa6fe4f4359cef6ad))
+
 ## [1.15.0](https://github.com/nonchan7720/manifold/compare/v1.14.0...v1.15.0) (2026-09-21)
 
 
