@@ -39,7 +39,8 @@ func loadIncludeFile(path string, visiting map[string]bool) (map[string]any, err
 	visiting[abs] = true
 	defer delete(visiting, abs)
 
-	raw, err := os.ReadFile(abs)
+	// The path comes from the operator's own config file, not from requests.
+	raw, err := os.ReadFile(filepath.Clean(abs))
 	if err != nil {
 		return nil, fmt.Errorf("error reading config file %s: %w", abs, err)
 	}
@@ -83,7 +84,9 @@ func includePaths(doc map[string]any, baseDir string) ([]string, error) {
 	case []any:
 		entries = typed
 	default:
-		return nil, fmt.Errorf("%s must be a string or a list of strings, got %T", includeKey, value)
+		return nil, fmt.Errorf(
+			"%s must be a string or a list of strings, got %T", includeKey, value,
+		)
 	}
 
 	var paths []string
