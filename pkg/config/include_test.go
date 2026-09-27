@@ -122,7 +122,30 @@ func TestLoadWithIncludes_IncludeKeyIsCaseInsensitive(t *testing.T) {
 	}, got)
 }
 
+func TestLoadWithIncludes_BaseDirWithGlobMeta(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "[prod]")
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include: [serviceA.yaml, services.d/*.yaml]\n")
+	writeFile(t, filepath.Join(dir, "serviceA.yaml"), "mcpServers: {xxx: {url: https://xxx}}\n")
+	writeFile(t, filepath.Join(dir, "services.d", "b.yaml"),
+		"mcpServers: {yyy: {url: https://yyy}}\n")
+
+	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"mcpServers": map[string]any{
+			"xxx": map[string]any{"url": "https://xxx"},
+			"yyy": map[string]any{"url": "https://yyy"},
+		},
+	}, got)
+}
+
 func TestLoadWithIncludes_Errors(t *testing.T) {
+	t.Run("explicit null include", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n")
+		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+		require.ErrorContains(t, err, "include must not be empty")
+	})
 	t.Run("include key set twice with different casing", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [a.yaml]\nInclude: [b.yaml]\n")

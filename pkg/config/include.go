@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/template"
@@ -42,7 +43,12 @@ func loadWithIncludes(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", abs, err)
 	}
-	includes, err := includePaths(doc[docIncludeKey], filepath.Dir(abs))
+	includeValue, present := doc[docIncludeKey]
+	if present && includeValue == nil {
+		// "include:" with no value would otherwise silently include nothing.
+		return nil, fmt.Errorf("%s: %s must not be empty", abs, includeKey)
+	}
+	includes, err := includePaths(includeValue, filepath.Dir(abs))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", abs, err)
 	}
@@ -149,12 +155,17 @@ func includePaths(value any, baseDir string) ([]string, error) {
 		if strings.TrimSpace(pattern) == "" {
 			return nil, fmt.Errorf("%s entries must not be empty", includeKey)
 		}
-		if !filepath.IsAbs(pattern) {
-			pattern = filepath.Join(baseDir, pattern)
-		}
+		// Decide on globbing from the entry alone, so metacharacters in
+		// baseDir (e.g. a "[prod]" directory) are never read as a pattern.
 		if !hasGlobMeta(pattern) {
+			if !filepath.IsAbs(pattern) {
+				pattern = filepath.Join(baseDir, pattern)
+			}
 			paths = append(paths, pattern)
 			continue
+		}
+		if !filepath.IsAbs(pattern) {
+			pattern = filepath.Join(escapeGlob(baseDir), pattern)
 		}
 		// filepath.Glob returns matches in lexical order.
 		matches, err := filepath.Glob(pattern)
@@ -164,6 +175,23 @@ func includePaths(value any, baseDir string) ([]string, error) {
 		paths = append(paths, matches...)
 	}
 	return paths, nil
+}
+
+// escapeGlob escapes filepath.Match metacharacters in path so it matches
+// itself literally. Windows has no escape character in filepath.Match, so the
+// path is returned unchanged there.
+func escapeGlob(path string) string {
+	if runtime.GOOS == "windows" {
+		return path
+	}
+	var b strings.Builder
+	for _, r := range path {
+		if strings.ContainsRune(`*?[\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // hasGlobMeta reports whether path contains filepath.Match metacharacters.
