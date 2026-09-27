@@ -18,6 +18,7 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/mcpsrv"
+	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/version"
 	"github.com/spf13/cobra"
@@ -32,6 +33,7 @@ func newOpenAPICmd() *cobra.Command {
 	}
 	cmd.AddCommand(newOpenAPIToolsCmd())
 	cmd.AddCommand(newOpenAPIGenerateCmd())
+	cmd.AddCommand(newOpenAPIDiffCmd())
 	return cmd
 }
 
@@ -314,7 +316,8 @@ func newOpenAPIGenerateCmd() *cobra.Command {
 			"spec (an existing generated file is never read as input), and writes it to each " +
 			"server's tools.file — or to --output, which requires --server. With --check, " +
 			"nothing is written: the would-be catalog is compared against what's on disk and " +
-			"any drift is reported (exit non-zero), for CI.",
+			"any drift is reported (exit non-zero), for CI, including an oasdiff " +
+			"breaking-change summary when the embedded spec changed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check {
 				return runOpenAPIGenerateCheck(cmd, serverFilter, output)
@@ -492,7 +495,11 @@ type generatedCatalogDrift struct {
 	// EmbeddedSpecChanged catches a changed or hand-edited "spec" section
 	// even when source.sha256 and the tools section are unchanged.
 	EmbeddedSpecChanged bool
-	Tools               mcpsrv.GeneratedToolsDiff
+	// APIChanges is what oasdiff finds between the embedded specs, set only
+	// when EmbeddedSpecChanged; APIChangesErr is set instead if that failed.
+	APIChanges    []oasbreaking.Change
+	APIChangesErr error
+	Tools         mcpsrv.GeneratedToolsDiff
 }
 
 // empty reports whether d found no drift at all.
@@ -538,6 +545,10 @@ func checkOne(
 		return generatedCatalogDrift{}, fmt.Errorf("compare embedded spec: %w", err)
 	}
 	drift.EmbeddedSpecChanged = !sameSpec
+	if drift.EmbeddedSpecChanged {
+		// Best-effort: a failure here is reported, never turned into an error.
+		drift.APIChanges, drift.APIChangesErr = breakingChanges(current, next)
+	}
 
 	return drift, nil
 }
@@ -613,6 +624,7 @@ func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogD
 	}
 	if drift.EmbeddedSpecChanged {
 		fmt.Fprintln(w, "  embedded spec differs from what the live spec produces")
+		writeDriftAPIChanges(w, drift)
 	}
 
 	added := slices.Clone(drift.Tools.Added)
@@ -634,6 +646,22 @@ func writeDriftReport(w io.Writer, name, outPath string, drift generatedCatalogD
 	}
 
 	fmt.Fprintln(w, `  run "manifold openapi generate" to update`)
+}
+
+// writeDriftAPIChanges prints the oasdiff summary for a changed embedded
+// spec and one line per breaking change; non-breaking changes are only
+// counted (see "openapi diff" for the full list).
+func writeDriftAPIChanges(w io.Writer, drift generatedCatalogDrift) {
+	if drift.APIChangesErr != nil {
+		fmt.Fprintf(w, "  breaking-change analysis failed: %v\n", drift.APIChangesErr)
+		return
+	}
+	fmt.Fprintf(w, "  compatibility: %s\n", summarizeChanges(drift.APIChanges))
+	for _, c := range drift.APIChanges {
+		if c.Level.Breaking() {
+			writeChangeLine(w, "    ", c)
+		}
+	}
 }
 
 // shortSHA256 returns the first 8 hex characters of a sha256 hex digest.

@@ -145,16 +145,9 @@ func LoadGeneratedSpecSource(
 		return nil, nil, err
 	}
 
-	specJSON, err := json.Marshal(g.Spec)
+	doc, err := LoadGeneratedSpec(g)
 	if err != nil {
-		return nil, nil, fmt.Errorf("marshal generated spec section: %w", err)
-	}
-
-	loader := openapi3.NewLoader()
-	loader.IsExternalRefsAllowed = false
-	doc, err := loader.LoadFromData(specJSON)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load generated spec section: %w", err)
+		return nil, nil, err
 	}
 
 	return &SpecSource{
@@ -163,4 +156,21 @@ func LoadGeneratedSpecSource(
 		Hash:     hash,
 		OpenAPI:  doc,
 	}, g, nil
+}
+
+// LoadGeneratedSpec loads g's "spec" section as an OpenAPI 3.x document.
+// External $refs are disallowed, so this never reaches the network.
+func LoadGeneratedSpec(g *GeneratedCatalog) (*openapi3.T, error) {
+	specJSON, err := json.Marshal(g.Spec)
+	if err != nil {
+		return nil, fmt.Errorf("marshal generated spec section: %w", err)
+	}
+
+	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = false
+	doc, err := loader.LoadFromData(specJSON)
+	if err != nil {
+		return nil, fmt.Errorf("load generated spec section: %w", err)
+	}
+	return doc, nil
 }
