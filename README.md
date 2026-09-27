@@ -303,6 +303,46 @@ With `>>` the step's exit status is still `manifold`'s, so the job fails on an `
 Place a configuration file (`config.yaml`) in the current directory or in a `config/` subdirectory.
 Configuration values support environment variable expansion in the form `${VAR}` or `${VAR:-default}`.
 
+### Splitting the config across files (`include`)
+
+A top-level `include` list merges the `mcpServers` section from other YAML files into the config, similar to LiteLLM's include directive:
+
+```yaml
+# config.yaml
+include:
+  - serviceA.yaml       # relative to this file (may only contain `mcpServers`)
+  - serviceB.yaml
+  - services.d/*.yaml   # glob patterns are merged in lexical order
+gateway:
+  port: 9998
+  encryptKey: ${ENCRYPT_KEY}
+sqlite:
+  path: ./tmp/manifold.db
+```
+
+```yaml
+# serviceA.yaml
+mcpServers:
+  notion:
+    transport: http
+    url: https://mcp.notion.com/mcp
+    description: Notion MCP server
+```
+
+```yaml
+# serviceB.yaml
+mcpServers:
+  google:
+    baseURL: https://www.googleapis.com/calendar/v3
+    spec: https://example.com/calendar/openapi.yaml
+    description: Google Calendar API
+```
+
+- Included files may only contain the `mcpServers` key; any other key (including a nested `include`) is an error.
+- Included files are merged in list order, and the main config file is merged last, so its own values win. Servers with different names are combined; a server defined in several files has its settings merged.
+- Maps are merged recursively; lists and scalars are replaced as a whole.
+- Paths are relative to the main config file and may use `${VAR}` expansion. A missing file is an error (a glob with no match is not).
+
 ### Connecting to an MCP backend
 
 Expose an external MCP server through Manifold.

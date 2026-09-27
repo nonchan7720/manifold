@@ -230,6 +230,15 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
+	// Merge files listed under the top-level include key into the config.
+	merged, err := loadWithIncludes(v.ConfigFileUsed())
+	if err != nil {
+		return nil, err
+	}
+	if err := v.MergeConfigMap(merged); err != nil {
+		return nil, fmt.Errorf("error merging included config files: %w", err)
+	}
+
 	// Expand shell variables for string values loaded from yaml, supporting ${VAR:-default}
 	if err := expandEnvVars(v); err != nil {
 		return nil, err

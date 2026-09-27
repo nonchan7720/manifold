@@ -303,6 +303,46 @@ CI では再生成の前に実行しておくと、破壊的な上流変更を�
 設定ファイル（`config.yaml`）をカレントディレクトリまたは `config/` サブディレクトリに配置します。
 設定値には `${VAR}` または `${VAR:-default}` 形式の環境変数展開が使えます。
 
+### 設定ファイルの分割（`include`）
+
+トップレベルの `include` に列挙した YAML ファイルの `mcpServers` セクションを設定にマージできます（LiteLLM の include ディレクティブと同様）。
+
+```yaml
+# config.yaml
+include:
+  - serviceA.yaml       # このファイルからの相対パス（`mcpServers` のみ記述可）
+  - serviceB.yaml
+  - services.d/*.yaml   # glob も可（辞書順でマージ）
+gateway:
+  port: 9998
+  encryptKey: ${ENCRYPT_KEY}
+sqlite:
+  path: ./tmp/manifold.db
+```
+
+```yaml
+# serviceA.yaml
+mcpServers:
+  notion:
+    transport: http
+    url: https://mcp.notion.com/mcp
+    description: Notion MCP サーバー
+```
+
+```yaml
+# serviceB.yaml
+mcpServers:
+  google:
+    baseURL: https://www.googleapis.com/calendar/v3
+    spec: https://example.com/calendar/openapi.yaml
+    description: Google Calendar API
+```
+
+- include するファイルに書けるのは `mcpServers` キーだけです。それ以外のキー（ネストした `include` を含む）はエラーになります。
+- include したファイルはリスト順にマージされ、最後にメインの設定ファイル自身がマージされます（メインの値が優先）。名前の異なるサーバーはすべて登録され、同じ名前のサーバーが複数のファイルにある場合は設定がマージされます。
+- map は再帰的にマージされ、リストやスカラー値は丸ごと置き換えられます。
+- パスはメインの設定ファイルからの相対パスで、`${VAR}` 展開が使えます。存在しないファイルはエラーになります（一致なしの glob はエラーになりません）。
+
 ### MCP バックエンドへの接続
 
 外部 MCP サーバーを Manifold 経由で公開します。
