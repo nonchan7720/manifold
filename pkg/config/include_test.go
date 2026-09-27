@@ -8,31 +8,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeFile writes content to path, creating parent directories as needed.
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
-func TestLoadWithIncludes_MergesGatewayFromOtherFile(t *testing.T) {
+func TestLoadWithIncludes_MergesMCPServersFromServiceFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), `
 include:
-  - gateway.yaml
-sqlite:
-  path: ./tmp/manifold.db
-`)
-	writeFile(t, filepath.Join(dir, "gateway.yaml"), `
+  - serviceA.yaml
+  - serviceB.yaml
 gateway:
   port: 9000
-  encryptKey: abc
+`)
+	writeFile(t, filepath.Join(dir, "serviceA.yaml"), `
+mcpServers:
+  xxx:
+    url: https://xxx
+`)
+	writeFile(t, filepath.Join(dir, "serviceB.yaml"), `
+mcpServers:
+  yyy:
+    url: https://yyy
 `)
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway": map[string]any{"port": 9000, "encryptKey": "abc"},
-		"sqlite":  map[string]any{"path": "./tmp/manifold.db"},
+		"gateway": map[string]any{"port": 9000},
+		"mcpServers": map[string]any{
+			"xxx": map[string]any{"url": "https://xxx"},
+			"yyy": map[string]any{"url": "https://yyy"},
+		},
 	}, got)
 }
 
@@ -40,49 +50,62 @@ func TestLoadWithIncludes_IncludingFileWinsAndMapsDeepMerge(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), `
 include: [base.yaml, override.yaml]
-gateway:
-  port: 1
+mcpServers:
+  a:
+    description: from main
 `)
 	writeFile(t, filepath.Join(dir, "base.yaml"), `
-gateway:
-  port: 9000
-  encryptKey: base
-  edge:
-    enabled: true
+mcpServers:
+  a:
+    url: https://a
+    description: from base
+    headers: {X-Base: "1"}
+  b:
+    url: https://b
 `)
 	writeFile(t, filepath.Join(dir, "override.yaml"), `
-Gateway:
-  encryptKey: override
+MCPServers:
+  a:
+    url: https://a2
+  c:
+    url: https://c
 `)
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway": map[string]any{
-			"port":       1,
-			"encryptKey": "override",
-			"edge":       map[string]any{"enabled": true},
+		"mcpServers": map[string]any{
+			"a": map[string]any{
+				"url":         "https://a2",
+				"description": "from main",
+				"headers":     map[string]any{"X-Base": "1"},
+			},
+			"b": map[string]any{"url": "https://b"},
+			"c": map[string]any{"url": "https://c"},
 		},
 	}, got)
 }
 
 func TestLoadWithIncludes_GlobAndEnv(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("MANIFOLD_CONF_DIR", "conf.d")
+	t.Setenv("MANIFOLD_CONF_DIR", "mcp-servers.d")
 	writeFile(t, filepath.Join(dir, "config.yaml"), `
 include: ${MANIFOLD_CONF_DIR}/*.yaml
 `)
-	writeFile(t, filepath.Join(dir, "conf.d", "10-gateway.yaml"), `
-gateway: {port: 1, encryptKey: k}
+	writeFile(t, filepath.Join(dir, "mcp-servers.d", "10-a.yaml"), `
+mcpServers: {a: {url: https://a1}}
 `)
-	writeFile(t, filepath.Join(dir, "conf.d", "20-port.yaml"), `
-gateway: {port: 2}
+	writeFile(t, filepath.Join(dir, "mcp-servers.d", "20-a.yaml"), `
+mcpServers: {a: {url: https://a2}, b: {url: https://b}}
 `)
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway": map[string]any{"port": 2, "encryptKey": "k"},
+		"mcpServers": map[string]any{
+			"a": map[string]any{"url": "https://a2"},
+			"b": map[string]any{"url": "https://b"},
+		},
 	}, got)
 }
 
@@ -93,12 +116,12 @@ func TestLoadWithIncludes_Errors(t *testing.T) {
 		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 		require.ErrorContains(t, err, "nope.yaml")
 	})
-	t.Run("key other than gateway", func(t *testing.T) {
+	t.Run("key other than mcpServers", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [a.yaml]\n")
-		writeFile(t, filepath.Join(dir, "a.yaml"), "mcpServers:\n  a: {url: https://a}\n")
+		writeFile(t, filepath.Join(dir, "a.yaml"), "gateway:\n  port: 1\n")
 		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
-		require.ErrorContains(t, err, `key "mcpServers" is not allowed`)
+		require.ErrorContains(t, err, `key "gateway" is not allowed`)
 	})
 	t.Run("nested include", func(t *testing.T) {
 		dir := t.TempDir()
@@ -115,24 +138,30 @@ func TestLoadWithIncludes_Errors(t *testing.T) {
 	})
 }
 
-func TestLoadInternal_IncludeGateway(t *testing.T) {
+func TestLoadInternal_IncludeMCPServers(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifold-include-test.yaml"), `
-include: [gateway.yaml]
+include: [mcp-servers.yaml]
+gateway:
+  port: 7777
+  encryptKey: 5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=
 sqlite:
   path: ./tmp/manifold.db
 `)
-	writeFile(t, filepath.Join(dir, "gateway.yaml"), `
-gateway:
-  port: 7777
-  encryptKey: ${TEST_INCLUDE_ENCRYPT_KEY}
+	writeFile(t, filepath.Join(dir, "mcp-servers.yaml"), `
+mcpServers:
+  notion:
+    transport: http
+    url: ${TEST_INCLUDE_NOTION_URL}
+    description: notion
 `)
-	t.Setenv("TEST_INCLUDE_ENCRYPT_KEY", "5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=")
+	t.Setenv("TEST_INCLUDE_NOTION_URL", "https://mcp.notion.com/mcp")
 	t.Chdir(dir)
 
 	cfg, err := loadInternal(t.Context(), "manifold-include-test")
 	require.NoError(t, err)
 	require.Equal(t, 7777, cfg.Gateway.Port)
-	require.Equal(t, "5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=", cfg.Gateway.EncryptKey)
-	require.NotNil(t, cfg.SQLite)
+	require.Contains(t, cfg.MCPServer, "notion")
+	require.Equal(t, "notion", cfg.MCPServer["notion"].Name)
+	require.Equal(t, "https://mcp.notion.com/mcp", cfg.MCPServer["notion"].URL)
 }

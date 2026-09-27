@@ -15,7 +15,7 @@ import (
 const includeKey = "include"
 
 // includableKeys are the only top-level keys an included file may set.
-var includableKeys = []string{"gateway"}
+var includableKeys = []string{"mcpServers"}
 
 // loadWithIncludes reads the YAML config file at path and resolves its
 // top-level include list, returning the merged document.
@@ -63,6 +63,7 @@ func loadWithIncludes(path string) (map[string]any, error) {
 	return merged, nil
 }
 
+// isIncludableKey reports whether an included file may set the top-level key.
 func isIncludableKey(key string) bool {
 	for _, allowed := range includableKeys {
 		if strings.EqualFold(key, allowed) {
@@ -72,6 +73,8 @@ func isIncludableKey(key string) bool {
 	return false
 }
 
+// readYAMLFile parses the YAML file at path into a map; an empty file yields
+// an empty map.
 func readYAMLFile(path string) (map[string]any, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -141,6 +144,7 @@ func includePaths(doc map[string]any, baseDir string) ([]string, error) {
 	return paths, nil
 }
 
+// hasGlobMeta reports whether path contains filepath.Match metacharacters.
 func hasGlobMeta(path string) bool {
 	return strings.ContainsAny(path, `*?[`)
 }
