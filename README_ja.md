@@ -245,6 +245,7 @@ server "petstore": drift detected (generated/petstore.yaml)
 | `--server`  | （全サーバー） | 対象を 1 サーバーに絞り込む |
 | `--fail-on` | `ERR`      | このレベル以上の変更が 1 件でもあれば exit 1 にする: `ERR` / `WARN` / `INFO`。`""` または `NONE` を指定すると変更があっても失敗しない（読み込みエラーは引き続き失敗扱い） |
 | `--format`  | `text`     | `text` / `json` / `markdown` |
+| `--by-tool` | `false`    | 変更を一覧ではなく MCP ツールごとにまとめて出力する（後述） |
 
 ```bash
 # error レベルの変更があれば失敗する（デフォルト）
@@ -255,6 +256,9 @@ manifold openapi diff -c config --fail-on WARN --format markdown
 
 # レポートのみ（変更があっても失敗しない）
 manifold openapi diff -c config --server petstore --format json --fail-on NONE
+
+# どのツール呼び出しが壊れるかを確認する
+manifold openapi diff -c config --by-tool
 ```
 
 `text` の出力例:
@@ -268,6 +272,22 @@ petstore: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
 ```
 
 spec に変更がないサーバーは `petstore: no API changes` と表示される。`json` はサーバー名をキーとするオブジェクトで、各サーバーに `breaking` / `errors` / `warnings` / `infos` の件数と、`{level, id, operation, message, tool}` からなる `changes` 配列を持つ（`api-version-not-bumped` のような `paths` 以外の変更では `operation` と `tool` は省略される）。`markdown` はサーバーごとに `### <server>` 見出しと表を出力するので、PR コメントやジョブサマリーにそのまま使える。
+
+`--by-tool` を指定すると、同じ結果を MCP ツールごとにまとめて出力し、「どのツール呼び出しが壊れるか」がわかる。影響を受けるツールごとにステータスと最も高いレベルを表示し（深刻なものから順）、その下に変更をインデントして並べる。影響のないツールは出力せず、サマリー行の件数にのみ反映される。どのツールにも紐づかない変更（components、security、`api-version-not-bumped` など）は最後に `(spec-wide)` としてまとめる:
+
+```text
+petstore: 3 of 5 tools affected, 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+  error    changed  getpetbyid (GET /pet/{petId})
+    error    new-required-request-parameter: added the new required `query` request parameter `verbose`
+  error    removed  uploadfile (POST /pet/{petId}/uploadImage)
+    error    api-path-removed-without-deprecation: api path removed without deprecation
+  info     added    listpets (GET /pet)
+    info     endpoint-added: endpoint added
+  (spec-wide)
+    info     -  api-version-not-bumped: a breaking change was detected but the version is still `1.0.0`
+```
+
+ツールのステータスには、生成されるツール自体の差分（`generate --check` が表示するものと同じ比較）も反映される。`removed` はツールが生成されなくなったことを表し、呼び出しているクライアントはすべて壊れるため、oasdiff が何も報告していなくても（`operationId` の変更によるリネームなど）常に `error` として扱う。`added` は新しく追加されたツール、`changed` は oasdiff がその operation の変更を報告したか、生成された `inputSchema` が変わったツールを表す。oasdiff の報告がなく `inputSchema` だけが変わった場合（パラメータの description の変更など）は、レベル `none` とメモ付きで表示される。`json` はサーバーごとに `{affected, total, tools: [{name, operation, status, level, note?, changes: [{level, id, message}]}], specWide: [...]}` の形になり、`markdown` はサーバーごとに `Tool | Operation | Status | Level | Rule | Message` 列の表を 1 つ出力する（1 行 1 変更）。`--fail-on` は引き続き最も高いレベルと比較し、`removed` のツールは `error` として数える。
 
 CI では再生成の前に実行しておくと、破壊的な上流変更を取り込む PR を、どのツールが壊れるかとあわせて検出できる:
 

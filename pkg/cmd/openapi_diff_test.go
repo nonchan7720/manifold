@@ -257,3 +257,162 @@ func TestOpenAPIGenerateCheck_EmbeddedSpecEdited_NoAPIChanges(t *testing.T) {
 	require.Contains(t, stdout, "  embedded spec differs from what the live spec produces")
 	require.Contains(t, stdout, "  compatibility: no API changes")
 }
+
+// petstoreSpecJSONParamDescribed is petstoreSpecJSON with a description on
+// getPetById's petId parameter: oasdiff reports nothing, but the generated
+// inputSchema changes.
+var petstoreSpecJSONParamDescribed = strings.Replace(
+	petstoreSpecJSON,
+	`{"name": "petId", "in": "path", "required": true, "schema": {"type": "integer"}}`,
+	`{"name": "petId", "in": "path", "required": true, "description": "ID of pet", `+
+		`"schema": {"type": "integer"}}`,
+	1,
+)
+
+func TestOpenAPIDiffByTool_NoChanges(t *testing.T) {
+	setupCheckServer(t)
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool")
+	require.NoError(t, err)
+	require.Equal(t, "petstore: 0 of 3 tools affected, no API changes\n", stdout)
+}
+
+func TestOpenAPIDiffByTool_RequiredParamAdded_Changed(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONParamRequired), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "changes at or above error level found in 1 server(s)")
+	require.Equal(
+		t,
+		"petstore: 1 of 3 tools affected, 1 breaking change (1 error, 0 warnings), 1 non-breaking\n"+
+			"  error    changed  getpetbyid (GET /pet/{petId})\n"+
+			"    error    new-required-request-parameter: "+
+			"added the new required `query` request parameter `verbose`\n"+
+			"  (spec-wide)\n"+
+			"    info     -  api-version-not-bumped: "+
+			"a breaking change was detected but the version is still `1.0.0`\n",
+		stdout,
+	)
+}
+
+func TestOpenAPIDiffByTool_OperationRemoved_Removed(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONToolRemoved), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool")
+	require.Error(t, err)
+	require.Contains(t, stdout, "petstore: 1 of 3 tools affected, ")
+	require.Contains(t, stdout, "  error    removed  uploadfile (POST /pet/{petId}/uploadImage)\n")
+	require.Contains(t, stdout, "    error    api-path-removed-without-deprecation: ")
+	require.NotContains(t, stdout, "getpetbyid", "unaffected tools are omitted")
+	require.NotContains(t, stdout, "addpet", "unaffected tools are omitted")
+}
+
+func TestOpenAPIDiffByTool_OperationAdded_Added(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONToolAdded), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool")
+	require.NoError(t, err, "an added tool must not fail with the default --fail-on")
+	require.Equal(
+		t,
+		"petstore: 1 of 4 tools affected, no breaking changes, 1 non-breaking\n"+
+			"  info     added    deletepet (DELETE /pet/{petId})\n"+
+			"    info     endpoint-added: endpoint added\n",
+		stdout,
+	)
+}
+
+func TestOpenAPIDiffByTool_SchemaOnlyChange_ChangedWithNote(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONParamDescribed), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool", "--fail-on", "INFO")
+	require.NoError(t, err, "a change oasdiff doesn't report has no level to fail on")
+	require.Equal(
+		t,
+		"petstore: 1 of 3 tools affected, no API changes\n"+
+			"  none     changed  getpetbyid (GET /pet/{petId})\n"+
+			"    note: inputSchema changed in the generated tools, but oasdiff reported no change\n",
+		stdout,
+	)
+}
+
+func TestOpenAPIDiffByTool_JSON(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONParamRequired), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool", "--format", "json")
+	require.Error(t, err)
+
+	type change struct {
+		Level     string `json:"level"`
+		ID        string `json:"id"`
+		Operation string `json:"operation"`
+		Message   string `json:"message"`
+	}
+	var got map[string]struct {
+		Affected int `json:"affected"`
+		Total    int `json:"total"`
+		Tools    []struct {
+			Name      string   `json:"name"`
+			Operation string   `json:"operation"`
+			Status    string   `json:"status"`
+			Level     string   `json:"level"`
+			Changes   []change `json:"changes"`
+		} `json:"tools"`
+		SpecWide []change `json:"specWide"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &got))
+	require.Contains(t, got, "petstore")
+	p := got["petstore"]
+	require.Equal(t, 1, p.Affected)
+	require.Equal(t, 3, p.Total)
+	require.Len(t, p.Tools, 1)
+	tool := p.Tools[0]
+	require.Equal(t, "getpetbyid", tool.Name)
+	require.Equal(t, "GET /pet/{petId}", tool.Operation)
+	require.Equal(t, "changed", tool.Status)
+	require.Equal(t, "error", tool.Level)
+	require.Equal(t, []change{{
+		Level: "error", ID: "new-required-request-parameter",
+		Message: "added the new required `query` request parameter `verbose`",
+	}}, tool.Changes)
+	require.Len(t, p.SpecWide, 1)
+	require.Equal(t, "api-version-not-bumped", p.SpecWide[0].ID)
+	require.Empty(t, p.SpecWide[0].Operation)
+}
+
+func TestOpenAPIDiffByTool_JSON_NoChanges_EmptyArrays(t *testing.T) {
+	setupCheckServer(t)
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool", "--format", "json")
+	require.NoError(t, err)
+	require.Contains(t, stdout, `"affected": 0,`)
+	require.Contains(t, stdout, `"total": 3,`)
+	require.Contains(t, stdout, `"tools": []`)
+	require.Contains(t, stdout, `"specWide": []`)
+}
+
+func TestOpenAPIDiffByTool_Markdown(t *testing.T) {
+	specPath, _ := setupCheckServer(t)
+	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONParamRequired), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "diff", "--by-tool", "--format", "markdown")
+	require.Error(t, err)
+	require.True(
+		t, strings.HasPrefix(stdout, "### petstore\n\n1 of 3 tools affected, 1 breaking change"),
+		stdout,
+	)
+	require.Contains(t, stdout, "| Tool | Operation | Status | Level | Rule | Message |")
+	require.Contains(
+		t, stdout,
+		"| `getpetbyid` | `GET /pet/{petId}` | **changed** (error) | error | "+
+			"`new-required-request-parameter` | ",
+	)
+	require.Contains(
+		t, stdout, "| _(spec-wide)_ | - | | info | `api-version-not-bumped` | ",
+	)
+}

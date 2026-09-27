@@ -245,6 +245,7 @@ server "petstore": drift detected (generated/petstore.yaml)
 | `--server`  | (all)   | Restrict to a single server |
 | `--fail-on` | `ERR`   | Exit non-zero if any change is at or above this level: `ERR`, `WARN` or `INFO`. `""` or `NONE` never fails on changes (load errors still fail) |
 | `--format`  | `text`  | `text`, `json` or `markdown` |
+| `--by-tool` | `false` | Group the report by MCP tool instead of listing changes flat (see below) |
 
 ```bash
 # Fail only on errors (default)
@@ -255,6 +256,9 @@ manifold openapi diff -c config --fail-on WARN --format markdown
 
 # Report only, never fail on changes
 manifold openapi diff -c config --server petstore --format json --fail-on NONE
+
+# Which tool calls break?
+manifold openapi diff -c config --by-tool
 ```
 
 `text` output:
@@ -268,6 +272,22 @@ petstore: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
 ```
 
 A server whose spec is unchanged prints `petstore: no API changes`. `json` output is an object keyed by server name, each with `breaking` / `errors` / `warnings` / `infos` counts and a `changes` array of `{level, id, operation, message, tool}` (`operation` and `tool` are omitted for a change outside `paths`, such as `api-version-not-bumped`). `markdown` renders a `### <server>` section with a table per server, suitable for a PR comment or a job summary.
+
+With `--by-tool` the same result is grouped by MCP tool, answering "which tool calls will break". Each affected tool is listed with its status and highest level, most severe first, and its changes indented below; unaffected tools are omitted and counted in the summary line. Changes tied to no tool (components, security, `api-version-not-bumped`, …) go last under `(spec-wide)`:
+
+```text
+petstore: 3 of 5 tools affected, 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+  error    changed  getpetbyid (GET /pet/{petId})
+    error    new-required-request-parameter: added the new required `query` request parameter `verbose`
+  error    removed  uploadfile (POST /pet/{petId}/uploadImage)
+    error    api-path-removed-without-deprecation: api path removed without deprecation
+  info     added    listpets (GET /pet)
+    info     endpoint-added: endpoint added
+  (spec-wide)
+    info     -  api-version-not-bumped: a breaking change was detected but the version is still `1.0.0`
+```
+
+A tool's status also reflects the generated tools themselves (the same comparison `generate --check` prints): `removed` — the tool is no longer generated, so every client still calling it breaks; it always counts as `error`, even if oasdiff reported nothing for it (e.g. an `operationId` rename); `added` — a new tool; `changed` — oasdiff reported a change on its operation, or its generated `inputSchema` changed. The latter case with no oasdiff change (e.g. a parameter description edit) is listed at level `none` with a note. `json` output becomes `{affected, total, tools: [{name, operation, status, level, note?, changes: [{level, id, message}]}], specWide: [...]}` per server, and `markdown` a single table per server with `Tool | Operation | Status | Level | Rule | Message` columns, one row per change. `--fail-on` still compares against the highest level, with a removed tool counted as `error`.
 
 Run it in CI before regenerating, so a PR that pulls in a breaking upstream change is flagged with exactly which tools break:
 
