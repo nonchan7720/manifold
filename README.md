@@ -303,6 +303,31 @@ With `>>` the step's exit status is still `manifold`'s, so the job fails on an `
 Place a configuration file (`config.yaml`) in the current directory or in a `config/` subdirectory.
 Configuration values support environment variable expansion in the form `${VAR}` or `${VAR:-default}`.
 
+### Splitting the config across files (`include`)
+
+A top-level `include` list merges other YAML files into the config, similar to LiteLLM's include directive — e.g. to keep `gateway` in its own file:
+
+```yaml
+# config.yaml
+include:
+  - gateway.yaml        # relative to this file
+  - conf.d/*.yaml       # glob patterns are merged in lexical order
+sqlite:
+  path: ./tmp/manifold.db
+```
+
+```yaml
+# gateway.yaml
+gateway:
+  port: 9998
+  encryptKey: ${ENCRYPT_KEY}
+```
+
+- Included files are merged in list order, and the including file is merged last, so its own values win.
+- Maps (e.g. `gateway`, `mcpServers`) are merged recursively; lists and scalars are replaced as a whole.
+- Paths are relative to the including file and may use `${VAR}` expansion. A missing file is an error (a glob with no match is not).
+- Included files may declare `include` themselves; include cycles are rejected.
+
 ### Connecting to an MCP backend
 
 Expose an external MCP server through Manifold.

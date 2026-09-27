@@ -303,6 +303,31 @@ CI では再生成の前に実行しておくと、破壊的な上流変更を�
 設定ファイル（`config.yaml`）をカレントディレクトリまたは `config/` サブディレクトリに配置します。
 設定値には `${VAR}` または `${VAR:-default}` 形式の環境変数展開が使えます。
 
+### 設定ファイルの分割（`include`）
+
+トップレベルの `include` に列挙した YAML ファイルを設定にマージできます（LiteLLM の include ディレクティブと同様）。例えば `gateway` を別ファイルに切り出せます。
+
+```yaml
+# config.yaml
+include:
+  - gateway.yaml        # このファイルからの相対パス
+  - conf.d/*.yaml       # glob も可（辞書順でマージ）
+sqlite:
+  path: ./tmp/manifold.db
+```
+
+```yaml
+# gateway.yaml
+gateway:
+  port: 9998
+  encryptKey: ${ENCRYPT_KEY}
+```
+
+- include したファイルはリスト順にマージされ、最後に include 元のファイル自身がマージされます（include 元の値が優先）。
+- map（`gateway` や `mcpServers` など）は再帰的にマージされ、リストやスカラー値は丸ごと置き換えられます。
+- パスは include 元ファイルからの相対パスで、`${VAR}` 展開が使えます。存在しないファイルはエラーになります（一致なしの glob はエラーになりません）。
+- include したファイルの中でさらに `include` できます。循環参照はエラーになります。
+
 ### MCP バックエンドへの接続
 
 外部 MCP サーバーを Manifold 経由で公開します。
