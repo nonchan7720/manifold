@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
 	"github.com/stretchr/testify/require"
 )
 
@@ -527,6 +528,41 @@ func TestServer_ValidateWithContext_ZeroSpecRefreshInterval_Valid(t *testing.T) 
 	d := time.Duration(0)
 	s.SpecRefreshInterval = &d
 	require.NoError(t, s.ValidateWithContext(t.Context()))
+}
+
+func TestServer_ValidateWithContext_SpecRefreshRejectOn(t *testing.T) {
+	for _, tt := range []struct {
+		level   string
+		wantErr bool
+	}{
+		{level: "", wantErr: false},
+		{level: "NONE", wantErr: false},
+		{level: "WARN", wantErr: false},
+		{level: "ERR", wantErr: false},
+		{level: "fatal", wantErr: true},
+	} {
+		t.Run(tt.level, func(t *testing.T) {
+			s := baseValidServer()
+			s.SpecRefreshRejectOn = &tt.level
+			err := s.ValidateWithContext(t.Context())
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "SpecRefreshRejectOn")
+		})
+	}
+}
+
+func TestServer_EffectiveSpecRefreshRejectOn(t *testing.T) {
+	none, warn := "NONE", "WARN"
+	require.Equal(t, oasbreaking.LevelNone, Server{}.EffectiveSpecRefreshRejectOn(""))
+	require.Equal(t, oasbreaking.LevelErr, Server{}.EffectiveSpecRefreshRejectOn("ERR"))
+	require.Equal(t, oasbreaking.LevelWarn,
+		Server{SpecRefreshRejectOn: &warn}.EffectiveSpecRefreshRejectOn("ERR"))
+	require.Equal(t, oasbreaking.LevelNone,
+		Server{SpecRefreshRejectOn: &none}.EffectiveSpecRefreshRejectOn("ERR"))
 }
 
 func TestIsMCPBackend(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
 )
 
 type MCPTransport string
@@ -34,6 +35,8 @@ type Server struct {
 
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
 	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
+	// nil は gateway.specRefresh.rejectOn を使う、"" / NONE はこのサーバーのみ拒否しない。
+	SpecRefreshRejectOn *string `mapstructure:"specRefreshRejectOn"`
 
 	// Tools は静的ツールカタログ（生成物）関連の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
@@ -92,6 +95,19 @@ func (s Server) EffectiveSpecRefreshInterval(global time.Duration) time.Duration
 		return *s.SpecRefreshInterval
 	}
 	return global
+}
+
+// EffectiveSpecRefreshRejectOn returns the level at or above which a
+// refreshed spec is rejected for this server, falling back to the
+// gateway-wide default. Both are validated at load time, so an unparsable
+// value (never reached in practice) reads as oasbreaking.LevelNone.
+func (s Server) EffectiveSpecRefreshRejectOn(global string) oasbreaking.Level {
+	v := global
+	if s.SpecRefreshRejectOn != nil {
+		v = *s.SpecRefreshRejectOn
+	}
+	level, _ := oasbreaking.ParseLevel(v)
+	return level
 }
 
 func (s Server) ValidateWithContext(ctx context.Context) error {
@@ -202,6 +218,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			}
 			return nil
 		})),
+		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
 	)
 }

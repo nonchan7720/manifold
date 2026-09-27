@@ -16,6 +16,8 @@ import (
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // specTestServer serves an OpenAPI spec whose body and status can be swapped
@@ -79,21 +81,76 @@ func newRefreshTestMCPServer(
 	t *testing.T,
 	spec *specTestServer,
 	interval *time.Duration,
+	opts ...Option,
 ) *MCPServer {
 	t.Helper()
-	servers := config.Servers{
-		"api": &config.Server{
-			Name:                "api",
-			Description:         "test api",
-			Spec:                spec.URL + "/openapi.json",
-			BaseURL:             spec.URL,
-			SpecRefreshInterval: interval,
-		},
+	return newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
+		srv.SpecRefreshInterval = interval
+	}, opts...)
+}
+
+func newRefreshTestMCPServerWith(
+	t *testing.T,
+	spec *specTestServer,
+	configure func(*config.Server),
+	opts ...Option,
+) *MCPServer {
+	t.Helper()
+	server := &config.Server{
+		Name:        "api",
+		Description: "test api",
+		Spec:        spec.URL + "/openapi.json",
+		BaseURL:     spec.URL,
 	}
+	configure(server)
 	u, _ := url.Parse("https://example.com")
-	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	s := NewMCPServer(
+		config.Servers{"api": server},
+		storage.NewContentManagementService(u, storage.NewNoopUploader()),
+		opts...,
+	)
 	require.NoError(t, s.Init(t.Context()))
 	return s
+}
+
+// withRejectOn sets mcpServers.api.specRefreshRejectOn.
+func withRejectOn(level string) func(*config.Server) {
+	return func(srv *config.Server) { srv.SpecRefreshRejectOn = &level }
+}
+
+// newTestMeterProvider returns a MeterProvider whose metrics can be read back
+// with counterValues.
+func newTestMeterProvider(t *testing.T) (*sdkmetric.MeterProvider, *sdkmetric.ManualReader) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	return mp, reader
+}
+
+// counterValues returns the int64 counter name's values keyed by its "level"
+// attribute.
+func counterValues(t *testing.T, reader *sdkmetric.ManualReader, name string) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	values := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok, "metric %s is not an int64 sum", name)
+			for _, dp := range sum.DataPoints {
+				server, _ := dp.Attributes.Value("server")
+				require.Equal(t, "api", server.AsString())
+				level, _ := dp.Attributes.Value("level")
+				values[level.AsString()] += dp.Value
+			}
+		}
+	}
+	return values
 }
 
 // tryListToolNames は require を使わないため、require.Eventually の条件関数
@@ -240,7 +297,7 @@ func TestMCPServer_StartSpecRefresh_UpdatesToolsAndStopsOnClose(t *testing.T) {
 	interval := 20 * time.Millisecond
 	s := newRefreshTestMCPServer(t, spec, &interval)
 
-	s.StartSpecRefresh(t.Context(), 0)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{})
 	spec.setBody(specWithOperations("ping", "pong"))
 
 	srv, err := s.Server("api")
@@ -286,7 +343,7 @@ func TestMCPServer_StartSpecRefresh_DisabledInterval_NeverRefreshes(t *testing.T
 	s := newRefreshTestMCPServer(t, spec, &disabled)
 
 	// グローバル既定が正でも、サーバー側の 0 指定が優先されリフレッシュしない。
-	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{Interval: 20 * time.Millisecond})
 	defer s.Close()
 
 	fetches := spec.fetches.Load()
@@ -300,7 +357,7 @@ func TestMCPServer_StartSpecRefresh_GlobalInterval(t *testing.T) {
 	spec := newSpecTestServer(t, specWithOperations("ping"))
 	s := newRefreshTestMCPServer(t, spec, nil)
 
-	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{Interval: 20 * time.Millisecond})
 	defer s.Close()
 	spec.setBody(specWithOperations("ping", "pong"))
 
@@ -318,8 +375,8 @@ func TestMCPServer_StartSpecRefresh_CalledTwice_StopsPreviousCycle(t *testing.T)
 	interval := 20 * time.Millisecond
 	s := newRefreshTestMCPServer(t, spec, &interval)
 
-	s.StartSpecRefresh(t.Context(), 0)
-	s.StartSpecRefresh(t.Context(), 0)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{})
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{})
 
 	closed := make(chan struct{})
 	go func() {
@@ -337,4 +394,137 @@ func TestMCPServer_StartSpecRefresh_CalledTwice_StopsPreviousCycle(t *testing.T)
 	fetches := spec.fetches.Load()
 	time.Sleep(200 * time.Millisecond)
 	require.Equal(t, fetches, spec.fetches.Load(), "no spec fetch should happen after Close")
+}
+
+func TestMCPServer_RefreshServer_NonBreakingChange_Adopted(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServerWith(t, spec, withRejectOn("WARN"), WithMeterProvider(mp))
+
+	// operation の追加は info レベル（非破壊的）なので rejectOn=WARN でも採用される。
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+	require.Equal(t, map[string]int64{"info": 1},
+		counterValues(t, reader, "manifold.openapi.spec_refresh.changes"))
+	require.Empty(t, counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"))
+}
+
+func TestMCPServer_RefreshServer_BreakingChange_AdoptedWithoutRejectOn(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping", "pong"))
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServer(t, spec, nil, WithMeterProvider(mp))
+
+	// operation の削除は error レベルの破壊的変更だが、rejectOn 未設定なので採用される。
+	spec.setBody(specWithOperations("ping"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
+	// パスの削除は error に加え info の変更も伴う。
+	require.Equal(t, int64(1),
+		counterValues(t, reader, "manifold.openapi.spec_refresh.changes")["error"])
+	require.Empty(t, counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"))
+}
+
+func TestMCPServer_RefreshServer_BreakingChange_Rejected(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping", "pong"))
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServerWith(t, spec, withRejectOn("ERR"), WithMeterProvider(mp))
+
+	spec.setBody(specWithOperations("ping"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+	catalog, err := s.ToolCatalog(t.Context(), "api")
+	require.NoError(t, err)
+	require.Len(t, catalog, 2)
+	// パスの削除は error に加え info の変更も伴う。
+	require.Equal(t, int64(1),
+		counterValues(t, reader, "manifold.openapi.spec_refresh.changes")["error"])
+	require.Equal(t, map[string]int64{"error": 1},
+		counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"))
+
+	// 上流が直すまで同じ spec は拒否され続けるが、diff・計上し直しはしない。
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+	require.Equal(t, map[string]int64{"error": 1},
+		counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"))
+
+	// 上流が直せば、提供中の（拒否前の）spec に対して改めて判定され採用される。
+	spec.setBody(specWithOperations("ping", "pong", "extra"))
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.ElementsMatch(t, []string{"ping", "pong", "extra"}, listToolNames(t, srv))
+}
+
+func TestMCPServer_StartSpecRefresh_GlobalRejectOn_KeepsTools(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping", "pong"))
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServer(t, spec, nil, WithMeterProvider(mp))
+
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{
+		Interval: 20 * time.Millisecond,
+		RejectOn: "ERR",
+	})
+	defer s.Close()
+	spec.setBody(specWithOperations("ping"))
+
+	require.Eventually(t, func() bool {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(t.Context(), &rm); err != nil {
+			return false
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name == "manifold.openapi.spec_refresh.rejected" {
+					return true
+				}
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+}
+
+func TestMCPServer_RefreshServer_InitialFetchFailed_NoBaseToCheck(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	spec.setStatus(http.StatusInternalServerError)
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServerWith(t, spec, withRejectOn("INFO"), WithMeterProvider(mp))
+
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.Empty(t, listToolNames(t, srv))
+
+	// 比較元の spec が無いので、rejectOn に関わらずそのまま採用される。
+	spec.setStatus(http.StatusOK)
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
+	require.Empty(t, counterValues(t, reader, "manifold.openapi.spec_refresh.changes"))
 }

@@ -94,6 +94,7 @@ func BuildCatalog(
 			return nil, err
 		}
 	case oastomcptool.SpecFormatOpenAPI3:
+		register.setOpenAPISpec(source.OpenAPI)
 		if err := openapi(
 			ctx, client, register, source.OpenAPI, source.SpecPath, baseUrl, headers,
 		); err != nil {

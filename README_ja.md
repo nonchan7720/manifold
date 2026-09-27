@@ -245,6 +245,7 @@ server "petstore": drift detected (generated/petstore.yaml)
 | `--server`  | （全サーバー） | 対象を 1 サーバーに絞り込む |
 | `--fail-on` | `ERR`      | このレベル以上の変更が 1 件でもあれば exit 1 にする: `ERR` / `WARN` / `INFO`。`""` または `NONE` を指定すると変更があっても失敗しない（読み込みエラーは引き続き失敗扱い） |
 | `--format`  | `text`     | `text` / `json` / `markdown` |
+| `--by-tool` | `false`    | 変更を一覧ではなく MCP ツールごとにまとめて出力する（後述） |
 
 ```bash
 # error レベルの変更があれば失敗する（デフォルト）
@@ -255,6 +256,9 @@ manifold openapi diff -c config --fail-on WARN --format markdown
 
 # レポートのみ（変更があっても失敗しない）
 manifold openapi diff -c config --server petstore --format json --fail-on NONE
+
+# どのツール呼び出しが壊れるかを確認する
+manifold openapi diff -c config --by-tool
 ```
 
 `text` の出力例:
@@ -268,6 +272,22 @@ petstore: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
 ```
 
 spec に変更がないサーバーは `petstore: no API changes` と表示される。`json` はサーバー名をキーとするオブジェクトで、各サーバーに `breaking` / `errors` / `warnings` / `infos` の件数と、`{level, id, operation, message, tool}` からなる `changes` 配列を持つ（`api-version-not-bumped` のような `paths` 以外の変更では `operation` と `tool` は省略される）。`markdown` はサーバーごとに `### <server>` 見出しと表を出力するので、PR コメントやジョブサマリーにそのまま使える。
+
+`--by-tool` を指定すると、同じ結果を MCP ツールごとにまとめて出力し、「どのツール呼び出しが壊れるか」がわかる。影響を受けるツールごとにステータスと最も高いレベルを表示し（深刻なものから順）、その下に変更をインデントして並べる。影響のないツールは出力せず、サマリー行の件数にのみ反映される。どのツールにも紐づかない変更（components、security、`api-version-not-bumped` など）は最後に `(spec-wide)` としてまとめる:
+
+```text
+petstore: 3 of 5 tools affected, 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+  error    changed  getpetbyid (GET /pet/{petId})
+    error    new-required-request-parameter: added the new required `query` request parameter `verbose`
+  error    removed  uploadfile (POST /pet/{petId}/uploadImage)
+    error    api-path-removed-without-deprecation: api path removed without deprecation
+  info     added    listpets (GET /pet)
+    info     endpoint-added: endpoint added
+  (spec-wide)
+    info     -  api-version-not-bumped: a breaking change was detected but the version is still `1.0.0`
+```
+
+ツールのステータスには、生成されるツール自体の差分（`generate --check` が表示するものと同じ比較）も反映される。`removed` はツールが生成されなくなったことを表し、呼び出しているクライアントはすべて壊れるため、oasdiff が何も報告していなくても（`operationId` の変更によるリネームなど）常に `error` として扱う。`added` は新しく追加されたツール、`changed` は oasdiff がその operation の変更を報告したか、生成された `inputSchema` が変わったツールを表す。oasdiff の報告がなく `inputSchema` だけが変わった場合（パラメータの description の変更など）は、レベル `none` とメモ付きで表示される。`json` はサーバーごとに `{affected, total, tools: [{name, operation, status, level, note?, changes: [{level, id, message}]}], specWide: [...]}` の形になり、`markdown` はサーバーごとに `Tool | Operation | Status | Level | Rule | Message` 列の表を 1 つ出力する（1 行 1 変更）。`--fail-on` は引き続き最も高いレベルと比較し、`removed` のツールは `error` として数える。
 
 CI では再生成の前に実行しておくと、破壊的な上流変更を取り込む PR を、どのツールが壊れるかとあわせて検出できる:
 
@@ -357,6 +377,7 @@ redis:
 | `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
 | `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
+| `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
 
 #### `gateway.specRefresh`
 
@@ -369,6 +390,23 @@ gateway:
 ```
 
 変更検知は取得した spec 本体のハッシュで行うため、外部 `$ref` 先だけが更新された場合はハッシュが変わらず検知できません。取得やパースに失敗した場合は既存のツール定義を維持し、次の間隔で再試行します。
+
+##### リフレッシュ時の破壊的変更の検出
+
+再取得した spec が現在提供中のものと異なる場合、ツールを入れ替える前に [`openapi diff`](#破壊的変更の検出openapi-diff) と同じ [oasdiff](https://github.com/oasdiff/oasdiff) のチェックで両者を比較します。
+
+- **ログ**: サーバー名と `error` / `warning` / `info` ごとの件数を含むサマリーを 1 行出力します。破壊的変更（`error` または `warning`）があれば `WARN`、なければ `INFO` レベルです。あわせて破壊的変更ごとに `level`・`id`・`operation`・影響を受ける `tool`・`message` を含む `WARN` ログを 1 行ずつ出力します。
+- **メトリクス**: OpenTelemetry のカウンター `manifold.openapi.spec_refresh.changes`（属性 `server`、`level` = `error` / `warning` / `info`）を検出した変更 1 件ごとに加算します。
+- **拒否**: `rejectOn`（`gateway.specRefresh.rejectOn`、またはサーバー単位の `mcpServers.<name>.specRefreshRejectOn`）を設定すると、最も重い変更がそのレベル以上の spec は採用しません。以前の spec とツールを提供し続け、拒否の原因になった変更を列挙した `ERROR` ログを出力し、`manifold.openapi.spec_refresh.rejected`（属性 `server`、`level` = 最も重い変更のレベル）を加算します。
+
+```yaml
+gateway:
+  specRefresh:
+    interval: 5m
+    rejectOn: ERR   # 上流に error レベルの破壊的変更が入ったら現在のツールを維持する
+```
+
+拒否は、提供中の spec と比較してチェックを通る spec を上流が公開するまで続きます。拒否したものと同じ spec を再取得しても、diff・ログ出力・計上はやり直しません。ゲートウェイを再起動すると（再起動を伴う設定の再読み込みを含む）、起動時に取得した spec をチェックなしでそのまま採用します。検出はベストエフォートで、diff 自体に失敗した場合は警告ログを出して従来どおり新しい spec を採用します。起動時の spec 取得に失敗していた場合の最初の取得成功時や、Swagger 2.x の spec では比較対象が無いため検出を行いません。
 
 #### `mcpServers.<name>`
 
@@ -389,6 +427,7 @@ gateway:
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
+| `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。

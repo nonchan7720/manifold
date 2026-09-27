@@ -264,7 +264,7 @@ func newMCPServer(
 	if err := mcpSrv.Init(ctx); err != nil {
 		return nil, err
 	}
-	mcpSrv.StartSpecRefresh(ctx, gateway.SpecRefresh.Interval)
+	mcpSrv.StartSpecRefresh(ctx, gateway.SpecRefresh)
 	return mcpSrv, nil
 }
 
