@@ -37,11 +37,16 @@ func loadWithIncludes(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	includes, err := includePaths(doc, filepath.Dir(abs))
+	// viper treats keys case-insensitively, so "Include" is the include key too.
+	docIncludeKey, err := findKeyFold(doc, includeKey)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", abs, err)
 	}
-	delete(doc, includeKey)
+	includes, err := includePaths(doc[docIncludeKey], filepath.Dir(abs))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", abs, err)
+	}
+	delete(doc, docIncludeKey)
 
 	merged := map[string]any{}
 	for _, inc := range includes {
@@ -95,11 +100,28 @@ func readYAMLFile(path string) (map[string]any, error) {
 	return doc, nil
 }
 
-// includePaths returns the files referenced by doc's include key, resolved
+// findKeyFold returns the key in doc matching key case-insensitively, or key
+// itself when there is none. More than one match is an error, since viper
+// would keep only one of them.
+func findKeyFold(doc map[string]any, key string) (string, error) {
+	found := key
+	matches := 0
+	for existing := range doc {
+		if strings.EqualFold(existing, key) {
+			found = existing
+			matches++
+		}
+	}
+	if matches > 1 {
+		return "", fmt.Errorf("key %q is set more than once with different casing", key)
+	}
+	return found, nil
+}
+
+// includePaths returns the files referenced by an include value, resolved
 // against baseDir.
-func includePaths(doc map[string]any, baseDir string) ([]string, error) {
-	value, ok := doc[includeKey]
-	if !ok || value == nil {
+func includePaths(value any, baseDir string) ([]string, error) {
+	if value == nil {
 		return nil, nil
 	}
 	var entries []any

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,7 +110,25 @@ mcpServers: {a: {url: https://a2}, b: {url: https://b}}
 	}, got)
 }
 
+func TestLoadWithIncludes_IncludeKeyIsCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "Include: [serviceA.yaml]\n")
+	writeFile(t, filepath.Join(dir, "serviceA.yaml"), "mcpServers: {xxx: {url: https://xxx}}\n")
+
+	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"mcpServers": map[string]any{"xxx": map[string]any{"url": "https://xxx"}},
+	}, got)
+}
+
 func TestLoadWithIncludes_Errors(t *testing.T) {
+	t.Run("include key set twice with different casing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [a.yaml]\nInclude: [b.yaml]\n")
+		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+		require.ErrorContains(t, err, "more than once")
+	})
 	t.Run("missing file", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [nope.yaml]\n")
@@ -144,7 +163,7 @@ func TestLoadInternal_IncludeMCPServers(t *testing.T) {
 include: [mcp-servers.yaml]
 gateway:
   port: 7777
-  encryptKey: 5pJXItSsvVwbxS4gysMYf5Zn1z5dYP6uCQn2xVAqtlM=
+  encryptKey: ${TEST_INCLUDE_ENCRYPT_KEY}
 sqlite:
   path: ./tmp/manifold.db
 `)
@@ -155,6 +174,7 @@ mcpServers:
     url: ${TEST_INCLUDE_NOTION_URL}
     description: notion
 `)
+	t.Setenv("TEST_INCLUDE_ENCRYPT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("TEST_INCLUDE_NOTION_URL", "https://mcp.notion.com/mcp")
 	t.Chdir(dir)
 
