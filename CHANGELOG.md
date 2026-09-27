@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.0](https://github.com/nonchan7720/manifold/compare/v1.15.1...v1.16.0) (2026-09-27)
+
+
+### Features
+
+* **openapi:** add breaking-change detection with oasdiff ([#202](https://github.com/nonchan7720/manifold/issues/202)) ([207d61c](https://github.com/nonchan7720/manifold/commit/207d61cb610d4fa78002f251d134c4186dea64a5))
+* **openapi:** detect breaking changes on spec refresh and add per-tool impact view ([#204](https://github.com/nonchan7720/manifold/issues/204)) ([885a618](https://github.com/nonchan7720/manifold/commit/885a6186b3b9a9ee54068cf71ba3e09c83656f9b))
+
 ## [1.15.1](https://github.com/nonchan7720/manifold/compare/v1.15.0...v1.15.1) (2026-09-25)
 
 
