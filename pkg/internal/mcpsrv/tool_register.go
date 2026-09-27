@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -34,6 +35,10 @@ type MCPToolRegistry struct {
 	mu       sync.RWMutex
 	tools    map[string]Tool
 	specHash string
+	// openAPI is the parsed OpenAPI 3.x document the tools were built from,
+	// kept as the base for breaking-change detection on spec refresh. nil
+	// for Swagger 2.x.
+	openAPI *openapi3.T
 }
 
 func NewMCPToolRegistry() *MCPToolRegistry {
@@ -93,6 +98,20 @@ func (r *MCPToolRegistry) setSpecHash(hash string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.specHash = hash
+}
+
+// OpenAPISpec returns the OpenAPI 3.x document these tools were built from,
+// or nil for a Swagger 2.x spec.
+func (r *MCPToolRegistry) OpenAPISpec() *openapi3.T {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.openAPI
+}
+
+func (r *MCPToolRegistry) setOpenAPISpec(spec *openapi3.T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.openAPI = spec
 }
 
 // ListTools returns all registered tools sorted by name.

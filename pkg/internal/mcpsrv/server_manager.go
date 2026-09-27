@@ -15,7 +15,9 @@ import (
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/nonchan7720/manifold/pkg/version"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type MCPServer struct {
@@ -25,16 +27,21 @@ type MCPServer struct {
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
 
-	// mu guards openAPIStates and refreshCancel, which the spec refresh
-	// goroutines touch concurrently with request handling.
+	// mu guards openAPIStates, refreshCancel and refreshRejectOn, which the
+	// spec refresh goroutines touch concurrently with request handling.
 	mu            sync.Mutex
 	openAPIStates map[string]*openAPIServerState
 	refreshCancel context.CancelFunc
 	refreshWG     sync.WaitGroup
+	// refreshRejectOn is gateway.specRefresh.rejectOn, set by StartSpecRefresh.
+	refreshRejectOn string
 
 	mediaUploader *storage.ContentManagementService
 
 	middlewareFn func(name string) []mcp.Middleware
+
+	meterProvider metric.MeterProvider
+	metrics       *specRefreshMetrics
 }
 
 // Option configures optional behavior of a MCPServer built by NewMCPServer.
@@ -44,6 +51,12 @@ type Option func(*MCPServer)
 // per-backend *mcp.Server it creates, right after construction.
 func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
 	return func(s *MCPServer) { s.middlewareFn = fn }
+}
+
+// WithMeterProvider records the spec refresh metrics to mp instead of the
+// global MeterProvider (otel.GetMeterProvider).
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(s *MCPServer) { s.meterProvider = mp }
 }
 
 func NewMCPServer(
@@ -65,6 +78,10 @@ func NewMCPServer(
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.meterProvider == nil {
+		s.meterProvider = otel.GetMeterProvider()
+	}
+	s.metrics = newSpecRefreshMetrics(s.meterProvider)
 	return s
 }
 
@@ -79,7 +96,7 @@ func NewMCPServer(
 func (s *MCPServer) registerOpenAPIServer(
 	ctx context.Context, name string, server *config.Server, srv *mcp.Server,
 ) error {
-	toolInfos, specHash, err := registerAPI(
+	register, toolInfos, err := registerAPI(
 		ctx,
 		server.Spec,
 		server.BaseURL,
@@ -93,14 +110,12 @@ func (s *MCPServer) registerOpenAPIServer(
 		}
 		slog.WarnContext(ctx, "openapi spec fetch or parse failed; starting server with no tools",
 			slog.String("server", name), slog.Any("error", err))
-		toolInfos, specHash = nil, ""
 	}
-	s.openAPIStates[name] = &openAPIServerState{
-		srv:       srv,
-		cfg:       server,
-		toolInfos: toolInfos,
-		specHash:  specHash,
+	state := &openAPIServerState{srv: srv, cfg: server}
+	if register != nil {
+		state.adopt(register, toolInfos)
 	}
+	s.openAPIStates[name] = state
 	return nil
 }
 
@@ -212,8 +227,7 @@ func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
 }
 
 // registerAPI builds the tools of an OpenAPI mode server and registers them on
-// srv, returning the registered tool names and the hash of the spec they were
-// built from.
+// srv, returning the registry they were built into and the registered tools.
 func registerAPI(
 	ctx context.Context,
 	spec, baseURL string,
@@ -221,13 +235,13 @@ func registerAPI(
 	srv *mcp.Server,
 	mediaUploader storage.MediaService,
 	opts ...RegisterOpenAPIOption,
-) ([]ToolInfo, string, error) {
+) (*MCPToolRegistry, []ToolInfo, error) {
 	// OpenAPI モード: 既存ロジック
 	register, err := RegisterOpenAPI(ctx, spec, baseURL, headers, opts...)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return attachTools(srv, register, mediaUploader), register.SpecHash(), nil
+	return register, attachTools(srv, register, mediaUploader), nil
 }
 
 func attachTools(

@@ -357,6 +357,7 @@ redis:
 | `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
 | `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
+| `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
 
 #### `gateway.specRefresh`
 
@@ -369,6 +370,23 @@ gateway:
 ```
 
 変更検知は取得した spec 本体のハッシュで行うため、外部 `$ref` 先だけが更新された場合はハッシュが変わらず検知できません。取得やパースに失敗した場合は既存のツール定義を維持し、次の間隔で再試行します。
+
+##### リフレッシュ時の破壊的変更の検出
+
+再取得した spec が現在提供中のものと異なる場合、ツールを入れ替える前に [`openapi diff`](#破壊的変更の検出openapi-diff) と同じ [oasdiff](https://github.com/oasdiff/oasdiff) のチェックで両者を比較します。
+
+- **ログ**: サーバー名と `error` / `warning` / `info` ごとの件数を含むサマリーを 1 行出力します。破壊的変更（`error` または `warning`）があれば `WARN`、なければ `INFO` レベルです。あわせて破壊的変更ごとに `level`・`id`・`operation`・影響を受ける `tool`・`message` を含む `WARN` ログを 1 行ずつ出力します。
+- **メトリクス**: OpenTelemetry のカウンター `manifold.openapi.spec_refresh.changes`（属性 `server`、`level` = `error` / `warning` / `info`）を検出した変更 1 件ごとに加算します。
+- **拒否**: `rejectOn`（`gateway.specRefresh.rejectOn`、またはサーバー単位の `mcpServers.<name>.specRefreshRejectOn`）を設定すると、最も重い変更がそのレベル以上の spec は採用しません。以前の spec とツールを提供し続け、拒否の原因になった変更を列挙した `ERROR` ログを出力し、`manifold.openapi.spec_refresh.rejected`（属性 `server`、`level` = 最も重い変更のレベル）を加算します。
+
+```yaml
+gateway:
+  specRefresh:
+    interval: 5m
+    rejectOn: ERR   # 上流に error レベルの破壊的変更が入ったら現在のツールを維持する
+```
+
+拒否は、提供中の spec と比較してチェックを通る spec を上流が公開するまで続きます。拒否したものと同じ spec を再取得しても、diff・ログ出力・計上はやり直しません。ゲートウェイを再起動すると（再起動を伴う設定の再読み込みを含む）、起動時に取得した spec をチェックなしでそのまま採用します。検出はベストエフォートで、diff 自体に失敗した場合は警告ログを出して従来どおり新しい spec を採用します。起動時の spec 取得に失敗していた場合の最初の取得成功時や、Swagger 2.x の spec では比較対象が無いため検出を行いません。
 
 #### `mcpServers.<name>`
 
@@ -389,6 +407,7 @@ gateway:
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
+| `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。

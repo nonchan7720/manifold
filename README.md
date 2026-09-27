@@ -357,6 +357,7 @@ redis:
 | `cert`       | string | TLS certificate file path (optional)                                                                             |
 | `encryptKey` | string | Token encryption key (**required**). Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32` |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
+| `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
 
 #### `gateway.specRefresh`
 
@@ -369,6 +370,23 @@ gateway:
 ```
 
 Changes are detected by hashing the fetched spec document, so a change made only in an externally `$ref`-ed document leaves the hash unchanged and is not picked up. When a fetch or parse fails, the existing tool definitions are kept and the next interval retries.
+
+##### Breaking changes during refresh
+
+When a refresh fetches a spec that differs from the one currently served, Manifold diffs the two with the same [oasdiff](https://github.com/oasdiff/oasdiff) checks as [`openapi diff`](#breaking-change-detection-openapi-diff) before swapping the tools:
+
+- **Logs**: a summary line with the server name and the number of `error` / `warning` / `info` changes — at `WARN` level if any change is breaking (`error` or `warning`), `INFO` otherwise — plus one `WARN` line per breaking change with its `level`, `id`, `operation`, affected `tool` and `message`.
+- **Metrics**: the OpenTelemetry counter `manifold.openapi.spec_refresh.changes` (attributes `server`, `level` = `error` / `warning` / `info`) is incremented once per detected change.
+- **Rejection**: with `rejectOn` set (`gateway.specRefresh.rejectOn`, or per server `mcpServers.<name>.specRefreshRejectOn`), a refreshed spec whose most severe change is at or above that level is not adopted. The previous spec and tools keep being served, an `ERROR` log lists the changes that caused the rejection, and `manifold.openapi.spec_refresh.rejected` (attributes `server`, `level` = the most severe change level) is incremented.
+
+```yaml
+gateway:
+  specRefresh:
+    interval: 5m
+    rejectOn: ERR   # keep the current tools if upstream introduces an error-level breaking change
+```
+
+A rejection lasts until upstream publishes a spec that passes the check against the spec still being served; re-fetching the same rejected spec is not re-diffed, logged or counted again. Restarting the gateway (including a config reload that restarts it) adopts whatever spec is fetched at boot, without any check. Detection is best-effort: if the diff itself fails, a warning is logged and the new spec is adopted as before. It is skipped when there is nothing to compare against — the first successful fetch after the spec failed at startup, or a Swagger 2.x spec.
 
 #### `mcpServers.<name>`
 
@@ -389,6 +407,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
+| `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.

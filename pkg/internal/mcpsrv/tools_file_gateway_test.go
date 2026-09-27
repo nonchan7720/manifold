@@ -157,7 +157,7 @@ func TestMCPServer_Init_ToolsFile_NoSpecStillStarts(t *testing.T) {
 	require.Equal(
 		t, time.Duration(0), servers["petstore"].EffectiveSpecRefreshInterval(20*time.Millisecond),
 	)
-	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{Interval: 20 * time.Millisecond})
 	defer s.Close()
 	s.mu.Lock()
 	cancelSet := s.refreshCancel != nil
@@ -219,7 +219,7 @@ func TestMCPServer_StartSpecRefresh_ToolsFile_NeverStartsGoroutine(t *testing.T)
 		t, int64(0), spec.fetches.Load(), "Init must not fetch spec when tools.file is set",
 	)
 
-	s.StartSpecRefresh(t.Context(), 20*time.Millisecond)
+	s.StartSpecRefresh(t.Context(), config.SpecRefreshConfig{Interval: 20 * time.Millisecond})
 	defer s.Close()
 
 	time.Sleep(200 * time.Millisecond)

@@ -70,3 +70,38 @@ gateway:
 	require.NoError(t, v.Unmarshal(&conf))
 	require.Zero(t, conf.Gateway.SpecRefresh.Interval)
 }
+
+func TestSpecRefreshConfig_ValidateWithContext_RejectOn(t *testing.T) {
+	for _, level := range []string{"", "NONE", "INFO", "WARN", "ERR", "err"} {
+		t.Run(level, func(t *testing.T) {
+			c := SpecRefreshConfig{RejectOn: level}
+			require.NoError(t, c.ValidateWithContext(t.Context()))
+		})
+	}
+}
+
+func TestGateway_ValidateWithContext_SpecRefreshRejectOn_Invalid(t *testing.T) {
+	g := Gateway{
+		EncryptKey:  validEncryptKey,
+		SpecRefresh: SpecRefreshConfig{RejectOn: "BREAKING"},
+	}
+	err := g.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "RejectOn")
+}
+
+func TestSpecRefreshConfig_UnmarshalFromYAML_RejectOn(t *testing.T) {
+	const yaml = `
+gateway:
+  specRefresh:
+    interval: 5m
+    rejectOn: ERR
+`
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(strings.NewReader(yaml)))
+
+	var conf Config
+	require.NoError(t, v.Unmarshal(&conf))
+	require.Equal(t, "ERR", conf.Gateway.SpecRefresh.RejectOn)
+}
