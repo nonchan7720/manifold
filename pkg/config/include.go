@@ -11,34 +11,72 @@ import (
 )
 
 // includeKey is the top-level key listing extra config files to merge into
-// the file that declares it (similar to LiteLLM's include directive).
+// the main config (similar to LiteLLM's include directive).
 const includeKey = "include"
 
-// loadWithIncludes reads the YAML file at path and resolves its top-level
-// include list, returning the merged document.
-//
-// Included files are merged in list order and the including file is merged
-// last, so its own values win over anything it includes. Maps are merged
-// recursively (keys compared case-insensitively, as viper does); any other
-// value, including lists, is replaced as a whole. Include paths are resolved
-// relative to the including file, may reference ${VAR} environment variables
-// and may be glob patterns (matched files are merged in lexical order).
-// Included files may declare include themselves; cycles are an error.
-func loadWithIncludes(path string) (map[string]any, error) {
-	return loadIncludeFile(path, map[string]bool{})
-}
+// includableKeys are the only top-level keys an included file may set.
+var includableKeys = []string{"gateway"}
 
-func loadIncludeFile(path string, visiting map[string]bool) (map[string]any, error) {
+// loadWithIncludes reads the YAML config file at path and resolves its
+// top-level include list, returning the merged document.
+//
+// Included files may only set the keys in includableKeys; anything else,
+// including a nested include, is an error. They are merged in list order and
+// the main file is merged last, so its own values win over anything it
+// includes. Maps are merged recursively (keys compared case-insensitively, as
+// viper does); any other value, including lists, is replaced as a whole.
+// Include paths are resolved relative to the main file, may reference ${VAR}
+// environment variables and may be glob patterns (matched files are merged in
+// lexical order).
+func loadWithIncludes(path string) (map[string]any, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	if visiting[abs] {
-		return nil, fmt.Errorf("config include cycle detected at %s", abs)
+	doc, err := readYAMLFile(abs)
+	if err != nil {
+		return nil, err
 	}
-	visiting[abs] = true
-	defer delete(visiting, abs)
+	includes, err := includePaths(doc, filepath.Dir(abs))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", abs, err)
+	}
+	delete(doc, includeKey)
 
+	merged := map[string]any{}
+	for _, inc := range includes {
+		child, err := readYAMLFile(inc)
+		if err != nil {
+			return nil, err
+		}
+		for key := range child {
+			if !isIncludableKey(key) {
+				return nil, fmt.Errorf(
+					"included config file %s: key %q is not allowed (allowed: %s)",
+					inc, key, strings.Join(includableKeys, ", "),
+				)
+			}
+		}
+		mergeConfigMaps(merged, child)
+	}
+	mergeConfigMaps(merged, doc)
+	return merged, nil
+}
+
+func isIncludableKey(key string) bool {
+	for _, allowed := range includableKeys {
+		if strings.EqualFold(key, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func readYAMLFile(path string) (map[string]any, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	// The path comes from the operator's own config file, not from requests.
 	raw, err := os.ReadFile(filepath.Clean(abs))
 	if err != nil {
@@ -51,23 +89,7 @@ func loadIncludeFile(path string, visiting map[string]bool) (map[string]any, err
 	if doc == nil {
 		doc = map[string]any{}
 	}
-
-	includes, err := includePaths(doc, filepath.Dir(abs))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", abs, err)
-	}
-	delete(doc, includeKey)
-
-	merged := map[string]any{}
-	for _, inc := range includes {
-		child, err := loadIncludeFile(inc, visiting)
-		if err != nil {
-			return nil, err
-		}
-		mergeConfigMaps(merged, child)
-	}
-	mergeConfigMaps(merged, doc)
-	return merged, nil
+	return doc, nil
 }
 
 // includePaths returns the files referenced by doc's include key, resolved

@@ -305,12 +305,12 @@ Configuration values support environment variable expansion in the form `${VAR}`
 
 ### Splitting the config across files (`include`)
 
-A top-level `include` list merges other YAML files into the config, similar to LiteLLM's include directive — e.g. to keep `gateway` in its own file:
+A top-level `include` list merges the `gateway` section from other YAML files into the config, similar to LiteLLM's include directive:
 
 ```yaml
 # config.yaml
 include:
-  - gateway.yaml        # relative to this file
+  - gateway.yaml        # relative to this file (may only contain `gateway`)
   - conf.d/*.yaml       # glob patterns are merged in lexical order
 sqlite:
   path: ./tmp/manifold.db
@@ -323,10 +323,10 @@ gateway:
   encryptKey: ${ENCRYPT_KEY}
 ```
 
-- Included files are merged in list order, and the including file is merged last, so its own values win.
-- Maps (e.g. `gateway`, `mcpServers`) are merged recursively; lists and scalars are replaced as a whole.
-- Paths are relative to the including file and may use `${VAR}` expansion. A missing file is an error (a glob with no match is not).
-- Included files may declare `include` themselves; include cycles are rejected.
+- Included files may only contain the `gateway` key; any other key (including a nested `include`) is an error.
+- Included files are merged in list order, and the main config file is merged last, so its own values win.
+- Maps are merged recursively; lists and scalars are replaced as a whole.
+- Paths are relative to the main config file and may use `${VAR}` expansion. A missing file is an error (a glob with no match is not).
 
 ### Connecting to an MCP backend
 

@@ -49,14 +49,10 @@ gateway:
   encryptKey: base
   edge:
     enabled: true
-mcpServers:
-  a: {url: https://a}
 `)
 	writeFile(t, filepath.Join(dir, "override.yaml"), `
 Gateway:
   encryptKey: override
-mcpServers:
-  b: {url: https://b}
 `)
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
@@ -67,34 +63,26 @@ mcpServers:
 			"encryptKey": "override",
 			"edge":       map[string]any{"enabled": true},
 		},
-		"mcpServers": map[string]any{
-			"a": map[string]any{"url": "https://a"},
-			"b": map[string]any{"url": "https://b"},
-		},
 	}, got)
 }
 
-func TestLoadWithIncludes_GlobEnvAndNested(t *testing.T) {
+func TestLoadWithIncludes_GlobAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MANIFOLD_CONF_DIR", "conf.d")
 	writeFile(t, filepath.Join(dir, "config.yaml"), `
 include: ${MANIFOLD_CONF_DIR}/*.yaml
 `)
 	writeFile(t, filepath.Join(dir, "conf.d", "10-gateway.yaml"), `
-include: [../nested/port.yaml]
-gateway: {encryptKey: k}
+gateway: {port: 1, encryptKey: k}
 `)
 	writeFile(t, filepath.Join(dir, "conf.d", "20-port.yaml"), `
 gateway: {port: 2}
-`)
-	writeFile(t, filepath.Join(dir, "nested", "port.yaml"), `
-gateway: {port: 1, key: tls.key}
 `)
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway": map[string]any{"port": 2, "key": "tls.key", "encryptKey": "k"},
+		"gateway": map[string]any{"port": 2, "encryptKey": "k"},
 	}, got)
 }
 
@@ -105,12 +93,19 @@ func TestLoadWithIncludes_Errors(t *testing.T) {
 		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 		require.ErrorContains(t, err, "nope.yaml")
 	})
-	t.Run("cycle", func(t *testing.T) {
+	t.Run("key other than gateway", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [a.yaml]\n")
-		writeFile(t, filepath.Join(dir, "a.yaml"), "include: [config.yaml]\n")
+		writeFile(t, filepath.Join(dir, "a.yaml"), "mcpServers:\n  a: {url: https://a}\n")
 		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
-		require.ErrorContains(t, err, "cycle")
+		require.ErrorContains(t, err, `key "mcpServers" is not allowed`)
+	})
+	t.Run("nested include", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "config.yaml"), "include: [a.yaml]\n")
+		writeFile(t, filepath.Join(dir, "a.yaml"), "include: [b.yaml]\n")
+		_, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+		require.ErrorContains(t, err, `key "include" is not allowed`)
 	})
 	t.Run("invalid type", func(t *testing.T) {
 		dir := t.TempDir()
