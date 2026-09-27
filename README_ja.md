@@ -42,6 +42,7 @@ Server
 
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
+- **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
@@ -122,6 +123,9 @@ manifold openapi generate -c config
 
 # CI: コミット済みファイルが最新の spec と一致するか確認する（何も書き込まない）
 manifold openapi generate -c config --check
+
+# コミット済みファイルと最新の spec の間の破壊的変更を表示する（oasdiff）
+manifold openapi diff -c config
 ```
 
 `openapi tools` の出力例:
@@ -216,6 +220,63 @@ tools:
 - name: Check generated OpenAPI tools files are up to date
   run: manifold openapi generate -c config --check
 ```
+
+埋め込まれた spec に差分がある場合、`--check` はそのサーバーについて [oasdiff](https://github.com/oasdiff/oasdiff) による破壊的変更のサマリーもあわせて表示する。破壊的変更は影響を受ける MCP ツールとともに 1 行ずつ出力し、非破壊的な変更は件数のみ表示する（全件の一覧は後述の `openapi diff` を参照）。終了コードの扱いは変わらず、差分があれば破壊的かどうかに関わらず失敗する:
+
+```text
+server "petstore": drift detected (generated/petstore.yaml)
+  spec changed (sha256 a31896bb… → 3958dc03…)
+  embedded spec differs from what the live spec produces
+  compatibility: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+    error    GET /pet/{petId} (getpetbyid)  new-required-request-parameter: added the new required `query` request parameter `verbose`
+    error    POST /pet/{petId}/uploadImage (uploadfile)  api-path-removed-without-deprecation: api path removed without deprecation
+  + added: listpets (GET /pet)
+  - removed: uploadfile (POST /pet/{petId}/uploadImage)
+  ~ changed: getpetbyid (inputSchema)
+  run "manifold openapi generate" to update
+```
+
+#### 破壊的変更の検出（`openapi diff`）
+
+`manifold openapi diff` は「この上流 spec の変更は MCP クライアントにとって安全か」を確認するためのコマンドです。`tools.file` が設定されている各サーバーについて（未設定のサーバーは stderr にメモを出してスキップ）、コミット済みの生成物ファイルに埋め込まれた spec（base）と、ライブの spec から今生成される spec（revision）を [oasdiff](https://github.com/oasdiff/oasdiff) の後方互換性チェックで比較し、変更ごとにレベル（`error` と `warning` は破壊的、`info` は非破壊的）と、その operation に対応する MCP ツール名を出力する。ファイルへの書き込みは一切行わない。
+
+| フラグ      | デフォルト | 説明 |
+| ----------- | ---------- | ---- |
+| `--server`  | （全サーバー） | 対象を 1 サーバーに絞り込む |
+| `--fail-on` | `ERR`      | このレベル以上の変更が 1 件でもあれば exit 1 にする: `ERR` / `WARN` / `INFO`。`""` または `NONE` を指定すると変更があっても失敗しない（読み込みエラーは引き続き失敗扱い） |
+| `--format`  | `text`     | `text` / `json` / `markdown` |
+
+```bash
+# error レベルの変更があれば失敗する（デフォルト）
+manifold openapi diff -c config
+
+# warning でも失敗させ、Markdown の表で出力する
+manifold openapi diff -c config --fail-on WARN --format markdown
+
+# レポートのみ（変更があっても失敗しない）
+manifold openapi diff -c config --server petstore --format json --fail-on NONE
+```
+
+`text` の出力例:
+
+```text
+petstore: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+  error    GET /pet/{petId} (getpetbyid)  new-required-request-parameter: added the new required `query` request parameter `verbose`
+  error    POST /pet/{petId}/uploadImage (uploadfile)  api-path-removed-without-deprecation: api path removed without deprecation
+  info     -  api-version-not-bumped: a breaking change was detected but the version is still `1.0.0`
+  info     GET /pet (listpets)  endpoint-added: endpoint added
+```
+
+spec に変更がないサーバーは `petstore: no API changes` と表示される。`json` はサーバー名をキーとするオブジェクトで、各サーバーに `breaking` / `errors` / `warnings` / `infos` の件数と、`{level, id, operation, message, tool}` からなる `changes` 配列を持つ（`api-version-not-bumped` のような `paths` 以外の変更では `operation` と `tool` は省略される）。`markdown` はサーバーごとに `### <server>` 見出しと表を出力するので、PR コメントやジョブサマリーにそのまま使える。
+
+CI では再生成の前に実行しておくと、破壊的な上流変更を取り込む PR を、どのツールが壊れるかとあわせて検出できる:
+
+```yaml
+- name: Check upstream OpenAPI changes for breaking changes
+  run: manifold openapi diff -c config --format markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+`>>` でリダイレクトしてもステップの終了コードは `manifold` のものなので、`ERR` レベルの変更があればジョブは失敗し、レポートはジョブサマリーに残る。`generate` と同様、Swagger 2.x の spec はスキップされる。
 
 ## 設定
 

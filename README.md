@@ -42,6 +42,7 @@ Server
 
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
+- **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
@@ -122,6 +123,9 @@ manifold openapi generate -c config
 
 # CI: fail if the committed file doesn't match the live spec, without writing anything
 manifold openapi generate -c config --check
+
+# Show breaking changes between the committed file and the live spec (oasdiff)
+manifold openapi diff -c config
 ```
 
 `openapi tools` output:
@@ -216,6 +220,63 @@ Recommended workflow:
 - name: Check generated OpenAPI tools files are up to date
   run: manifold openapi generate -c config --check
 ```
+
+When the embedded spec differs, `--check` also prints an [oasdiff](https://github.com/oasdiff/oasdiff) breaking-change summary for that server, listing each breaking change with the MCP tool it affects (non-breaking changes are only counted; see `openapi diff` below for the full list). Its exit status is unchanged — any drift still fails:
+
+```text
+server "petstore": drift detected (generated/petstore.yaml)
+  spec changed (sha256 a31896bb… → 3958dc03…)
+  embedded spec differs from what the live spec produces
+  compatibility: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+    error    GET /pet/{petId} (getpetbyid)  new-required-request-parameter: added the new required `query` request parameter `verbose`
+    error    POST /pet/{petId}/uploadImage (uploadfile)  api-path-removed-without-deprecation: api path removed without deprecation
+  + added: listpets (GET /pet)
+  - removed: uploadfile (POST /pet/{petId}/uploadImage)
+  ~ changed: getpetbyid (inputSchema)
+  run "manifold openapi generate" to update
+```
+
+#### Breaking-change detection (`openapi diff`)
+
+`manifold openapi diff` answers "is this upstream spec change safe for my MCP clients?". For every server with `tools.file` configured (others are skipped with a stderr note), it compares the spec embedded in the committed generated file (base) against what the live spec produces now (revision) using [oasdiff](https://github.com/oasdiff/oasdiff)'s backward-compatibility checks, and reports every change with its level — `error` and `warning` are breaking, `info` is not — and the MCP tool whose operation it affects. It never writes.
+
+| Flag        | Default | Description |
+| ----------- | ------- | ----------- |
+| `--server`  | (all)   | Restrict to a single server |
+| `--fail-on` | `ERR`   | Exit non-zero if any change is at or above this level: `ERR`, `WARN` or `INFO`. `""` or `NONE` never fails on changes (load errors still fail) |
+| `--format`  | `text`  | `text`, `json` or `markdown` |
+
+```bash
+# Fail only on errors (default)
+manifold openapi diff -c config
+
+# Fail on warnings too, as a Markdown table
+manifold openapi diff -c config --fail-on WARN --format markdown
+
+# Report only, never fail on changes
+manifold openapi diff -c config --server petstore --format json --fail-on NONE
+```
+
+`text` output:
+
+```text
+petstore: 2 breaking changes (2 errors, 0 warnings), 2 non-breaking
+  error    GET /pet/{petId} (getpetbyid)  new-required-request-parameter: added the new required `query` request parameter `verbose`
+  error    POST /pet/{petId}/uploadImage (uploadfile)  api-path-removed-without-deprecation: api path removed without deprecation
+  info     -  api-version-not-bumped: a breaking change was detected but the version is still `1.0.0`
+  info     GET /pet (listpets)  endpoint-added: endpoint added
+```
+
+A server whose spec is unchanged prints `petstore: no API changes`. `json` output is an object keyed by server name, each with `breaking` / `errors` / `warnings` / `infos` counts and a `changes` array of `{level, id, operation, message, tool}` (`operation` and `tool` are omitted for a change outside `paths`, such as `api-version-not-bumped`). `markdown` renders a `### <server>` section with a table per server, suitable for a PR comment or a job summary.
+
+Run it in CI before regenerating, so a PR that pulls in a breaking upstream change is flagged with exactly which tools break:
+
+```yaml
+- name: Check upstream OpenAPI changes for breaking changes
+  run: manifold openapi diff -c config --format markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+With `>>` the step's exit status is still `manifold`'s, so the job fails on an `ERR`-level change while the report lands in the job summary. Swagger 2.x specs are skipped, as with `generate`.
 
 ## Configuration
 
