@@ -18,6 +18,9 @@ const (
 	MCPTransportHTTP    MCPTransport = "http"
 	MCPTransportStdio   MCPTransport = "stdio"
 	MCPTransportReverse MCPTransport = "reverse"
+	// MCPTransportA2A は agents ディレクティブから生成した Server
+	// （Agent.Server 参照）に設定される。mcpServers 配下では受け付けない。
+	MCPTransportA2A MCPTransport = "a2a"
 )
 
 // DefaultCallTimeout is used when Server.CallTimeout is unset (<= 0) for a
@@ -56,6 +59,10 @@ type Server struct {
 	Origin      string        `mapstructure:"origin"`      // ブリッジ対象タブの許可 origin
 	Identity    string        `mapstructure:"identity"`    // identities プロファイル名の参照
 	CallTimeout time.Duration `mapstructure:"callTimeout"` // 未設定/0以下は DefaultCallTimeout
+
+	// a2a トランスポート用（agents ディレクティブから Agent.Server で生成される）。
+	// mcpServers 配下では設定できない。
+	AgentCardPath string `mapstructure:"agentCardPath"`
 }
 
 // CallTimeoutOrDefault returns CallTimeout, falling back to DefaultCallTimeout
@@ -120,7 +127,8 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			&s.Transport,
 			validation.When(
 				!s.IsOpenAPI(),
-				validation.In(MCPTransportHTTP, MCPTransportStdio, MCPTransportReverse),
+				validation.In(MCPTransportHTTP, MCPTransportStdio, MCPTransportReverse).
+					Error("must be a valid value (a2a agents are configured under agents, not mcpServers)"),
 			),
 			validation.By(func(value any) error {
 				if s.Transport != MCPTransportReverse {
@@ -194,21 +202,8 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		// ランタイムの transport 選択（httpClientRoundTripper）は AuthValue > OAuth2 >
 		// TokenExchange の優先順位で暗黙に1つだけを採用してしまうため、複数同時設定を
 		// 設定ロード時点でエラーにする。いずれか1つ、または設定無しのみを許可する。
-		validation.Field(&s.AuthValue, validation.By(func(value any) error {
-			count := 0
-			if s.AuthValue != nil {
-				count++
-			}
-			if s.OAuth2 != nil {
-				count++
-			}
-			if s.TokenExchange != nil {
-				count++
-			}
-			if count > 1 {
-				return fmt.Errorf("only one of authValue, oauth2, tokenExchange may be configured")
-			}
-			return nil
+		validation.Field(&s.AuthValue, validation.By(func(any) error {
+			return validateSingleAuth(s.AuthValue, s.OAuth2, s.TokenExchange)
 		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
@@ -220,6 +215,12 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
+		validation.Field(&s.AgentCardPath, validation.By(func(any) error {
+			if s.AgentCardPath != "" {
+				return fmt.Errorf("agentCardPath is only supported under agents")
+			}
+			return nil
+		})),
 	)
 }
 
@@ -248,9 +249,15 @@ func (s Server) validateToolsFile(value any) error {
 	return nil
 }
 
-// IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す（reverse を除く）。
+// IsMCPBackend はこの Server が MCP バックエンドモードかどうかを返す（reverse・a2a を除く）。
 func (s *Server) IsMCPBackend() bool {
-	return !s.IsOpenAPI() && s.Transport != "" && s.Transport != MCPTransportReverse
+	return !s.IsOpenAPI() && s.Transport != "" &&
+		s.Transport != MCPTransportReverse && s.Transport != MCPTransportA2A
+}
+
+// IsA2ABackend はこの Server が agents ディレクティブ由来の A2A エージェントかどうかを返す。
+func (s *Server) IsA2ABackend() bool {
+	return s.Transport == MCPTransportA2A
 }
 
 // IsReverseBackend はこの Server が WebMCP reverse connection gateway 経由かどうかを返す。

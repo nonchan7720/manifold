@@ -44,6 +44,7 @@ Server
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
+- **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開（`agents`）。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
@@ -305,12 +306,12 @@ CI では再生成の前に実行しておくと、破壊的な上流変更を�
 
 ### 設定ファイルの分割（`include`）
 
-トップレベルの `include` に列挙した YAML ファイルの `mcpServers` セクションを設定にマージできます（LiteLLM の include ディレクティブと同様）。
+トップレベルの `include` に列挙した YAML ファイルの `mcpServers` と `agents` セクションを設定にマージできます（LiteLLM の include ディレクティブと同様）。
 
 ```yaml
 # config.yaml
 include:
-  - serviceA.yaml       # このファイルからの相対パス（`mcpServers` のみ記述可）
+  - serviceA.yaml       # このファイルからの相対パス（`mcpServers` / `agents` のみ記述可）
   - serviceB.yaml
   - services.d/*.yaml   # glob も可（辞書順でマージ）
 gateway:
@@ -338,7 +339,7 @@ mcpServers:
     description: Google Calendar API
 ```
 
-- include するファイルに書けるのは `mcpServers` キーだけです。それ以外のキー（ネストした `include` を含む）はエラーになります。
+- include するファイルに書けるのは `mcpServers` と `agents` キーだけです。それ以外のキー（ネストした `include` を含む）はエラーになります。
 - include したファイルはリスト順にマージされ、最後にメインの設定ファイル自身がマージされます（メインの値が優先）。名前の異なるサーバーはすべて登録され、同じ名前のサーバーが複数のファイルにある場合は設定がマージされます。
 - map は再帰的にマージされ、リストやスカラー値は丸ごと置き換えられます。
 - パスはメインの設定ファイルからの相対パスで、`${VAR}` 展開が使えます。存在しないファイルはエラーになります（一致なしの glob はエラーになりません）。
@@ -362,6 +363,31 @@ mcpServers:
 sqlite:
   path: ./tmp/manifold.db
 ```
+
+### A2A エージェントへの接続
+
+[A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントを Manifold 経由で公開します。`agents` の各エントリは `mcpServers` と同じく `/mcp/<name>` で提供されます（[`agents.<name>`](#agentsname) 参照）。
+
+```yaml
+agents:
+  translator:
+    url: https://translator.example.com   # Agent Card は <url>/.well-known/agent-card.json から取得
+    description: |
+      翻訳エージェント。呼び出し元のセッション ID を必ず sessionId に渡すこと。
+      _meta.a2a.state が input-required のときは、同じ sessionId と返ってきた taskId で続きを送ること。
+    oauth2:
+      clientID: ${TRANSLATOR_CLIENT_ID}
+      clientSecret: ${TRANSLATOR_CLIENT_SECRET}
+      authURL: https://auth.example.com/authorize
+      tokenURL: https://auth.example.com/token
+```
+
+- Manifold は `url` から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
+- Card の **スキル** が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
+- `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
+- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
+- 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`tool=<スキル ID>` です。
+- ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
 
 ### OpenAPI / Swagger バックエンドへの接続
 
@@ -569,6 +595,23 @@ mcpServers:
 | フィールド | 型     | 説明                                             |
 | ---------- | ------ | ------------------------------------------------ |
 | `url`      | string | トークン交換エンドポイントの絶対 URL（**必須**） |
+
+#### `agents.<name>`
+
+A2A エージェント（[A2A エージェントへの接続](#a2a-エージェントへの接続) 参照）。名前は `mcpServers` と同じ名前空間で、文字種の制限も同じです。両方で同じ名前を使うと設定エラーになります。
+
+| フィールド      | 型                | 説明                                                       |
+| --------------- | ----------------- | ---------------------------------------------------------- |
+| `description`   | string            | 呼び出し元エージェントへの指示文（**必須**）。各スキルのツール description の先頭に付き、`/mcp/list` でも返される |
+| `url`           | string            | Agent Card を取得するベース URL（**必須**）。メッセージは Card に書かれたエンドポイントへ送られる |
+| `agentCardPath` | string            | `url` からの Agent Card のパス（既定 `/.well-known/agent-card.json`） |
+| `headers`       | map[string]string | Agent Card 取得とメッセージ送信に追加するヘッダー          |
+| `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
+| `oauth2`        | object            | OAuth 2.0 設定（[`mcpServers.<name>.oauth2`](#mcpserversnameoauth2) と同じ）。呼び出し元のトークンを付けるのはメッセージ送信のみで、Agent Card は `headers` / `authValue` だけで取得する |
+| `tokenExchange` | object            | Token Exchange 設定（[`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange) と同じ） |
+| `timeout`       | duration          | `message/send` 1 回のタイムアウト（既定 `60s`）            |
+
+`authValue` / `oauth2` / `tokenExchange` は排他で、同時に 1 つだけ設定できます。
 
 #### `oauth.cimd`
 
@@ -1051,7 +1094,7 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 
 | メソッド | パス                 | 説明                                     |
 | -------- | -------------------- | ---------------------------------------- |
-| `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）        |
+| `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）。`{server_name}` は `mcpServers` または `agents` のエントリ |
 | `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前と説明）取得。`?tools=true` でツール一覧も取得（前述の「ポリシー作成用のツール一覧」参照） |
 
 ### OAuth 2.1

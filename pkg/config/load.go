@@ -257,11 +257,18 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	for name, srv := range conf.MCPServer {
 		srv.Name = name
 	}
+	for name, agent := range conf.Agents {
+		agent.Name = name
+	}
 	normalizeReverseOrigins(conf.MCPServer)
 
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
 	}
+	// agents は両方を個別に検証した後でサーバー一覧へ加える。こうすることで
+	// エージェントが Server.ValidateWithContext を通ることはなく、上の名前
+	// 重複チェックも設定ファイルどおりの 2 つの map を比較できる。
+	conf.MCPServer = mergeAgentsIntoServers(conf.MCPServer, conf.Agents)
 	return &conf, nil
 }
 
