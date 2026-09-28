@@ -990,7 +990,7 @@ OPA が bundle をマージする仕組み上、制約が 3 つある。
       "name": "petstore",
       "description": "Swagger Petstore sample API",
       "tools": [
-        {"name": "getpetbyid", "description": "Find pet by ID."}
+        {"name": "getpetbyid", "summary": "Find pet by ID.", "description": "Returns a single pet."}
       ]
     },
     // WebMCP reverse サーバーのツールはブラウザ接続後にしか決まらないため、
