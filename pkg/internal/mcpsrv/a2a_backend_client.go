@@ -124,43 +124,80 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 // EnsureCard は初回利用時に Agent Card（とそのエンドポイントに紐づく SDK
 // クライアント）を取得してキャッシュし、以降はキャッシュを返す。取得失敗は
 // キャッシュしないため、次のリクエストで再試行される。
+//
+// 取得はロックを保持せずに行い、cfg の timeout（CallTimeoutOrDefault）で
+// 打ち切る。応答しない Agent Card サーバーが起動処理や他の呼び出し・Close を
+// 巻き込んで止めないようにするため。同時に取得が走った場合は先に完了した
+// 結果を採用し、後から完了した分は破棄する。
 func (c *A2ABackendClient) EnsureCard(ctx context.Context) (_ *a2a.AgentCard, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/A2ABackendClient/EnsureCard")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
+	closed, card := c.closed, c.card
+	c.mu.Unlock()
+	if closed {
 		return nil, fmt.Errorf("agent %s: client closed", c.name)
 	}
-	if c.card != nil {
-		return c.card, nil
+	if card != nil {
+		return card, nil
 	}
+
+	card, client, err := c.resolveCard(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	switch {
+	case c.closed:
+		c.mu.Unlock()
+		_ = client.Destroy()
+		return nil, fmt.Errorf("agent %s: client closed", c.name)
+	case c.card != nil:
+		// 別の呼び出しが先に取得を終えていた。そちらを採用する。
+		card = c.card
+		c.mu.Unlock()
+		_ = client.Destroy()
+		return card, nil
+	default:
+		c.card = card
+		c.client = client
+		c.mu.Unlock()
+		return card, nil
+	}
+}
+
+// resolveCard は Agent Card を取得し、そのエンドポイントへ接続する SDK
+// クライアントを組み立てる。ロックを保持せずに呼ぶこと。
+func (c *A2ABackendClient) resolveCard(
+	ctx context.Context,
+) (*a2a.AgentCard, *a2aclient.Client, error) {
+	resolveCtx, cancel := context.WithTimeout(ctx, c.cfg.CallTimeoutOrDefault())
+	defer cancel()
 
 	resolver := &agentcard.Resolver{Client: c.cardHTTPClient, CardParser: parseAgentCard}
 	var opts []agentcard.ResolveOption
 	if c.cfg.AgentCardPath != "" {
 		opts = append(opts, agentcard.WithPath(c.cfg.AgentCardPath))
 	}
-	card, err := resolver.Resolve(ctx, c.cfg.URL, opts...)
+	card, err := resolver.Resolve(resolveCtx, c.cfg.URL, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("agent %s: resolve agent card: %w", c.name, err)
+		return nil, nil, fmt.Errorf("agent %s: resolve agent card: %w", c.name, err)
 	}
 	if len(card.SupportedInterfaces) == 0 {
-		return nil, fmt.Errorf("agent %s: agent card declares no endpoint", c.name)
+		return nil, nil, fmt.Errorf("agent %s: agent card declares no endpoint", c.name)
 	}
 
-	client, err := a2aclient.NewFromCard(ctx, card,
+	client, err := a2aclient.NewFromCard(resolveCtx, card,
 		a2aclient.WithDefaultsDisabled(),
 		a2aclient.WithJSONRPCTransport(c.messageHTTPClient),
 		a2av0.WithJSONRPCTransport(a2av0.JSONRPCTransportConfig{Client: c.messageHTTPClient}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("agent %s: connect: %w", c.name, err)
+		return nil, nil, fmt.Errorf("agent %s: connect: %w", c.name, err)
 	}
-	c.card = card
-	c.client = client
-	return card, nil
+	return card, client, nil
 }
 
 // Close はキャッシュした Card/クライアントを破棄し、以降の利用を拒否する。

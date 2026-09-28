@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	a2alegacy "github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -331,6 +332,50 @@ func TestA2ABackendClient_EnsureCard_FetchFailureIsRetried(t *testing.T) {
 	card, err := c.EnsureCard(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, "Translator", card.Name)
+}
+
+func TestA2ABackendClient_EnsureCard_TimesOutOnUnresponsiveServer(t *testing.T) {
+	t.Setenv("TEST", "true")
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := (&config.Agent{
+		Name: "translator", Description: "d", URL: srv.URL, Timeout: 100 * time.Millisecond,
+	}).Server()
+	c := NewA2ABackendClient("translator", cfg, nil)
+	t.Cleanup(c.Close)
+
+	start := time.Now()
+	_, err := c.EnsureCard(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "resolve agent card")
+	require.Less(t, time.Since(start), 5*time.Second,
+		"card resolution is bounded by the agent's timeout")
+
+	// 取得中もロックを保持しないので、Close は取得完了を待たずに返る。
+	done := make(chan struct{})
+	go func() {
+		_, _ = c.EnsureCard(context.Background())
+		close(done)
+	}()
+	closed := make(chan struct{})
+	go func() {
+		c.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked behind an in-flight card fetch")
+	}
+	<-done
 }
 
 // --- tools/call: リクエストの形 ---
