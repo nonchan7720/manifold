@@ -1,0 +1,29 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+# A2A (Agent2Agent) agents. Each entry is served at /mcp/<name>: the agent's
+# Agent Card skills become MCP tools, and every tools/call is an A2A
+# message/send to the endpoint the card declares.
+agents:
+  translator:
+    # Base URL the Agent Card is fetched from (<url>/.well-known/agent-card.json).
+    # Messages go to the URL inside the card, not to this one.
+    url: ${TRANSLATOR_AGENT_URL:-http://localhost:10000}
+    # Instruction for the calling agent. It is placed at the top of every
+    # skill's tool description and returned by /mcp/list.
+    description: |
+      Translation agent. Pass the caller's session id as sessionId on every call
+      so follow-up messages stay in the same conversation. When a result comes
+      back with _meta.a2a.state = input-required, answer with the same sessionId
+      and the taskId from _meta.a2a.taskId.
+    # timeout: 60s
+    # headers:
+    #   X-Tenant: acme
+    # authValue:
+    #   header: X-Api-Key
+    #   value: ${TRANSLATOR_API_KEY}
+
+sqlite:
+  path: ./tmp/manifold.db

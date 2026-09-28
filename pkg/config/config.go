@@ -13,6 +13,9 @@ import (
 type Config struct {
 	Gateway   Gateway `mapstructure:"gateway"`
 	MCPServer Servers `mapstructure:"mcpServers"`
+	// Agents は検証後に MCPServer へ（transport a2a として）マージされる。
+	// mergeAgentsIntoServers を参照。
+	Agents Agents `mapstructure:"agents"`
 
 	Redis  *RedisConfig  `mapstructure:"redis"`
 	SQLite *SQLiteConfig `mapstructure:"sqlite"`
@@ -72,6 +75,24 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 					)
 				}
 				origins[normalized] = key
+			}
+			return nil
+		})),
+		validation.Field(&c.Agents, validation.By(func(value any) error {
+			mp, ok := value.(Agents)
+			if !ok {
+				return fmt.Errorf("type error: %T", value)
+			}
+			for key := range mp {
+				if !pathRegex.MatchString(key) {
+					return fmt.Errorf("key '%s' contains invalid characters", key)
+				}
+				if _, dup := c.MCPServer[key]; dup {
+					return fmt.Errorf(
+						"name '%s' is used by both agents and mcpServers; names must be unique",
+						key,
+					)
+				}
 			}
 			return nil
 		})),

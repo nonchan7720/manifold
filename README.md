@@ -44,6 +44,7 @@ Server
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
+- **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools (`agents`), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
@@ -305,12 +306,12 @@ Configuration values support environment variable expansion in the form `${VAR}`
 
 ### Splitting the config across files (`include`)
 
-A top-level `include` list merges the `mcpServers` section from other YAML files into the config, similar to LiteLLM's include directive:
+A top-level `include` list merges the `mcpServers` and `agents` sections from other YAML files into the config, similar to LiteLLM's include directive:
 
 ```yaml
 # config.yaml
 include:
-  - serviceA.yaml       # relative to this file (may only contain `mcpServers`)
+  - serviceA.yaml       # relative to this file (may only contain `mcpServers` / `agents`)
   - serviceB.yaml
   - services.d/*.yaml   # glob patterns are merged in lexical order
 gateway:
@@ -338,7 +339,7 @@ mcpServers:
     description: Google Calendar API
 ```
 
-- Included files may only contain the `mcpServers` key; any other key (including a nested `include`) is an error.
+- Included files may only contain the `mcpServers` and `agents` keys; any other key (including a nested `include`) is an error.
 - Included files are merged in list order, and the main config file is merged last, so its own values win. Servers with different names are combined; a server defined in several files has its settings merged.
 - Maps are merged recursively; lists and scalars are replaced as a whole.
 - Paths are relative to the main config file and may use `${VAR}` expansion. A missing file is an error (a glob with no match is not).
@@ -362,6 +363,31 @@ mcpServers:
 sqlite:
   path: ./tmp/manifold.db
 ```
+
+### Connecting to an A2A agent
+
+Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent through Manifold. Each entry under `agents` is served at `/mcp/<name>` like an `mcpServers` entry (see [`agents.<name>`](#agentsname)).
+
+```yaml
+agents:
+  translator:
+    url: https://translator.example.com   # Agent Card is fetched from <url>/.well-known/agent-card.json
+    description: |
+      Translation agent. Always pass the caller's session id as sessionId.
+      On _meta.a2a.state = input-required, reply with the same sessionId and the returned taskId.
+    oauth2:
+      clientID: ${TRANSLATOR_CLIENT_ID}
+      clientSecret: ${TRANSLATOR_CLIENT_SECRET}
+      authURL: https://auth.example.com/authorize
+      tokenURL: https://auth.example.com/token
+```
+
+- Manifold resolves the **Agent Card** (v0.3 and v1.0 formats) from `url` and sends messages to the endpoint the card declares — `url` is never used as the message endpoint. The card is fetched at startup (a failure only logs a warning) and again on the first request if needed, then cached for the lifetime of the process.
+- Every **skill** in the card becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
+- `tools/call` arguments: `sessionId` (**required** — the calling agent's session id, forwarded as the A2A `contextId`), `taskId` (optional; continue a task, e.g. after `input-required`), and at least one of `message` (text), `data` (JSON object, sent as a data part) or `files` (each written like an OpenAPI file input — a base64 string / URL, or `{url|base64|text, filename, contentType}` — see [Binary fields and responses](#binary-fields-and-responses)). The message text is sent as-is; the chosen skill id is passed in the message `metadata.skillId` since A2A has no per-request skill selector.
+- Results: text and data parts become text content (data parts are also returned as `structuredContent`), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
+- Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `tool=<skill id>`.
+- Streaming (`message/stream`), task polling and push notifications are not used; every call is a blocking `message/send`.
 
 ### Connecting to an OpenAPI / Swagger backend
 
@@ -569,6 +595,23 @@ Exchanges the API key received from the client for an OAuth token at the specifi
 | Field | Type   | Description                                                |
 | ----- | ------ | ---------------------------------------------------------- |
 | `url` | string | Absolute URL of the token exchange endpoint (**required**) |
+
+#### `agents.<name>`
+
+A2A agents (see [Connecting to an A2A agent](#connecting-to-an-a2a-agent)). Names share the `mcpServers` namespace and follow the same character rules; a name used by both is a configuration error.
+
+| Field           | Type              | Description                                                          |
+| --------------- | ----------------- | -------------------------------------------------------------------- |
+| `description`   | string            | Instruction for the calling agent (**required**). Prepended to every skill's tool description and returned by `/mcp/list` |
+| `url`           | string            | Base URL the Agent Card is resolved from (**required**). Messages go to the endpoint declared in the card |
+| `agentCardPath` | string            | Agent Card path relative to `url` (default `/.well-known/agent-card.json`) |
+| `headers`       | map[string]string | Extra headers added to Agent Card and message requests               |
+| `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
+| `oauth2`        | object            | OAuth 2.0 settings (same as [`mcpServers.<name>.oauth2`](#mcpserversnameoauth2)). Only message requests carry the caller's token; the Agent Card is fetched with `headers` / `authValue` only |
+| `tokenExchange` | object            | Token Exchange settings (same as [`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange)) |
+| `timeout`       | duration          | Timeout of one `message/send` (default `60s`)                        |
+
+`authValue` / `oauth2` / `tokenExchange` are mutually exclusive.
 
 #### `oauth.cimd`
 
@@ -1052,7 +1095,7 @@ The HTTP endpoints exposed by Manifold.
 
 | Method | Path                 | Description                                      |
 | ------ | -------------------- | ------------------------------------------------ |
-| `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP)                   |
+| `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP). `{server_name}` is an `mcpServers` or `agents` entry |
 | `GET`  | `/mcp/list`          | List registered servers (names and descriptions). Add `?tools=true` for the tool catalog (see "Tool catalog for policy authoring" above) |
 
 ### OAuth 2.1

@@ -26,6 +26,7 @@ type MCPServer struct {
 	srv            *mcp.Server
 	appSrv         map[string]*mcp.Server
 	backendClients map[string]*MCPBackendClient
+	a2aClients     map[string]*A2ABackendClient
 
 	// mu guards openAPIStates, refreshCancel and refreshRejectOn, which the
 	// spec refresh goroutines touch concurrently with request handling.
@@ -72,6 +73,7 @@ func NewMCPServer(
 		),
 		appSrv:         map[string]*mcp.Server{},
 		backendClients: map[string]*MCPBackendClient{},
+		a2aClients:     map[string]*A2ABackendClient{},
 		openAPIStates:  map[string]*openAPIServerState{},
 		mediaUploader:  mediaUploader,
 	}
@@ -132,8 +134,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		}
 
 		srvOpts := &mcp.ServerOptions{}
-		if server.IsMCPBackend() {
-			// MCP バックエンドはツールを登録せず毎回転送するため、
+		passthrough := server.IsMCPBackend() || server.IsA2ABackend()
+		if passthrough {
+			// MCP / A2A バックエンドはツールを登録せず毎回転送するため、
 			// tools capability の広告を明示する（listChanged はゲートウェイが
 			// バックエンドの通知を転送しないため広告しない）。
 			srvOpts.Capabilities = &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
@@ -150,11 +153,23 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			s.backendClients[name] = bc
 			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(bc))
 		}
+		if server.IsA2ABackend() {
+			// A2A エージェント: Agent Card のスキルを tools/list で返し、
+			// tools/call を message/send へ転送する。Card は起動時に取得を試み、
+			// 失敗しても最初のリクエストで取り直す。
+			ac := NewA2ABackendClient(name, server, s.mediaService())
+			s.a2aClients[name] = ac
+			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(ac))
+			if _, err := ac.EnsureCard(ctx); err != nil {
+				slog.WarnContext(ctx, "a2a agent card fetch failed; retrying on first request",
+					slog.String("agent", name), slog.Any("error", err))
+			}
+		}
 		if s.middlewareFn != nil {
 			srv.AddReceivingMiddleware(s.middlewareFn(name)...)
 		}
 
-		if !server.IsMCPBackend() {
+		if !passthrough {
 			// OpenAPI モード
 			if err := s.registerOpenAPIServer(ctx, name, server, srv); err != nil {
 				return err
@@ -180,6 +195,22 @@ func (s *MCPServer) BackendClient(name string) (*MCPBackendClient, bool) {
 	return bc, ok
 }
 
+// A2AClient は指定された名前の A2A エージェントクライアントを返す。
+// agents ディレクティブ由来のサーバーにのみ存在する。
+func (s *MCPServer) A2AClient(name string) (*A2ABackendClient, bool) {
+	ac, ok := s.a2aClients[name]
+	return ac, ok
+}
+
+// mediaService はツール結果のバイナリをアップロードする MediaService を返す。
+// 未設定なら noop アップローダーを返す。
+func (s *MCPServer) mediaService() storage.MediaService {
+	if s.mediaUploader == nil {
+		return storage.NewNoopUploader()
+	}
+	return s.mediaUploader
+}
+
 // ToolCatalog returns the full (name, description) tool list for name,
 // independent of any per-caller tools/list authz filtering (see
 // authz_middleware.go): OpenAPI mode reads it from openAPIStates, MCP
@@ -202,6 +233,9 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 	if bc, ok := s.backendClients[name]; ok {
 		return bc.ListToolInfos(ctx)
 	}
+	if ac, ok := s.a2aClients[name]; ok {
+		return ac.ListToolInfos(ctx)
+	}
 
 	return nil, fmt.Errorf("not found mcp server: %s", name)
 }
@@ -211,6 +245,9 @@ func (s *MCPServer) Close() {
 	s.stopSpecRefresh()
 	for _, bc := range s.backendClients {
 		bc.Close()
+	}
+	for _, ac := range s.a2aClients {
+		ac.Close()
 	}
 }
 
