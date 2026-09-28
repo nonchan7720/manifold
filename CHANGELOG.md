@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.17.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **config:** skip directories when expanding include globs ([#214](https://github.com/nonchan7720/manifold/issues/214)) ([b1e2100](https://github.com/nonchan7720/manifold/commit/b1e21000979fb3bde511991043cf26f64f6a5d40))
+
 ## [1.17.0](https://github.com/nonchan7720/manifold/compare/v1.16.0...v1.17.0) (2026-09-28)
 
 
