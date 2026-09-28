@@ -221,7 +221,9 @@ func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
 
 	catalog, err := s.ToolCatalog(t.Context(), "api")
 	require.NoError(t, err)
-	require.Equal(t, []ToolInfo{{Name: "ping", Description: "GET /ping"}}, catalog)
+	// specWithOperations emits neither summary nor description, so the catalog
+	// reports both as "" rather than the "GET /ping" MCP fallback description.
+	require.Equal(t, []ToolInfo{{Name: "ping"}}, catalog)
 
 	spec.setBody(specWithOperations("ping", "pong"))
 	changed, err := s.refreshServer(t.Context(), "api")
@@ -230,10 +232,7 @@ func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
 
 	catalog, err = s.ToolCatalog(t.Context(), "api")
 	require.NoError(t, err)
-	require.ElementsMatch(t, []ToolInfo{
-		{Name: "ping", Description: "GET /ping"},
-		{Name: "pong", Description: "GET /pong"},
-	}, catalog)
+	require.ElementsMatch(t, []ToolInfo{{Name: "ping"}, {Name: "pong"}}, catalog)
 }
 
 func TestMCPServer_RefreshServer_RemovedOperation(t *testing.T) {

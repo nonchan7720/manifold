@@ -1033,7 +1033,7 @@ Writing a policy requires knowing every `<server>/<tool>` pair that exists, but 
       "name": "petstore",
       "description": "Swagger Petstore sample API",
       "tools": [
-        {"name": "getpetbyid", "description": "Find pet by ID."}
+        {"name": "getpetbyid", "summary": "Find pet by ID.", "description": "Returns a single pet."}
       ]
     },
     // A WebMCP reverse server's tools only exist per-browser-connection, so

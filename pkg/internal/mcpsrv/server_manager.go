@@ -289,7 +289,11 @@ func attachTools(
 	tools := register.ListTools()
 	infos := make([]ToolInfo, 0, len(tools))
 	for _, tool := range tools {
-		infos = append(infos, ToolInfo{Name: tool.tool.Name, Description: tool.tool.Description})
+		infos = append(infos, ToolInfo{
+			Name:        tool.tool.Name,
+			Summary:     tool.summary,
+			Description: tool.description,
+		})
 		srv.AddTool(
 			&tool.tool,
 			func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {

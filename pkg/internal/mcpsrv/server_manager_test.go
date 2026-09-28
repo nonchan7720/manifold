@@ -495,7 +495,11 @@ func TestMCPServer_ToolCatalog_OpenAPIMode(t *testing.T) {
 
 	tools, err := s.ToolCatalog(context.Background(), "petstore")
 	require.NoError(t, err)
-	require.Contains(t, tools, ToolInfo{Name: "getpetbyid", Description: "Find pet by ID."})
+	require.Contains(t, tools, ToolInfo{
+		Name:        "getpetbyid",
+		Summary:     "Find pet by ID.",
+		Description: "Returns a single pet.",
+	})
 }
 
 func TestMCPServer_ToolCatalog_UnknownServer(t *testing.T) {

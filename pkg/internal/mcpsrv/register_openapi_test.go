@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -152,6 +153,58 @@ func TestRegisterSwagger_Description_UsesSummary(t *testing.T) {
 			require.Equal(t, tc.wantSummary, tool.tool.Description)
 		})
 	}
+}
+
+// TestRegisterOpenAPI_Docs_KeepsSummaryAndDescriptionVerbatim: the raw
+// operation summary/description are retained separately from the derived
+// MCP description, and each is "" when the spec omits it.
+func TestRegisterOpenAPI_Docs_KeepsSummaryAndDescriptionVerbatim(t *testing.T) {
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_oas.json", "", nil)
+	require.NoError(t, err)
+
+	tool := findTool(t, r, "getpetbyid")
+	require.NotNil(t, tool)
+	require.Equal(t, "Find pet by ID.", tool.summary)
+	require.Equal(t, "Returns a single pet.", tool.description)
+}
+
+func TestRegisterSwagger_Docs_KeepsSummaryAndDescriptionVerbatim(t *testing.T) {
+	r, err := RegisterOpenAPI(t.Context(), "fixtures/petstore_swagger.json", "", nil)
+	require.NoError(t, err)
+
+	tool := findTool(t, r, "getpetbyid")
+	require.NotNil(t, tool)
+	require.Equal(t, "Find pet by ID", tool.summary)
+	require.Equal(t, "Returns a single pet", tool.description)
+}
+
+func TestRegisterOpenAPI_Docs_EmptyWhenSpecOmitsThem(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(`{
+  "openapi": "3.0.0",
+  "info": {"title": "t", "version": "1"},
+  "paths": {
+    "/only-desc": {"get": {"operationId": "onlyDesc", "description": "desc only",
+      "responses": {"200": {"description": "ok"}}}},
+    "/none": {"get": {"operationId": "none", "responses": {"200": {"description": "ok"}}}}
+  }
+}`), 0o600))
+
+	r, err := RegisterOpenAPI(t.Context(), specPath, "", nil)
+	require.NoError(t, err)
+
+	onlyDesc := findTool(t, r, "onlydesc")
+	require.NotNil(t, onlyDesc)
+	require.Equal(t, "", onlyDesc.summary)
+	require.Equal(t, "desc only", onlyDesc.description)
+	require.Equal(t, "desc only", onlyDesc.tool.Description)
+
+	none := findTool(t, r, "none")
+	require.NotNil(t, none)
+	require.Equal(t, "", none.summary)
+	require.Equal(t, "", none.description)
+	require.Equal(t, "GET /none", none.tool.Description)
 }
 
 func TestRegisterOpenAPI_InputSchema(t *testing.T) {
