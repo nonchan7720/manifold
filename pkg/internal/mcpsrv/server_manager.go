@@ -202,8 +202,8 @@ func (s *MCPServer) A2AClient(name string) (*A2ABackendClient, bool) {
 	return ac, ok
 }
 
-// mediaService returns the MediaService tool results upload binaries to,
-// or the noop uploader when none was configured.
+// mediaService はツール結果のバイナリをアップロードする MediaService を返す。
+// 未設定なら noop アップローダーを返す。
 func (s *MCPServer) mediaService() storage.MediaService {
 	if s.mediaUploader == nil {
 		return storage.NewNoopUploader()

@@ -13,8 +13,8 @@ import (
 type Config struct {
 	Gateway   Gateway `mapstructure:"gateway"`
 	MCPServer Servers `mapstructure:"mcpServers"`
-	// Agents are merged into MCPServer (as transport a2a) after validation;
-	// see mergeAgentsIntoServers.
+	// Agents は検証後に MCPServer へ（transport a2a として）マージされる。
+	// mergeAgentsIntoServers を参照。
 	Agents Agents `mapstructure:"agents"`
 
 	Redis  *RedisConfig  `mapstructure:"redis"`

@@ -6,12 +6,11 @@ import (
 	"io"
 )
 
-// FileInputSchema returns the MCP input-schema fragment for a file-input
-// value, identical to what a `format: binary` OpenAPI property generates
-// (see binaryFieldMCPSchema): a bare string (base64 content or a URL) or an
-// explicit {url, base64, text, content, filename, contentType} object, marked
-// with `_meta.manifold.file: true`. Non-OpenAPI backends use it so a file
-// argument is written the same way everywhere.
+// FileInputSchema はファイル入力値の MCP input schema 断片を返す。OpenAPI の
+// `format: binary` プロパティが生成するもの（binaryFieldMCPSchema 参照）と同一で、
+// 文字列（base64 の内容または URL）か、明示的な {url, base64, text, content,
+// filename, contentType} オブジェクトを受け付け、`_meta.manifold.file: true` を付ける。
+// OpenAPI 以外のバックエンドでも、ファイル引数の書き方を揃えるために使う。
 func FileInputSchema(description string) map[string]any {
 	return binaryFieldMCPSchema(description, map[string]any{
 		"manifold": map[string]any{
@@ -21,17 +20,17 @@ func FileInputSchema(description string) map[string]any {
 	})
 }
 
-// ResolvedFile is one file argument resolved by ResolveFileInput.
+// ResolvedFile は ResolveFileInput で解決したファイル引数 1 つ。
 type ResolvedFile struct {
 	Data        []byte
 	Filename    string
 	ContentType string
 }
 
-// ResolveFileInput resolves a value shaped by FileInputSchema into bytes
-// under the package-level FileFetchConfig (URL allow list, size cap), the
-// same way OpenAPI multipart uploads do (writeMultipartFile). name only
-// labels errors. An unset contentType is sniffed from the content.
+// ResolveFileInput は FileInputSchema 形式の値を、パッケージレベルの
+// FileFetchConfig（URL 許可リスト、サイズ上限）に従ってバイト列へ解決する。
+// OpenAPI の multipart アップロード（writeMultipartFile）と同じ処理。name は
+// エラーメッセージのラベルにのみ使う。contentType が無ければ内容から推定する。
 func ResolveFileInput(ctx context.Context, name string, value any) (ResolvedFile, error) {
 	filename := defaultFileFieldName
 	filenameExplicit := false
@@ -60,9 +59,9 @@ func ResolveFileInput(ctx context.Context, name string, value any) (ResolvedFile
 	defer body.Close() //nolint: errcheck
 
 	cfg := getFileFetchConfig()
-	// resolveFileFieldValue bounds base64/text by MaxSize itself and
-	// fetchFileFromURL wraps the download in a MaxSize reader, so LimitReader
-	// here is only a guard against a stream that ignores those.
+	// base64/text は resolveFileFieldValue 自身が MaxSize で制限し、URL は
+	// fetchFileFromURL が MaxSize の reader で包むため、ここでの LimitReader は
+	// それらを無視するストリームに対する保険にすぎない。
 	data, err := io.ReadAll(io.LimitReader(body, cfg.MaxSize+1))
 	if err != nil {
 		return ResolvedFile{}, fmt.Errorf("%q: read file content: %w", name, err)

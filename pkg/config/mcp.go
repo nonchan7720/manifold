@@ -18,8 +18,8 @@ const (
 	MCPTransportHTTP    MCPTransport = "http"
 	MCPTransportStdio   MCPTransport = "stdio"
 	MCPTransportReverse MCPTransport = "reverse"
-	// MCPTransportA2A is set on the Server entries built from the agents
-	// directive (see Agent.Server); it is not accepted under mcpServers.
+	// MCPTransportA2A は agents ディレクティブから生成した Server
+	// （Agent.Server 参照）に設定される。mcpServers 配下では受け付けない。
 	MCPTransportA2A MCPTransport = "a2a"
 )
 

@@ -9,29 +9,29 @@ import (
 	"github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
-// DefaultAgentCardPath is the well-known Agent Card location fetched when
-// Agent.AgentCardPath is unset.
+// DefaultAgentCardPath は Agent.AgentCardPath 未設定時に取得する
+// well-known の Agent Card パス。
 const DefaultAgentCardPath = "/.well-known/agent-card.json"
 
-// Agents is the top-level agents directive: A2A (Agent2Agent) agents exposed
-// through the gateway, keyed by the name used in the /mcp/{name} path. The
-// names share one namespace with mcpServers.
+// Agents はトップレベルの agents ディレクティブ。ゲートウェイ経由で公開する
+// A2A（Agent2Agent）エージェントを、/mcp/{name} パスに使う名前をキーに持つ。
+// 名前は mcpServers と同じ名前空間を共有する。
 type Agents map[string]*Agent
 
-// Agent configures one A2A agent. The gateway fetches its Agent Card from
-// URL (+ AgentCardPath) and sends messages to the endpoint the card declares;
-// URL itself is never used as the message endpoint.
+// Agent は A2A エージェント 1 つの設定。ゲートウェイは URL（+ AgentCardPath）
+// から Agent Card を取得し、メッセージは Card に書かれたエンドポイントへ送る。
+// URL 自体をメッセージの送信先に使うことはない。
 type Agent struct {
 	Name string
 
-	// Description is an instruction for the calling agent: how and when to
-	// use this agent. It is prepended to every skill's tool description and
-	// returned as the agent's description in /mcp/list.
+	// Description は呼び出し元エージェントへの指示文（このエージェントを
+	// いつ・どう使うか）。各スキルのツール description の先頭に付き、
+	// /mcp/list ではエージェントの description として返される。
 	Description string `mapstructure:"description"`
 
-	// URL is the base URL the Agent Card is resolved from.
+	// URL は Agent Card を取得するベース URL。
 	URL string `mapstructure:"url"`
-	// AgentCardPath overrides the Agent Card path relative to URL.
+	// AgentCardPath は URL からの Agent Card のパスを上書きする。
 	AgentCardPath string `mapstructure:"agentCardPath"`
 
 	ExtraHeaders map[string]string `mapstructure:"headers"`
@@ -40,8 +40,7 @@ type Agent struct {
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
 
-	// Timeout bounds one message/send round trip; unset/0 uses
-	// DefaultCallTimeout.
+	// Timeout は message/send 1 回のタイムアウト。未設定/0 は DefaultCallTimeout。
 	Timeout time.Duration `mapstructure:"timeout"`
 }
 
@@ -60,8 +59,8 @@ func (a Agent) ValidateWithContext(ctx context.Context) error {
 	)
 }
 
-// validateSingleAuth rejects more than one of authValue/oauth2/tokenExchange:
-// httpClientRoundTripper silently picks one by priority otherwise.
+// validateSingleAuth は authValue/oauth2/tokenExchange の複数同時設定を拒否する。
+// 許すと httpClientRoundTripper が優先順位で暗黙に 1 つだけを採用してしまうため。
 func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExchange) error {
 	count := 0
 	if auth != nil {
@@ -79,10 +78,10 @@ func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExc
 	return nil
 }
 
-// Server converts the agent into the Server entry registered under
-// mcpServers after validation, so every path keyed by server name (JWT
-// pass-through, OAuth endpoints, header forwarding, authz, /mcp/list) treats
-// an agent like any other backend. Transport is MCPTransportA2A.
+// Server はエージェントを、検証後に mcpServers 配下へ登録する Server へ変換する。
+// これでサーバー名をキーにする経路（JWT パススルー、OAuth エンドポイント、
+// ヘッダー転送、authz、/mcp/list）は他のバックエンドと同じようにエージェントを
+// 扱える。Transport は MCPTransportA2A。
 func (a *Agent) Server() *Server {
 	return &Server{
 		Name:          a.Name,
@@ -98,8 +97,7 @@ func (a *Agent) Server() *Server {
 	}
 }
 
-// AgentCardPathOrDefault returns agentCardPath, falling back to
-// DefaultAgentCardPath.
+// AgentCardPathOrDefault は agentCardPath を返す。未設定なら DefaultAgentCardPath。
 func (s Server) AgentCardPathOrDefault() string {
 	if s.AgentCardPath == "" {
 		return DefaultAgentCardPath
@@ -107,9 +105,9 @@ func (s Server) AgentCardPathOrDefault() string {
 	return s.AgentCardPath
 }
 
-// mergeAgentsIntoServers registers every agent as a Server under its name.
-// Callers validate the Config first, which guarantees the names do not
-// collide with mcpServers.
+// mergeAgentsIntoServers は各エージェントをその名前で Server として登録する。
+// 呼び出し側が先に Config を検証するため、名前が mcpServers と衝突しないことは
+// 保証されている。
 func mergeAgentsIntoServers(servers Servers, agents Agents) Servers {
 	if len(agents) == 0 {
 		return servers

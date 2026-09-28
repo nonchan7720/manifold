@@ -22,17 +22,17 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// a2aMetaKey is the _meta key under which every A2A tool result reports the
-// response context (a2aResultMeta).
+// a2aMetaKey は A2A のツール結果がレスポンスのコンテキスト（a2aResultMeta）を
+// 報告する _meta のキー。
 const a2aMetaKey = "a2a"
 
-// a2aSkillMetadataKey is the message metadata key naming the skill a call
-// targets. A2A itself has no per-request skill selector: skills only exist
-// in the Agent Card, so the gateway passes the chosen skill's id here rather
-// than injecting anything into the message text.
+// a2aSkillMetadataKey は呼び出し対象のスキルを示すメッセージ metadata のキー。
+// A2A にはリクエスト単位でスキルを指定する仕組みがなく、スキルは Agent Card に
+// しか存在しない。そのためメッセージ本文には何も足さず、選ばれたスキル ID を
+// ここに入れて渡す。
 const a2aSkillMetadataKey = "skillId"
 
-// a2aResultMeta is the _meta.a2a payload of a tool result.
+// a2aResultMeta はツール結果の _meta.a2a の内容。
 type a2aResultMeta struct {
 	ProtocolVersion string            `json:"protocolVersion,omitempty"`
 	ContextID       string            `json:"contextId,omitempty"`
@@ -48,8 +48,7 @@ type a2aArtifactMeta struct {
 	Description string `json:"description,omitempty"`
 }
 
-// a2aCallArgs are the tools/call arguments every skill tool accepts (see
-// a2aSkillInputSchema).
+// a2aCallArgs は全スキルツール共通の tools/call 引数（a2aSkillInputSchema 参照）。
 type a2aCallArgs struct {
 	SessionID string `json:"sessionId"`
 	TaskID    string `json:"taskId"`
@@ -58,17 +57,17 @@ type a2aCallArgs struct {
 	Files     []any  `json:"files"`
 }
 
-// A2ABackendClient exposes one A2A agent (an agents.<name> entry, carried as
-// a config.Server with transport a2a) as an MCP server: each Agent Card skill
-// becomes a tool whose call is a message/send with the caller's sessionId as
-// the A2A contextId.
+// A2ABackendClient は A2A エージェント 1 つ（agents.<name> エントリ。transport a2a
+// の config.Server として渡される）を MCP サーバーとして公開する。Agent Card の
+// 各スキルがツールになり、その呼び出しは呼び出し元の sessionId を A2A の
+// contextId に載せた message/send になる。
 //
-// The Agent Card is fetched from cfg.URL (+ agentCardPath) and cached for
-// the client's lifetime; the message endpoint is whatever the card declares,
-// never cfg.URL. Like the http MCP backend, every message is sent with the
-// caller's ctx so the oauth2/tokenExchange round trippers see the caller's
-// own credentials; the card itself is fetched with only headers/authValue,
-// since a public card cannot depend on a per-caller token.
+// Agent Card は cfg.URL（+ agentCardPath）から取得してクライアントの生存期間中
+// キャッシュする。メッセージの送信先は Card に書かれたエンドポイントであり、
+// cfg.URL ではない。http MCP バックエンドと同様、メッセージは呼び出し元の ctx で
+// 送るため、oauth2/tokenExchange の RoundTripper は呼び出し元本人の認証情報を
+// 使う。Card の取得には headers/authValue だけを付ける。公開 Card の取得が
+// 呼び出し元ごとのトークンに依存することはないため。
 type A2ABackendClient struct {
 	name         string
 	cfg          *config.Server
@@ -83,8 +82,8 @@ type A2ABackendClient struct {
 	closed bool
 }
 
-// NewA2ABackendClient builds the client for cfg; nothing is fetched until
-// EnsureCard, ListTools or CallTool.
+// NewA2ABackendClient は cfg 用のクライアントを組み立てる。EnsureCard・ListTools・
+// CallTool のいずれかが呼ばれるまで何も取得しない。
 func NewA2ABackendClient(
 	name string, cfg *config.Server, mediaService storage.MediaService,
 ) *A2ABackendClient {
@@ -106,9 +105,9 @@ func NewA2ABackendClient(
 	}
 }
 
-// parseAgentCard decodes either Agent Card format: a v1.0 card lists
-// supportedInterfaces, a v0.3 card has url/preferredTransport instead and is
-// converted by the SDK's compatibility parser.
+// parseAgentCard は両形式の Agent Card を復号する。v1.0 の Card は
+// supportedInterfaces を持ち、v0.3 の Card は代わりに url/preferredTransport を
+// 持つため、後者は SDK の互換パーサーで変換する。
 func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	var probe struct {
 		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
@@ -122,9 +121,9 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	return a2av0.NewAgentCardParser()(body)
 }
 
-// EnsureCard fetches and caches the Agent Card (and the SDK client bound to
-// its endpoint) on first use; later calls return the cached card. A failed
-// fetch is not cached, so the next request retries.
+// EnsureCard は初回利用時に Agent Card（とそのエンドポイントに紐づく SDK
+// クライアント）を取得してキャッシュし、以降はキャッシュを返す。取得失敗は
+// キャッシュしないため、次のリクエストで再試行される。
 func (c *A2ABackendClient) EnsureCard(ctx context.Context) (_ *a2a.AgentCard, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/A2ABackendClient/EnsureCard")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -164,7 +163,7 @@ func (c *A2ABackendClient) EnsureCard(ctx context.Context) (_ *a2a.AgentCard, rE
 	return card, nil
 }
 
-// Close forgets the cached card/client and refuses further use.
+// Close はキャッシュした Card/クライアントを破棄し、以降の利用を拒否する。
 func (c *A2ABackendClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -176,9 +175,8 @@ func (c *A2ABackendClient) Close() {
 	c.card = nil
 }
 
-// a2aSkillInputSchema is the input schema shared by every skill tool. files
-// takes the same value shape as an OpenAPI `format: binary` field
-// (oastomcptool.FileInputSchema).
+// a2aSkillInputSchema は全スキルツール共通の input schema。files は OpenAPI の
+// `format: binary` フィールドと同じ値の形（oastomcptool.FileInputSchema）を取る。
 func a2aSkillInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -211,9 +209,8 @@ func a2aSkillInputSchema() map[string]any {
 	}
 }
 
-// a2aSkillDescription builds a skill tool's description: the operator's
-// instruction (agents.<name>.description) first, then the skill as the Agent
-// Card describes it.
+// a2aSkillDescription はスキルツールの description を組み立てる。運用者の指示文
+// （agents.<name>.description）を先頭に、続けて Agent Card のスキル情報を並べる。
 func a2aSkillDescription(instruction string, skill a2a.AgentSkill) string {
 	var b strings.Builder
 	if instruction != "" {
@@ -239,7 +236,7 @@ func a2aSkillDescription(instruction string, skill a2a.AgentSkill) string {
 	return b.String()
 }
 
-// skillTools maps the card's skills to MCP tools, in card order.
+// skillTools は Card のスキルを Card の順序どおり MCP ツールへ変換する。
 func (c *A2ABackendClient) skillTools(card *a2a.AgentCard) []*mcp.Tool {
 	tools := make([]*mcp.Tool, 0, len(card.Skills))
 	for _, skill := range card.Skills {
@@ -253,7 +250,7 @@ func (c *A2ABackendClient) skillTools(card *a2a.AgentCard) []*mcp.Tool {
 	return tools
 }
 
-// ListTools answers tools/list with one tool per Agent Card skill.
+// ListTools は tools/list に対して Agent Card のスキル 1 つにつきツール 1 つを返す。
 func (c *A2ABackendClient) ListTools(
 	ctx context.Context, _ *mcp.ListToolsParams,
 ) (_ *mcp.ListToolsResult, rErr error) {
@@ -267,7 +264,7 @@ func (c *A2ABackendClient) ListTools(
 	return &mcp.ListToolsResult{Tools: c.skillTools(card)}, nil
 }
 
-// ListToolInfos returns the (skill id, description) catalog for /mcp/list.
+// ListToolInfos は /mcp/list 用の（スキル ID, description）一覧を返す。
 func (c *A2ABackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error) {
 	card, err := c.EnsureCard(ctx)
 	if err != nil {
@@ -286,9 +283,10 @@ func a2aErrorResult(err error) *mcp.CallToolResult {
 	return res
 }
 
-// CallTool sends one message/send for the skill named name. Argument and
-// agent errors are reported as an isError result so the calling model sees
-// them; only an unusable client (closed, no card) is a protocol error.
+// CallTool は name で指定されたスキルに対して message/send を 1 回送る。引数の
+// 誤りやエージェント側のエラーは、呼び出し元のモデルに見えるよう isError の
+// 結果として返す。プロトコルエラーにするのはクライアントが使えない場合
+// （Close 済み、Card 未取得）だけ。
 func (c *A2ABackendClient) CallTool(
 	ctx context.Context, name string, args json.RawMessage,
 ) (_ *mcp.CallToolResult, rErr error) {
@@ -338,9 +336,8 @@ func findSkill(card *a2a.AgentCard, id string) (a2a.AgentSkill, bool) {
 	return a2a.AgentSkill{}, false
 }
 
-// buildMessage validates args and assembles the A2A message: message, data
-// and files parts in that order, the sessionId as contextId, and the skill
-// id in metadata.
+// buildMessage は引数を検証して A2A メッセージを組み立てる。パートは message・
+// data・files の順、sessionId は contextId に、スキル ID は metadata に入れる。
 func (c *A2ABackendClient) buildMessage(
 	ctx context.Context, skill a2a.AgentSkill, raw json.RawMessage,
 ) (*a2a.Message, error) {
@@ -386,16 +383,16 @@ func (c *A2ABackendClient) buildMessage(
 	}, nil
 }
 
-// a2aStateString shortens a TaskState ("TASK_STATE_INPUT_REQUIRED") to the
-// spec's lower-case form ("input-required") for _meta.a2a.state.
+// a2aStateString は TaskState（"TASK_STATE_INPUT_REQUIRED"）を _meta.a2a.state 用に
+// 仕様の小文字形式（"input-required"）へ短縮する。
 func a2aStateString(state a2a.TaskState) string {
 	s := strings.TrimPrefix(string(state), "TASK_STATE_")
 	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
 }
 
-// toCallToolResult converts a message/send result. A Message yields its
-// parts; a Task yields its status message parts followed by every artifact's
-// parts, and is an error result when the task failed or was rejected.
+// toCallToolResult は message/send の結果を変換する。Message はそのパートを、
+// Task は status のメッセージのパートに続けて各 artifact のパートを返し、タスクが
+// failed / rejected ならエラー結果にする。
 func (c *A2ABackendClient) toCallToolResult(
 	ctx context.Context, result a2a.SendMessageResult,
 ) (*mcp.CallToolResult, error) {
@@ -447,12 +444,11 @@ func (c *A2ABackendClient) toCallToolResult(
 	return res, nil
 }
 
-// partsToContent maps A2A parts to MCP content: text and data parts become
-// text (data as JSON), a file URL becomes a resource link as-is, and file
-// bytes go through generateContent exactly like an OpenAPI binary response
-// (resource link when storage is enabled, inline otherwise). The data part
-// values are also returned as structuredContent: one value, or a list when
-// there are several.
+// partsToContent は A2A のパートを MCP の content へ変換する。text・data パートは
+// テキスト（data は JSON 文字列）、ファイル URL はそのままリソースリンク、ファイル
+// のバイト列は OpenAPI のバイナリレスポンスと同じく generateContent を通す
+// （storage 有効ならリソースリンク、無効ならインライン）。data パートの値は
+// structuredContent としても返す（1 つならその値、複数ならリスト）。
 func (c *A2ABackendClient) partsToContent(
 	ctx context.Context, parts []*a2a.Part,
 ) ([]mcp.Content, any, error) {

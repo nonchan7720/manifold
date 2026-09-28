@@ -193,14 +193,14 @@ agents:
 	require.Equal(t, "translator", cfg.Agents["translator"].Name)
 	require.Equal(t, "planner", cfg.Agents["planner"].Name)
 
-	// Both agents are registered beside the MCP server as a2a transports.
+	// 両方のエージェントが MCP サーバーと並んで a2a トランスポートとして登録される。
 	require.Len(t, cfg.MCPServer, 3)
 	translator := cfg.MCPServer["translator"]
 	require.True(t, translator.IsA2ABackend())
 	require.Equal(t, "https://translator.example.com", translator.URL)
 	require.Equal(t, "Use for translation.", translator.Description)
 	require.Equal(t, 30*time.Second, translator.CallTimeoutOrDefault())
-	// viper lower-cases map keys, as it does for mcpServers.<name>.headers.
+	// viper は map のキーを小文字化する（mcpServers.<name>.headers と同じ挙動）。
 	require.Equal(t, "acme", translator.ExtraHeaders["x-tenant"])
 
 	planner := cfg.MCPServer["planner"]

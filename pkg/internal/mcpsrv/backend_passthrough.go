@@ -8,8 +8,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// backendPassthrough is what newBackendPassthroughMiddleware forwards to:
-// an MCPBackendClient (MCP backend) or an A2ABackendClient (A2A agent).
+// backendPassthrough は newBackendPassthroughMiddleware の転送先。
+// MCPBackendClient（MCP バックエンド）または A2ABackendClient（A2A エージェント）。
 type backendPassthrough interface {
 	ListTools(ctx context.Context, params *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
 	CallTool(ctx context.Context, name string, args json.RawMessage) (*mcp.CallToolResult, error)

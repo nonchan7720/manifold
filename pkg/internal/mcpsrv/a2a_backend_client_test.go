@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubA2AAgent is an httptest-served A2A agent: it publishes an Agent Card
-// (v1.0 or v0.3 format) whose endpoint is /rpc on the same server, records
-// every message/send it receives and answers with a configurable event.
+// stubA2AAgent は httptest で提供する A2A エージェントのスタブ。同じサーバーの
+// /rpc をエンドポイントとする Agent Card（v1.0 または v0.3 形式）を公開し、受け取った
+// message/send をすべて記録して、設定されたイベントを返す。
 type stubA2AAgent struct {
 	srv    *httptest.Server
 	legacy bool // serve a v0.3 card and speak the v0.3 JSON-RPC wire format
@@ -41,8 +41,8 @@ const (
 
 func newStubA2AAgent(t *testing.T, legacy bool) *stubA2AAgent {
 	t.Helper()
-	// The shared internal transport only dials loopback when TEST is set
-	// (see newToolCatalogBackendServer in server_manager_test.go).
+	// 共有の内部トランスポートは TEST が設定されているときだけループバックへ
+	// 接続できる（server_manager_test.go の newToolCatalogBackendServer 参照）。
 	t.Setenv("TEST", "true")
 
 	s := &stubA2AAgent{legacy: legacy}
@@ -140,8 +140,8 @@ func (s *stubA2AAgent) serveRPC(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// decodeSendRequest decodes the wire-format params (v1 SendMessage or v0.3
-// message/send) into a v1 request so tests assert one shape.
+// decodeSendRequest はワイヤ形式の params（v1 の SendMessage または v0.3 の
+// message/send）を v1 のリクエストへ復号し、テストが 1 つの形で検証できるようにする。
 func (s *stubA2AAgent) decodeSendRequest(req stubRPCRequest) (*a2a.SendMessageRequest, error) {
 	if s.legacy {
 		if req.Method != "message/send" {
@@ -232,7 +232,7 @@ func TestA2ABackendClient_ListTools_SkillsBecomeTools(t *testing.T) {
 
 	translate := res.Tools[0]
 	require.Equal(t, "Translate", translate.Title)
-	// The operator's instruction comes first, then the card's skill text.
+	// 運用者の指示文が先頭で、その後に Card のスキル情報が続く。
 	require.Contains(t, translate.Description, cfg.Description)
 	require.Less(t,
 		indexOf(translate.Description, cfg.Description),
@@ -333,7 +333,7 @@ func TestA2ABackendClient_EnsureCard_FetchFailureIsRetried(t *testing.T) {
 	require.Equal(t, "Translator", card.Name)
 }
 
-// --- tools/call: request shape ---
+// --- tools/call: リクエストの形 ---
 
 func TestA2ABackendClient_CallTool_SendsPartsSessionAndSkill(t *testing.T) {
 	stub := newStubA2AAgent(t, false)
@@ -418,7 +418,7 @@ func TestA2ABackendClient_CallTool_V03Wire(t *testing.T) {
 	require.Equal(t, "completed", meta.State)
 }
 
-// --- tools/call: argument errors are isError results, not protocol errors ---
+// --- tools/call: 引数エラーはプロトコルエラーではなく isError の結果になる ---
 
 func TestA2ABackendClient_CallTool_ArgumentErrors(t *testing.T) {
 	stub := newStubA2AAgent(t, false)
@@ -500,7 +500,7 @@ func TestA2ABackendClient_CallTool_AgentErrorIsErrorResult(t *testing.T) {
 	require.Contains(t, res.GetError().Error(), "send message")
 }
 
-// --- tools/call: task results and part mapping ---
+// --- tools/call: Task の結果とパートの変換 ---
 
 func TestA2ABackendClient_CallTool_TaskPartsBecomeContent(t *testing.T) {
 	stub := newStubA2AAgent(t, false)
@@ -667,7 +667,7 @@ func TestA2AStateString(t *testing.T) {
 	require.Equal(t, "", a2aStateString(a2a.TaskStateUnspecified))
 }
 
-// --- MCPServer wiring: /mcp/{agent} through the passthrough + authz ---
+// --- MCPServer との結線: パススルー + authz 経由の /mcp/{agent} ---
 
 func TestMCPServer_Init_A2AAgent(t *testing.T) {
 	stub := newStubA2AAgent(t, false)
@@ -751,14 +751,14 @@ func TestMCPServer_A2AAgent_AuthzPerSkill(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 
-	// tools/list is narrowed to the skills the policy allows.
+	// tools/list はポリシーが許可したスキルだけに絞られる。
 	listed, err := session.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{stubSkillSummarize}, toolNames(listed.Tools))
 	require.Equal(t, 1, d.allowedToolsCallCount())
 
-	// tools/call on a denied skill never reaches the agent; the decider saw
-	// server=<agent name> and tool=<skill id>.
+	// 拒否されたスキルへの tools/call はエージェントに届かない。Decider には
+	// server=<エージェント名>、tool=<スキル ID> が渡っている。
 	_, err = session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      stubSkillTranslate,
 		Arguments: map[string]any{"sessionId": "sess-1", "message": "hi"},
