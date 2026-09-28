@@ -110,6 +110,39 @@ mcpServers: {a: {url: https://a2}, b: {url: https://b}}
 	}, got)
 }
 
+// A Kubernetes ConfigMap mount looks like this:
+//
+//	services/
+//	  ..2026_09_28_15_06_52.1338942298/   (directory holding the real files)
+//	  ..data -> ..2026_09_28_15_06_52.1338942298
+//	  a.yaml -> ..data/a.yaml
+//
+// A glob such as "services/*" matches the directory and the symlink to it,
+// which must be skipped instead of being read as files.
+func TestLoadWithIncludes_GlobSkipsDirectories(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), `
+include: services/*
+`)
+	services := filepath.Join(dir, "services")
+	versioned := filepath.Join(services, "..2026_09_28_15_06_52.1338942298")
+	writeFile(t, filepath.Join(versioned, "a.yaml"), `
+mcpServers: {a: {url: https://a}}
+`)
+	require.NoError(t, os.Symlink(versioned, filepath.Join(services, "..data")))
+	require.NoError(t, os.Symlink(
+		filepath.Join("..data", "a.yaml"), filepath.Join(services, "a.yaml"),
+	))
+
+	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"mcpServers": map[string]any{
+			"a": map[string]any{"url": "https://a"},
+		},
+	}, got)
+}
+
 func TestLoadWithIncludes_IncludeKeyIsCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), "Include: [serviceA.yaml]\n")

@@ -161,7 +161,20 @@ func includePaths(value any, baseDir string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid %s pattern %q: %w", includeKey, pattern, err)
 		}
-		paths = append(paths, matches...)
+		for _, match := range matches {
+			// A pattern like "dir/*" also matches directories. Kubernetes
+			// ConfigMap/Secret mounts contain a "..data" symlink and a
+			// "..<timestamp>" directory next to the files, so skip anything
+			// that is not a regular file after following symlinks.
+			info, err := os.Stat(match)
+			if err != nil {
+				return nil, fmt.Errorf("error reading config file %s: %w", match, err)
+			}
+			if info.IsDir() {
+				continue
+			}
+			paths = append(paths, match)
+		}
 	}
 	return paths, nil
 }
