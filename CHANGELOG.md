@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.2](https://github.com/nonchan7720/manifold/compare/v1.17.1...v1.17.2) (2026-09-28)
+
+
+### Features
+
+* **mcp-list:** return OpenAPI summary and description per tool in /mcp/list?tools=true ([#218](https://github.com/nonchan7720/manifold/issues/218)) ([c11b954](https://github.com/nonchan7720/manifold/commit/c11b954f36cc08e582c90f3a30ce60b1282c217a))
+
+
+### Miscellaneous
+
+* release 1.17.2 ([4661c59](https://github.com/nonchan7720/manifold/commit/4661c596bd2acb914122b8bd85ea446f3142ef61))
+
 ## [1.17.1](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.17.1) (2026-09-28)
 
 
