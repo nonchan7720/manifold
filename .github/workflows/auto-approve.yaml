@@ -9,6 +9,7 @@ on:
       - synchronize
     branches:
       - main
+      - release/v[0-9]* # Something like release/v1, release/v1.0 release/v1.0.0
 
 permissions:
   pull-requests: write
