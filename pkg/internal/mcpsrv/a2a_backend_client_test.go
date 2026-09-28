@@ -299,6 +299,106 @@ func TestA2ABackendClient_ListTools_V03Card(t *testing.T) {
 	require.Equal(t, stub.srv.URL+"/rpc", card.SupportedInterfaces[0].URL)
 }
 
+// v0.3 の Card は preferredTransport と protocolVersion を省略できる（既定は
+// JSONRPC / 0.3）。SDK の互換パーサーはその場合エンドポイントを返さないため、
+// parseAgentCard が url を JSONRPC のエンドポイントとして補うことを検証する。
+func TestParseAgentCard_V03DefaultsMissingTransportAndVersion(t *testing.T) {
+	const skills = `"skills":[{"id":"s1","name":"S","description":"d","tags":[]}]`
+	cases := []struct {
+		name        string
+		body        string
+		wantVersion a2a.ProtocolVersion
+	}{
+		{
+			name: "no preferredTransport",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: "0.3",
+		},
+		{
+			name: "no preferredTransport and no protocolVersion",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: a2av0.Version,
+		},
+		{
+			name: "protocolVersion 0.2",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"protocolVersion":"0.2","version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: "0.2",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card, err := parseAgentCard([]byte(tc.body))
+			require.NoError(t, err)
+			require.Len(t, card.SupportedInterfaces, 1)
+			iface := card.SupportedInterfaces[0]
+			require.Equal(t, "http://agent.example/rpc", iface.URL)
+			require.Equal(t, a2a.TransportProtocolJSONRPC, iface.ProtocolBinding)
+			require.Equal(t, tc.wantVersion, iface.ProtocolVersion)
+			require.Len(t, card.Skills, 1)
+		})
+	}
+}
+
+func TestParseAgentCard_V03ExplicitTransportKept(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/grpc",` +
+		`"preferredTransport":"GRPC","additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 2, "explicit interfaces are not rewritten")
+	require.Equal(t, a2a.TransportProtocolGRPC, card.SupportedInterfaces[0].ProtocolBinding)
+}
+
+func TestParseAgentCard_V03WithoutURLStillHasNoEndpoint(t *testing.T) {
+	body := `{"name":"x","description":"d","protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Empty(t, card.SupportedInterfaces)
+}
+
+// stub のカードから preferredTransport を落とした v0.3 Card でも、tools/list と
+// tools/call が通ることを end-to-end で検証する。
+func TestA2ABackendClient_V03CardWithoutPreferredTransport(t *testing.T) {
+	t.Setenv("TEST", "true")
+	stub := &stubA2AAgent{legacy: true}
+	stub.setResult(agentMessage("ok"))
+	mux := http.NewServeMux()
+	serveCard := func(w http.ResponseWriter, _ *http.Request) {
+		legacyCard := a2av0.FromV1AgentCard(stub.card())
+		legacyCard.ProtocolVersion = string(a2av0.Version)
+		legacyCard.PreferredTransport = ""
+		legacyCard.AdditionalInterfaces = nil
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(legacyCard)
+	}
+	mux.HandleFunc("GET /.well-known/agent-card.json", serveCard)
+	mux.HandleFunc("POST /rpc", stub.serveRPC)
+	stub.srv = httptest.NewServer(mux)
+	t.Cleanup(stub.srv.Close)
+
+	c := NewA2ABackendClient("translator", stubAgentServer(stub), nil)
+	t.Cleanup(c.Close)
+
+	listed, err := c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{stubSkillTranslate, stubSkillSummarize}, toolNames(listed.Tools))
+
+	res, err := c.CallTool(t.Context(), stubSkillTranslate, callArgs(t, map[string]any{
+		"sessionId": "sess-1", "message": "hi",
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "0.3", resultMeta(t, res).ProtocolVersion)
+}
+
 func TestA2ABackendClient_EnsureCard_FetchFailureIsRetried(t *testing.T) {
 	t.Setenv("TEST", "true")
 	fail := true

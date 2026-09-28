@@ -108,9 +108,16 @@ func NewA2ABackendClient(
 // parseAgentCard は両形式の Agent Card を復号する。v1.0 の Card は
 // supportedInterfaces を持ち、v0.3 の Card は代わりに url/preferredTransport を
 // 持つため、後者は SDK の互換パーサーで変換する。
+//
+// v0.3 では preferredTransport と protocolVersion は省略可能（既定はそれぞれ
+// JSONRPC と 0.3）だが、SDK の互換パーサーは preferredTransport が無い Card の
+// url をエンドポイントとして扱わない。そのままだと「エンドポイント無し」で
+// 失敗するため、その場合は url を JSONRPC のエンドポイントとして補う。
 func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	var probe struct {
 		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
+		URL                 string          `json:"url"`
+		ProtocolVersion     string          `json:"protocolVersion"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return nil, err
@@ -118,7 +125,22 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	if len(probe.SupportedInterfaces) > 0 && string(probe.SupportedInterfaces) != "null" {
 		return agentcard.DefaultCardParser(body)
 	}
-	return a2av0.NewAgentCardParser()(body)
+	card, err := a2av0.NewAgentCardParser()(body)
+	if err != nil {
+		return nil, err
+	}
+	if len(card.SupportedInterfaces) == 0 && probe.URL != "" {
+		version := a2a.ProtocolVersion(probe.ProtocolVersion)
+		if version == "" {
+			version = a2av0.Version
+		}
+		card.SupportedInterfaces = []*a2a.AgentInterface{{
+			URL:             probe.URL,
+			ProtocolBinding: a2a.TransportProtocolJSONRPC,
+			ProtocolVersion: version,
+		}}
+	}
+	return card, nil
 }
 
 // EnsureCard は初回利用時に Agent Card（とそのエンドポイントに紐づく SDK
@@ -296,6 +318,8 @@ func (c *A2ABackendClient) ListTools(
 
 	card, err := c.EnsureCard(ctx)
 	if err != nil {
+		slog.ErrorContext(ctx, "a2a tools/list failed: agent card unavailable",
+			slog.String("agent", c.name), slog.Any("error", err))
 		return nil, err
 	}
 	return &mcp.ListToolsResult{Tools: c.skillTools(card)}, nil
@@ -333,6 +357,8 @@ func (c *A2ABackendClient) CallTool(
 
 	card, err := c.EnsureCard(ctx)
 	if err != nil {
+		slog.ErrorContext(ctx, "a2a tools/call failed: agent card unavailable",
+			slog.String("agent", c.name), slog.String("skill", name), slog.Any("error", err))
 		return nil, err
 	}
 	skill, ok := findSkill(card, name)
