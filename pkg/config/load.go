@@ -257,11 +257,18 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	for name, srv := range conf.MCPServer {
 		srv.Name = name
 	}
+	for name, agent := range conf.Agents {
+		agent.Name = name
+	}
 	normalizeReverseOrigins(conf.MCPServer)
 
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
 	}
+	// Agents join the server map only once both were validated separately,
+	// so an agent never passes through Server.ValidateWithContext and the
+	// name collision check above sees the two maps as configured.
+	conf.MCPServer = mergeAgentsIntoServers(conf.MCPServer, conf.Agents)
 	return &conf, nil
 }
 

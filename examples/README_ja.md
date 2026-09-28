@@ -8,6 +8,7 @@ Manifold をすぐ試せる設定サンプル集です。各ディレクトリ�
 | -------- | ---- |
 | [`openapi-backend/`](openapi-backend/) | 公開 OpenAPI 仕様（Swagger Petstore）を MCP ツールに変換する — Manifold を最速で試す方法。`manifold openapi tools` / `generate` の使い方も示す |
 | [`mcp-backend/`](mcp-backend/) | 外部 MCP サーバーをプロキシする（stdio / HTTP トランスポート） |
+| [`a2a-agent/`](a2a-agent/) | A2A（Agent2Agent）エージェントのスキルを MCP ツールとして公開する |
 | [`oauth2-backend/`](oauth2-backend/) | OAuth 保護された REST API（Google Calendar）を MCP ツールとして公開する |
 | [`opa/`](opa/) | OPA サイドカーで `tools/call` / `tools/list` を呼び出し元のグループ単位で認可する |
 

@@ -15,7 +15,7 @@ import (
 const includeKey = "include"
 
 // includableKeys are the only top-level keys an included file may set.
-var includableKeys = []string{"mcpServers"}
+var includableKeys = []string{"mcpServers", "agents"}
 
 // loadWithIncludes reads the YAML config file at path and resolves its
 // top-level include list, returning the merged document.

@@ -395,6 +395,12 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 			c.name,
 		)
 
+	case config.MCPTransportA2A:
+		return nil, fmt.Errorf(
+			"backend %s: a2a transport is not connected via MCPBackendClient",
+			c.name,
+		)
+
 	default:
 		return nil, fmt.Errorf("backend %s: unknown transport %q", c.name, c.cfg.Transport)
 	}
