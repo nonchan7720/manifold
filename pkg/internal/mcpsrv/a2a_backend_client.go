@@ -131,7 +131,8 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	if err != nil {
 		return nil, err
 	}
-	if probe.PreferredTransport == "" && probe.URL != "" && !hasInterfaceURL(card, probe.URL) {
+	if probe.PreferredTransport == "" && probe.URL != "" &&
+		!hasJSONRPCInterface(card, probe.URL) {
 		version := a2a.ProtocolVersion(probe.ProtocolVersion)
 		if version == "" {
 			version = a2av0.Version
@@ -148,10 +149,14 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	return card, nil
 }
 
-// hasInterfaceURL は card が url をエンドポイントとして既に持っているかを返す。
-func hasInterfaceURL(card *a2a.AgentCard, url string) bool {
+// hasJSONRPCInterface は card が url を JSONRPC のエンドポイントとして既に
+// 持っているかを返す。URL が同じでもバインディングが異なるインターフェース
+// （例: HTTP+JSON）は別物として扱う。resolveCard は JSONRPC トランスポートしか
+// 登録しないため、それを重複とみなすと接続できるインターフェースが無くなる。
+func hasJSONRPCInterface(card *a2a.AgentCard, url string) bool {
 	for _, iface := range card.SupportedInterfaces {
-		if iface != nil && iface.URL == url {
+		if iface != nil && iface.URL == url &&
+			iface.ProtocolBinding == a2a.TransportProtocolJSONRPC {
 			return true
 		}
 	}

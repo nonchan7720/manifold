@@ -362,7 +362,7 @@ func TestParseAgentCard_V03NoPreferredTransportKeepsAdditionalInterfaces(t *test
 	require.Equal(t, a2a.TransportProtocolHTTPJSON, card.SupportedInterfaces[1].ProtocolBinding)
 }
 
-// additionalInterfaces に主 url と同じ URL が既にある場合は重複して補わない。
+// additionalInterfaces に主 url と同じ URL の JSONRPC が既にある場合は重複して補わない。
 func TestParseAgentCard_V03NoPreferredTransportSameURLNotDuplicated(t *testing.T) {
 	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
 		`"additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
@@ -372,6 +372,42 @@ func TestParseAgentCard_V03NoPreferredTransportSameURLNotDuplicated(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, card.SupportedInterfaces, 1)
 	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+}
+
+// 同じ URL でもバインディングが JSONRPC でなければ重複とはみなさず、主 url の
+// JSONRPC を先頭に補う。そうしないと JSONRPC しか登録しないクライアントが
+// 接続できるインターフェースを失う。（SDK v2.6.0 の互換パーサーは主 url と同じ
+// URL の additionalInterfaces を落とすため、結果は JSONRPC 1 つになる。）
+func TestParseAgentCard_V03NoPreferredTransportSameURLOtherBindingAdded(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"HTTP+JSON"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.NotEmpty(t, card.SupportedInterfaces)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+	require.Equal(t, a2a.TransportProtocolJSONRPC, card.SupportedInterfaces[0].ProtocolBinding)
+	for _, iface := range card.SupportedInterfaces[1:] {
+		require.NotEqual(t, a2a.TransportProtocolJSONRPC, iface.ProtocolBinding,
+			"the JSONRPC endpoint must not be duplicated")
+	}
+}
+
+// hasJSONRPCInterface は URL とバインディングの両方が一致するときだけ true。
+func TestHasJSONRPCInterface(t *testing.T) {
+	const url = "http://agent.example/rpc"
+	card := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		nil,
+		{URL: url, ProtocolBinding: a2a.TransportProtocolHTTPJSON},
+		{URL: "http://agent.example/other", ProtocolBinding: a2a.TransportProtocolJSONRPC},
+	}}
+	require.False(t, hasJSONRPCInterface(card, url),
+		"same URL with another binding is not a duplicate")
+
+	card.SupportedInterfaces = append(card.SupportedInterfaces,
+		&a2a.AgentInterface{URL: url, ProtocolBinding: a2a.TransportProtocolJSONRPC})
+	require.True(t, hasJSONRPCInterface(card, url))
 }
 
 func TestParseAgentCard_V03ExplicitTransportKept(t *testing.T) {
