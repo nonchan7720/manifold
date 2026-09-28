@@ -123,8 +123,12 @@ func TestMCPList_WithoutToolsQuery_OmitsToolsField(t *testing.T) {
 func TestMCPList_ToolsQuery_AuthzDisabled_ReturnsToolsPerServer(t *testing.T) {
 	catalog := &fakeToolCatalog{
 		infos: map[string][]mcpsrv.ToolInfo{
-			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
-			"backend":  {},
+			"petstore": {{
+				Name:        "getpetbyid",
+				Summary:     "Find pet by ID.",
+				Description: "Returns a single pet.",
+			}},
+			"backend": {{Name: "ping", Description: "ping the backend"}},
 		},
 	}
 	h := NewMCPHandler(testMCPListServers(), catalog, config.AuthzConfig{}, nil)
@@ -139,14 +143,19 @@ func TestMCPList_ToolsQuery_AuthzDisabled_ReturnsToolsPerServer(t *testing.T) {
 	petstore := findMCPListEntry(t, entries, "petstore")
 	require.JSONEq(
 		t,
-		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
+		`[{"name":"getpetbyid","summary":"Find pet by ID.","description":"Returns a single pet."}]`,
 		string(petstore.Tools),
 	)
 	require.False(t, petstore.Dynamic)
 	require.Empty(t, petstore.Error)
 
+	// A non-OpenAPI backend has no summary: the key is still present, as "".
 	backend := findMCPListEntry(t, entries, "backend")
-	require.JSONEq(t, `[]`, string(backend.Tools))
+	require.JSONEq(
+		t,
+		`[{"name":"ping","summary":"","description":"ping the backend"}]`,
+		string(backend.Tools),
+	)
 }
 
 func TestMCPList_ToolsQuery_ReverseBackend_MarksDynamicWithoutTools(t *testing.T) {
@@ -188,7 +197,11 @@ func testMCPListAuthzHeaders() config.AuthzHeaders {
 func TestMCPList_ToolsQuery_AuthzEnabled_DeciderAllows_ReturnsTools(t *testing.T) {
 	catalog := &fakeToolCatalog{
 		infos: map[string][]mcpsrv.ToolInfo{
-			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
+			"petstore": {{
+				Name:        "getpetbyid",
+				Summary:     "Find pet by ID.",
+				Description: "Returns a single pet.",
+			}},
 		},
 	}
 	authzCfg := config.AuthzConfig{Enabled: true, Headers: testMCPListAuthzHeaders()}
@@ -206,7 +219,7 @@ func TestMCPList_ToolsQuery_AuthzEnabled_DeciderAllows_ReturnsTools(t *testing.T
 	petstore := findMCPListEntry(t, entries, "petstore")
 	require.JSONEq(
 		t,
-		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
+		`[{"name":"getpetbyid","summary":"Find pet by ID.","description":"Returns a single pet."}]`,
 		string(petstore.Tools),
 	)
 	require.Equal(t, 1, decider.calls)
@@ -291,7 +304,11 @@ func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutCal
 ) {
 	catalog := &fakeToolCatalog{
 		infos: map[string][]mcpsrv.ToolInfo{
-			"petstore": {{Name: "getpetbyid", Description: "Find pet by ID."}},
+			"petstore": {{
+				Name:        "getpetbyid",
+				Summary:     "Find pet by ID.",
+				Description: "Returns a single pet.",
+			}},
 		},
 	}
 	decider := &fakeCatalogDecider{allowCatalogResult: false}
@@ -307,7 +324,7 @@ func TestMCPList_ToolsQuery_AuthzEnabled_BypassHeaderTrue_ReturnsToolsWithoutCal
 	petstore := findMCPListEntry(t, entries, "petstore")
 	require.JSONEq(
 		t,
-		`[{"name":"getpetbyid","description":"Find pet by ID."}]`,
+		`[{"name":"getpetbyid","summary":"Find pet by ID.","description":"Returns a single pet."}]`,
 		string(petstore.Tools),
 	)
 	require.Zero(t, decider.calls)

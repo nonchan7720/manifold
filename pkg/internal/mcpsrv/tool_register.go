@@ -23,11 +23,23 @@ type Tool struct {
 	// method/path hold the source operation for Definitions(), not mcp.Tool itself.
 	method string
 	path   string
+	// summary/description hold the source operation's OpenAPI summary and
+	// description verbatim (each empty when the spec omits it), for the
+	// /mcp/list?tools=true catalog. mcp.Tool.Description is the derived
+	// description exposed to MCP clients, which may fall back to one of these
+	// or to "METHOD /path".
+	summary     string
+	description string
 }
 
-// ToolInfo is the (name, description) pair of a registered tool.
+// ToolInfo is the catalog entry of a registered tool for /mcp/list?tools=true.
+// For an OpenAPI tool, Summary and Description are the source operation's
+// summary and description verbatim (empty when the spec omits them). For a
+// tool from another kind of backend, Description is the tool's description
+// and Summary is empty.
 type ToolInfo struct {
 	Name        string
+	Summary     string
 	Description string
 }
 
@@ -64,6 +76,15 @@ func WithRegisterToolOperation(method, path string) RegisterToolOptions {
 	return func(tool *Tool) {
 		tool.method = strings.ToUpper(method)
 		tool.path = path
+	}
+}
+
+// WithRegisterToolDocs records the source operation's OpenAPI summary and
+// description verbatim, for readback via ToolInfo (the /mcp/list catalog).
+func WithRegisterToolDocs(summary, description string) RegisterToolOptions {
+	return func(tool *Tool) {
+		tool.summary = summary
+		tool.description = description
 	}
 }
 

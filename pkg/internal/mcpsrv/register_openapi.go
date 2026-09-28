@@ -164,6 +164,7 @@ func swagger(
 				inputSchema,
 				ToolFunc(toolFunc),
 				WithRegisterToolOperation(method, path),
+				WithRegisterToolDocs(operation.Summary, operation.Description),
 			)
 		}
 	}
@@ -218,7 +219,10 @@ func openapi(
 				isBinaryResponse,
 			)
 			opts := make([]RegisterToolOptions, 0, 10)
-			opts = append(opts, WithRegisterToolOperation(method, path))
+			opts = append(opts,
+				WithRegisterToolOperation(method, path),
+				WithRegisterToolDocs(operation.Summary, operation.Description),
+			)
 			if isBinaryResponse {
 				opts = append(opts, WithRegisterToolMeta(map[string]any{
 					"manifold": map[string]any{

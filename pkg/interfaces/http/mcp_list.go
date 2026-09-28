@@ -20,8 +20,14 @@ type ToolCataloger interface {
 	ToolCatalog(ctx context.Context, name string) ([]mcpsrv.ToolInfo, error)
 }
 
+// mcpToolEntry is one tool of a server's catalog. For an OpenAPI server,
+// Name is the operationId-derived tool name and Summary / Description are
+// the operation's summary and description verbatim. Summary and Description
+// are always present, as "" when the source has no value for them (e.g. an
+// MCP backend has no summary; an operation may omit either field).
 type mcpToolEntry struct {
 	Name        string `json:"name"`
+	Summary     string `json:"summary"`
 	Description string `json:"description"`
 }
 
@@ -96,7 +102,11 @@ func (h *MCPHandler) toolCatalogFields(
 	}
 	entries := make([]mcpToolEntry, len(infos))
 	for i, info := range infos {
-		entries[i] = mcpToolEntry{Name: info.Name, Description: info.Description}
+		entries[i] = mcpToolEntry{
+			Name:        info.Name,
+			Summary:     info.Summary,
+			Description: info.Description,
+		}
 	}
 	return &entries, false, ""
 }
