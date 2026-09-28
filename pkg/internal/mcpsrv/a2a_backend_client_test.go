@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	a2alegacy "github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2acompat/a2av0"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -148,11 +147,13 @@ func (s *stubA2AAgent) decodeSendRequest(req stubRPCRequest) (*a2a.SendMessageRe
 		if req.Method != "message/send" {
 			return nil, fmt.Errorf("unexpected method %s", req.Method)
 		}
-		var params a2alegacy.MessageSendParams
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		// v0.3 の型は a2av0 の変換関数経由で空の値を得て使う。v0 モジュール
+		// （github.com/a2aproject/a2a-go）を直接 import しないため。
+		params := a2av0.FromV1SendMessageRequest(&a2a.SendMessageRequest{})
+		if err := json.Unmarshal(req.Params, params); err != nil {
 			return nil, err
 		}
-		return a2av0.ToV1SendMessageRequest(&params)
+		return a2av0.ToV1SendMessageRequest(params)
 	}
 	if req.Method != "SendMessage" {
 		return nil, fmt.Errorf("unexpected method %s", req.Method)
