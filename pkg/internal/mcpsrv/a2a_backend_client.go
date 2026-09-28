@@ -111,12 +111,14 @@ func NewA2ABackendClient(
 //
 // v0.3 では preferredTransport と protocolVersion は省略可能（既定はそれぞれ
 // JSONRPC と 0.3）だが、SDK の互換パーサーは preferredTransport が無い Card の
-// url をエンドポイントとして扱わない。そのままだと「エンドポイント無し」で
-// 失敗するため、その場合は url を JSONRPC のエンドポイントとして補う。
+// url をエンドポイントとして扱わない（additionalInterfaces だけが残る）。
+// そのままだと主エンドポイントを失うため、preferredTransport が無い Card では
+// url を JSONRPC のエンドポイントとして先頭に補う。
 func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	var probe struct {
 		SupportedInterfaces json.RawMessage `json:"supportedInterfaces"`
 		URL                 string          `json:"url"`
+		PreferredTransport  string          `json:"preferredTransport"`
 		ProtocolVersion     string          `json:"protocolVersion"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
@@ -129,18 +131,31 @@ func parseAgentCard(body []byte) (*a2a.AgentCard, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(card.SupportedInterfaces) == 0 && probe.URL != "" {
+	if probe.PreferredTransport == "" && probe.URL != "" && !hasInterfaceURL(card, probe.URL) {
 		version := a2a.ProtocolVersion(probe.ProtocolVersion)
 		if version == "" {
 			version = a2av0.Version
 		}
-		card.SupportedInterfaces = []*a2a.AgentInterface{{
+		primary := &a2a.AgentInterface{
 			URL:             probe.URL,
 			ProtocolBinding: a2a.TransportProtocolJSONRPC,
 			ProtocolVersion: version,
-		}}
+		}
+		card.SupportedInterfaces = append(
+			[]*a2a.AgentInterface{primary}, card.SupportedInterfaces...,
+		)
 	}
 	return card, nil
+}
+
+// hasInterfaceURL は card が url をエンドポイントとして既に持っているかを返す。
+func hasInterfaceURL(card *a2a.AgentCard, url string) bool {
+	for _, iface := range card.SupportedInterfaces {
+		if iface != nil && iface.URL == url {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureCard は初回利用時に Agent Card（とそのエンドポイントに紐づく SDK

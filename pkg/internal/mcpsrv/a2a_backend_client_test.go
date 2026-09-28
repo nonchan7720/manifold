@@ -345,6 +345,35 @@ func TestParseAgentCard_V03DefaultsMissingTransportAndVersion(t *testing.T) {
 	}
 }
 
+// preferredTransport 省略 + additionalInterfaces あり: SDK は追加インターフェース
+// だけを返すので、主 url の JSONRPC を先頭に補い、追加分は保持する。
+func TestParseAgentCard_V03NoPreferredTransportKeepsAdditionalInterfaces(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rest","transport":"HTTP+JSON"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 2)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+	require.Equal(t, a2a.TransportProtocolJSONRPC, card.SupportedInterfaces[0].ProtocolBinding)
+	require.Equal(t, a2a.ProtocolVersion("0.3"), card.SupportedInterfaces[0].ProtocolVersion)
+	require.Equal(t, "http://agent.example/rest", card.SupportedInterfaces[1].URL)
+	require.Equal(t, a2a.TransportProtocolHTTPJSON, card.SupportedInterfaces[1].ProtocolBinding)
+}
+
+// additionalInterfaces に主 url と同じ URL が既にある場合は重複して補わない。
+func TestParseAgentCard_V03NoPreferredTransportSameURLNotDuplicated(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 1)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+}
+
 func TestParseAgentCard_V03ExplicitTransportKept(t *testing.T) {
 	body := `{"name":"x","description":"d","url":"http://agent.example/grpc",` +
 		`"preferredTransport":"GRPC","additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
