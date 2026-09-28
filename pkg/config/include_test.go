@@ -130,7 +130,9 @@ include: services/*
 mcpServers: {a: {url: https://a}}
 `)
 	require.NoError(t, os.Symlink(versioned, filepath.Join(services, "..data")))
-	require.NoError(t, os.Symlink(filepath.Join("..data", "a.yaml"), filepath.Join(services, "a.yaml")))
+	require.NoError(t, os.Symlink(
+		filepath.Join("..data", "a.yaml"), filepath.Join(services, "a.yaml"),
+	))
 
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
