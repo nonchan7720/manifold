@@ -850,6 +850,9 @@ func TestMCPServer_Init_A2AAgent(t *testing.T) {
 	listed, err := session.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{stubSkillTranslate, stubSkillSummarize}, toolNames(listed.Tools))
+	// cacheScope はワイヤ上必須の enum。空のままだと厳密なクライアントが
+	// レスポンスを捨てるため、パススルーが "public" に正規化する。
+	require.Equal(t, "public", listed.CacheScope)
 
 	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      stubSkillTranslate,
