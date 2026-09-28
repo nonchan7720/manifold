@@ -299,6 +299,171 @@ func TestA2ABackendClient_ListTools_V03Card(t *testing.T) {
 	require.Equal(t, stub.srv.URL+"/rpc", card.SupportedInterfaces[0].URL)
 }
 
+// v0.3 の Card は preferredTransport と protocolVersion を省略できる（既定は
+// JSONRPC / 0.3）。SDK の互換パーサーはその場合エンドポイントを返さないため、
+// parseAgentCard が url を JSONRPC のエンドポイントとして補うことを検証する。
+func TestParseAgentCard_V03DefaultsMissingTransportAndVersion(t *testing.T) {
+	const skills = `"skills":[{"id":"s1","name":"S","description":"d","tags":[]}]`
+	cases := []struct {
+		name        string
+		body        string
+		wantVersion a2a.ProtocolVersion
+	}{
+		{
+			name: "no preferredTransport",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: "0.3",
+		},
+		{
+			name: "no preferredTransport and no protocolVersion",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: a2av0.Version,
+		},
+		{
+			name: "protocolVersion 0.2",
+			body: `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+				`"protocolVersion":"0.2","version":"1","capabilities":{},` +
+				`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],` + skills + `}`,
+			wantVersion: "0.2",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card, err := parseAgentCard([]byte(tc.body))
+			require.NoError(t, err)
+			require.Len(t, card.SupportedInterfaces, 1)
+			iface := card.SupportedInterfaces[0]
+			require.Equal(t, "http://agent.example/rpc", iface.URL)
+			require.Equal(t, a2a.TransportProtocolJSONRPC, iface.ProtocolBinding)
+			require.Equal(t, tc.wantVersion, iface.ProtocolVersion)
+			require.Len(t, card.Skills, 1)
+		})
+	}
+}
+
+// preferredTransport 省略 + additionalInterfaces あり: SDK は追加インターフェース
+// だけを返すので、主 url の JSONRPC を先頭に補い、追加分は保持する。
+func TestParseAgentCard_V03NoPreferredTransportKeepsAdditionalInterfaces(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rest","transport":"HTTP+JSON"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 2)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+	require.Equal(t, a2a.TransportProtocolJSONRPC, card.SupportedInterfaces[0].ProtocolBinding)
+	require.Equal(t, a2a.ProtocolVersion("0.3"), card.SupportedInterfaces[0].ProtocolVersion)
+	require.Equal(t, "http://agent.example/rest", card.SupportedInterfaces[1].URL)
+	require.Equal(t, a2a.TransportProtocolHTTPJSON, card.SupportedInterfaces[1].ProtocolBinding)
+}
+
+// additionalInterfaces に主 url と同じ URL の JSONRPC が既にある場合は重複して補わない。
+func TestParseAgentCard_V03NoPreferredTransportSameURLNotDuplicated(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 1)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+}
+
+// 同じ URL でもバインディングが JSONRPC でなければ重複とはみなさず、主 url の
+// JSONRPC を先頭に補う。そうしないと JSONRPC しか登録しないクライアントが
+// 接続できるインターフェースを失う。（SDK v2.6.0 の互換パーサーは主 url と同じ
+// URL の additionalInterfaces を落とすため、結果は JSONRPC 1 つになる。）
+func TestParseAgentCard_V03NoPreferredTransportSameURLOtherBindingAdded(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/rpc",` +
+		`"additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"HTTP+JSON"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.NotEmpty(t, card.SupportedInterfaces)
+	require.Equal(t, "http://agent.example/rpc", card.SupportedInterfaces[0].URL)
+	require.Equal(t, a2a.TransportProtocolJSONRPC, card.SupportedInterfaces[0].ProtocolBinding)
+	for _, iface := range card.SupportedInterfaces[1:] {
+		require.NotEqual(t, a2a.TransportProtocolJSONRPC, iface.ProtocolBinding,
+			"the JSONRPC endpoint must not be duplicated")
+	}
+}
+
+// hasJSONRPCInterface は URL とバインディングの両方が一致するときだけ true。
+func TestHasJSONRPCInterface(t *testing.T) {
+	const url = "http://agent.example/rpc"
+	card := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		nil,
+		{URL: url, ProtocolBinding: a2a.TransportProtocolHTTPJSON},
+		{URL: "http://agent.example/other", ProtocolBinding: a2a.TransportProtocolJSONRPC},
+	}}
+	require.False(t, hasJSONRPCInterface(card, url),
+		"same URL with another binding is not a duplicate")
+
+	card.SupportedInterfaces = append(card.SupportedInterfaces,
+		&a2a.AgentInterface{URL: url, ProtocolBinding: a2a.TransportProtocolJSONRPC})
+	require.True(t, hasJSONRPCInterface(card, url))
+}
+
+func TestParseAgentCard_V03ExplicitTransportKept(t *testing.T) {
+	body := `{"name":"x","description":"d","url":"http://agent.example/grpc",` +
+		`"preferredTransport":"GRPC","additionalInterfaces":[{"url":"http://agent.example/rpc","transport":"JSONRPC"}],` +
+		`"protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, card.SupportedInterfaces, 2, "explicit interfaces are not rewritten")
+	require.Equal(t, a2a.TransportProtocolGRPC, card.SupportedInterfaces[0].ProtocolBinding)
+}
+
+func TestParseAgentCard_V03WithoutURLStillHasNoEndpoint(t *testing.T) {
+	body := `{"name":"x","description":"d","protocolVersion":"0.3","version":"1","capabilities":{},` +
+		`"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"skills":[]}`
+	card, err := parseAgentCard([]byte(body))
+	require.NoError(t, err)
+	require.Empty(t, card.SupportedInterfaces)
+}
+
+// stub のカードから preferredTransport を落とした v0.3 Card でも、tools/list と
+// tools/call が通ることを end-to-end で検証する。
+func TestA2ABackendClient_V03CardWithoutPreferredTransport(t *testing.T) {
+	t.Setenv("TEST", "true")
+	stub := &stubA2AAgent{legacy: true}
+	stub.setResult(agentMessage("ok"))
+	mux := http.NewServeMux()
+	serveCard := func(w http.ResponseWriter, _ *http.Request) {
+		legacyCard := a2av0.FromV1AgentCard(stub.card())
+		legacyCard.ProtocolVersion = string(a2av0.Version)
+		legacyCard.PreferredTransport = ""
+		legacyCard.AdditionalInterfaces = nil
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(legacyCard)
+	}
+	mux.HandleFunc("GET /.well-known/agent-card.json", serveCard)
+	mux.HandleFunc("POST /rpc", stub.serveRPC)
+	stub.srv = httptest.NewServer(mux)
+	t.Cleanup(stub.srv.Close)
+
+	c := NewA2ABackendClient("translator", stubAgentServer(stub), nil)
+	t.Cleanup(c.Close)
+
+	listed, err := c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{stubSkillTranslate, stubSkillSummarize}, toolNames(listed.Tools))
+
+	res, err := c.CallTool(t.Context(), stubSkillTranslate, callArgs(t, map[string]any{
+		"sessionId": "sess-1", "message": "hi",
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "0.3", resultMeta(t, res).ProtocolVersion)
+}
+
 func TestA2ABackendClient_EnsureCard_FetchFailureIsRetried(t *testing.T) {
 	t.Setenv("TEST", "true")
 	fail := true
@@ -750,6 +915,9 @@ func TestMCPServer_Init_A2AAgent(t *testing.T) {
 	listed, err := session.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{stubSkillTranslate, stubSkillSummarize}, toolNames(listed.Tools))
+	// cacheScope はワイヤ上必須の enum。空のままだと厳密なクライアントが
+	// レスポンスを捨てるため、パススルーが "public" に正規化する。
+	require.Equal(t, "public", listed.CacheScope)
 
 	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      stubSkillTranslate,

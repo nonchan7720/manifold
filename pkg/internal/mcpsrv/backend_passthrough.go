@@ -8,6 +8,17 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// normalizeCacheable は SEP-2549 のキャッシュ項目に既定値を入れる。cacheScope は
+// ワイヤ上必須の enum（"public" / "private"）で、SDK の tools/list ハンドラは空なら
+// "public" に正規化する。パススルーはそのハンドラを通らないため、同じ正規化を
+// ここで行う。空のまま送ると enum を厳密に検証するクライアント（Postman 等）が
+// レスポンス全体を捨て、ツールが 1 つも表示されない。
+func normalizeCacheable(c *mcp.Cacheable) {
+	if c.CacheScope == "" {
+		c.CacheScope = "public"
+	}
+}
+
 // backendPassthrough は newBackendPassthroughMiddleware の転送先。
 // MCPBackendClient（MCP バックエンド）または A2ABackendClient（A2A エージェント）。
 type backendPassthrough interface {
@@ -29,7 +40,12 @@ func newBackendPassthroughMiddleware(bc backendPassthrough) mcp.Middleware {
 			case authzMethodToolsList:
 				// params は missingParamsOK のため nil がありうる。
 				params, _ := req.GetParams().(*mcp.ListToolsParams)
-				return bc.ListTools(ctx, params)
+				res, err := bc.ListTools(ctx, params)
+				if err != nil {
+					return nil, err
+				}
+				normalizeCacheable(&res.Cacheable)
+				return res, nil
 			case authzMethodToolsCall:
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 				if !ok {
