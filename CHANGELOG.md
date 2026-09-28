@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.17.0](https://github.com/nonchan7720/manifold/compare/v1.16.0...v1.17.0) (2026-09-28)
+
+
+### Features
+
+* **config:** support top-level include directive to split mcpServers into separate files ([#205](https://github.com/nonchan7720/manifold/issues/205)) ([2d59189](https://github.com/nonchan7720/manifold/commit/2d591897caf918c5dc13081bd78f07e7314f1e63))
+
+
+### Miscellaneous
+
+* add SessionStart hook to install mise tools in Claude Code on the web ([#206](https://github.com/nonchan7720/manifold/issues/206)) ([e176584](https://github.com/nonchan7720/manifold/commit/e176584e01e457dd5606614431d59059879351d9))
+* **deps:** lock file maintenance ([#208](https://github.com/nonchan7720/manifold/issues/208)) ([f6e4f77](https://github.com/nonchan7720/manifold/commit/f6e4f7702c2b0b8dee94e8209f134e8323b46ca6))
+* **deps:** lock file maintenance ([#209](https://github.com/nonchan7720/manifold/issues/209)) ([fc818ce](https://github.com/nonchan7720/manifold/commit/fc818ce10c1b4e6e32ec3420ec0e10e34345f9b2))
+
 ## [1.16.0](https://github.com/nonchan7720/manifold/compare/v1.15.1...v1.16.0) (2026-09-27)
 
 
