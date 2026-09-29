@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/base64"
 	"path/filepath"
 	"testing"
@@ -111,6 +112,40 @@ func TestServer_Validate_AgentCardPathRejectedUnderMCPServers(t *testing.T) {
 	require.Contains(t, err.Error(), "agentCardPath is only supported under agents")
 }
 
+func TestServer_Validate_SkillsRejectedUnderMCPServers(t *testing.T) {
+	s := Server{
+		Description: "x",
+		Transport:   MCPTransportHTTP,
+		URL:         "https://x",
+		Skills:      []string{"translate"},
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "skills is only supported under agents")
+}
+
+func TestAgent_Validate_SkillsRejectEmptyAndDuplicate(t *testing.T) {
+	a := validAgent()
+	a.Skills = []string{"translate", "summarize"}
+	require.NoError(t, a.ValidateWithContext(t.Context()))
+
+	a.Skills = []string{" "}
+	err := a.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must not be empty")
+
+	a.Skills = []string{"translate", "translate"}
+	err = a.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "more than once")
+}
+
+func TestAgent_Server_CarriesSkills(t *testing.T) {
+	a := validAgent()
+	a.Skills = []string{"summarize", "translate"}
+	require.Equal(t, []string{"summarize", "translate"}, a.Server().Skills)
+}
+
 func TestConfig_Validate_Agents_Valid(t *testing.T) {
 	cfg := newValidConfigWithServers(nil)
 	cfg.Agents = Agents{"translator": validAgent()}
@@ -169,6 +204,7 @@ agents:
     url: https://translator.example.com
     description: Use for translation.
     timeout: 30s
+    skills: [translate]
     headers:
       X-Tenant: acme
 `)
@@ -202,6 +238,7 @@ agents:
 	require.Equal(t, 30*time.Second, translator.CallTimeoutOrDefault())
 	// viper は map のキーを小文字化する（mcpServers.<name>.headers と同じ挙動）。
 	require.Equal(t, "acme", translator.ExtraHeaders["x-tenant"])
+	require.Equal(t, []string{"translate"}, translator.Skills)
 
 	planner := cfg.MCPServer["planner"]
 	require.True(t, planner.IsA2ABackend())
@@ -236,4 +273,165 @@ agents:
 	_, err := loadInternal(t.Context(), "manifold-agents-dup")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "used by both agents and mcpServers")
+}
+
+// --- mcpServers.<name>.agents（サービスにぶら下げる A2A エージェント） ---
+
+func validServerWithAgents(agents Agents) Server {
+	return Server{
+		Description: "Billing service",
+		Transport:   MCPTransportHTTP,
+		URL:         "https://billing.example.com/mcp",
+		Agents:      agents,
+	}
+}
+
+func TestServer_Validate_NestedAgents_HTTPValid(t *testing.T) {
+	s := validServerWithAgents(Agents{
+		"translator": validAgent(),
+		"reviewer": {
+			Description: "Use for review.",
+			URL:         "https://reviewer.example.com",
+			Skills:      []string{"review"},
+			Timeout:     10 * time.Second,
+		},
+	})
+	require.NoError(t, s.ValidateWithContext(t.Context()))
+	require.True(t, s.HasAgents())
+	require.False(t, Server{}.HasAgents())
+}
+
+func TestServer_Validate_NestedAgents_OpenAPIValid(t *testing.T) {
+	s := Server{
+		Description: "Billing API",
+		Spec:        "https://billing.example.com/openapi.json",
+		BaseURL:     "https://billing.example.com",
+		Agents:      Agents{"translator": validAgent()},
+	}
+	require.NoError(t, s.ValidateWithContext(t.Context()))
+}
+
+func TestServer_Validate_NestedAgents_RejectedForReverse(t *testing.T) {
+	s := Server{
+		Description: "Page",
+		Transport:   MCPTransportReverse,
+		Origin:      "https://app.example.com",
+		Identity:    "user",
+		Agents:      Agents{"translator": validAgent()},
+	}
+	ctx := context.WithValue(t.Context(), edgeContextKey{}, EdgeConfig{})
+	ctx = context.WithValue(ctx, identitiesContextKey{}, map[string]*IdentityProfile{"user": {}})
+	err := s.ValidateWithContext(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agents is not supported for the reverse transport")
+}
+
+func TestServer_Validate_NestedAgents_NameMustNotContainSeparator(t *testing.T) {
+	s := validServerWithAgents(Agents{"trans__lator": validAgent()})
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `must not contain "__"`)
+}
+
+func TestServer_Validate_NestedAgents_NameCharacters(t *testing.T) {
+	s := validServerWithAgents(Agents{"trans.lator": validAgent()})
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestServer_Validate_NestedAgents_OAuth2Rejected(t *testing.T) {
+	a := validAgent()
+	a.OAuth2 = &OAuth2{
+		ClientID:     "id",
+		ClientSecret: "secret",
+		AuthURL:      "https://auth.example.com/authorize",
+		TokenURL:     "https://auth.example.com/token",
+	}
+	s := validServerWithAgents(Agents{"translator": a})
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "oauth2 is not supported for agents under mcpServers")
+}
+
+func TestServer_Validate_NestedAgents_InvalidAgentReportedWithName(t *testing.T) {
+	a := validAgent()
+	a.Description = ""
+	s := validServerWithAgents(Agents{"translator": a})
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `agent "translator"`)
+	require.Contains(t, err.Error(), "Description")
+}
+
+func TestAgentToolName(t *testing.T) {
+	require.Equal(t, "translator__translate", AgentToolName("translator", "translate"))
+	require.Equal(t, "translator__", AgentToolName("translator", ""))
+}
+
+func TestLoadInternal_NestedAgents(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifold-nested-agents.yaml"), `
+include: [services.yaml]
+gateway:
+  encryptKey: ${TEST_NESTED_AGENTS_ENCRYPT_KEY}
+sqlite:
+  path: ./tmp/manifold.db
+mcpServers:
+  billing:
+    transport: http
+    url: https://billing.example.com/mcp
+    description: Billing service
+    agents:
+      translator:
+        url: https://translator.example.com
+        agentCardPath: /cards/translator.json
+        description: Use for translation.
+        skills: [translate]
+        timeout: 30s
+      reviewer:
+        url: https://reviewer.example.com
+        description: Use for review.
+`)
+	writeFile(t, filepath.Join(dir, "services.yaml"), `
+mcpServers:
+  search:
+    transport: http
+    url: https://search.example.com/mcp
+    description: Search service
+    agents:
+      summarizer:
+        url: https://summarizer.example.com
+        description: Use for summarization.
+`)
+	t.Setenv("TEST_NESTED_AGENTS_ENCRYPT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Chdir(dir)
+
+	cfg, err := loadInternal(t.Context(), "manifold-nested-agents")
+	require.NoError(t, err)
+
+	billing := cfg.MCPServer["billing"]
+	require.True(t, billing.IsMCPBackend())
+	require.True(t, billing.HasAgents())
+	require.Len(t, billing.Agents, 2)
+
+	translator := billing.Agents["translator"]
+	require.Equal(t, "translator", translator.Name)
+	require.Equal(t, "https://translator.example.com", translator.URL)
+	require.Equal(t, "/cards/translator.json", translator.AgentCardPath)
+	require.Equal(t, []string{"translate"}, translator.Skills)
+	require.Equal(t, 30*time.Second, translator.Timeout)
+
+	reviewer := billing.Agents["reviewer"]
+	require.Equal(t, "reviewer", reviewer.Name)
+	require.Empty(t, reviewer.Skills)
+
+	// include 先の mcpServers にぶら下げたエージェントも読み込まれる。
+	search := cfg.MCPServer["search"]
+	require.Len(t, search.Agents, 1)
+	require.Equal(t, "summarizer", search.Agents["summarizer"].Name)
+	require.Equal(t, "https://summarizer.example.com", search.Agents["summarizer"].URL)
+
+	// mcpServers 配下のエージェントはトップレベルの agents には現れない。
+	require.Empty(t, cfg.Agents)
 }

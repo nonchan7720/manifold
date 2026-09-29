@@ -44,7 +44,7 @@ Server
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
-- **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools (`agents`), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
+- **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
@@ -375,6 +375,8 @@ agents:
     description: |
       Translation agent. Always pass the caller's session id as sessionId.
       On _meta.a2a.state = input-required, reply with the same sessionId and the returned taskId.
+    skills: [translate, summarize]        # optional: expose only these skills, in this order
+    timeout: 30s                          # optional: timeout of one message/send (default 60s)
     oauth2:
       clientID: ${TRANSLATOR_CLIENT_ID}
       clientSecret: ${TRANSLATOR_CLIENT_SECRET}
@@ -382,12 +384,42 @@ agents:
       tokenURL: https://auth.example.com/token
 ```
 
-- Manifold resolves the **Agent Card** (v0.3 and v1.0 formats) from `url` and sends messages to the endpoint the card declares — `url` is never used as the message endpoint. The card is fetched at startup (a failure only logs a warning) and again on the first request if needed, then cached for the lifetime of the process.
-- Every **skill** in the card becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
+- `skills` limits which Agent Card skills become tools. Only the listed skill IDs are exposed, in the listed order; an ID that the card does not have is skipped with a warning log (startup is not affected). When `skills` is unset, every skill in the card is exposed. A skill that is not exposed cannot be called either: `tools/call` returns the same `unknown skill` error as for a skill the card does not have.
+- Manifold resolves the **Agent Card** (v0.3 and v1.0 formats) from `url` (plus `agentCardPath`, default `/.well-known/agent-card.json`) and sends messages to the endpoint the card declares — `url` is never used as the message endpoint. The card is fetched at startup (a failure only logs a warning) and again on the first request if needed, then cached for the lifetime of the process.
+- Every exposed **skill** (all skills in the card unless `skills` is set) becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
 - `tools/call` arguments: `sessionId` (**required** — the calling agent's session id, forwarded as the A2A `contextId`), `taskId` (optional; continue a task, e.g. after `input-required`), and at least one of `message` (text), `data` (JSON object, sent as a data part) or `files` (each written like an OpenAPI file input — a base64 string / URL, or `{url|base64|text, filename, contentType}` — see [Binary fields and responses](#binary-fields-and-responses)). The message text is sent as-is; the chosen skill id is passed in the message `metadata.skillId` since A2A has no per-request skill selector.
 - Results: text and data parts become text content (data parts are also returned as `structuredContent`), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
 - Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `tool=<skill id>`.
 - Streaming (`message/stream`), task polling and push notifications are not used; every call is a blocking `message/send`.
+
+#### Attaching agents to a service
+
+To hand a service's callers agents that belong to it, put them under `agents` of that `mcpServers` entry (any transport except `reverse`, including OpenAPI). The service is still served at `/mcp/<name>` and configured as before; its `tools/list` now returns the service's own tools **plus one tool per exposed skill of each agent**.
+
+```yaml
+mcpServers:
+  billing:                       # a service, configured as before
+    transport: http
+    url: https://billing.example.com/mcp
+    description: Billing service
+    agents:                      # A2A agents attached to this service
+      translator:
+        url: https://translator.example.com
+        description: Use for translation.
+        skills: [translate]      # optional
+        timeout: 30s
+      reviewer:
+        url: https://reviewer.example.com
+        description: Use for review.
+```
+
+- Tools are named `<agent>__<skill>` (double underscore), e.g. `translator__translate`. `tools/call` on such a name is a `message/send` to that agent's skill, exactly like a top-level agent's skill tool; `sessionId`, `taskId`, `message` / `data` / `files` and the result format are the same as above.
+- Order: the service's own tools first, then the agents in name order, each agent's skills in card order (or in `skills` order when it is set). `/mcp/list?tools=true` returns the same list. A `tools/call` whose name does not start with an attached agent's `<agent>__` goes to the service as before.
+- Name collisions: if an attached agent's tool name equals one of the service's own tools (e.g. the service has a tool `translator__translate` and the agent `translator` has a skill `translate`), the service's tool wins. It is listed once, `tools/call` reaches the service, and the agent's colliding skill is dropped from the list with a warning log. Rename the agent to resolve it.
+- An agent whose Agent Card cannot be fetched is skipped from `tools/list` (and `/mcp/list?tools=true`) with an error log; the service's own tools and the other agents are still returned, and the card is fetched again on the next request.
+- `oauth2` is not available for these agents. The OAuth flow belongs to the server: the caller's per-server upstream token is what the round tripper forwards, so an agent's own `oauth2` client settings would be silently ignored. Use `authValue`, `tokenExchange` or `headers`, or configure the agent under the top-level `agents` directive. See `docs/design/service-agents.md` for the rationale.
+- Not available on `transport: reverse` (those servers are resolved per user by the reverse gateway).
+- [Tool authorization](#tool-authorization-opa-sidecar) sees the service's name and the composed tool name: `server=<service>`, `tool=<agent>__<skill>`. The same policy therefore governs the service's own tools and its agents' skills, and `tools/list` is filtered accordingly.
 
 ### Connecting to an OpenAPI / Swagger backend
 
@@ -495,6 +527,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
+| `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 
@@ -609,9 +642,27 @@ A2A agents (see [Connecting to an A2A agent](#connecting-to-an-a2a-agent)). Name
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (same as [`mcpServers.<name>.oauth2`](#mcpserversnameoauth2)). Only message requests carry the caller's token; the Agent Card is fetched with `headers` / `authValue` only |
 | `tokenExchange` | object            | Token Exchange settings (same as [`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange)) |
+| `skills`        | []string          | Agent Card skill IDs to expose as tools, in this order; IDs missing from the card are skipped with a warning. Unset exposes all skills |
 | `timeout`       | duration          | Timeout of one `message/send` (default `60s`)                        |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive.
+
+#### `mcpServers.<name>.agents.<agent>`
+
+A2A agents attached to a service (see [Attaching agents to a service](#attaching-agents-to-a-service)). `<agent>` follows the server-name character rules (alphanumerics, `_` and `-`) and must not contain `__`, which separates the agent from the skill in tool names (`<agent>__<skill>`). Agent names are scoped to the service, so they may repeat across services and may equal a top-level name.
+
+| Field           | Type              | Description                                                          |
+| --------------- | ----------------- | -------------------------------------------------------------------- |
+| `description`   | string            | Instruction for the calling agent (**required**). Prepended to every skill's tool description and returned by `/mcp/list` |
+| `url`           | string            | Base URL the Agent Card is resolved from (**required**). Messages go to the endpoint declared in the card |
+| `agentCardPath` | string            | Agent Card path relative to `url` (default `/.well-known/agent-card.json`) |
+| `headers`       | map[string]string | Extra headers added to Agent Card and message requests               |
+| `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
+| `tokenExchange` | object            | Token Exchange settings (same as [`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange)) |
+| `skills`        | []string          | Agent Card skill IDs to expose as tools, in this order; IDs missing from the card are skipped with a warning. Unset exposes all skills |
+| `timeout`       | duration          | Timeout of one `message/send` (default `60s`)                        |
+
+This is the same as [`agents.<name>`](#agentsname) **minus `oauth2`**, which is rejected here: the OAuth flow is per server, so use `authValue`, `tokenExchange` or `headers`, or a top-level `agents` entry. `authValue` / `tokenExchange` are mutually exclusive.
 
 #### `oauth.cimd`
 

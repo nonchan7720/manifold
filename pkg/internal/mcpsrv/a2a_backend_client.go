@@ -57,10 +57,13 @@ type a2aCallArgs struct {
 	Files     []any  `json:"files"`
 }
 
-// A2ABackendClient は A2A エージェント 1 つ（agents.<name> エントリ。transport a2a
-// の config.Server として渡される）を MCP サーバーとして公開する。Agent Card の
-// 各スキルがツールになり、その呼び出しは呼び出し元の sessionId を A2A の
-// contextId に載せた message/send になる。
+// A2ABackendClient は A2A エージェント 1 つ（agents.<name> エントリ、または
+// mcpServers.<name>.agents.<agent> エントリ。どちらも transport a2a の
+// config.Server として渡される）を MCP サーバーとして公開する。Agent Card の
+// 各スキル（cfg.Skills を指定した場合はそのスキルだけ）がツールになり、その
+// 呼び出しは呼び出し元の sessionId を A2A の contextId に載せた message/send になる。
+// mcpServers.<name>.agents 配下のエージェントではツール名に <agent>__ の接頭辞が付く
+// （withToolPrefix 参照）。
 //
 // Agent Card は cfg.URL（+ agentCardPath）から取得してクライアントの生存期間中
 // キャッシュする。メッセージの送信先は Card に書かれたエンドポイントであり、
@@ -72,6 +75,9 @@ type A2ABackendClient struct {
 	name         string
 	cfg          *config.Server
 	mediaService storage.MediaService
+	// toolPrefix はツール名（tools/list・tools/call）に付ける接頭辞。トップレベルの
+	// agents では空、mcpServers.<name>.agents 配下では "<agent>__"。
+	toolPrefix string
 
 	cardHTTPClient    *http.Client
 	messageHTTPClient *http.Client
@@ -82,15 +88,24 @@ type A2ABackendClient struct {
 	closed bool
 }
 
+// a2aClientOption は NewA2ABackendClient の任意設定。
+type a2aClientOption func(*A2ABackendClient)
+
+// withToolPrefix はスキルのツール名に prefix を付ける（<prefix><skill ID>）。
+// tools/call では同じ接頭辞を外してスキルを引く。
+func withToolPrefix(prefix string) a2aClientOption {
+	return func(c *A2ABackendClient) { c.toolPrefix = prefix }
+}
+
 // NewA2ABackendClient は cfg 用のクライアントを組み立てる。EnsureCard・ListTools・
 // CallTool のいずれかが呼ばれるまで何も取得しない。
 func NewA2ABackendClient(
-	name string, cfg *config.Server, mediaService storage.MediaService,
+	name string, cfg *config.Server, mediaService storage.MediaService, opts ...a2aClientOption,
 ) *A2ABackendClient {
 	if mediaService == nil {
 		mediaService = storage.NewNoopUploader()
 	}
-	return &A2ABackendClient{
+	c := &A2ABackendClient{
 		name:         name,
 		cfg:          cfg,
 		mediaService: mediaService,
@@ -103,6 +118,10 @@ func NewA2ABackendClient(
 			),
 		},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // parseAgentCard は両形式の Agent Card を復号する。v1.0 の Card は
@@ -206,8 +225,39 @@ func (c *A2ABackendClient) EnsureCard(ctx context.Context) (_ *a2a.AgentCard, rE
 		c.card = card
 		c.client = client
 		c.mu.Unlock()
+		// 採用した取得結果に対してだけ、Card が持たない skills を警告する
+		// （取得のたびではなく、Card をキャッシュしたとき 1 回）。
+		c.warnMissingSkills(ctx, card)
 		return card, nil
 	}
+}
+
+// warnMissingSkills は skills に設定されているが Agent Card に無いスキル ID を
+// 警告ログに出す。設定ミスの可能性はあるが、Card は後から更新され得るため
+// 起動や呼び出しは失敗させない（該当 ID は公開されないだけ）。
+func (c *A2ABackendClient) warnMissingSkills(ctx context.Context, card *a2a.AgentCard) {
+	for _, id := range c.cfg.Skills {
+		if _, ok := findSkill(card.Skills, id); !ok {
+			slog.WarnContext(ctx, "a2a skill in skills is not in the agent card; skipped",
+				slog.String("agent", c.name), slog.String("skill", id))
+		}
+	}
+}
+
+// exposedSkills はツールとして公開するスキルを返す。skills が空なら Card の全
+// スキルを Card の順序で、指定があれば設定された順序で指定 ID のスキルだけを返す。
+// Card に無い ID は読み飛ばす。
+func (c *A2ABackendClient) exposedSkills(card *a2a.AgentCard) []a2a.AgentSkill {
+	if len(c.cfg.Skills) == 0 {
+		return card.Skills
+	}
+	skills := make([]a2a.AgentSkill, 0, len(c.cfg.Skills))
+	for _, id := range c.cfg.Skills {
+		if skill, ok := findSkill(card.Skills, id); ok {
+			skills = append(skills, skill)
+		}
+	}
+	return skills
 }
 
 // resolveCard は Agent Card を取得し、そのエンドポイントへ接続する SDK
@@ -289,7 +339,7 @@ func a2aSkillInputSchema() map[string]any {
 }
 
 // a2aSkillDescription はスキルツールの description を組み立てる。運用者の指示文
-// （agents.<name>.description）を先頭に、続けて Agent Card のスキル情報を並べる。
+// （mcpServers / agents の description）を先頭に、続けて Agent Card のスキル情報を並べる。
 func a2aSkillDescription(instruction string, skill a2a.AgentSkill) string {
 	var b strings.Builder
 	if instruction != "" {
@@ -315,12 +365,13 @@ func a2aSkillDescription(instruction string, skill a2a.AgentSkill) string {
 	return b.String()
 }
 
-// skillTools は Card のスキルを Card の順序どおり MCP ツールへ変換する。
+// skillTools は公開対象のスキル（exposedSkills 参照）を MCP ツールへ変換する。
 func (c *A2ABackendClient) skillTools(card *a2a.AgentCard) []*mcp.Tool {
-	tools := make([]*mcp.Tool, 0, len(card.Skills))
-	for _, skill := range card.Skills {
+	skills := c.exposedSkills(card)
+	tools := make([]*mcp.Tool, 0, len(skills))
+	for _, skill := range skills {
 		tools = append(tools, &mcp.Tool{
-			Name:        skill.ID,
+			Name:        c.toolPrefix + skill.ID,
 			Title:       skill.Name,
 			Description: a2aSkillDescription(c.cfg.Description, skill),
 			InputSchema: a2aSkillInputSchema(),
@@ -329,7 +380,7 @@ func (c *A2ABackendClient) skillTools(card *a2a.AgentCard) []*mcp.Tool {
 	return tools
 }
 
-// ListTools は tools/list に対して Agent Card のスキル 1 つにつきツール 1 つを返す。
+// ListTools は tools/list に対して公開対象のスキル 1 つにつきツール 1 つを返す。
 func (c *A2ABackendClient) ListTools(
 	ctx context.Context, _ *mcp.ListToolsParams,
 ) (_ *mcp.ListToolsResult, rErr error) {
@@ -351,9 +402,13 @@ func (c *A2ABackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error
 	if err != nil {
 		return nil, err
 	}
-	infos := make([]ToolInfo, 0, len(card.Skills))
-	for _, skill := range card.Skills {
-		infos = append(infos, ToolInfo{Name: skill.ID, Description: skill.Description})
+	skills := c.exposedSkills(card)
+	infos := make([]ToolInfo, 0, len(skills))
+	for _, skill := range skills {
+		infos = append(
+			infos,
+			ToolInfo{Name: c.toolPrefix + skill.ID, Description: skill.Description},
+		)
 	}
 	return infos, nil
 }
@@ -375,13 +430,20 @@ func (c *A2ABackendClient) CallTool(
 		attribute.String("tool-name", name))
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
+	// toolPrefix があるときは接頭辞を外してスキル ID にする。接頭辞が合わない
+	// 名前は、Card に無いスキルと同じ扱いにする。
+	skillID, ok := strings.CutPrefix(name, c.toolPrefix)
+	if !ok {
+		return a2aErrorResult(fmt.Errorf("unknown skill %q", name)), nil
+	}
+
 	card, err := c.EnsureCard(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "a2a tools/call failed: agent card unavailable",
 			slog.String("agent", c.name), slog.String("skill", name), slog.Any("error", err))
 		return nil, err
 	}
-	skill, ok := findSkill(card, name)
+	skill, ok := findSkill(c.exposedSkills(card), skillID)
 	if !ok {
 		return a2aErrorResult(fmt.Errorf("unknown skill %q", name)), nil
 	}
@@ -410,8 +472,10 @@ func (c *A2ABackendClient) CallTool(
 	return c.toCallToolResult(ctx, result)
 }
 
-func findSkill(card *a2a.AgentCard, id string) (a2a.AgentSkill, bool) {
-	for _, skill := range card.Skills {
+// findSkill は skills から id に一致するスキルを探す。呼び出しでは公開対象
+// （exposedSkills）だけを渡し、公開していないスキルを呼べないようにする。
+func findSkill(skills []a2a.AgentSkill, id string) (a2a.AgentSkill, bool) {
+	for _, skill := range skills {
 		if skill.ID == id {
 			return skill, true
 		}
