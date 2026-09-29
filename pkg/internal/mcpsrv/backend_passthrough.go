@@ -33,6 +33,9 @@ type backendPassthrough interface {
 // authz ミドルウェアより先に AddReceivingMiddleware すること。先に追加した
 // ミドルウェアが内側になるため、authz が外側で tools/call を許可判定し、
 // tools/list の結果（= バックエンドからの live な一覧）をフィルタできる。
+// mcpServers.<name>.agents を持つサービスでは、サービスエージェントの
+// ミドルウェア（newServiceAgentsMiddleware）をこのパススルーの後、authz の前に
+// 追加する。つまり内側から パススルー → サービスエージェント → authz の順になる。
 func newBackendPassthroughMiddleware(bc backendPassthrough) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {

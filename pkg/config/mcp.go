@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -62,7 +63,13 @@ type Server struct {
 
 	// a2a トランスポート用（agents ディレクティブから Agent.Server で生成される）。
 	// mcpServers 配下では設定できない。
-	AgentCardPath string `mapstructure:"agentCardPath"`
+	AgentCardPath string   `mapstructure:"agentCardPath"` // URL からの Agent Card のパス
+	Skills        []string `mapstructure:"skills"`        // 公開するスキル ID（空なら全スキル）
+
+	// Agents はこのサービスにぶら下げる A2A エージェント。各エージェントの
+	// スキルは <agent>__<skill> というツール名で、サービス自身のツールと並んで
+	// このサービスの tools/list に現れる。reverse トランスポートでは使えない。
+	Agents Agents `mapstructure:"agents"`
 }
 
 // CallTimeoutOrDefault returns CallTimeout, falling back to DefaultCallTimeout
@@ -128,7 +135,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			validation.When(
 				!s.IsOpenAPI(),
 				validation.In(MCPTransportHTTP, MCPTransportStdio, MCPTransportReverse).
-					Error("must be a valid value (a2a agents are configured under agents, not mcpServers)"),
+					Error("must be a valid value (a2a agents are configured under agents or mcpServers.<name>.agents)"),
 			),
 			validation.By(func(value any) error {
 				if s.Transport != MCPTransportReverse {
@@ -221,7 +228,67 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			}
 			return nil
 		})),
+		validation.Field(&s.Skills, validation.By(func(any) error {
+			if len(s.Skills) > 0 {
+				return fmt.Errorf("skills is only supported under agents")
+			}
+			return nil
+		})),
+		validation.Field(&s.Agents, validation.WithContext(s.validateAgents)),
 	)
+}
+
+// validateAgents は mcpServers.<name>.agents を検証する。
+//
+// reverse サーバーは MCPServer ではなく ReverseGateway が identityKey ごとに
+// 解決するため、エージェントをぶら下げられない。キーは URL とは無関係だが
+// ツール名 <agent>__<skill> の一部になるため、サーバー名と同じ文字種に加えて
+// 区切り文字列（__）を含まないことを要求する（含むと最初の __ で分割する
+// ルーティングが曖昧になる）。
+func (s Server) validateAgents(ctx context.Context, _ any) error {
+	if len(s.Agents) == 0 {
+		return nil
+	}
+	if s.Transport == MCPTransportReverse {
+		return fmt.Errorf("agents is not supported for the reverse transport")
+	}
+	// エラーの出力順を安定させるため、キーをソートして検証する。
+	for _, key := range slices.Sorted(maps.Keys(s.Agents)) {
+		if !pathRegex.MatchString(key) {
+			return fmt.Errorf("agent name '%s' contains invalid characters", key)
+		}
+		if strings.Contains(key, AgentToolSeparator) {
+			return fmt.Errorf(
+				"agent name %q must not contain %q (reserved as the agent/skill separator in tool names)",
+				key,
+				AgentToolSeparator,
+			)
+		}
+		agent := s.Agents[key]
+		if agent == nil {
+			return fmt.Errorf("agent %q: must not be empty", key)
+		}
+		if err := agent.ValidateWithContext(ctx); err != nil {
+			return fmt.Errorf("agent %q: %w", key, err)
+		}
+		if agent.OAuth2 != nil {
+			// OAuth2 の RoundTripper は呼び出し元のサーバー単位の上流トークンを
+			// ctx から転送するため、エージェント個別の oauth2 クライアント設定は
+			// 使われない。黙って無視せず設定時点で拒否する。
+			return fmt.Errorf(
+				"agent %q: oauth2 is not supported for agents under mcpServers; "+
+					"the OAuth flow is per server (use authValue or tokenExchange, or a top-level agents entry)",
+				key,
+			)
+		}
+	}
+	return nil
+}
+
+// HasAgents はこのサーバーに mcpServers.<name>.agents でエージェントが
+// ぶら下がっているかを返す。
+func (s Server) HasAgents() bool {
+	return len(s.Agents) > 0
 }
 
 // validateToolsFile validates tools.file: mutually exclusive with

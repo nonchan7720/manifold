@@ -44,7 +44,7 @@ Server
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
-- **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開（`agents`）。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
+- **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
@@ -375,6 +375,8 @@ agents:
     description: |
       翻訳エージェント。呼び出し元のセッション ID を必ず sessionId に渡すこと。
       _meta.a2a.state が input-required のときは、同じ sessionId と返ってきた taskId で続きを送ること。
+    skills: [translate, summarize]        # 任意: このスキルだけをこの順で公開
+    timeout: 30s                          # 任意: message/send 1 回のタイムアウト（既定 60s）
     oauth2:
       clientID: ${TRANSLATOR_CLIENT_ID}
       clientSecret: ${TRANSLATOR_CLIENT_SECRET}
@@ -382,12 +384,41 @@ agents:
       tokenURL: https://auth.example.com/token
 ```
 
-- Manifold は `url` から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
-- Card の **スキル** が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
+- `skills` は、Agent Card のスキルのうちツールにするものを絞ります。列挙したスキル ID だけを列挙した順に公開し、Card にない ID は警告ログを出して読み飛ばします（起動には影響しません）。`skills` を省略すると Card の全スキルを公開します。公開していないスキルは呼び出せません。`tools/call` は、Card にないスキルと同じ `unknown skill` エラーを返します。
+- Manifold は `url`（と `agentCardPath`。既定 `/.well-known/agent-card.json`）から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
+- 公開対象の **スキル**（`skills` を設定しない限り Card の全スキル）が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
 - `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
 - 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
 - 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`tool=<スキル ID>` です。
 - ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
+
+#### サービスにエージェントをぶら下げる
+
+サービスに属するエージェントをそのサービスの利用者へ渡したいときは、その `mcpServers` エントリの `agents` に書きます（`reverse` 以外のどのトランスポートでも、OpenAPI モードでも可）。サービスはこれまでどおり `/mcp/<name>` で提供され、設定も変わりません。`tools/list` は、サービス自身のツールに**各エージェントの公開スキルごとに 1 つのツール**を加えたものを返します。
+
+```yaml
+mcpServers:
+  billing:                       # これまでどおり設定するサービス
+    transport: http
+    url: https://billing.example.com/mcp
+    description: 請求サービス
+    agents:                      # このサービスにぶら下げる A2A エージェント
+      translator:
+        url: https://translator.example.com
+        description: 翻訳に使う。
+        skills: [translate]      # 任意
+        timeout: 30s
+      reviewer:
+        url: https://reviewer.example.com
+        description: レビューに使う。
+```
+
+- ツール名は `<agent>__<skill>`（アンダースコア 2 つ）で、例は `translator__translate` です。この名前への `tools/call` は、トップレベルの `agents` のスキルツールと同じく、そのエージェントのスキルへの `message/send` になります。`sessionId`・`taskId`・`message` / `data` / `files` や結果の形式も上記と同じです。
+- 並び順は、サービス自身のツールが先、続いてエージェントが名前順、各エージェントのスキルは Card の順（`skills` を設定した場合はその順）です。`/mcp/list?tools=true` も同じ一覧を返します。ぶら下げたエージェントの `<agent>__` で始まらない名前の `tools/call` は、これまでどおりサービスへ渡ります。
+- Agent Card を取得できないエージェントは、エラーログを出して `tools/list`（と `/mcp/list?tools=true`）から除外されます。サービス自身のツールと他のエージェントのツールは返り、Card は次のリクエストで取り直します。
+- これらのエージェントでは `oauth2` は使えません。OAuth のフローはサーバー単位で、RoundTripper が転送するのは呼び出し元のサーバー単位の上流トークンなので、エージェント個別の `oauth2` クライアント設定は黙って無視されてしまうためです。`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。理由の詳細は `docs/design/service-agents.ja.md` を参照してください。
+- `transport: reverse` では使えません（reverse のサーバーはユーザーごとに reverse ゲートウェイが解決します）。
+- [ツール認可](#ツール認可opa-サイドカー)には、サービス名と組み立てたツール名（`server=<サービス>`、`tool=<agent>__<skill>`）が渡ります。そのため同じポリシーがサービス自身のツールとエージェントのスキルの両方に適用され、`tools/list` もそれに従って絞り込まれます。
 
 ### OpenAPI / Swagger バックエンドへの接続
 
@@ -495,6 +526,7 @@ gateway:
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
+| `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 
@@ -609,9 +641,27 @@ A2A エージェント（[A2A エージェントへの接続](#a2a-エージェ�
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（[`mcpServers.<name>.oauth2`](#mcpserversnameoauth2) と同じ）。呼び出し元のトークンを付けるのはメッセージ送信のみで、Agent Card は `headers` / `authValue` だけで取得する |
 | `tokenExchange` | object            | Token Exchange 設定（[`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange) と同じ） |
+| `skills`        | []string          | ツールとして公開する Agent Card のスキル ID。この順で公開し、Card にない ID は警告ログを出して読み飛ばす。省略すると全スキルを公開 |
 | `timeout`       | duration          | `message/send` 1 回のタイムアウト（既定 `60s`）            |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に 1 つだけ設定できます。
+
+#### `mcpServers.<name>.agents.<agent>`
+
+サービスにぶら下げる A2A エージェント（[サービスにエージェントをぶら下げる](#サービスにエージェントをぶら下げる) 参照）。`<agent>` はサーバー名と同じ文字種（英数字・`_`・`-`）で、ツール名（`<agent>__<skill>`）でエージェントとスキルを区切る `__` を含められません。エージェント名はサービスごとに独立しているため、別のサービスと重複しても、トップレベルの名前と同じでも構いません。
+
+| フィールド      | 型                | 説明                                                       |
+| --------------- | ----------------- | ---------------------------------------------------------- |
+| `description`   | string            | 呼び出し元エージェントへの指示文（**必須**）。各スキルのツール description の先頭に付き、`/mcp/list` でも返される |
+| `url`           | string            | Agent Card を取得するベース URL（**必須**）。メッセージは Card に書かれたエンドポイントへ送られる |
+| `agentCardPath` | string            | `url` からの Agent Card のパス（既定 `/.well-known/agent-card.json`） |
+| `headers`       | map[string]string | Agent Card 取得とメッセージ送信に追加するヘッダー          |
+| `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
+| `tokenExchange` | object            | Token Exchange 設定（[`mcpServers.<name>.tokenExchange`](#mcpserversnametokenexchange) と同じ） |
+| `skills`        | []string          | ツールとして公開する Agent Card のスキル ID。この順で公開し、Card にない ID は警告ログを出して読み飛ばす。省略すると全スキルを公開 |
+| `timeout`       | duration          | `message/send` 1 回のタイムアウト（既定 `60s`）            |
+
+[`agents.<name>`](#agentsname) から **`oauth2` を除いたもの**と同じです。`oauth2` はここでは拒否されます。OAuth のフローはサーバー単位のため、`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。`authValue` / `tokenExchange` は排他です。
 
 #### `oauth.cimd`
 

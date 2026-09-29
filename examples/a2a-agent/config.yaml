@@ -18,12 +18,30 @@ agents:
       so follow-up messages stay in the same conversation. When a result comes
       back with _meta.a2a.state = input-required, answer with the same sessionId
       and the taskId from _meta.a2a.taskId.
+    # Expose only these skills, in this order (default: every skill in the card).
+    # Skill ids missing from the card are skipped with a warning.
+    # skills: [translate]
     # timeout: 60s
     # headers:
     #   X-Tenant: acme
     # authValue:
     #   header: X-Api-Key
     #   value: ${TRANSLATOR_API_KEY}
+
+# Agents can also be attached to a service: under mcpServers.<name>.agents,
+# each agent's skills are added to the service's own tools as
+# <agent>__<skill> (e.g. translator__translate) at /mcp/<name>. oauth2 is not
+# available for these agents (use authValue / tokenExchange / headers).
+# mcpServers:
+#   billing:
+#     transport: http
+#     url: ${BILLING_MCP_URL:-http://localhost:8080/mcp}
+#     description: Billing service
+#     agents:
+#       translator:
+#         url: ${TRANSLATOR_AGENT_URL:-http://localhost:10000}
+#         description: Translation agent. Pass the caller's session id as sessionId on every call.
+#         skills: [translate]
 
 sqlite:
   path: ./tmp/manifold.db

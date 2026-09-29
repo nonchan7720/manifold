@@ -1,13 +1,16 @@
 package mcpsrv
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -987,4 +990,101 @@ func TestMCPServer_A2AAgent_AuthzPerSkill(t *testing.T) {
 	stub.mu.Lock()
 	require.Empty(t, stub.requests)
 	stub.mu.Unlock()
+}
+
+// --- skills による公開スキルの絞り込み ---
+
+// stubAgentServerWithSkills は stubAgentServer に skills を設定した cfg を返す。
+func stubAgentServerWithSkills(s *stubA2AAgent, skills ...string) *config.Server {
+	cfg := stubAgentServer(s)
+	cfg.Skills = skills
+	return cfg
+}
+
+func TestA2ABackendClient_Skills_OnlyListedSkillsAreExposed(t *testing.T) {
+	stub := newStubA2AAgent(t, false)
+	stub.setResult(agentMessage("ok"))
+	c := NewA2ABackendClient("translator", stubAgentServerWithSkills(stub, stubSkillSummarize), nil)
+	t.Cleanup(c.Close)
+
+	res, err := c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{stubSkillSummarize}, toolNames(res.Tools))
+
+	infos, err := c.ListToolInfos(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{
+		{Name: stubSkillSummarize, Description: "Summarize a document."},
+	}, infos)
+
+	// Card にはあるが skills に無いスキルは、未知のスキルと同じ結果になる。
+	call, err := c.CallTool(t.Context(), stubSkillTranslate,
+		callArgs(t, map[string]any{"sessionId": "s", "message": "hi"}))
+	require.NoError(t, err)
+	require.True(t, call.IsError)
+	require.Contains(t, resultText(t, call), `unknown skill "translate"`)
+	stub.mu.Lock()
+	require.Empty(t, stub.requests, "a skill that is not exposed must not reach the agent")
+	stub.mu.Unlock()
+
+	// 公開しているスキルは呼び出せる。
+	call, err = c.CallTool(t.Context(), stubSkillSummarize,
+		callArgs(t, map[string]any{"sessionId": "s", "message": "hi"}))
+	require.NoError(t, err)
+	require.False(t, call.IsError)
+}
+
+func TestA2ABackendClient_Skills_ConfiguredOrderIsKept(t *testing.T) {
+	stub := newStubA2AAgent(t, false)
+	c := NewA2ABackendClient("translator",
+		stubAgentServerWithSkills(stub, stubSkillSummarize, stubSkillTranslate), nil)
+	t.Cleanup(c.Close)
+
+	res, err := c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	// Card の順序（translate, summarize）ではなく、設定した順序で返る。
+	require.Equal(t, []string{stubSkillSummarize, stubSkillTranslate}, toolNames(res.Tools))
+
+	infos, err := c.ListToolInfos(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []ToolInfo{
+		{Name: stubSkillSummarize, Description: "Summarize a document."},
+		{Name: stubSkillTranslate, Description: "Translate text between languages."},
+	}, infos)
+}
+
+func TestA2ABackendClient_Skills_MissingSkillIsSkippedWithWarning(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	handler := slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	stub := newStubA2AAgent(t, false)
+	c := NewA2ABackendClient("translator",
+		stubAgentServerWithSkills(stub, stubSkillSummarize, "nope"), nil)
+	t.Cleanup(c.Close)
+
+	res, err := c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{stubSkillSummarize}, toolNames(res.Tools))
+
+	// 2 回目以降はキャッシュ済みの Card を使うため、警告は Card 取得時の 1 回だけ。
+	_, err = c.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(logs.String(), "skill=nope"), logs.String())
+	require.Contains(t, logs.String(), "agent=translator")
+	require.NotContains(t, logs.String(), "skill=summarize")
+}
+
+// resultText は結果の text content を連結して返す。
+func resultText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	var b strings.Builder
+	for _, content := range res.Content {
+		text, ok := content.(*mcp.TextContent)
+		require.True(t, ok)
+		b.WriteString(text.Text)
+	}
+	return b.String()
 }

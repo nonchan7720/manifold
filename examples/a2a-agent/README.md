@@ -3,8 +3,9 @@
 Exposes an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent through Manifold as an MCP server, next to any `mcpServers` you already have.
 
 - Manifold fetches the agent's **Agent Card** from `agents.<name>.url` (`/.well-known/agent-card.json`; both the v0.3 and v1.0 card formats are accepted).
-- Every **skill** in the card becomes one MCP tool named after the skill id.
+- Every **skill** in the card becomes one MCP tool named after the skill id. Set `skills: [translate, ...]` to expose only the listed skills (in that order); ids missing from the card are skipped with a warning.
 - A `tools/call` sends an A2A `message/send` to the endpoint the card declares, with the caller's `sessionId` as the A2A `contextId`.
+- Agents can also be attached to a service: write them under `mcpServers.<name>.agents` (see the commented `billing` block in `config.yaml`). The service keeps its own tools at `/mcp/<name>` and gains one tool per exposed skill of each agent, named `<agent>__<skill>` (e.g. `translator__translate`); `tools/call` on such a name is the same A2A `message/send`. `oauth2` is not available for these agents.
 - The response context comes back in `_meta.a2a` (`contextId`, `taskId`, `state`, …).
 
 ## Run

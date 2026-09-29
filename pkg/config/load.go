@@ -256,6 +256,11 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 
 	for name, srv := range conf.MCPServer {
 		srv.Name = name
+		for agentName, agent := range srv.Agents {
+			if agent != nil {
+				agent.Name = agentName
+			}
+		}
 	}
 	for name, agent := range conf.Agents {
 		agent.Name = name
