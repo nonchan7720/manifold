@@ -415,6 +415,7 @@ mcpServers:
 
 - ツール名は `<agent>__<skill>`（アンダースコア 2 つ）で、例は `translator__translate` です。この名前への `tools/call` は、トップレベルの `agents` のスキルツールと同じく、そのエージェントのスキルへの `message/send` になります。`sessionId`・`taskId`・`message` / `data` / `files` や結果の形式も上記と同じです。
 - 並び順は、サービス自身のツールが先、続いてエージェントが名前順、各エージェントのスキルは Card の順（`skills` を設定した場合はその順）です。`/mcp/list?tools=true` も同じ一覧を返します。ぶら下げたエージェントの `<agent>__` で始まらない名前の `tools/call` は、これまでどおりサービスへ渡ります。
+- 名前の衝突: ぶら下げたエージェントのツール名がサービス自身のツールと同じ場合（例: サービスに `translator__translate` というツールがあり、エージェント `translator` に `translate` スキルがある）、サービスのツールが優先されます。一覧には 1 つだけ載り、`tools/call` はサービスへ届き、エージェントの衝突したスキルは警告ログを出して一覧から外れます。解消するにはエージェントの名前を変えてください。
 - Agent Card を取得できないエージェントは、エラーログを出して `tools/list`（と `/mcp/list?tools=true`）から除外されます。サービス自身のツールと他のエージェントのツールは返り、Card は次のリクエストで取り直します。
 - これらのエージェントでは `oauth2` は使えません。OAuth のフローはサーバー単位で、RoundTripper が転送するのは呼び出し元のサーバー単位の上流トークンなので、エージェント個別の `oauth2` クライアント設定は黙って無視されてしまうためです。`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。理由の詳細は `docs/design/service-agents.ja.md` を参照してください。
 - `transport: reverse` では使えません（reverse のサーバーはユーザーごとに reverse ゲートウェイが解決します）。

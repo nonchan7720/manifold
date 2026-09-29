@@ -34,7 +34,8 @@ mcpServers:
 
 - A skill is exposed as `<agent>__<skill>` (double underscore), e.g. `translator__translate`.
 - `__` is reserved: an agent name may not contain it (config validation rejects it), and must otherwise match the server-name characters (alphanumerics, `_`, `-`).
-- `tools/call` is routed on the **first** `__` of the tool name. Because agent names cannot contain `__`, at most one agent matches. A name that does not start with an attached agent's `<agent>__` goes to the service as before. A skill that is not exposed (Agent Card does not have it, or `skills` excludes it) yields the same `unknown skill` error as for a top-level agent.
+- `tools/call` is routed on the **first** `__` of the tool name. Because agent names cannot contain `__`, at most one agent matches. A name that does not start with an attached agent's `<agent>__` goes to the service as before.
+- **On a name collision the service wins.** If the service itself has a tool with the exact name that would route to an agent (e.g. a backend tool `translator__translate` next to agent `translator` with skill `translate`), the call goes to the service, and `tools/list` / `/mcp/list?tools=true` list the service's tool once and drop the agent's colliding tool with a warning log (`server`, `agent`, `tool`). The service's tools are never filtered. Detection: on a `tools/call` whose name would route to an agent, the middleware consults the service's own `tools/list` (following pagination) through the inner handler, so it costs one extra round trip per agent call for MCP backends and an in-process call for OpenAPI mode. If that lookup fails, a warning is logged and the call goes to the agent, so an unavailable backend never blocks agent calls. The remedy for a collision is to rename the agent. A skill that is not exposed (Agent Card does not have it, or `skills` excludes it) yields the same `unknown skill` error as for a top-level agent.
 - Order in `tools/list` and `/mcp/list?tools=true`: the service's own tools first, then the agents in name order, each agent's skills in card order (or `skills` order).
 - The `skills` filter applies to nested agents exactly as it does to top-level agents.
 
@@ -83,6 +84,7 @@ Why:
 - **`transport: a2a` under `mcpServers`.** Rejected (see Context). It makes an agent a peer of the service and cannot attach several agents to one.
 - **Allow `oauth2` on nested agents with "forward the caller's token" semantics.** Rejected: the configured client would be ignored, so the block would mislead readers and hide a real credential decision.
 - **Run a separate OAuth flow per `<service>/<agent>`.** Rejected for now. It needs new auth endpoints, token storage keyed by service and agent, and a second consent step inside the same `/mcp/<service>` connection. It can be revisited if a concrete need appears; the load-time rejection can then be relaxed without breaking configurations.
+- **On a name collision, hide the service's tool (agent wins).** Rejected: renaming an agent is a local configuration change, whereas a service's tool names are owned by its backend and cannot be changed by the operator. The service therefore keeps its tools reachable, and the agent's colliding skill is the one dropped.
 - **A different separator or a per-agent tool prefix option.** Rejected to keep the rule simple and routing unambiguous: one reserved separator, nothing to configure.
 
 ## Consequences

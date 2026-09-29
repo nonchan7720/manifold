@@ -266,9 +266,10 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 	}
 
 	// mcpServers.<name>.agents にぶら下げたエージェントのツールをサービス自身の
-	// ツールの後ろに足す（tools/list と同じ並び）。
+	// ツールの後ろに足す（tools/list と同じ並び）。サービスのツールと同名の
+	// エージェントのツールは、tools/list と同じくサービスを優先して外す。
 	if sa, ok := s.serviceAgents[name]; ok {
-		infos = append(infos, sa.listToolInfos(ctx)...)
+		infos = append(infos, sa.dropCollidingInfos(ctx, infos, sa.listToolInfos(ctx))...)
 	}
 	return infos, nil
 }

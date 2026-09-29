@@ -361,3 +361,118 @@ func TestA2ABackendClient_ToolPrefix(t *testing.T) {
 	require.True(t, call.IsError)
 	require.Contains(t, resultText(t, call), "unknown skill")
 }
+
+// newCollidingBackendServer は "translator__translate"（エージェント translator の
+// スキル translate と同名）を持つ http MCP バックエンドを返す。
+func newCollidingBackendServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
+	for _, tool := range []struct{ name, description, text string }{
+		{"echo", "echo the input", "echoed"},
+		{"translator__translate", "backend translate", "from-backend"},
+	} {
+		srv.AddTool(
+			&mcp.Tool{
+				Name:        tool.name,
+				Description: tool.description,
+				InputSchema: map[string]any{"type": "object"},
+			},
+			func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: tool.text}},
+				}, nil
+			},
+		)
+	}
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(httpSrv.Close)
+	return httpSrv
+}
+
+// サービス自身のツールがエージェントのツールと同名のときは、サービスが優先される。
+func TestServiceAgents_NameCollision_ServiceToolWins(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	)
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	backend := newCollidingBackendServer(t)
+	translator := newStubA2AAgent(t, false)
+	translator.setResult(agentMessage("from-agent"))
+	s := newMCPServiceWithAgents(t, backend.URL, config.Agents{
+		"translator": serviceAgentConfig(translator),
+	})
+	session := connectInMemory(t, s, "billing")
+
+	// 衝突したツールは 1 回だけ、バックエンドの description で並ぶ。
+	listed, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Equal(t,
+		[]string{"echo", "translator__translate", "translator__summarize"}, toolNames(listed.Tools))
+	require.Equal(t, "backend translate", listed.Tools[1].Description)
+	require.Contains(t, logs.String(), "agent tool name collides with a service tool")
+	require.Contains(t, logs.String(), "tool=translator__translate")
+	require.Contains(t, logs.String(), "agent=translator")
+
+	// 衝突した名前の呼び出しはサービスへ届き、エージェントには届かない。
+	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "translator__translate",
+		Arguments: map[string]any{"sessionId": "s", "message": "hi"},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "from-backend", resultText(t, res))
+	translator.mu.Lock()
+	require.Empty(t, translator.requests)
+	translator.mu.Unlock()
+
+	// 衝突しないスキルは従来どおりエージェントへ届く。
+	res, err = session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "translator__summarize",
+		Arguments: map[string]any{"sessionId": "sess-7", "message": "hi"},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "from-agent", resultText(t, res))
+	require.Equal(t, "sess-7", translator.lastRequest(t).Message.ContextID)
+
+	// /mcp/list 用のカタログも同じ規則。
+	catalog, err := s.ToolCatalog(t.Context(), "billing")
+	require.NoError(t, err)
+	var names []string
+	descriptions := map[string]string{}
+	for _, info := range catalog {
+		names = append(names, info.Name)
+		descriptions[info.Name] = info.Description
+	}
+	require.Equal(t, []string{"echo", "translator__translate", "translator__summarize"}, names)
+	require.Equal(t, "backend translate", descriptions["translator__translate"])
+}
+
+// バックエンドの tools/list が失敗しても、エージェントの呼び出しは妨げない。
+func TestServiceAgents_CollisionCheckFailureStillCallsAgent(t *testing.T) {
+	t.Setenv("TEST", "true")
+	translator := newStubA2AAgent(t, false)
+	translator.setResult(agentMessage("from-agent"))
+
+	backend := newAuthzMCPBackendServer(t)
+	s := newMCPServiceWithAgents(t, backend.URL, config.Agents{
+		"translator": serviceAgentConfig(translator),
+	})
+	session := connectInMemory(t, s, "billing")
+	backend.Close() // 以降、サービスの tools/list は失敗する
+
+	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "translator__translate",
+		Arguments: map[string]any{"sessionId": "sess-1", "message": "hi"},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "sess-1", translator.lastRequest(t).Message.ContextID)
+}
