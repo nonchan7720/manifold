@@ -32,6 +32,8 @@ type Config struct {
 
 	Authz AuthzConfig `mapstructure:"authz"`
 
+	ToolScope ToolScopeConfig `mapstructure:"toolScope"`
+
 	OAuth OAuthConfig `mapstructure:"oauth"`
 }
 
@@ -123,6 +125,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Storage),
 		validation.Field(&c.Authz),
+		validation.Field(&c.ToolScope),
 		validation.Field(&c.OAuth),
 	)
 }

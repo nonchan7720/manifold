@@ -1189,6 +1189,51 @@ OPA が bundle をマージする仕組み上、制約が 3 つある。
 
 動作する OPA サイドカーとサンプルのポリシー・データは [`examples/opa/`](examples/opa/) を参照してください。
 
+## ターンごとのツールスコープ
+
+[ツール認可](#ツール認可opa-サイドカー)は「その**ユーザー**が使ってよいツール」を決めます。ツールスコープはそれとは独立に、「その**リクエスト**（LLM の 1 ターン）で使うツール」をクライアント自身がさらに絞り込む仕組みです。
+
+似たサービスを複数つないでいると（例: 会計サービス 1 と会計サービス 2）、「今月の請求書を作って」のようなあいまいなプロンプトで両方のツールが呼ばれたり、LLM に「どちらを使いますか？」と聞き返されたりします。チャット UI 側でターンごとにサービスを on/off し、その結果をヘッダーで Manifold に渡せば、off にしたサービスのツールは LLM から見えなくなり、呼ぶこともできなくなります。
+
+```yaml
+toolScope:
+  enabled: true
+  headers:
+    services: x-tool-scope-services # 既定値
+    servers: x-tool-scope-servers   # 既定値
+```
+
+| フィールド | 型 | 既定値 | 説明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | ツールスコープのミドルウェアを有効化します |
+| `headers.services` | string | `x-tool-scope-services` | 有効にするサービスコード（`service.code`、未設定ならサーバー名）の一覧を受け取るヘッダー名 |
+| `headers.servers` | string | `x-tool-scope-servers` | 有効にするサーバー名（`mcpServers` / `agents` のキー）の一覧を受け取るヘッダー名 |
+
+環境変数 `TOOLSCOPE_ENABLED` / `TOOLSCOPE_HEADERS_SERVICES` / `TOOLSCOPE_HEADERS_SERVERS` でも上書きできます。
+
+ヘッダーの値はカンマ区切りの一覧です（同じヘッダーを複数回付けた場合はすべての値を合わせます）。比較は大文字・小文字を区別します。
+
+```http
+POST /mcp/accounting-1
+x-tool-scope-services: accounting-1
+```
+
+リクエストごとの挙動:
+
+- **ヘッダーが無い**: 絞り込まない（既存の動作のまま）
+- **ヘッダーがあり、そのサーバーが一覧に含まれる**: そのまま処理する（authz が有効なら、続けて authz の判定を受ける）
+- **ヘッダーがあり、そのサーバーが一覧に含まれない**: `tools/list` は空の一覧を返し、`tools/call` は `tool not enabled in this request's tool scope` のエラーを返す。どちらも OPA への問い合わせやバックエンドへの転送は行わない
+- **ヘッダーはあるが値が空**: 何も有効にしない（すべてのサーバーが一覧に含まれない扱い）
+- `services` と `servers` の両方があれば、両方に含まれるサーバーだけが有効になる
+
+ポイント:
+
+- ツールスコープは許可を**広げない**。有効になるのは authz が許可したツールとスコープの積で、スコープは authz の手前（外側）で判定する。スコープ外のサーバーは OPA に問い合わせない
+- スコープのヘッダーはクライアントが自分の LLM のために付けるもので、アクセス制御には使えない（ヘッダーを外せば全ツールが見える）。ユーザーごとの制限は authz で行う
+- スコープのヘッダーが付いた `tools/list` の結果は `cacheScope: "private"`・`ttlMs: 0` で返す。ターンごとにスコープを切り替えるクライアントは、ターンの開始時に `tools/list` を取り直すこと（Manifold はスコープの変化で `notifications/tools/list_changed` を送らない）
+- サービス一覧（on/off の候補）は `GET /mcp/list` の各エントリの `service` から取得できる
+- HTTP 以外のトランスポートで届いたリクエストは絞り込まない
+
 ## HTTP エンドポイント
 
 Manifold が公開する HTTP エンドポイントの一覧です。

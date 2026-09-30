@@ -218,6 +218,12 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("authz.input.tools", DefaultAuthzInputTools)
 	v.SetDefault("authz.input.toolName", DefaultAuthzInputToolName)
 
+	// Same reasoning as fileFetch above — also makes TOOLSCOPE_ENABLED,
+	// TOOLSCOPE_HEADERS_SERVICES and TOOLSCOPE_HEADERS_SERVERS effective overrides.
+	v.SetDefault("toolScope.enabled", false)
+	v.SetDefault("toolScope.headers.services", DefaultToolScopeHeaderServices)
+	v.SetDefault("toolScope.headers.servers", DefaultToolScopeHeaderServers)
+
 	// Same reasoning as fileFetch above — also makes OAUTH_CIMD_ENABLED,
 	// OAUTH_CIMD_ALLOWEDORIGINS, OAUTH_CIMD_CACHETTL and
 	// OAUTH_CIMD_MAXDOCUMENTSIZE effective overrides.

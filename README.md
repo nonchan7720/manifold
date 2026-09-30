@@ -1190,6 +1190,51 @@ Every ambiguous or failing case denies the request rather than allowing it:
 
 See [`examples/opa/`](examples/opa/) for a runnable OPA sidecar with sample policy and data.
 
+## Per-turn tool scope
+
+[Tool authorization](#tool-authorization-opa-sidecar) decides which tools a **user** may use. Tool scope is independent of it: it lets the client itself narrow down which tools a single **request** (one LLM turn) uses.
+
+With several similar services connected (e.g. accounting service 1 and accounting service 2), an ambiguous prompt such as "create this month's invoice" may call tools of both, or make the LLM ask back which one to use. If the chat UI lets the user switch services on/off per turn and passes the result to Manifold in a header, the tools of the services switched off disappear from the LLM's view and cannot be called.
+
+```yaml
+toolScope:
+  enabled: true
+  headers:
+    services: x-tool-scope-services # default
+    servers: x-tool-scope-servers   # default
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Enables the tool scope middleware |
+| `headers.services` | string | `x-tool-scope-services` | Header carrying the service codes (`service.code`, or the server name when unset) to enable |
+| `headers.servers` | string | `x-tool-scope-servers` | Header carrying the server names (keys of `mcpServers` / `agents`) to enable |
+
+The environment variables `TOOLSCOPE_ENABLED` / `TOOLSCOPE_HEADERS_SERVICES` / `TOOLSCOPE_HEADERS_SERVERS` override them as well.
+
+A header value is a comma-separated list (values of a repeated header are combined). Matching is case-sensitive.
+
+```http
+POST /mcp/accounting-1
+x-tool-scope-services: accounting-1
+```
+
+Per-request behavior:
+
+- **No header**: nothing is narrowed (the existing behavior)
+- **Header present and the server is listed**: handled as usual (followed by the authz decision when authz is enabled)
+- **Header present and the server is not listed**: `tools/list` returns an empty list and `tools/call` fails with `tool not enabled in this request's tool scope`. Neither queries OPA nor reaches the backend
+- **Header present with an empty value**: nothing is enabled (no server is listed)
+- With both `services` and `servers` present, only servers listed in both are enabled
+
+Notes:
+
+- Tool scope never **widens** access. The enabled tools are the intersection of what authz allows and the scope, and the scope is checked before (outside) authz, so an out-of-scope server never queries OPA
+- The scope headers are set by the client for its own LLM and are not an access control (dropping them shows every tool). Restrict users with authz
+- A `tools/list` result for a request carrying a scope header is returned with `cacheScope: "private"` and `ttlMs: 0`. A client switching the scope per turn should re-fetch `tools/list` at the start of each turn (Manifold does not send `notifications/tools/list_changed` when the scope changes)
+- The candidate services to switch on/off are available from the `service` of each entry of `GET /mcp/list`
+- Requests arriving over a non-HTTP transport are not narrowed
+
 ## HTTP endpoints
 
 The HTTP endpoints exposed by Manifold.

@@ -872,6 +872,86 @@ func (rt headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
+// --- toolScopeMiddlewareFn / chainMiddlewareFns ---
+
+func TestToolScopeMiddlewareFn_Disabled_ReturnsNil(t *testing.T) {
+	got := toolScopeMiddlewareFn(config.ToolScopeConfig{Enabled: false}, nil)
+	require.Nil(t, got)
+}
+
+func TestChainMiddlewareFns_AllNil_ReturnsNil(t *testing.T) {
+	require.Nil(t, chainMiddlewareFns(nil, nil))
+}
+
+// connectScopedBilling serves a "billing-api" server (service "billing")
+// with fn's middlewares and returns a session sending header on every
+// request.
+func connectScopedBilling(
+	t *testing.T, fn func(name string) []mcp.Middleware, header http.Header,
+) *mcp.ClientSession {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "billing-api", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "create_invoice", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		},
+	)
+	srv.AddReceivingMiddleware(fn("billing-api")...)
+
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(httpSrv.Close)
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
+		Endpoint:   httpSrv.URL,
+		HTTPClient: &http.Client{Transport: headerTransport{header: header}},
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestToolScopeMiddlewareFn_MatchesServiceCode(t *testing.T) {
+	servers := config.Servers{
+		"billing-api": {Name: "billing-api", Service: &config.Service{Code: "billing"}},
+	}
+	fn := toolScopeMiddlewareFn(config.ToolScopeConfig{Enabled: true}, servers)
+	require.NotNil(t, fn)
+
+	inScope := http.Header{}
+	inScope.Set(config.DefaultToolScopeHeaderServices, "billing")
+	res, err := connectScopedBilling(t, fn, inScope).ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, res.Tools, 1)
+
+	outOfScope := http.Header{}
+	outOfScope.Set(config.DefaultToolScopeHeaderServices, "accounting")
+	res, err = connectScopedBilling(t, fn, outOfScope).ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.Empty(t, res.Tools)
+}
+
+func TestChainMiddlewareFns_ToolScopeOutsideAuthz(t *testing.T) {
+	// ツールスコープが authz より外側にあれば、スコープ外のサーバーは識別
+	// ヘッダーが無くても authz に到達せず、スコープのエラーで拒否される。
+	authzCfg := config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"}
+	fn := chainMiddlewareFns(
+		toolScopeMiddlewareFn(config.ToolScopeConfig{Enabled: true}, nil),
+		authzMiddlewareFn(authzCfg, newAuthzDecider(authzCfg), nil),
+	)
+	require.Len(t, fn("billing-api"), 2)
+
+	header := http.Header{}
+	header.Set(config.DefaultToolScopeHeaderServers, "accounting-api")
+	_, err := connectScopedBilling(t, fn, header).
+		CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not enabled in this request's tool scope")
+}
+
 // --- newMCPServer: authz wiring ---
 
 func TestNewMCPServer_AuthzMiddlewareFn_AppliedToServer(t *testing.T) {

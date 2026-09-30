@@ -243,15 +243,62 @@ func authzMiddlewareFn(
 	}
 	cfg = cfg.WithDefaults()
 	return func(name string) []mcp.Middleware {
-		// 判定 input の service はサーバーのサービスコード。設定に無い名前
-		// （通常は起こらない）はサーバー名をそのまま使う（ServiceCode の既定と同じ）。
-		service := name
-		if srv, ok := servers[name]; ok && srv != nil {
-			service = srv.ServiceCode()
-		}
 		return []mcp.Middleware{
-			mcpsrv.NewAuthzMiddleware(name, service, decider, cfg.Headers, cfg.Input.FromHeaders),
+			mcpsrv.NewAuthzMiddleware(
+				name, serverServiceCode(servers, name), decider, cfg.Headers, cfg.Input.FromHeaders,
+			),
 		}
+	}
+}
+
+// serverServiceCode returns the service code of server name. A name missing
+// from servers (not expected in practice) falls back to the name itself,
+// the same default config.Server.ServiceCode applies.
+func serverServiceCode(servers config.Servers, name string) string {
+	if srv, ok := servers[name]; ok && srv != nil {
+		return srv.ServiceCode()
+	}
+	return name
+}
+
+// toolScopeMiddlewareFn builds the per-server mcp.Middleware factory wiring
+// mcpsrv.NewToolScopeMiddleware into every backend MCPServer and
+// ReverseGateway build, or nil when tool scoping is disabled.
+func toolScopeMiddlewareFn(
+	cfg config.ToolScopeConfig, servers config.Servers,
+) func(name string) []mcp.Middleware {
+	if !cfg.Enabled {
+		return nil
+	}
+	cfg = cfg.WithDefaults()
+	return func(name string) []mcp.Middleware {
+		return []mcp.Middleware{
+			mcpsrv.NewToolScopeMiddleware(name, serverServiceCode(servers, name), cfg.Headers),
+		}
+	}
+}
+
+// chainMiddlewareFns concatenates the middlewares of each non-nil fn, in
+// order, so the first fn's middlewares end up outermost. It returns nil when
+// every fn is nil, so a caller can keep treating nil as "nothing to add".
+func chainMiddlewareFns(
+	fns ...func(name string) []mcp.Middleware,
+) func(name string) []mcp.Middleware {
+	var active []func(name string) []mcp.Middleware
+	for _, fn := range fns {
+		if fn != nil {
+			active = append(active, fn)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return func(name string) []mcp.Middleware {
+		var mws []mcp.Middleware
+		for _, fn := range active {
+			mws = append(mws, fn(name)...)
+		}
+		return mws
 	}
 }
 
@@ -341,15 +388,18 @@ func runGatewayServer(ctx context.Context) error {
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzDecider := newAuthzDecider(globalConfig.Authz)
-	authzMiddleware := authzMiddlewareFn(
-		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
+	// ツールスコープは authz より外側に置く。スコープ外のサーバーは OPA に
+	// 問い合わせずに空の一覧 / 拒否を返せる。
+	serverMiddleware := chainMiddlewareFns(
+		toolScopeMiddlewareFn(globalConfig.ToolScope, globalConfig.MCPServer),
+		authzMiddlewareFn(globalConfig.Authz, authzDecider, globalConfig.MCPServer),
 	)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
 		contentManagementService,
 		globalConfig.Gateway,
-		authzMiddleware,
+		serverMiddleware,
 	)
 	if err != nil {
 		return err
@@ -363,9 +413,9 @@ func runGatewayServer(ctx context.Context) error {
 	pairingService := edgeservices.NewPairingService(storeClient)
 	edgeRegistry := edgeservices.NewInMemoryRegistry()
 	var reverseGatewayOpts []mcpsrv.ReverseGatewayOption
-	if authzMiddleware != nil {
+	if serverMiddleware != nil {
 		reverseGatewayOpts = append(
-			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(authzMiddleware),
+			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(serverMiddleware),
 		)
 	}
 	reverseGateway := mcpsrv.NewReverseGateway(
