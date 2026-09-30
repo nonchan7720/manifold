@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.18.0](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.18.0) (2026-09-30)
+
+
+### Features
+
+* **a2a:** expose A2A agents as MCP servers via the agents directive ([#210](https://github.com/nonchan7720/manifold/issues/210)) ([16ac430](https://github.com/nonchan7720/manifold/commit/16ac4308e8df8b7557c297822340106a5e46b08a))
+* **config:** attach A2A agents to mcpServers entries and add skills filter ([#223](https://github.com/nonchan7720/manifold/issues/223)) ([9d67a35](https://github.com/nonchan7720/manifold/commit/9d67a35b88e1fbdcc53632cf6b487c2d3b33e948))
+* **config:** group mcpServers and agents into services for tool authorization ([#225](https://github.com/nonchan7720/manifold/issues/225)) ([169254c](https://github.com/nonchan7720/manifold/commit/169254c86ac4b2751e1aff09af3981c96d92e1d7))
+* **mcp-list:** return OpenAPI summary and description per tool in /mcp/list?tools=true ([#220](https://github.com/nonchan7720/manifold/issues/220)) ([b8ca29e](https://github.com/nonchan7720/manifold/commit/b8ca29ef19085e644fea0fd9bc749aec3f512258))
+
+
+### Bug Fixes
+
+* **a2a:** tools/list shows no skills in strict MCP clients (cacheScope) and v0.3 cards without preferredTransport ([#213](https://github.com/nonchan7720/manifold/issues/213)) ([a43249f](https://github.com/nonchan7720/manifold/commit/a43249f895844e3baa7c2e158f13e4b3b402c8a9))
+* **config:** skip directories when expanding include globs ([#217](https://github.com/nonchan7720/manifold/issues/217)) ([3b8eb36](https://github.com/nonchan7720/manifold/commit/3b8eb361318f2a05e34706f182d8d7ffbfd953e0))
+
+
+### Miscellaneous
+
+* **deps:** drop the direct dependency on a2a-go v0.3 ([#221](https://github.com/nonchan7720/manifold/issues/221)) ([ef214f7](https://github.com/nonchan7720/manifold/commit/ef214f7e29a7fd0d687b12c01ff4875f955508ab))
+* **release:** point the main manifest at the last release made on main ([#222](https://github.com/nonchan7720/manifold/issues/222)) ([0ec7a51](https://github.com/nonchan7720/manifold/commit/0ec7a51406e227cf466bde9bc0c13b12bcb7f432))
+
 ## [1.17.1](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.17.1) (2026-09-28)
 
 
