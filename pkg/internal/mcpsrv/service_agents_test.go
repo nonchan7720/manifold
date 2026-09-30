@@ -281,7 +281,7 @@ func TestServiceAgents_AuthzPerAgentSkill(t *testing.T) {
 	s := newMCPServiceWithAgents(t, backend.URL,
 		config.Agents{"translator": serviceAgentConfig(translator)},
 		WithServerMiddleware(func(name string) []mcp.Middleware {
-			return []mcp.Middleware{NewAuthzMiddleware(name, d, testAuthzHeaders(), nil)}
+			return []mcp.Middleware{NewAuthzMiddleware(name, name, d, testAuthzHeaders(), nil)}
 		}),
 	)
 	srv, err := s.Server("billing")
@@ -314,8 +314,11 @@ func TestServiceAgents_AuthzPerAgentSkill(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool not allowed by policy")
-	require.Equal(t, authz.ToolRef{Server: "billing", Name: "translator__translate"},
-		d.calls[len(d.calls)-1])
+	require.Equal(
+		t,
+		authz.ToolRef{Server: "billing", Service: "billing", Name: "translator__translate"},
+		d.calls[len(d.calls)-1],
+	)
 	translator.mu.Lock()
 	require.Empty(t, translator.requests)
 	translator.mu.Unlock()

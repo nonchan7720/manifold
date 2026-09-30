@@ -389,7 +389,7 @@ agents:
 - 公開対象の **スキル**（`skills` を設定しない限り Card の全スキル）が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
 - `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
 - 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
-- 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`tool=<スキル ID>` です。
+- 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`service=<service.code、既定は name>`、`tool=<スキル ID>` です。
 - ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
 
 #### サービスにエージェントをぶら下げる
@@ -419,7 +419,49 @@ mcpServers:
 - Agent Card を取得できないエージェントは、エラーログを出して `tools/list`（と `/mcp/list?tools=true`）から除外されます。サービス自身のツールと他のエージェントのツールは返り、Card は次のリクエストで取り直します。
 - これらのエージェントでは `oauth2` は使えません。OAuth のフローはサーバー単位で、RoundTripper が転送するのは呼び出し元のサーバー単位の上流トークンなので、エージェント個別の `oauth2` クライアント設定は黙って無視されてしまうためです。`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。理由の詳細は `docs/design/service-agents.ja.md` を参照してください。
 - `transport: reverse` では使えません（reverse のサーバーはユーザーごとに reverse ゲートウェイが解決します）。
-- [ツール認可](#ツール認可opa-サイドカー)には、サービス名と組み立てたツール名（`server=<サービス>`、`tool=<agent>__<skill>`）が渡ります。そのため同じポリシーがサービス自身のツールとエージェントのスキルの両方に適用され、`tools/list` もそれに従って絞り込まれます。
+- [ツール認可](#ツール認可opa-サイドカー)には、サーバー名・そのサービスコード・組み立てたツール名（`server=<サーバー>`、`service=<サーバーの service.code>`、`tool=<agent>__<skill>`）が渡ります。そのため同じポリシーがサービス自身のツールとエージェントのスキルの両方に適用され、`tools/list` もそれに従って絞り込まれます。
+
+### サーバーをサービスでまとめる（`service`）
+
+1 つのサービスが MCP サーバー・OpenAPI・A2A エージェントなど複数の API 群を提供することはよくあります。`service` を使うと、それらの `mcpServers` / `agents` のエントリを 1 つのサービスコードでまとめられます。[ツール認可](#ツール認可opa-サイドカー)ではトップキーを列挙する代わりに、サービス単位で許可できます。
+
+```yaml
+mcpServers:
+  billing-api:
+    description: 請求 REST API
+    baseURL: https://billing.example.com/api
+    spec: https://billing.example.com/openapi.yaml
+    service:
+      code: billing       # ポリシーには input.service として渡る
+      name: 請求サービス   # UI などでの表示名（/mcp/list）
+  billing-mcp:
+    transport: http
+    url: https://billing.example.com/mcp
+    description: 請求 MCP サーバー
+    service:
+      code: billing       # name 省略時は billing-api の「請求サービス」が使われる
+agents:
+  billing-assistant:
+    url: https://billing-agent.example.com
+    description: 請求に関する質問に使う。
+    service:
+      code: billing
+```
+
+- `service.code` の既定はそのエントリ自身の名前（トップキー）です。`service` を書かない既存の設定では、サーバー 1 つがそのまま 1 サービスになります。文字種はサーバー名と同じ（英数字・`_`・`-`）です。
+- `service.name` は表示専用で、既定はコードと同じです。同じコードを持つエントリ同士で異なる名前を設定するとエラーになります。省略したエントリは、同じサービスの他のエントリに設定された名前を使います。
+- URL パス（`/mcp/{name}`）や OAuth エンドポイントなど、サーバー名をキーにする仕組みはそのままです。`service` が追加するのは authz の判定 input の `input.service` と、`/mcp/list` の各エントリの `service` だけです。
+- `mcpServers.<name>.agents` 配下のエージェントには `service` を設定できません。スキルはそのサーバーのツールとして並ぶため、サーバーのサービスに属します。
+
+ポリシーで `<server>/<tool>` の代わりに `<service>/<tool>` を照合すれば（[`examples/opa/policy.rego`](examples/opa/policy.rego) と比較）、`billing/*` の 1 パターンで 3 つのエントリすべてを許可できます。
+
+```rego
+allow if {
+	some group in input.groups
+	some pattern in data.policies[group].tools
+	glob.match(pattern, ["/"], sprintf("%s/%s", [input.service, input.tool]))
+}
+```
 
 ### OpenAPI / Swagger バックエンドへの接続
 
@@ -513,6 +555,8 @@ gateway:
 | フィールド      | 型                | 説明                                                       |
 | --------------- | ----------------- | ---------------------------------------------------------- |
 | `description`   | string            | サーバーの説明（**必須**。`/mcp/list` のレスポンスに含まれる） |
+| `service.code`  | string            | 他のエントリとまとめるためのサービスコード（既定: サーバー名）。authz に `input.service` として渡る（[サーバーをサービスでまとめる](#サーバーをサービスでまとめるservice) 参照） |
+| `service.name`  | string            | UI などで使うサービスの表示名（既定: サービスコード）。`/mcp/list` で返される |
 | `transport`     | string            | MCP バックエンド用トランスポート（`http` または `stdio`）  |
 | `url`           | string            | HTTP トランスポートのエンドポイント                        |
 | `command`       | string            | stdio トランスポートのコマンド                             |
@@ -636,6 +680,8 @@ A2A エージェント（[A2A エージェントへの接続](#a2a-エージェ�
 | フィールド      | 型                | 説明                                                       |
 | --------------- | ----------------- | ---------------------------------------------------------- |
 | `description`   | string            | 呼び出し元エージェントへの指示文（**必須**）。各スキルのツール description の先頭に付き、`/mcp/list` でも返される |
+| `service.code`  | string            | サービスコード。[`mcpServers.<name>`](#mcpserversname) と同じ（既定: エージェント名） |
+| `service.name`  | string            | サービスの表示名。[`mcpServers.<name>`](#mcpserversname) と同じ（既定: サービスコード） |
 | `url`           | string            | Agent Card を取得するベース URL（**必須**）。メッセージは Card に書かれたエンドポイントへ送られる |
 | `agentCardPath` | string            | `url` からの Agent Card のパス（既定 `/.well-known/agent-card.json`） |
 | `headers`       | map[string]string | Agent Card 取得とメッセージ送信に追加するヘッダー          |
@@ -662,7 +708,7 @@ A2A エージェント（[A2A エージェントへの接続](#a2a-エージェ�
 | `skills`        | []string          | ツールとして公開する Agent Card のスキル ID。この順で公開し、Card にない ID は警告ログを出して読み飛ばす。省略すると全スキルを公開 |
 | `timeout`       | duration          | `message/send` 1 回のタイムアウト（既定 `60s`）            |
 
-[`agents.<name>`](#agentsname) から **`oauth2` を除いたもの**と同じです。`oauth2` はここでは拒否されます。OAuth のフローはサーバー単位のため、`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。`authValue` / `tokenExchange` は排他です。
+[`agents.<name>`](#agentsname) から **`oauth2` と `service` を除いたもの**と同じです。どちらもここでは拒否されます。OAuth のフローはサーバー単位のため、`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。また、エージェントのスキルはサーバーのサービスに属します。`authValue` / `tokenExchange` は排他です。
 
 #### `oauth.cimd`
 
@@ -899,6 +945,7 @@ authz:
     user: user
     groups: groups
     server: server
+    service: service
     tool: tool
     tools: tools
     toolName: name
@@ -922,6 +969,7 @@ authz:
 | `input.user` | string | `user` | 全ての判定 input で呼び出し元のユーザー ID に使う JSON キー |
 | `input.groups` | string | `groups` | 全ての判定 input で呼び出し元のグループに使う JSON キー |
 | `input.server` | string | `server` | `tools/call` の input、および `tools/list` の各配列要素でサーバー名に使う JSON キー |
+| `input.service` | string | `service` | `tools/call` の input、および `tools/list` の各配列要素でサービスコード（`service.code`、未設定ならサーバー名）に使う JSON キー |
 | `input.tool` | string | `tool` | `tools/call` の input でツール名に使う JSON キー |
 | `input.tools` | string | `tools` | `tools/list` の input でツール配列に使う JSON キー |
 | `input.toolName` | string | `name` | `tools/list` の各配列要素でツール名に使う JSON キー |
@@ -932,7 +980,7 @@ authz:
 
 Manifold は `headers.userID` の値を不透明な文字列として扱います。中身を解釈せず、そのまま判定 input のうち `authz.input.user` が指すキー（既定 `user`）に渡すだけです。マルチテナント環境ではテナントを含む形式（例: `{tenant}:{user}`）にして、ポリシー側がテナントを区別できるようにすることを推奨します。または `input.fromHeaders` を使う方法もあります（後述の「マルチテナントのポリシーデータ」参照）。この場合 `headers.userID` にテナントを埋め込む必要はありません。`headers.userGroups` の値も同様に、表示名ではなく不変の不透明 ID（[ULID](https://github.com/ulid/spec) など）を推奨します。表示名は変わりうるためです。
 
-`input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。`input.fromHeaders` のフィールド名も同様に空文字不可で、上記のトップレベルのキー（改名されていれば改名後の `user` / `groups` / `server` / `tool` / `tools`）と衝突してはならない。OPA に渡る JSON のキーは case-sensitive なので比較も case-sensitive で、既定のままなら `User` という名前のフィールドは `input.user` とは別キーなので通る。`toolName` は予約されない: `tools` 配列の要素内のキーであってトップレベルには出ないため。同じヘッダーを複数のフィールドに割り当てることは可能。
+`input` を使うと、ポリシー側の既存の input 契約に Manifold を合わせられる（ポリシー側を Manifold の既定名に書き換える必要がない）。同じ input オブジェクトに同居するキーは互いに異なる値でなければならない: `user` / `groups` / `server` / `service` / `tool`（`tools/call` の input）、`user` / `groups` / `tools`（`tools/list` の input）、`server` / `service` / `toolName`（`tools/list` の各配列要素）。いずれかの組で衝突すると起動時のバリデーションで拒否される。各キーは空文字も不可。`input.fromHeaders` のフィールド名も同様に空文字不可で、上記のトップレベルのキー（改名されていれば改名後の `user` / `groups` / `server` / `service` / `tool` / `tools`）と衝突してはならない。OPA に渡る JSON のキーは case-sensitive なので比較も case-sensitive で、既定のままなら `User` という名前のフィールドは `input.user` とは別キーなので通る。`toolName` は予約されない: `tools` 配列の要素内のキーであってトップレベルには出ないため。同じヘッダーを複数のフィールドに割り当てることは可能。
 
 ### 前提条件
 
@@ -948,17 +996,19 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 
 ```jsonc
 // tools/call
-{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice"}}
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "service": "billing", "tool": "create_invoice"}}
 // → {"result": true}
 
 // tools/list
-{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
-// → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "service": "billing", "name": "create_invoice"}, ...]}}
+// → {"result": [{"server": "billing-svc", "service": "billing", "name": "create_invoice"}, ...]}
 
 // GET /mcp/list?tools=true
 {"input": {"user": "user-042", "groups": ["team-finance"]}}
 // → {"result": true}
 ```
+
+`service` はサーバーの `service.code` です（未設定ならサーバー名なので、`service` を書かない設定では `server` と同じ値になります）。`server` の代わりに `service` で照合するポリシーは、サービスに属するサーバーとエージェントをまとめて許可できます（[サーバーをサービスでまとめる](#サーバーをサービスでまとめるservice) 参照）。`tools/list` の結果は `server` と `name` だけでリクエストと照合するため、ポリシーは input の要素をそのまま返しても、`{server, name}` だけを返しても構いません。
 
 OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧、`data.policies[<group id>].catalog` を真偽値とする例）があります。
 
@@ -1083,15 +1133,17 @@ OPA が bundle をマージする仕組み上、制約が 3 つある。
     {
       "name": "petstore",
       "description": "Swagger Petstore sample API",
+      // service.code / service.name。未設定ならサーバー名
+      "service": {"code": "pets", "name": "Pet Store"},
       "tools": [
         {"name": "getpetbyid", "summary": "Find pet by ID.", "description": "Returns a single pet."}
       ]
     },
     // WebMCP reverse サーバーのツールはブラウザ接続後にしか決まらないため、
     // ツール一覧の代わりに "dynamic" を返す
-    {"name": "billing-svc", "description": "browser app", "dynamic": true},
+    {"name": "billing-svc", "description": "browser app", "service": {"code": "billing-svc", "name": "billing-svc"}, "dynamic": true},
     // 接続に失敗したバックエンドも "tools" の代わりに "error" を付けて一覧には残る
-    {"name": "crm", "description": "CRM MCP backend", "error": "connect: dial tcp: connection refused"}
+    {"name": "crm", "description": "CRM MCP backend", "service": {"code": "crm", "name": "crm"}, "error": "connect: dial tcp: connection refused"}
   ]
 }
 ```
@@ -1126,8 +1178,8 @@ OPA が bundle をマージする仕組み上、制約が 3 つある。
 
   | 判定 | 問い合わせ | input のフィールド |
   | ---- | ---------- | ------------------- |
-  | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
-  | `allowed_tools` | `tools/list` | `user`, `groups`、および `{server, name}` の配列 `tools` |
+  | `allow` | `tools/call` | `user`, `groups`, `server`, `service`, `tool` |
+  | `allowed_tools` | `tools/list` | `user`, `groups`、および `{server, service, name}` の配列 `tools` |
   | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
 
   解決できた `input.fromHeaders` のフィールドは、上記 3 種すべてにトップレベルで入る。`required: false` のフィールドはヘッダーが無かったリクエストの input には現れないので、decision log に出ていないのは想定どおりであってフィールドの取りこぼしではない。
@@ -1146,7 +1198,7 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | メソッド | パス                 | 説明                                     |
 | -------- | -------------------- | ---------------------------------------- |
 | `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）。`{server_name}` は `mcpServers` または `agents` のエントリ |
-| `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前と説明）取得。`?tools=true` でツール一覧も取得（前述の「ポリシー作成用のツール一覧」参照） |
+| `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前・説明・サービス）取得。`?tools=true` でツール一覧も取得（前述の「ポリシー作成用のツール一覧」参照） |
 
 ### OAuth 2.1
 

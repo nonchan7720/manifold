@@ -771,7 +771,7 @@ func TestNewAuthzDecider_Enabled_ReturnsNonNilDecider(t *testing.T) {
 // --- authzMiddlewareFn ---
 
 func TestAuthzMiddlewareFn_Disabled_ReturnsNil(t *testing.T) {
-	got := authzMiddlewareFn(config.AuthzConfig{Enabled: false}, nil)
+	got := authzMiddlewareFn(config.AuthzConfig{Enabled: false}, nil, nil)
 	require.Nil(t, got)
 }
 
@@ -782,7 +782,7 @@ func TestAuthzMiddlewareFn_Enabled_BuildsDenyingMiddleware(t *testing.T) {
 		Enabled: true,
 		OPAURL:  "http://127.0.0.1:1",
 	}
-	fn := authzMiddlewareFn(cfg, newAuthzDecider(cfg))
+	fn := authzMiddlewareFn(cfg, newAuthzDecider(cfg), nil)
 	require.NotNil(t, fn)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "svc", Version: "0.0.1"}, nil)
@@ -809,6 +809,69 @@ func TestAuthzMiddlewareFn_Enabled_BuildsDenyingMiddleware(t *testing.T) {
 	require.Contains(t, err.Error(), "tool not allowed by policy")
 }
 
+func TestAuthzMiddlewareFn_PassesServiceCodeToDecider(t *testing.T) {
+	// サーバーに service.code があれば、判定 input の service はサーバー名では
+	// なくサービスコードになる。
+	var gotInput map[string]any
+	opa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input map[string]any `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotInput = body.Input
+		_, _ = w.Write([]byte(`{"result": true}`))
+	}))
+	defer opa.Close()
+
+	cfg := config.AuthzConfig{Enabled: true, OPAURL: opa.URL}
+	servers := config.Servers{
+		"billing-api": {Name: "billing-api", Service: &config.Service{Code: "billing"}},
+	}
+	fn := authzMiddlewareFn(cfg, newAuthzDecider(cfg), servers)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "billing-api", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "create_invoice", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		},
+	)
+	srv.AddReceivingMiddleware(fn("billing-api")...)
+
+	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	defer httpSrv.Close()
+	header := http.Header{}
+	header.Set(config.DefaultAuthzHeaderUserID, "user-042")
+	header.Set(config.DefaultAuthzHeaderUserGroups, "team-finance")
+	client := mcp.NewClient(&mcp.Implementation{Name: "caller", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
+		Endpoint:   httpSrv.URL,
+		HTTPClient: &http.Client{Transport: headerTransport{header: header}},
+	}, nil)
+	require.NoError(t, err)
+	defer session.Close() //nolint: errcheck
+
+	_, err = session.CallTool(t.Context(), &mcp.CallToolParams{Name: "create_invoice"})
+	require.NoError(t, err)
+	require.Equal(t, "billing-api", gotInput["server"])
+	require.Equal(t, "billing", gotInput["service"])
+	require.Equal(t, "create_invoice", gotInput["tool"])
+}
+
+// headerTransport adds header to every outgoing request.
+type headerTransport struct{ header http.Header }
+
+func (rt headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	for k, vs := range rt.header {
+		req.Header[k] = vs
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
 // --- newMCPServer: authz wiring ---
 
 func TestNewMCPServer_AuthzMiddlewareFn_AppliedToServer(t *testing.T) {
@@ -824,7 +887,7 @@ func TestNewMCPServer_AuthzMiddlewareFn_AppliedToServer(t *testing.T) {
 	require.NoError(t, err)
 
 	authzCfg := config.AuthzConfig{Enabled: true, OPAURL: "http://127.0.0.1:1"}
-	fn := authzMiddlewareFn(authzCfg, newAuthzDecider(authzCfg))
+	fn := authzMiddlewareFn(authzCfg, newAuthzDecider(authzCfg), servers)
 	mcpSrv, err := newMCPServer(
 		t.Context(),
 		servers,

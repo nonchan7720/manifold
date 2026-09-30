@@ -389,7 +389,7 @@ agents:
 - Every exposed **skill** (all skills in the card unless `skills` is set) becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
 - `tools/call` arguments: `sessionId` (**required** — the calling agent's session id, forwarded as the A2A `contextId`), `taskId` (optional; continue a task, e.g. after `input-required`), and at least one of `message` (text), `data` (JSON object, sent as a data part) or `files` (each written like an OpenAPI file input — a base64 string / URL, or `{url|base64|text, filename, contentType}` — see [Binary fields and responses](#binary-fields-and-responses)). The message text is sent as-is; the chosen skill id is passed in the message `metadata.skillId` since A2A has no per-request skill selector.
 - Results: text and data parts become text content (data parts are also returned as `structuredContent`), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
-- Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `tool=<skill id>`.
+- Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `service=<service.code, default name>`, `tool=<skill id>`.
 - Streaming (`message/stream`), task polling and push notifications are not used; every call is a blocking `message/send`.
 
 #### Attaching agents to a service
@@ -419,7 +419,49 @@ mcpServers:
 - An agent whose Agent Card cannot be fetched is skipped from `tools/list` (and `/mcp/list?tools=true`) with an error log; the service's own tools and the other agents are still returned, and the card is fetched again on the next request.
 - `oauth2` is not available for these agents. The OAuth flow belongs to the server: the caller's per-server upstream token is what the round tripper forwards, so an agent's own `oauth2` client settings would be silently ignored. Use `authValue`, `tokenExchange` or `headers`, or configure the agent under the top-level `agents` directive. See `docs/design/service-agents.md` for the rationale.
 - Not available on `transport: reverse` (those servers are resolved per user by the reverse gateway).
-- [Tool authorization](#tool-authorization-opa-sidecar) sees the service's name and the composed tool name: `server=<service>`, `tool=<agent>__<skill>`. The same policy therefore governs the service's own tools and its agents' skills, and `tools/list` is filtered accordingly.
+- [Tool authorization](#tool-authorization-opa-sidecar) sees the server's name, its service code and the composed tool name: `server=<server>`, `service=<the server's service.code>`, `tool=<agent>__<skill>`. The same policy therefore governs the service's own tools and its agents' skills, and `tools/list` is filtered accordingly.
+
+### Grouping servers into a service (`service`)
+
+A service often exposes several API sets — an MCP server, an OpenAPI spec, an A2A agent. `service` groups those `mcpServers` / `agents` entries under one service code, so [tool authorization](#tool-authorization-opa-sidecar) can grant a whole service instead of listing every top-level key:
+
+```yaml
+mcpServers:
+  billing-api:
+    description: Billing REST API
+    baseURL: https://billing.example.com/api
+    spec: https://billing.example.com/openapi.yaml
+    service:
+      code: billing       # passed to the policy as input.service
+      name: Billing       # display name for UIs (/mcp/list)
+  billing-mcp:
+    transport: http
+    url: https://billing.example.com/mcp
+    description: Billing MCP server
+    service:
+      code: billing       # name omitted: "Billing" from billing-api is used
+agents:
+  billing-assistant:
+    url: https://billing-agent.example.com
+    description: Use for billing questions.
+    service:
+      code: billing
+```
+
+- `service.code` defaults to the entry's own name (its top-level key), so a config without `service` keeps one service per server. It follows the server-name character rules (alphanumerics, `_` and `-`).
+- `service.name` is only for display and defaults to the code. Entries sharing a code must not set different names; an entry that omits it takes the name another entry of the same service set.
+- The URL path (`/mcp/{name}`), OAuth endpoints and everything else keyed by server name are unchanged; `service` only adds `input.service` to authz decisions and `service` to `/mcp/list` entries.
+- Agents under `mcpServers.<name>.agents` cannot set `service`: their skills are tools of that server, so they belong to its service.
+
+A policy that matches `<service>/<tool>` instead of `<server>/<tool>` (compare [`examples/opa/policy.rego`](examples/opa/policy.rego)) then grants `billing/*` across all three entries:
+
+```rego
+allow if {
+	some group in input.groups
+	some pattern in data.policies[group].tools
+	glob.match(pattern, ["/"], sprintf("%s/%s", [input.service, input.tool]))
+}
+```
 
 ### Connecting to an OpenAPI / Swagger backend
 
@@ -513,6 +555,8 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | Field           | Type              | Description                                                          |
 | --------------- | ----------------- | -------------------------------------------------------------------- |
 | `description`   | string            | Server description (**required**; included in `/mcp/list` responses) |
+| `service.code`  | string            | Service code grouping this entry with others (default: the server name). Passed to authz as `input.service` (see [Grouping servers into a service](#grouping-servers-into-a-service-service)) |
+| `service.name`  | string            | Service display name for UIs (default: the service code). Returned by `/mcp/list` |
 | `transport`     | string            | Transport for MCP backends (`http` or `stdio`)                       |
 | `url`           | string            | Endpoint for the HTTP transport                                      |
 | `command`       | string            | Command for the stdio transport                                      |
@@ -636,6 +680,8 @@ A2A agents (see [Connecting to an A2A agent](#connecting-to-an-a2a-agent)). Name
 | Field           | Type              | Description                                                          |
 | --------------- | ----------------- | -------------------------------------------------------------------- |
 | `description`   | string            | Instruction for the calling agent (**required**). Prepended to every skill's tool description and returned by `/mcp/list` |
+| `service.code`  | string            | Service code, same as [`mcpServers.<name>`](#mcpserversname) (default: the agent name) |
+| `service.name`  | string            | Service display name, same as [`mcpServers.<name>`](#mcpserversname) (default: the service code) |
 | `url`           | string            | Base URL the Agent Card is resolved from (**required**). Messages go to the endpoint declared in the card |
 | `agentCardPath` | string            | Agent Card path relative to `url` (default `/.well-known/agent-card.json`) |
 | `headers`       | map[string]string | Extra headers added to Agent Card and message requests               |
@@ -662,7 +708,7 @@ A2A agents attached to a service (see [Attaching agents to a service](#attaching
 | `skills`        | []string          | Agent Card skill IDs to expose as tools, in this order; IDs missing from the card are skipped with a warning. Unset exposes all skills |
 | `timeout`       | duration          | Timeout of one `message/send` (default `60s`)                        |
 
-This is the same as [`agents.<name>`](#agentsname) **minus `oauth2`**, which is rejected here: the OAuth flow is per server, so use `authValue`, `tokenExchange` or `headers`, or a top-level `agents` entry. `authValue` / `tokenExchange` are mutually exclusive.
+This is the same as [`agents.<name>`](#agentsname) **minus `oauth2` and `service`**, which are rejected here: the OAuth flow is per server, so use `authValue`, `tokenExchange` or `headers`, or a top-level `agents` entry; and the agent's skills belong to the server's service. `authValue` / `tokenExchange` are mutually exclusive.
 
 #### `oauth.cimd`
 
@@ -899,6 +945,7 @@ authz:
     user: user
     groups: groups
     server: server
+    service: service
     tool: tool
     tools: tools
     toolName: name
@@ -922,6 +969,7 @@ authz:
 | `input.user` | string | `user` | JSON key for the caller's user ID in every decision input |
 | `input.groups` | string | `groups` | JSON key for the caller's groups in every decision input |
 | `input.server` | string | `server` | JSON key for the server name in the `tools/call` input and in each `tools/list` array element |
+| `input.service` | string | `service` | JSON key for the service code (`service.code`, or the server name when unset) in the `tools/call` input and in each `tools/list` array element |
 | `input.tool` | string | `tool` | JSON key for the tool name in the `tools/call` input |
 | `input.tools` | string | `tools` | JSON key for the tool array in the `tools/list` input |
 | `input.toolName` | string | `name` | JSON key for the tool name in each `tools/list` array element |
@@ -932,7 +980,7 @@ authz:
 
 Manifold treats the `headers.userID` value as an opaque string: it doesn't interpret it, just passes it through as-is to the key `authz.input.user` names in the decision input (default `user`). In a multi-tenant deployment, use a format that includes the tenant (e.g. `{tenant}:{user}`) so policies can tell tenants apart — or use `input.fromHeaders` instead (see "Multi-tenant policy data" below), in which case `headers.userID` doesn't need to carry the tenant. `headers.userGroups` values should likewise be immutable opaque IDs (e.g. [ULIDs](https://github.com/ulid/spec)) rather than display names, since display names can change.
 
-`input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty. `input.fromHeaders` field names must likewise be non-empty and must not collide with any of the (possibly renamed) top-level keys above — `user` / `groups` / `server` / `tool` / `tools`. The comparison is case-sensitive, since OPA input keys are: with the defaults in place, a field named `User` is accepted because `input.user` is a different key. `toolName` is not reserved: it only names a key inside the `tools` array elements, never a top-level one. The same header may be assigned to more than one field.
+`input` lets a policy author match an existing decision-input contract instead of renaming their policy to Manifold's defaults. Keys that appear together in the same input object must be pairwise distinct: `user` / `groups` / `server` / `service` / `tool` (the `tools/call` input), `user` / `groups` / `tools` (the `tools/list` input), and `server` / `service` / `toolName` (each `tools/list` array element) — startup validation rejects a collision within any of those groups. Every key must also be non-empty. `input.fromHeaders` field names must likewise be non-empty and must not collide with any of the (possibly renamed) top-level keys above — `user` / `groups` / `server` / `service` / `tool` / `tools`. The comparison is case-sensitive, since OPA input keys are: with the defaults in place, a field named `User` is accepted because `input.user` is a different key. `toolName` is not reserved: it only names a key inside the `tools` array elements, never a top-level one. The same header may be assigned to more than one field.
 
 ### Prerequisites
 
@@ -948,17 +996,19 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 
 ```jsonc
 // tools/call
-{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "tool": "create_invoice"}}
+{"input": {"user": "user-042", "groups": ["team-finance"], "server": "billing-svc", "service": "billing", "tool": "create_invoice"}}
 // → {"result": true}
 
 // tools/list
-{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "name": "create_invoice"}, ...]}}
-// → {"result": [{"server": "billing-svc", "name": "create_invoice"}, ...]}
+{"input": {"user": "user-042", "groups": ["team-finance"], "tools": [{"server": "billing-svc", "service": "billing", "name": "create_invoice"}, ...]}}
+// → {"result": [{"server": "billing-svc", "service": "billing", "name": "create_invoice"}, ...]}
 
 // GET /mcp/list?tools=true
 {"input": {"user": "user-042", "groups": ["team-finance"]}}
 // → {"result": true}
 ```
+
+`service` is the server's `service.code` (the server name when unset, so it equals `server` for a config without `service`). A policy that matches on `service` instead of `server` grants every server and agent of a service at once — see [Grouping servers into a service](#grouping-servers-into-a-service-service). The `tools/list` result is matched back to the request by `server` and `name` only, so a policy may return the input entries as-is or just `{server, name}`.
 
 Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns, `data.policies[<group id>].catalog` as a boolean).
 
@@ -1083,16 +1133,18 @@ Writing a policy requires knowing every `<server>/<tool>` pair that exists, but 
     {
       "name": "petstore",
       "description": "Swagger Petstore sample API",
+      // service.code / service.name, defaulting to the server name.
+      "service": {"code": "pets", "name": "Pet Store"},
       "tools": [
         {"name": "getpetbyid", "summary": "Find pet by ID.", "description": "Returns a single pet."}
       ]
     },
     // A WebMCP reverse server's tools only exist per-browser-connection, so
     // it reports "dynamic" instead of a tool list.
-    {"name": "billing-svc", "description": "browser app", "dynamic": true},
+    {"name": "billing-svc", "description": "browser app", "service": {"code": "billing-svc", "name": "billing-svc"}, "dynamic": true},
     // A backend that failed to connect still lists (with "error" instead of
     // "tools") rather than dropping out of the response.
-    {"name": "crm", "description": "CRM MCP backend", "error": "connect: dial tcp: connection refused"}
+    {"name": "crm", "description": "CRM MCP backend", "service": {"code": "crm", "name": "crm"}, "error": "connect: dial tcp: connection refused"}
   ]
 }
 ```
@@ -1127,8 +1179,8 @@ Every ambiguous or failing case denies the request rather than allowing it:
 
   | Decision | Query | Input fields |
   | -------- | ----- | ------------- |
-  | `allow` | `tools/call` | `user`, `groups`, `server`, `tool` |
-  | `allowed_tools` | `tools/list` | `user`, `groups`, and a `tools` array of `{server, name}` entries |
+  | `allow` | `tools/call` | `user`, `groups`, `server`, `service`, `tool` |
+  | `allowed_tools` | `tools/list` | `user`, `groups`, and a `tools` array of `{server, service, name}` entries |
   | `allow_catalog` | `GET /mcp/list?tools=true` | `user`, `groups` |
 
   Every `input.fromHeaders` field that resolved is present in all three, at the top level. A field with `required: false` is absent from the input on requests whose header was missing or empty, so a decision log missing it is expected rather than a dropped field.
@@ -1147,7 +1199,7 @@ The HTTP endpoints exposed by Manifold.
 | Method | Path                 | Description                                      |
 | ------ | -------------------- | ------------------------------------------------ |
 | `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP). `{server_name}` is an `mcpServers` or `agents` entry |
-| `GET`  | `/mcp/list`          | List registered servers (names and descriptions). Add `?tools=true` for the tool catalog (see "Tool catalog for policy authoring" above) |
+| `GET`  | `/mcp/list`          | List registered servers (names, descriptions and services). Add `?tools=true` for the tool catalog (see "Tool catalog for policy authoring" above) |
 
 ### OAuth 2.1
 

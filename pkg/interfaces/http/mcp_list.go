@@ -31,9 +31,19 @@ type mcpToolEntry struct {
 	Description string `json:"description"`
 }
 
+// mcpServiceEntry is the service a server belongs to. Code is the value the
+// authz decision input carries as service (the server name when
+// service.code is unset); Name is the display name (Code when service.name
+// is unset), for grouping servers of the same service in a UI.
+type mcpServiceEntry struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
 type mcpServerEntry struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
+	Service     mcpServiceEntry `json:"service"`
 	Tools       *[]mcpToolEntry `json:"tools,omitempty"`
 	Dynamic     bool            `json:"dynamic,omitempty"`
 	Error       string          `json:"error,omitempty"`
@@ -131,7 +141,11 @@ func (h *MCPHandler) MCPList(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := response{MCP: make([]mcpServerEntry, len(h.servers))}
 	for idx, srv := range h.servers {
-		entry := mcpServerEntry{Name: srv.Name, Description: srv.Description}
+		entry := mcpServerEntry{
+			Name:        srv.Name,
+			Description: srv.Description,
+			Service:     mcpServiceEntry{Code: srv.ServiceCode(), Name: srv.ServiceName()},
+		}
 		if includeTools {
 			entry.Tools, entry.Dynamic, entry.Error = h.toolCatalogFields(ctx, srv)
 		}

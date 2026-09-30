@@ -274,6 +274,7 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	// エージェントが Server.ValidateWithContext を通ることはなく、上の名前
 	// 重複チェックも設定ファイルどおりの 2 つの map を比較できる。
 	conf.MCPServer = mergeAgentsIntoServers(conf.MCPServer, conf.Agents)
+	resolveServiceNames(conf.MCPServer)
 	return &conf, nil
 }
 

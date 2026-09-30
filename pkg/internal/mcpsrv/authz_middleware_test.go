@@ -125,7 +125,9 @@ func newAuthzTestServer(
 	if len(fromHeaders) > 0 {
 		fh = fromHeaders[0]
 	}
-	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders(), fh))
+	srv.AddReceivingMiddleware(
+		NewAuthzMiddleware("billing-svc", "billing", d, testAuthzHeaders(), fh),
+	)
 
 	httpSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
@@ -198,7 +200,7 @@ func TestAuthzMiddleware_ToolCall_Allowed_ReachesUpstream(t *testing.T) {
 	require.Equal(t, []string{"team-finance", "team-ops"}, d.allowCalls[0].p.Groups)
 	require.Equal(
 		t,
-		authz.ToolRef{Server: "billing-svc", Name: "create_invoice"},
+		authz.ToolRef{Server: "billing-svc", Service: "billing", Name: "create_invoice"},
 		d.allowCalls[0].t,
 	)
 }
@@ -251,7 +253,7 @@ func TestAuthzHandleToolCall_UnexpectedParamsType_DeniesWithoutCallingDeciderOrN
 	p := authz.Principal{UserID: "user-042", Groups: []string{"team-finance"}}
 
 	_, err := authzHandleToolCall(
-		t.Context(), "billing-svc", d, p, next, "tools/call", req,
+		t.Context(), "billing-svc", "billing-svc", d, p, next, "tools/call", req,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool not allowed by policy")
@@ -403,7 +405,9 @@ func TestAuthzMiddleware_OtherMethod_PassesThrough(t *testing.T) {
 func TestAuthzMiddleware_NoExtra_DeniesWithoutCallingDecider(t *testing.T) {
 	d := &fakeDecider{allowResult: true}
 	srv := newBillingServer(t)
-	srv.AddReceivingMiddleware(NewAuthzMiddleware("billing-svc", d, testAuthzHeaders(), nil))
+	srv.AddReceivingMiddleware(
+		NewAuthzMiddleware("billing-svc", "billing-svc", d, testAuthzHeaders(), nil),
+	)
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	_, err := srv.Connect(t.Context(), serverTransport, nil)

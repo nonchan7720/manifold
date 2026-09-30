@@ -309,11 +309,28 @@ func TestOPADecider_Allow_EmptyExtra_MatchesCurrentBody(t *testing.T) {
 	input, ok := req.body["input"].(map[string]any)
 	require.True(t, ok, "body must have an 'input' object")
 	require.Equal(t, map[string]any{
-		"user":   "user-042",
-		"groups": []any{"team-finance", "team-ops"},
-		"server": "billing-svc",
-		"tool":   "create_invoice",
+		"user":    "user-042",
+		"groups":  []any{"team-finance", "team-ops"},
+		"server":  "billing-svc",
+		"service": "billing-svc",
+		"tool":    "create_invoice",
 	}, input)
+}
+
+func TestOPADecider_Allow_PostsServiceCode(t *testing.T) {
+	s := newOPAStub(t)
+	s.response = `{"result": true}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	_, err := d.Allow(t.Context(), testPrincipal(), ToolRef{
+		Server: "billing-api", Service: "billing", Name: "create_invoice",
+	})
+	require.NoError(t, err)
+
+	input, ok := s.lastRequest.Load().body["input"].(map[string]any)
+	require.True(t, ok, "body must have an 'input' object")
+	require.Equal(t, "billing-api", input["server"])
+	require.Equal(t, "billing", input["service"])
 }
 
 // --- AllowedTools: request shape ---
@@ -324,7 +341,7 @@ func TestOPADecider_AllowedTools_PostsToListDecisionPath(t *testing.T) {
 	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
 
 	tools := []ToolRef{
-		{Server: "billing-svc", Name: "create_invoice"},
+		{Server: "billing-svc", Service: "billing", Name: "create_invoice"},
 		{Server: "inventory-svc", Name: "list_items"},
 	}
 	_, err := d.AllowedTools(t.Context(), testPrincipal(), tools)
@@ -340,9 +357,27 @@ func TestOPADecider_AllowedTools_PostsToListDecisionPath(t *testing.T) {
 	gotTools, ok := input["tools"].([]any)
 	require.True(t, ok)
 	require.Equal(t, []any{
-		map[string]any{"server": "billing-svc", "name": "create_invoice"},
-		map[string]any{"server": "inventory-svc", "name": "list_items"},
+		map[string]any{"server": "billing-svc", "service": "billing", "name": "create_invoice"},
+		map[string]any{
+			"server": "inventory-svc", "service": "inventory-svc", "name": "list_items",
+		},
 	}, gotTools)
+}
+
+func TestOPADecider_AllowedTools_MatchesResultByServerAndName(t *testing.T) {
+	// 結果の要素に service が無くても（ポリシーが {server, name} だけを返しても）
+	// 入力の ToolRef（Service 付き）と照合できる。
+	s := newOPAStub(t)
+	s.response = `{"result": [{"server": "billing-api", "name": "create_invoice"}]}`
+	d := NewOPADecider(testAuthzConfig(s.srv.URL), nil)
+
+	tools := []ToolRef{
+		{Server: "billing-api", Service: "billing", Name: "create_invoice"},
+		{Server: "billing-api", Service: "billing", Name: "void_invoice"},
+	}
+	got, err := d.AllowedTools(t.Context(), testPrincipal(), tools)
+	require.NoError(t, err)
+	require.Equal(t, []ToolRef{tools[0]}, got)
 }
 
 func TestOPADecider_AllowedTools_CustomInputKeys_PostsWithConfiguredNames(t *testing.T) {
@@ -353,6 +388,7 @@ func TestOPADecider_AllowedTools_CustomInputKeys_PostsWithConfiguredNames(t *tes
 		User:     "acct",
 		Groups:   "roles",
 		Server:   "svc",
+		Service:  "unit",
 		Tools:    "items",
 		ToolName: "op",
 	}
@@ -370,7 +406,7 @@ func TestOPADecider_AllowedTools_CustomInputKeys_PostsWithConfiguredNames(t *tes
 	gotTools, ok := input["items"].([]any)
 	require.True(t, ok)
 	require.Equal(t, []any{
-		map[string]any{"svc": "billing-svc", "op": "create_invoice"},
+		map[string]any{"svc": "billing-svc", "unit": "billing-svc", "op": "create_invoice"},
 	}, gotTools)
 	require.NotContains(t, input, "user")
 	require.NotContains(t, input, "groups")

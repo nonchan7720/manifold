@@ -207,7 +207,7 @@ func TestAuthzMCPBackend_EndToEnd(t *testing.T) {
 		storage.NewContentManagementService(u, storage.NewNoopUploader()),
 		WithServerMiddleware(func(name string) []mcp.Middleware {
 			return []mcp.Middleware{
-				NewAuthzMiddleware(name, decider, cfg.Headers, cfg.Input.FromHeaders),
+				NewAuthzMiddleware(name, name, decider, cfg.Headers, cfg.Input.FromHeaders),
 			}
 		}),
 	)

@@ -42,6 +42,10 @@ type Agent struct {
 	// /mcp/list ではエージェントの description として返される。
 	Description string `mapstructure:"description"`
 
+	// Service はこのエージェントが属するサービス（Server.Service と同じ）。
+	// mcpServers.<name>.agents 配下では設定できない。
+	Service *Service `mapstructure:"service"`
+
 	// URL は Agent Card を取得するベース URL。
 	URL string `mapstructure:"url"`
 	// AgentCardPath は URL からの Agent Card のパスを上書きする。
@@ -66,6 +70,7 @@ func (a Agent) ValidateWithContext(ctx context.Context) error {
 		ctx,
 		&a,
 		validation.Field(&a.Description, validation.Required),
+		validation.Field(&a.Service),
 		validation.Field(&a.URL, validation.Required, is.RequestURL),
 		validation.Field(&a.AuthValue, validation.By(func(any) error {
 			return validateSingleAuth(a.AuthValue, a.OAuth2, a.TokenExchange)
@@ -126,6 +131,7 @@ func (a *Agent) Server() *Server {
 	return &Server{
 		Name:          a.Name,
 		Description:   a.Description,
+		Service:       a.Service,
 		Transport:     MCPTransportA2A,
 		URL:           a.URL,
 		AgentCardPath: a.AgentCardPath,

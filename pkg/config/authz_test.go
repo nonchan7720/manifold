@@ -22,6 +22,7 @@ func TestAuthzConfig_WithDefaults_FillsAllWhenEmpty(t *testing.T) {
 	require.Equal(t, DefaultAuthzInputUser, got.Input.User)
 	require.Equal(t, DefaultAuthzInputGroups, got.Input.Groups)
 	require.Equal(t, DefaultAuthzInputServer, got.Input.Server)
+	require.Equal(t, DefaultAuthzInputService, got.Input.Service)
 	require.Equal(t, DefaultAuthzInputTool, got.Input.Tool)
 	require.Equal(t, DefaultAuthzInputTools, got.Input.Tools)
 	require.Equal(t, DefaultAuthzInputToolName, got.Input.ToolName)
@@ -453,6 +454,42 @@ func TestAuthzConfig_ValidateWithContext_Enabled_RejectsInputServerEqualsTool(t 
 	err := c.ValidateWithContext(t.Context())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Tool")
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsInputServiceCollisions(t *testing.T) {
+	for _, input := range []AuthzInput{
+		{User: "same", Service: "same"},
+		{Groups: "same", Service: "same"},
+		{Server: "same", Service: "same"},
+	} {
+		c := AuthzConfig{Enabled: true, Input: input}
+		err := c.ValidateWithContext(t.Context())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Service")
+	}
+	for _, input := range []AuthzInput{
+		{Service: "same", Tool: "same"},
+		{Service: "same", ToolName: "same"},
+	} {
+		c := AuthzConfig{Enabled: true, Input: input}
+		err := c.ValidateWithContext(t.Context())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "must differ from input.service")
+	}
+}
+
+func TestAuthzConfig_ValidateWithContext_Enabled_RejectsFromHeadersServiceField(t *testing.T) {
+	c := AuthzConfig{
+		Enabled: true,
+		Input: AuthzInput{
+			FromHeaders: map[string]AuthzInputHeaderField{
+				"service": {Header: "x-service"},
+			},
+		},
+	}
+	err := c.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "collides with an existing input key")
 }
 
 func TestAuthzConfig_ValidateWithContext_Enabled_RejectsInputUserEqualsTools(t *testing.T) {

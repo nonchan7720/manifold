@@ -37,6 +37,10 @@ type Server struct {
 	Spec         string            `mapstructure:"spec"` // ファイル or http(s) or configmap://<namespace>/<name>/<key>（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
 
+	// Service はこのサーバーが属するサービス。未設定ならサーバー名が
+	// サービスコードになる（ServiceCode 参照）。
+	Service *Service `mapstructure:"service"`
+
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
 	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
 	// nil は gateway.specRefresh.rejectOn を使う、"" / NONE はこのサーバーのみ拒否しない。
@@ -129,6 +133,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		ctx,
 		&s,
 		validation.Field(&s.Description, validation.Required),
+		validation.Field(&s.Service),
 		validation.Field(&s.BaseURL, validation.When(s.IsOpenAPI(), validation.Required)),
 		validation.Field(
 			&s.Transport,
@@ -270,6 +275,16 @@ func (s Server) validateAgents(ctx context.Context, _ any) error {
 		}
 		if err := agent.ValidateWithContext(ctx); err != nil {
 			return fmt.Errorf("agent %q: %w", key, err)
+		}
+		if agent.Service != nil {
+			// エージェントのスキルはこのサーバーの tools/list・tools/call に
+			// 並ぶため、ツール認可もこのサーバーのサービスで判定される。
+			// エージェント個別のサービスは使われないので設定時点で拒否する。
+			return fmt.Errorf(
+				"agent %q: service is not supported for agents under mcpServers; "+
+					"its skills belong to the server's service (set service on the server instead)",
+				key,
+			)
 		}
 		if agent.OAuth2 != nil {
 			// OAuth2 の RoundTripper は呼び出し元のサーバー単位の上流トークンを

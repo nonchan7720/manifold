@@ -236,15 +236,21 @@ func newAuthzDecider(cfg config.AuthzConfig) authz.Decider {
 // build, or nil when tool authorization is disabled — the shared decision
 // point for whether authz.enabled adds anything to the request path at all.
 func authzMiddlewareFn(
-	cfg config.AuthzConfig, decider authz.Decider,
+	cfg config.AuthzConfig, decider authz.Decider, servers config.Servers,
 ) func(name string) []mcp.Middleware {
 	if !cfg.Enabled {
 		return nil
 	}
 	cfg = cfg.WithDefaults()
 	return func(name string) []mcp.Middleware {
+		// 判定 input の service はサーバーのサービスコード。設定に無い名前
+		// （通常は起こらない）はサーバー名をそのまま使う（ServiceCode の既定と同じ）。
+		service := name
+		if srv, ok := servers[name]; ok && srv != nil {
+			service = srv.ServiceCode()
+		}
 		return []mcp.Middleware{
-			mcpsrv.NewAuthzMiddleware(name, decider, cfg.Headers, cfg.Input.FromHeaders),
+			mcpsrv.NewAuthzMiddleware(name, service, decider, cfg.Headers, cfg.Input.FromHeaders),
 		}
 	}
 }
@@ -335,7 +341,9 @@ func runGatewayServer(ctx context.Context) error {
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzDecider := newAuthzDecider(globalConfig.Authz)
-	authzMiddleware := authzMiddlewareFn(globalConfig.Authz, authzDecider)
+	authzMiddleware := authzMiddlewareFn(
+		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
+	)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
