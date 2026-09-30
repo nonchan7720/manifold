@@ -29,6 +29,7 @@ const (
 	DefaultAuthzInputUser     = "user"
 	DefaultAuthzInputGroups   = "groups"
 	DefaultAuthzInputServer   = "server"
+	DefaultAuthzInputService  = "service"
 	DefaultAuthzInputTool     = "tool"
 	DefaultAuthzInputTools    = "tools"
 	DefaultAuthzInputToolName = "name"
@@ -72,9 +73,12 @@ type AuthzDecisionPath struct {
 // Configurable so a policy author can match an existing input contract
 // instead of Manifold's defaults.
 type AuthzInput struct {
-	User     string `mapstructure:"user"`
-	Groups   string `mapstructure:"groups"`
-	Server   string `mapstructure:"server"`
+	User   string `mapstructure:"user"`
+	Groups string `mapstructure:"groups"`
+	Server string `mapstructure:"server"`
+	// Service はサービスコード（mcpServers.<name>.service.code)
+	// Server と同じ位置に並んで渡る。(未設定ならサーバー名)
+	Service  string `mapstructure:"service"`
 	Tool     string `mapstructure:"tool"`
 	Tools    string `mapstructure:"tools"`
 	ToolName string `mapstructure:"toolName"`
@@ -146,6 +150,9 @@ func (c AuthzConfig) WithDefaults() AuthzConfig {
 	if c.Input.Server == "" {
 		c.Input.Server = DefaultAuthzInputServer
 	}
+	if c.Input.Service == "" {
+		c.Input.Service = DefaultAuthzInputService
+	}
 	if c.Input.Tool == "" {
 		c.Input.Tool = DefaultAuthzInputTool
 	}
@@ -181,9 +188,9 @@ func (c AuthzDecisionPath) ValidateWithContext(ctx context.Context) error {
 }
 
 // ValidateWithContext rejects collisions between keys that appear together
-// in the same OPA input object: user/groups/server/tool (tools/call),
-// user/groups/tools (tools/list), and server/toolName (each tools/list
-// array element). Empty keys are not rejected here: like headers.*,
+// in the same OPA input object: user/groups/server/service/tool
+// (tools/call), user/groups/tools (tools/list), and server/service/toolName
+// (each tools/list array element). Empty keys are not rejected here: like headers.*,
 // decisionPath.*, opaURL and timeout, a zero value means "unset" and is
 // backfilled by WithDefaults before validation runs.
 func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
@@ -196,10 +203,16 @@ func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
 			validation.By(validateDiffersFrom("input.user", c.User)),
 			validation.By(validateDiffersFrom("input.groups", c.Groups)),
 		),
+		validation.Field(&c.Service,
+			validation.By(validateDiffersFrom("input.user", c.User)),
+			validation.By(validateDiffersFrom("input.groups", c.Groups)),
+			validation.By(validateDiffersFrom("input.server", c.Server)),
+		),
 		validation.Field(&c.Tool,
 			validation.By(validateDiffersFrom("input.user", c.User)),
 			validation.By(validateDiffersFrom("input.groups", c.Groups)),
 			validation.By(validateDiffersFrom("input.server", c.Server)),
+			validation.By(validateDiffersFrom("input.service", c.Service)),
 		),
 		validation.Field(&c.Tools,
 			validation.By(validateDiffersFrom("input.user", c.User)),
@@ -207,6 +220,7 @@ func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.ToolName,
 			validation.By(validateDiffersFrom("input.server", c.Server)),
+			validation.By(validateDiffersFrom("input.service", c.Service)),
 		),
 		validation.Field(&c.FromHeaders, validation.By(c.validateFromHeaders)),
 	)
@@ -214,7 +228,7 @@ func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
 
 // validateFromHeaders rejects an empty field name, an empty or invalid
 // header name, an unknown value type, and a field name equal to an
-// already-resolved top-level input key (c.User/Groups/Server/Tool/Tools —
+// already-resolved top-level input key (c.User/Groups/Server/Service/Tool/Tools —
 // the renamed value, not the original mapstructure key). c.ToolName is not
 // reserved: it only names a key inside the tools array elements, never a
 // top-level one, so it cannot collide. The comparison is case-sensitive
@@ -222,7 +236,7 @@ func (c AuthzInput) ValidateWithContext(ctx context.Context) error {
 // one field.
 func (c AuthzInput) validateFromHeaders(value any) error {
 	m, _ := value.(map[string]AuthzInputHeaderField)
-	reserved := []string{c.User, c.Groups, c.Server, c.Tool, c.Tools}
+	reserved := []string{c.User, c.Groups, c.Server, c.Service, c.Tool, c.Tools}
 	for field, spec := range m {
 		if field == "" {
 			return fmt.Errorf("field name must not be empty")

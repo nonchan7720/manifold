@@ -37,6 +37,10 @@ type Server struct {
 	Spec         string            `mapstructure:"spec"` // ファイル or http(s) or configmap://<namespace>/<name>/<key>（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
 
+	// Service はこのサーバーが属するサービス。未設定ならサーバー名が
+	// サービスコードになる（ServiceCode 参照）。
+	Service *Service `mapstructure:"service"`
+
 	// nil は gateway.specRefresh.interval を使う、0 はこのサーバーのみリフレッシュ無効。
 	SpecRefreshInterval *time.Duration `mapstructure:"specRefreshInterval"`
 	// nil は gateway.specRefresh.rejectOn を使う、"" / NONE はこのサーバーのみ拒否しない。
@@ -129,6 +133,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		ctx,
 		&s,
 		validation.Field(&s.Description, validation.Required),
+		validation.Field(&s.Service),
 		validation.Field(&s.BaseURL, validation.When(s.IsOpenAPI(), validation.Required)),
 		validation.Field(
 			&s.Transport,
@@ -271,6 +276,9 @@ func (s Server) validateAgents(ctx context.Context, _ any) error {
 		if err := agent.ValidateWithContext(ctx); err != nil {
 			return fmt.Errorf("agent %q: %w", key, err)
 		}
+		// agent.Service は検証するだけで使わない。エージェントのスキルはこの
+		// サーバーの tools/list・tools/call に並ぶため、ツール認可はこの
+		// サーバーのサービスで判定される。
 		if agent.OAuth2 != nil {
 			// OAuth2 の RoundTripper は呼び出し元のサーバー単位の上流トークンを
 			// ctx から転送するため、エージェント個別の oauth2 クライアント設定は

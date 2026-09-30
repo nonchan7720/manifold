@@ -112,10 +112,11 @@ func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (_ bool,
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	input := map[string]any{
-		d.input.User:   p.UserID,
-		d.input.Groups: p.Groups,
-		d.input.Server: t.Server,
-		d.input.Tool:   t.Name,
+		d.input.User:    p.UserID,
+		d.input.Groups:  p.Groups,
+		d.input.Server:  t.Server,
+		d.input.Service: t.serviceCode(),
+		d.input.Tool:    t.Name,
 	}
 	input, err := withExtra(input, p)
 	if err != nil {
@@ -146,6 +147,7 @@ func (d *OPADecider) AllowedTools(
 	for i, t := range tools {
 		inputTools[i] = map[string]any{
 			d.input.Server:   t.Server,
+			d.input.Service:  t.serviceCode(),
 			d.input.ToolName: t.Name,
 		}
 	}
@@ -168,16 +170,20 @@ func (d *OPADecider) AllowedTools(
 		return nil, fmt.Errorf("authz: OPA response missing result")
 	}
 
-	allowed := make(map[ToolRef]struct{}, len(*out.Result))
+	// 結果の要素は {server, name} で照合する。service は server から一意に
+	// 決まるため、ポリシーが結果に含めなくても（あるいは加工しても）照合に
+	// 影響させない。
+	type toolKey struct{ server, name string }
+	allowed := make(map[toolKey]struct{}, len(*out.Result))
 	for _, entry := range *out.Result {
 		server, _ := entry[d.input.Server].(string)
 		name, _ := entry[d.input.ToolName].(string)
-		allowed[ToolRef{Server: server, Name: name}] = struct{}{}
+		allowed[toolKey{server: server, name: name}] = struct{}{}
 	}
 
 	filtered := make([]ToolRef, 0, len(tools))
 	for _, t := range tools {
-		if _, ok := allowed[t]; ok {
+		if _, ok := allowed[toolKey{server: t.Server, name: t.Name}]; ok {
 			filtered = append(filtered, t)
 		}
 	}

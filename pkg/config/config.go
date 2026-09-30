@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"regexp"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
@@ -95,6 +96,22 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 				}
 			}
 			return nil
+		})),
+		// サービスは mcpServers と agents をまたいでまとめられるため、両方を
+		// 合わせた一覧で表示名の食い違いを検証する。
+		validation.Field(&c.Agents, validation.By(func(any) error {
+			servers := maps.Clone(c.MCPServer)
+			if servers == nil {
+				servers = Servers{}
+			}
+			for name, agent := range c.Agents {
+				if agent != nil {
+					srv := agent.Server()
+					srv.Name = name
+					servers[name] = srv
+				}
+			}
+			return validateServiceNames(servers)
 		})),
 		validation.Field(
 			&c.Redis,

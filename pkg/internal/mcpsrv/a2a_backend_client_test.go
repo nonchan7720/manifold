@@ -945,7 +945,7 @@ func TestMCPServer_A2AAgent_AuthzPerSkill(t *testing.T) {
 		allowedToolsResult: []authz.ToolRef{{Server: "translator", Name: stubSkillSummarize}},
 	}
 	s := NewMCPServer(servers, nil, WithServerMiddleware(func(name string) []mcp.Middleware {
-		return []mcp.Middleware{NewAuthzMiddleware(name, d, testAuthzHeaders(), nil)}
+		return []mcp.Middleware{NewAuthzMiddleware(name, name, d, testAuthzHeaders(), nil)}
 	}))
 	require.NoError(t, s.Init(t.Context()))
 	t.Cleanup(s.Close)
@@ -984,8 +984,11 @@ func TestMCPServer_A2AAgent_AuthzPerSkill(t *testing.T) {
 	require.Contains(t, err.Error(), "tool not allowed by policy")
 	require.Equal(t, 1, d.allowCallCount())
 	d.mu.Lock()
-	require.Equal(t, authz.ToolRef{Server: "translator", Name: stubSkillTranslate},
-		d.allowCalls[len(d.allowCalls)-1].t)
+	require.Equal(
+		t,
+		authz.ToolRef{Server: "translator", Service: "translator", Name: stubSkillTranslate},
+		d.allowCalls[len(d.allowCalls)-1].t,
+	)
 	d.mu.Unlock()
 	stub.mu.Lock()
 	require.Empty(t, stub.requests)

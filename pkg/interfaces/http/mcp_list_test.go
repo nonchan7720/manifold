@@ -57,7 +57,11 @@ func (d *fakeCatalogDecider) AllowCatalog(_ context.Context, p authz.Principal) 
 
 func testMCPListServers() config.Servers {
 	return config.Servers{
-		"petstore": {Name: "petstore", Description: "Swagger Petstore sample API"},
+		"petstore": {
+			Name:        "petstore",
+			Description: "Swagger Petstore sample API",
+			Service:     &config.Service{Code: "pets", Name: "Pet Store"},
+		},
 		"reverse": {
 			Name:        "reverse",
 			Description: "browser app",
@@ -77,11 +81,15 @@ func testMCPListServers() config.Servers {
 // so tests can assert whether the "tools" key was present at all (nil) vs.
 // present with an empty array — a distinction plain struct decoding loses.
 type mcpListEntry struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Tools       json.RawMessage `json:"tools"`
-	Dynamic     bool            `json:"dynamic"`
-	Error       string          `json:"error"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Service     struct {
+		Code string `json:"code"`
+		Name string `json:"name"`
+	} `json:"service"`
+	Tools   json.RawMessage `json:"tools"`
+	Dynamic bool            `json:"dynamic"`
+	Error   string          `json:"error"`
 }
 
 func decodeMCPList(t *testing.T, rec *httptest.ResponseRecorder) []mcpListEntry {
@@ -118,6 +126,24 @@ func TestMCPList_WithoutToolsQuery_OmitsToolsField(t *testing.T) {
 		require.Nil(t, e.Tools)
 		require.False(t, e.Dynamic)
 	}
+}
+
+func TestMCPList_ReturnsServicePerServer(t *testing.T) {
+	h := NewMCPHandler(testMCPListServers(), &fakeToolCatalog{}, config.AuthzConfig{}, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/mcp/list", nil)
+	rec := httptest.NewRecorder()
+
+	h.MCPList(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	entries := decodeMCPList(t, rec)
+	petstore := findMCPListEntry(t, entries, "petstore")
+	require.Equal(t, "pets", petstore.Service.Code)
+	require.Equal(t, "Pet Store", petstore.Service.Name)
+	// service 未設定のサーバーはサーバー名がそのままコード・表示名になる。
+	backend := findMCPListEntry(t, entries, "backend")
+	require.Equal(t, "backend", backend.Service.Code)
+	require.Equal(t, "backend", backend.Service.Name)
 }
 
 func TestMCPList_ToolsQuery_AuthzDisabled_ReturnsToolsPerServer(t *testing.T) {

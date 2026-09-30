@@ -54,7 +54,7 @@ func authzBypassRequested(req mcp.Request, headers config.AuthzHeaders) bool {
 // an unexpected params type) maps to the same fixed JSON-RPC error.
 func authzHandleToolCall(
 	ctx context.Context,
-	serverName string,
+	serverName, serviceCode string,
 	d authz.Decider,
 	p authz.Principal,
 	next mcp.MethodHandler,
@@ -67,7 +67,7 @@ func authzHandleToolCall(
 			slog.String("server", serverName), slog.String("reason", "unexpected_params"))
 		return nil, errToolNotAllowedByPolicy
 	}
-	tool := authz.ToolRef{Server: serverName, Name: params.Name}
+	tool := authz.ToolRef{Server: serverName, Service: serviceCode, Name: params.Name}
 
 	allowed, err := d.Allow(ctx, p, tool)
 	if err != nil {
@@ -83,8 +83,8 @@ func authzHandleToolCall(
 	}
 	slog.InfoContext(ctx, "authz decision",
 		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
-		slog.String("server", serverName), slog.String("tool", tool.Name),
-		slog.String("decision", decision))
+		slog.String("server", serverName), slog.String("service", serviceCode),
+		slog.String("tool", tool.Name), slog.String("decision", decision))
 
 	if !allowed {
 		return nil, errToolNotAllowedByPolicy
@@ -97,7 +97,7 @@ func authzHandleToolCall(
 // skips the Decider call entirely.
 func authzHandleToolsList(
 	ctx context.Context,
-	serverName string,
+	serverName, serviceCode string,
 	d authz.Decider,
 	p authz.Principal,
 	next mcp.MethodHandler,
@@ -115,7 +115,7 @@ func authzHandleToolsList(
 
 	refs := make([]authz.ToolRef, len(result.Tools))
 	for i, tool := range result.Tools {
-		refs[i] = authz.ToolRef{Server: serverName, Name: tool.Name}
+		refs[i] = authz.ToolRef{Server: serverName, Service: serviceCode, Name: tool.Name}
 	}
 	allowed, err := d.AllowedTools(ctx, p, refs)
 	if err != nil {
@@ -138,17 +138,19 @@ func authzHandleToolsList(
 
 	slog.InfoContext(ctx, "authz decision",
 		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
-		slog.String("server", serverName), slog.String("method", authzMethodToolsList),
+		slog.String("server", serverName), slog.String("service", serviceCode),
+		slog.String("method", authzMethodToolsList),
 		slog.Int("allowed", len(result.Tools)), slog.Int("total", len(refs)))
 	return result, nil
 }
 
 // NewAuthzMiddleware builds a mcp.Middleware enforcing d as the PEP for
-// server serverName. It fails closed: a missing/unresolvable identity denies
-// without querying d, and any tools/call or tools/list Decider error also
-// denies rather than falling through to next.
+// server serverName, which belongs to service serviceCode
+// (config.Server.ServiceCode). It fails closed: a missing/unresolvable
+// identity denies without querying d, and any tools/call or tools/list
+// Decider error also denies rather than falling through to next.
 func NewAuthzMiddleware(
-	serverName string,
+	serverName, serviceCode string,
 	d authz.Decider,
 	headers config.AuthzHeaders,
 	fromHeaders map[string]config.AuthzInputHeaderField,
@@ -176,9 +178,9 @@ func NewAuthzMiddleware(
 			}
 
 			if method == authzMethodToolsCall {
-				return authzHandleToolCall(ctx, serverName, d, p, next, method, req)
+				return authzHandleToolCall(ctx, serverName, serviceCode, d, p, next, method, req)
 			}
-			return authzHandleToolsList(ctx, serverName, d, p, next, method, req)
+			return authzHandleToolsList(ctx, serverName, serviceCode, d, p, next, method, req)
 		}
 	}
 }
