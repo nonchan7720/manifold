@@ -43,7 +43,7 @@ type Agent struct {
 	Description string `mapstructure:"description"`
 
 	// Service はこのエージェントが属するサービス（Server.Service と同じ）。
-	// mcpServers.<name>.agents 配下では設定できない。
+	// mcpServers.<name>.agents 配下では設定しても無視される。
 	Service *Service `mapstructure:"service"`
 
 	// URL は Agent Card を取得するベース URL。
