@@ -276,16 +276,9 @@ func (s Server) validateAgents(ctx context.Context, _ any) error {
 		if err := agent.ValidateWithContext(ctx); err != nil {
 			return fmt.Errorf("agent %q: %w", key, err)
 		}
-		if agent.Service != nil {
-			// エージェントのスキルはこのサーバーの tools/list・tools/call に
-			// 並ぶため、ツール認可もこのサーバーのサービスで判定される。
-			// エージェント個別のサービスは使われないので設定時点で拒否する。
-			return fmt.Errorf(
-				"agent %q: service is not supported for agents under mcpServers; "+
-					"its skills belong to the server's service (set service on the server instead)",
-				key,
-			)
-		}
+		// agent.Service は検証するだけで使わない。エージェントのスキルはこの
+		// サーバーの tools/list・tools/call に並ぶため、ツール認可はこの
+		// サーバーのサービスで判定される。
 		if agent.OAuth2 != nil {
 			// OAuth2 の RoundTripper は呼び出し元のサーバー単位の上流トークンを
 			// ctx から転送するため、エージェント個別の oauth2 クライアント設定は

@@ -451,7 +451,7 @@ agents:
 - `service.code` の既定はそのエントリ自身の名前（トップキー）です。`service` を書かない既存の設定では、サーバー 1 つがそのまま 1 サービスになります。文字種はサーバー名と同じ（英数字・`_`・`-`）です。
 - `service.name` は表示専用で、既定はコードと同じです。同じコードを持つエントリ同士で異なる名前を設定するとエラーになります。省略したエントリは、同じサービスの他のエントリに設定された名前を使います。
 - URL パス（`/mcp/{name}`）や OAuth エンドポイントなど、サーバー名をキーにする仕組みはそのままです。`service` が追加するのは authz の判定 input の `input.service` と、`/mcp/list` の各エントリの `service` だけです。
-- `mcpServers.<name>.agents` 配下のエージェントには `service` を設定できません。スキルはそのサーバーのツールとして並ぶため、サーバーのサービスに属します。
+- `mcpServers.<name>.agents` 配下のエージェントに設定した `service` は無視されます。スキルはそのサーバーのツールとして並ぶため、サーバーのサービスに属します。
 
 ポリシーで `<server>/<tool>` の代わりに `<service>/<tool>` を照合すれば（[`examples/opa/policy.rego`](examples/opa/policy.rego) と比較）、`billing/*` の 1 パターンで 3 つのエントリすべてを許可できます。
 
@@ -708,7 +708,7 @@ A2A エージェント（[A2A エージェントへの接続](#a2a-エージェ�
 | `skills`        | []string          | ツールとして公開する Agent Card のスキル ID。この順で公開し、Card にない ID は警告ログを出して読み飛ばす。省略すると全スキルを公開 |
 | `timeout`       | duration          | `message/send` 1 回のタイムアウト（既定 `60s`）            |
 
-[`agents.<name>`](#agentsname) から **`oauth2` と `service` を除いたもの**と同じです。どちらもここでは拒否されます。OAuth のフローはサーバー単位のため、`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。また、エージェントのスキルはサーバーのサービスに属します。`authValue` / `tokenExchange` は排他です。
+[`agents.<name>`](#agentsname) から **`oauth2` を除いたもの**と同じです。`oauth2` はここでは拒否されます。OAuth のフローはサーバー単位のため、`authValue`・`tokenExchange`・`headers` を使うか、トップレベルの `agents` に書いてください。`service` はここでは無視されます（エージェントのスキルはサーバーのサービスに属するため）。`authValue` / `tokenExchange` は排他です。
 
 #### `oauth.cimd`
 

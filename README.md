@@ -451,7 +451,7 @@ agents:
 - `service.code` defaults to the entry's own name (its top-level key), so a config without `service` keeps one service per server. It follows the server-name character rules (alphanumerics, `_` and `-`).
 - `service.name` is only for display and defaults to the code. Entries sharing a code must not set different names; an entry that omits it takes the name another entry of the same service set.
 - The URL path (`/mcp/{name}`), OAuth endpoints and everything else keyed by server name are unchanged; `service` only adds `input.service` to authz decisions and `service` to `/mcp/list` entries.
-- Agents under `mcpServers.<name>.agents` cannot set `service`: their skills are tools of that server, so they belong to its service.
+- `service` on an agent under `mcpServers.<name>.agents` is ignored: its skills are tools of that server, so they belong to the server's service.
 
 A policy that matches `<service>/<tool>` instead of `<server>/<tool>` (compare [`examples/opa/policy.rego`](examples/opa/policy.rego)) then grants `billing/*` across all three entries:
 
@@ -708,7 +708,7 @@ A2A agents attached to a service (see [Attaching agents to a service](#attaching
 | `skills`        | []string          | Agent Card skill IDs to expose as tools, in this order; IDs missing from the card are skipped with a warning. Unset exposes all skills |
 | `timeout`       | duration          | Timeout of one `message/send` (default `60s`)                        |
 
-This is the same as [`agents.<name>`](#agentsname) **minus `oauth2` and `service`**, which are rejected here: the OAuth flow is per server, so use `authValue`, `tokenExchange` or `headers`, or a top-level `agents` entry; and the agent's skills belong to the server's service. `authValue` / `tokenExchange` are mutually exclusive.
+This is the same as [`agents.<name>`](#agentsname) **minus `oauth2`**, which is rejected here: the OAuth flow is per server, so use `authValue`, `tokenExchange` or `headers`, or a top-level `agents` entry. `service` is ignored here, since the agent's skills belong to the server's service. `authValue` / `tokenExchange` are mutually exclusive.
 
 #### `oauth.cimd`
 

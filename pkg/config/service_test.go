@@ -72,13 +72,15 @@ func TestAgent_Server_CarriesService(t *testing.T) {
 	require.Equal(t, "Billing", srv.ServiceName())
 }
 
-func TestServer_Validate_NestedAgents_ServiceRejected(t *testing.T) {
+func TestServer_Validate_NestedAgents_ServiceIgnored(t *testing.T) {
+	// ネストしたエージェントの service はエラーにせず無視する（サーバーの
+	// サービスが使われる）。
 	agent := validAgent()
-	agent.Service = &Service{Code: "billing"}
+	agent.Service = &Service{Code: "other"}
 	s := validServerWithAgents(Agents{"translator": agent})
-	err := s.ValidateWithContext(t.Context())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "service is not supported for agents under mcpServers")
+	s.Name = "billing-api"
+	require.NoError(t, s.ValidateWithContext(t.Context()))
+	require.Equal(t, "billing-api", s.ServiceCode())
 }
 
 func TestConfig_Validate_ServiceNameConflict(t *testing.T) {

@@ -76,8 +76,8 @@ type AuthzInput struct {
 	User   string `mapstructure:"user"`
 	Groups string `mapstructure:"groups"`
 	Server string `mapstructure:"server"`
-	// Service はサービスコード（mcpServers.<name>.service.code、未設定なら
-	// サーバー名）に使う JSON キー。Server と同じ位置に並んで渡る。
+	// Service はサービスコード（mcpServers.<name>.service.code)
+	// Server と同じ位置に並んで渡る。(未設定ならサーバー名)
 	Service  string `mapstructure:"service"`
 	Tool     string `mapstructure:"tool"`
 	Tools    string `mapstructure:"tools"`
