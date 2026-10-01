@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1110,6 +1111,83 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// グレースフルシャットダウンはエラーなし
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServer did not return in time")
+	}
+}
+
+func TestRunServer_WaitsForInFlightRequestOnShutdown(t *testing.T) {
+	// 空いているポートを確保してからサーバーに渡す
+	var lc net.ListenConfig
+	l, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- runServer(ctx, srv, "test-server", 0, "", "") }()
+
+	// サーバーの起動を待ちながらリクエストを送る
+	type result struct {
+		status int
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			req, err := http.NewRequestWithContext(
+				context.Background(), http.MethodGet, "http://"+addr+"/slow", nil,
+			)
+			if err != nil {
+				resCh <- result{err: err}
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+				resCh <- result{status: resp.StatusCode}
+				return
+			}
+			if time.Now().After(deadline) {
+				resCh <- result{err: err}
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-entered:
+	case res := <-resCh:
+		t.Fatalf("request did not reach the handler: %v", res.err)
+	}
+
+	// シグナル受信（ctx のキャンセル）後も、処理中のリクエストの完了を待つこと
+	cancel()
+	select {
+	case err := <-errCh:
+		t.Fatalf("runServer returned before the in-flight request finished: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	res := <-resCh
+	require.NoError(t, res.err)
+	require.Equal(t, http.StatusOK, res.status)
+	select {
+	case err := <-errCh:
 		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServer did not return in time")

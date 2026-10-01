@@ -502,6 +502,10 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 	return redis.NewClient(ctx, globalConfig.Redis)
 }
 
+// httpShutdownTimeout は HTTP サーバーの graceful shutdown で処理中のリクエストを
+// 待つ上限。README の「Kubernetes で運用する場合の停止猶予」と合わせること。
+const httpShutdownTimeout = 30 * time.Second
+
 // runServer starts an HTTP server and handles graceful shutdown.
 func runServer(
 	ctx context.Context,
@@ -535,7 +539,9 @@ func runServer(
 		slog.InfoContext(ctx, "shutdown signal received", slog.String("server", name))
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// ctx はシグナル受信でキャンセル済みのため、そこから作ると Shutdown が処理中の
+	// リクエストを待たずに即座に失敗する。値だけを引き継いで猶予を与える。
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), httpShutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
