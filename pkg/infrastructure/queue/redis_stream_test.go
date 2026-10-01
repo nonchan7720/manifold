@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -66,13 +67,14 @@ func TestRedisStreamPublisher_ReturnsWhenContextEndsEvenIfRedisHangs(t *testing.
 	l, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
+	conns := make(chan net.Conn, 16)
 	go func() {
 		for {
 			conn, err := l.Accept()
 			if err != nil {
 				return
 			}
-			t.Cleanup(func() { _ = conn.Close() })
+			conns <- conn
 		}
 	}()
 
@@ -90,6 +92,17 @@ func TestRedisStreamPublisher_ReturnsWhenContextEndsEvenIfRedisHangs(t *testing.
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(start), 5*time.Second)
 
-	// Close でクライアントを閉じれば、置き去りの読み取りも解除される
+	// Close でクライアントを閉じれば、置き去りの読み取りも解除される。
+	// クライアントが接続を閉じたことを、サーバー側で EOF を読めることで確かめる。
+	var conn net.Conn
+	select {
+	case conn = <-conns:
+		t.Cleanup(func() { _ = conn.Close() })
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never connected")
+	}
 	require.NoError(t, p.Close())
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, err = io.Copy(io.Discard, conn) // EOF（クライアントが閉じた）まで読み捨てる
+	require.NoError(t, err, "the client must close the connection on Close")
 }
