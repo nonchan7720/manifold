@@ -63,10 +63,26 @@ func (p *RedisStreamPublisher) Publish(ctx context.Context, events []*toolmetric
 		}
 		pipe.XAdd(ctx, args)
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("redis XADD %s: %w", p.stream, err)
+	// go-redis は既定（ContextTimeoutEnabled: false）では ctx のキャンセルや期限で
+	// 応答の読み取りを中断せず、ReadTimeout まで待つ。publishTimeout と Close の
+	// 打ち切りを効かせるため別 goroutine で実行し、ctx が終わったら待たずに戻る。
+	// 置き去りの読み取りは Close でクライアントを閉じると解除される。戻った後に
+	// XADD が成功していることはあるが、配送は at-least-once で受信側は messageId で
+	// 重複を判定するので問題ない。
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := pipe.Exec(ctx)
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("redis XADD %s: %w", p.stream, err)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("redis XADD %s: %w", p.stream, ctx.Err())
 	}
-	return nil
 }
 
 func (p *RedisStreamPublisher) Close() error { return p.client.Close() }

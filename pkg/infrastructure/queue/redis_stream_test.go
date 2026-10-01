@@ -1,7 +1,10 @@
 package queue
 
 import (
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
@@ -55,4 +58,38 @@ func TestRedisStreamPublisher_ReturnsErrorWhenUnavailable(t *testing.T) {
 	mr.Close()
 
 	require.Error(t, p.Publish(t.Context(), events(1)))
+}
+
+func TestRedisStreamPublisher_ReturnsWhenContextEndsEvenIfRedisHangs(t *testing.T) {
+	// 接続を受け付けるが何も応答しないサーバー（応答しない Redis の再現）
+	var lc net.ListenConfig
+	l, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        l.Addr().String(),
+		ReadTimeout: time.Minute, // ctx が効かなければ 1 分待つ
+		MaxRetries:  -1,
+	})
+	p := NewRedisStreamPublisher(rdb, "tool-metrics", 0)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = p.Publish(ctx, events(1))
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 5*time.Second)
+
+	// Close でクライアントを閉じれば、置き去りの読み取りも解除される
+	require.NoError(t, p.Close())
 }
