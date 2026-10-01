@@ -4,13 +4,18 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-// RecorderOptions tunes a Recorder; zero values are not defaulted here
-// (config.ToolMetricsConfig.WithDefaults does that), so every field must be
-// positive.
+// 送信失敗時の再試行間隔。initialRetryInterval から始めて倍々にし、
+// maxRetryInterval で頭打ちにする。
+const (
+	initialRetryInterval = 500 * time.Millisecond
+	maxRetryInterval     = 30 * time.Second
+)
+
+// RecorderOptions は Recorder の動作設定。ここではゼロ値を補完しない
+// （config.ToolMetricsConfig.WithDefaults が補完する）ため、全フィールドに正の値が必要。
 type RecorderOptions struct {
 	BufferSize     int
 	BatchSize      int
@@ -18,64 +23,95 @@ type RecorderOptions struct {
 	PublishTimeout time.Duration
 }
 
-// Recorder buffers events in memory and publishes them in batches from a
-// single background goroutine. Record never blocks: when the buffer is full
-// the event is dropped and counted, so a slow queue degrades metrics rather
-// than tool-call latency.
+// Recorder はイベントをメモリ上にバッファし、バックグラウンドの単一の
+// goroutine からバッチで送信する。イベントは記録なので 1 件も破棄しない。
+//
+//   - バッファが満杯の間、Record はワーカーが空きを作るまで待つ
+//     （取りこぼす代わりにツール呼び出し側を待たせる）。
+//   - 送信に失敗したバッチは成功するまで指数バックオフで再試行する。そのため
+//     配送は at-least-once になり、受信側は Event.ID で重複を排除する。
+//   - Close が送り切る前に打ち切られた場合、未送信のイベントはすべて全文を
+//     error ログに出力する（logUndelivered）。ログから復元できる。
 type Recorder struct {
 	pub  Publisher
 	opts RecorderOptions
 
-	ch      chan Event
-	stop    chan struct{}
-	done    chan struct{}
-	closed  atomic.Bool
-	dropped atomic.Uint64
-	once    sync.Once
+	ch chan Event
+	// mu は closed と Record の inflight.Add を排他し、closed の確認を通過した
+	// Record をすべて Close が待てるようにする。
+	mu       sync.RWMutex
+	closed   bool
+	inflight sync.WaitGroup
+	// stop: 以降 Record は ch に送らない。ワーカーは ch を空にして終了する。
+	stop chan struct{}
+	// abort: Close の期限切れ。再試行をやめ、残りをログに出す。
+	abort chan struct{}
+	done  chan struct{}
+
+	closeOnce sync.Once
+	abortOnce sync.Once
 }
 
-// NewRecorder starts the worker goroutine. Cancelling ctx does not stop it;
-// call Close to flush and stop it.
+// NewRecorder はワーカー goroutine を起動する。ctx をキャンセルしても止まらない。
+// 残りを送り切って止めるには Close を呼ぶ。
 func NewRecorder(ctx context.Context, pub Publisher, opts RecorderOptions) *Recorder {
 	r := &Recorder{
-		pub:  pub,
-		opts: opts,
-		ch:   make(chan Event, opts.BufferSize),
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
+		pub:   pub,
+		opts:  opts,
+		ch:    make(chan Event, opts.BufferSize),
+		stop:  make(chan struct{}),
+		abort: make(chan struct{}),
+		done:  make(chan struct{}),
 	}
-	// The worker keeps ctx's values (trace, logger) but not its
-	// cancellation, since it must outlive ctx until Close flushes it.
+	// ワーカーは Close で送り切るまで ctx より長く動くため、ctx の値
+	// （トレース・ロガー）だけを引き継ぎ、キャンセルは引き継がない。
 	go r.run(context.WithoutCancel(ctx))
 	return r
 }
 
-// Record enqueues e without blocking. It is safe to call concurrently and
-// after Close (the event is then dropped).
+// Record は e をワーカーへ渡す。バッファが満杯の間は待つ。並行に呼んでよい。
+// Close の開始後、または Close が待つのを打ち切った後は、キューに積む代わりに
+// e を error ログに出力する。
 func (r *Recorder) Record(e Event) {
-	if r.closed.Load() {
-		r.dropped.Add(1)
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		logUndelivered(context.Background(), e)
 		return
 	}
+	r.inflight.Add(1)
+	r.mu.RUnlock()
+	defer r.inflight.Done()
+
 	select {
 	case r.ch <- e:
-	default:
-		r.dropped.Add(1)
+	case <-r.abort:
+		logUndelivered(context.Background(), e)
 	}
 }
 
-// Close stops accepting events, publishes whatever is still buffered and
-// closes the Publisher. It returns ctx.Err() if ctx expires before the
-// worker finishes; the worker keeps draining in the background in that case.
+// Close はイベントの受け付けを止め、積まれたイベントがすべて送信されて
+// Publisher が閉じられるまで待つ。先に ctx が期限切れになった場合は再試行を
+// やめ、未送信のイベントをすべて error ログに出力してから ctx.Err() を返す。
+// 何度呼んでもよい。
 func (r *Recorder) Close(ctx context.Context) error {
-	r.once.Do(func() {
-		r.closed.Store(true)
-		close(r.stop)
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
+		go func() {
+			// closed の確認を通過した Record が満杯のバッファで待っている
+			// 可能性がある。ワーカーは取り出し続けるので、それらも積まれる。
+			r.inflight.Wait()
+			close(r.stop)
+		}()
 	})
 	select {
 	case <-r.done:
 		return nil
 	case <-ctx.Done():
+		r.abortOnce.Do(func() { close(r.abort) })
+		<-r.done
 		return ctx.Err()
 	}
 }
@@ -93,53 +129,105 @@ func (r *Recorder) run(ctx context.Context) {
 	defer ticker.Stop()
 
 	batch := make([]Event, 0, r.opts.BatchSize)
-	flush := func() {
-		r.reportDropped(ctx)
+	// flush は batch を送信する。Close が再試行を打ち切った場合は false を
+	// 返す（batch はログに出力済み。ワーカーは終了処理に入る）。
+	flush := func() bool {
 		if len(batch) == 0 {
-			return
+			return true
 		}
-		r.publish(ctx, batch)
+		ok := r.publish(ctx, batch)
+		if !ok {
+			logUndelivered(ctx, batch...)
+		}
 		batch = batch[:0]
+		return ok
 	}
-	add := func(e Event) {
+	add := func(e Event) bool {
 		batch = append(batch, e)
 		if len(batch) >= r.opts.BatchSize {
-			flush()
+			return flush()
 		}
+		return true
 	}
 
 	for {
 		select {
 		case e := <-r.ch:
-			add(e)
+			if !add(e) {
+				r.drainToLog(ctx)
+				return
+			}
 		case <-ticker.C:
-			flush()
+			if !flush() {
+				r.drainToLog(ctx)
+				return
+			}
 		case <-r.stop:
 			for {
 				select {
 				case e := <-r.ch:
-					add(e)
+					if !add(e) {
+						r.drainToLog(ctx)
+						return
+					}
 				default:
 					flush()
 					return
 				}
 			}
+		case <-r.abort:
+			logUndelivered(ctx, batch...)
+			r.drainToLog(ctx)
+			return
 		}
 	}
 }
 
-func (r *Recorder) publish(ctx context.Context, batch []Event) {
-	ctx, cancel := context.WithTimeout(ctx, r.opts.PublishTimeout)
-	defer cancel()
-	if err := r.pub.Publish(ctx, batch); err != nil {
-		slog.WarnContext(ctx, "tool metrics: failed to publish events",
-			slog.Int("count", len(batch)), slog.Any("error", err))
+// publish は pub.Publish を成功する（true）か Close に打ち切られる（false）まで
+// 指数バックオフで再試行する。
+func (r *Recorder) publish(ctx context.Context, batch []Event) bool {
+	wait := initialRetryInterval
+	for attempt := 1; ; attempt++ {
+		pubCtx, cancel := context.WithTimeout(ctx, r.opts.PublishTimeout)
+		err := r.pub.Publish(pubCtx, batch)
+		cancel()
+		if err == nil {
+			return true
+		}
+		slog.WarnContext(ctx, "tool metrics: failed to publish events; retrying",
+			slog.Int("count", len(batch)), slog.Int("attempt", attempt),
+			slog.Duration("retry_in", wait), slog.Any("error", err))
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-r.abort:
+			timer.Stop()
+			return false
+		}
+		wait = min(wait*2, maxRetryInterval)
 	}
 }
 
-func (r *Recorder) reportDropped(ctx context.Context) {
-	if n := r.dropped.Swap(0); n > 0 {
-		slog.WarnContext(ctx, "tool metrics: events dropped because the buffer was full",
-			slog.Uint64("dropped", n))
+// drainToLog はバッファに残っているイベントをすべてログに出力する。abort 後
+// にのみ呼ばれ、その時点で Record は ch に送らない（ログに出す）ので ch は
+// 減る一方になる。
+func (r *Recorder) drainToLog(ctx context.Context) {
+	for {
+		select {
+		case e := <-r.ch:
+			logUndelivered(ctx, e)
+		default:
+			return
+		}
+	}
+}
+
+// logUndelivered はキューに送れなかったイベントの最後の受け皿。イベントの
+// 全文を error ログに出力し、そこから復元できるようにする。
+func logUndelivered(ctx context.Context, events ...Event) {
+	for _, e := range events {
+		slog.ErrorContext(ctx, "tool metrics: event could not be delivered to the queue",
+			slog.Any("event", e))
 	}
 }

@@ -786,16 +786,23 @@ fileFetch:
 
 #### `toolMetrics`
 
-Sends one event per `tools/call` (call count, status, error message, latency) to a queue service asynchronously. Events are buffered in memory and published in batches by a background worker, so a slow or unavailable queue never delays the tool call: when the buffer is full, new events are dropped and the drop count is logged. Disabled by default.
+Sends one event per `tools/call` (call count, status, error message, latency) to a queue service asynchronously. Events are buffered in memory and published in batches by a background worker. Disabled by default.
+
+Events are records and are never discarded:
+
+- A failed batch is retried with exponential backoff (0.5s doubling up to 30s) until it succeeds. Delivery is at-least-once, so consumers should dedupe by the event `id`.
+- While the queue is slow or down and the buffer (`bufferSize`) is full, tool calls wait until there is room.
+- On shutdown, Manifold waits up to `shutdownTimeout` for the remaining events to be delivered. Any event still undelivered after that is written in full to the error log (`tool metrics: event could not be delivered to the queue`).
 
 | Field                  | Type     | Description                                                                                                       |
 | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
 | `enabled`              | bool     | Enable tool metrics (default: `false`)                                                                            |
 | `type`                 | string   | Queue service: `sqs` (Amazon SQS) or `redis` (Redis Streams)                                                      |
-| `bufferSize`           | int      | In-memory buffer length; events beyond it are dropped (default: `1024`)                                            |
+| `bufferSize`           | int      | In-memory buffer length; tool calls wait while it is full (default: `1024`)                                        |
 | `batchSize`            | int      | Max events per publish (default: `10`; SQS is split into chunks of 10 regardless)                                  |
 | `flushInterval`        | duration | Publish buffered events at least this often (default: `1s`)                                                       |
 | `publishTimeout`       | duration | Timeout of one publish (default: `5s`)                                                                            |
+| `shutdownTimeout`      | duration | How long shutdown waits for undelivered events (default: `10s`); the rest is written to the error log            |
 | `sqs.queueURL`         | string   | SQS queue URL (required for `type: sqs`). Credentials and region follow the AWS SDK default chain, like `storage.s3` |
 | `sqs.messageGroupID`   | string   | Set for a FIFO queue; the event `id` is used as the `MessageDeduplicationId`                                       |
 | `redis.stream`         | string   | Stream key (default: `manifold:tool-metrics`)                                                                     |
@@ -839,6 +846,20 @@ toolMetrics:
   redis:
     stream: manifold:tool-metrics
     maxLen: 100000
+```
+
+##### Shutdown grace period on Kubernetes
+
+On SIGTERM, Manifold shuts down in this order:
+
+1. Graceful shutdown of the HTTP server (waits up to 30s for in-flight requests)
+2. Delivery of undelivered tool metrics (up to `toolMetrics.shutdownTimeout`)
+
+If `terminationGracePeriodSeconds` is shorter than the sum, the pod is SIGKILLed mid-delivery and the in-memory events are lost without even being logged. Set `terminationGracePeriodSeconds` to `30 + shutdownTimeout` seconds plus some margin (about 45s with the default `shutdownTimeout: 10s`). The Kubernetes default of 30s is not enough.
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 45
 ```
 
 #### `telemetry`

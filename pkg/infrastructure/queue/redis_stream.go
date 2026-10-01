@@ -9,12 +9,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisStreamEventField is the stream entry field holding the event JSON.
+// RedisStreamEventField はイベントの JSON を入れるストリームエントリのフィールド名。
 const RedisStreamEventField = "event"
 
-// RedisStreamPublisher appends each event to a Redis Stream (XADD) as a
-// single field RedisStreamEventField holding the event's JSON, pipelining a
-// whole batch in one round trip. Consumers read it with XREAD/XREADGROUP.
+// RedisStreamPublisher はイベントを Redis Stream に XADD する。各エントリは
+// イベントの JSON を持つフィールド RedisStreamEventField 1 つだけで、バッチ全体を
+// パイプラインで 1 往復で送る。受信側は XREAD / XREADGROUP で読む。
 type RedisStreamPublisher struct {
 	client redis.UniversalClient
 	stream string
@@ -23,8 +23,8 @@ type RedisStreamPublisher struct {
 
 var _ toolmetrics.Publisher = (*RedisStreamPublisher)(nil)
 
-// NewRedisStreamPublisher builds a publisher that owns client (Close closes
-// it). A positive maxLen trims the stream approximately to that length.
+// NewRedisStreamPublisher は client を所有する Publisher を作る（Close で client も
+// 閉じる）。maxLen が正の値ならストリームを概ねその長さに切り詰める。
 func NewRedisStreamPublisher(
 	client redis.UniversalClient, stream string, maxLen int64,
 ) *RedisStreamPublisher {

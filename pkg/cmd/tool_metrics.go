@@ -14,9 +14,9 @@ import (
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 )
 
-// newToolMetricsRecorder builds the Recorder shipping tools/call metrics to
-// the queue configured in cfg (which must be enabled). topLevelRedis is used
-// for type: redis when toolMetrics.redis.client is unset.
+// newToolMetricsRecorder は cfg で設定されたキューへ tools/call のメトリクスを
+// 送る Recorder を作る（cfg は有効であること）。type: redis で
+// toolMetrics.redis.client が未設定の場合は topLevelRedis に接続する。
 func newToolMetricsRecorder(
 	ctx context.Context, cfg config.ToolMetricsConfig, topLevelRedis *config.RedisConfig,
 ) (*toolmetrics.Recorder, error) {
@@ -54,9 +54,9 @@ func newToolMetricsRecorder(
 	}), nil
 }
 
-// toolMetricsMiddlewareFn builds the per-server mcp.Middleware factory
-// wiring mcpsrv.NewToolMetricsMiddleware, or nil when rec is nil. The user
-// is read from the same header authz uses (authz.headers.userID).
+// toolMetricsMiddlewareFn は mcpsrv.NewToolMetricsMiddleware をサーバーごとに
+// 組み込む mcp.Middleware のファクトリを返す。rec が nil なら nil を返す。
+// ユーザーは authz と同じヘッダー（authz.headers.userID）から読む。
 func toolMetricsMiddlewareFn(
 	rec *toolmetrics.Recorder, authzCfg config.AuthzConfig, servers config.Servers,
 ) func(name string) []mcp.Middleware {
@@ -71,9 +71,8 @@ func toolMetricsMiddlewareFn(
 	}
 }
 
-// combineMiddlewareFns concatenates the middleware each non-nil fn returns,
-// in argument order (so the first fn's middleware is the outermost), or
-// returns nil when every fn is nil.
+// combineMiddlewareFns は nil でない各 fn が返すミドルウェアを引数の順に連結する
+// （先頭の fn のミドルウェアが最も外側になる）。すべて nil なら nil を返す。
 func combineMiddlewareFns(
 	fns ...func(name string) []mcp.Middleware,
 ) func(name string) []mcp.Middleware {

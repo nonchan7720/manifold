@@ -1,4 +1,4 @@
-// Package queue implements toolmetrics.Publisher on top of queue services.
+// Package queue はキューサービスを使った toolmetrics.Publisher の実装。
 package queue
 
 import (
@@ -14,18 +14,18 @@ import (
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 )
 
-// sqsMaxBatchEntries is SendMessageBatch's hard per-request entry limit.
+// sqsMaxBatchEntries は SendMessageBatch の 1 リクエストあたりのエントリ数上限。
 const sqsMaxBatchEntries = 10
 
-// SQSSendMessageBatchAPI is the subset of *sqs.Client SQSPublisher uses.
+// SQSSendMessageBatchAPI は SQSPublisher が使う *sqs.Client のメソッド。
 type SQSSendMessageBatchAPI interface {
 	SendMessageBatch(
 		ctx context.Context, params *sqs.SendMessageBatchInput, optFns ...func(*sqs.Options),
 	) (*sqs.SendMessageBatchOutput, error)
 }
 
-// SQSPublisher sends each event as one SQS message whose body is the
-// event's JSON, using SendMessageBatch in chunks of up to 10.
+// SQSPublisher はイベント 1 件を、本文がイベントの JSON である SQS メッセージ
+// 1 件として送る。SendMessageBatch で最大 10 件ずつ送信する。
 type SQSPublisher struct {
 	client         SQSSendMessageBatchAPI
 	queueURL       string
@@ -34,9 +34,9 @@ type SQSPublisher struct {
 
 var _ toolmetrics.Publisher = (*SQSPublisher)(nil)
 
-// NewSQSPublisher builds a publisher for queueURL. A non-empty
-// messageGroupID targets a FIFO queue: it is set on every message and the
-// event ID is used as the MessageDeduplicationId.
+// NewSQSPublisher は queueURL 宛ての Publisher を作る。messageGroupID が空でない
+// 場合は FIFO キュー向けとして全メッセージに設定し、イベント ID を
+// MessageDeduplicationId に使う。
 func NewSQSPublisher(
 	client SQSSendMessageBatchAPI, queueURL, messageGroupID string,
 ) *SQSPublisher {

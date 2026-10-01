@@ -786,16 +786,23 @@ fileFetch:
 
 #### `toolMetrics`
 
-`tools/call` 1 回ごとのイベント（呼び出し回数・ステータス・エラーメッセージ・所要時間）をキューサービスへ非同期送信します。イベントはメモリ上にバッファされ、バックグラウンドのワーカーがまとめて送信するため、キューが遅い・落ちている場合でもツール呼び出しは遅延しません（バッファが満杯の間のイベントは破棄され、破棄件数がログに出ます）。既定では無効です。
+`tools/call` 1 回ごとのイベント（呼び出し回数・ステータス・エラーメッセージ・所要時間）をキューサービスへ非同期送信します。イベントはメモリ上にバッファされ、バックグラウンドのワーカーがまとめて送信します。既定では無効です。
+
+イベントは記録として扱い、破棄しません。
+
+- 送信に失敗したバッチは、成功するまで指数バックオフ（0.5 秒から倍々、最大 30 秒）で再試行します。配送は at-least-once のため、受信側はイベントの `id` で重複を排除してください。
+- キューが遅い・止まっている間にバッファ（`bufferSize`）が満杯になると、空きが出るまでツール呼び出しが待ちます。
+- 停止時は未送信のイベントを送り切るまで最大 `shutdownTimeout` 待ちます。それでも送れなかったイベントは、全文を error ログ（`tool metrics: event could not be delivered to the queue`）に出力します。
 
 | フィールド             | 型       | 説明                                                                                                     |
 | ---------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
 | `enabled`              | bool     | ツールメトリクスを有効化（既定: `false`）                                                                |
 | `type`                 | string   | 送信先: `sqs`（Amazon SQS）または `redis`（Redis Streams）                                               |
-| `bufferSize`           | int      | メモリ上のバッファ長。超えたイベントは破棄（既定: `1024`）                                               |
+| `bufferSize`           | int      | メモリ上のバッファ長。満杯の間はツール呼び出しが待つ（既定: `1024`）                                     |
 | `batchSize`            | int      | 1 回の送信にまとめる最大件数（既定: `10`。SQS はこれとは別に 10 件ずつに分割）                            |
 | `flushInterval`        | duration | 件数に満たなくても送信する間隔（既定: `1s`）                                                             |
 | `publishTimeout`       | duration | 1 回の送信のタイムアウト（既定: `5s`）                                                                   |
+| `shutdownTimeout`      | duration | 停止時に未送信イベントを送り切るまで待つ上限（既定: `10s`）。超えた分は error ログに出力               |
 | `sqs.queueURL`         | string   | SQS キューの URL（`type: sqs` の場合必須）。認証情報・リージョンは `storage.s3` と同じく AWS SDK の既定に従う |
 | `sqs.messageGroupID`   | string   | FIFO キューの場合に設定。イベントの `id` を `MessageDeduplicationId` に使う                              |
 | `redis.stream`         | string   | ストリームのキー（既定: `manifold:tool-metrics`）                                                        |
@@ -839,6 +846,20 @@ toolMetrics:
   redis:
     stream: manifold:tool-metrics
     maxLen: 100000
+```
+
+##### Kubernetes で運用する場合の停止猶予
+
+SIGTERM を受けると、Manifold は次の順に停止します。
+
+1. HTTP サーバーの graceful shutdown（処理中のリクエストを最大 30 秒待つ）
+2. 未送信のツールメトリクスの送信（最大 `toolMetrics.shutdownTimeout`）
+
+`terminationGracePeriodSeconds` がこの合計より短いと、送信途中で SIGKILL され、メモリ上の未送信イベントはログにも残らず失われます。`terminationGracePeriodSeconds` は `30 + shutdownTimeout` 秒に余裕を足した値にしてください（既定の `shutdownTimeout: 10s` なら 45 秒程度）。Kubernetes の既定値（30 秒）では足りません。
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 45
 ```
 
 #### `telemetry`

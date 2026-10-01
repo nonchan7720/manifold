@@ -18,6 +18,7 @@ func TestToolMetricsConfig_WithDefaults(t *testing.T) {
 	require.Equal(t, DefaultToolMetricsBatchSize, got.BatchSize)
 	require.Equal(t, DefaultToolMetricsFlushInterval, got.FlushInterval)
 	require.Equal(t, DefaultToolMetricsPublishTimeout, got.PublishTimeout)
+	require.Equal(t, DefaultToolMetricsShutdownTimeout, got.ShutdownTimeout)
 	require.Equal(t, DefaultToolMetricsRedisStream, got.Redis.Stream)
 }
 

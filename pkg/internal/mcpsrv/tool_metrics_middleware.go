@@ -14,18 +14,17 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ToolMetricsRecorder receives one event per tools/call. Implemented by
-// *toolmetrics.Recorder; Record must not block.
+// ToolMetricsRecorder は tools/call 1 回ごとのイベントを受け取る。
+// 実装は *toolmetrics.Recorder。
 type ToolMetricsRecorder interface {
 	Record(e toolmetrics.Event)
 }
 
-// NewToolMetricsMiddleware records a toolmetrics.Event for every tools/call
-// on server serverName (service serviceCode) and hands it to rec. It should
-// be the outermost receiving middleware so that authz denials are counted
-// too. userHeader, when non-empty, names the inbound HTTP header whose value
-// is recorded as Event.User (the same header authz reads the user ID from).
-// Other methods pass through untouched.
+// NewToolMetricsMiddleware はサーバー serverName（サービス serviceCode）への
+// tools/call ごとに toolmetrics.Event を作り、rec に渡す。認可で拒否された呼び出しも
+// 数えるため、受信ミドルウェアの最も外側に置くこと。userHeader が空でなければ、
+// その HTTP ヘッダーの値を Event.User に記録する（authz がユーザー ID を読むのと
+// 同じヘッダー）。tools/call 以外のメソッドはそのまま通す。
 func NewToolMetricsMiddleware(
 	serverName, serviceCode, userHeader string,
 	rec ToolMetricsRecorder,
@@ -81,8 +80,8 @@ func setToolMetricsStatus(e *toolmetrics.Event, res mcp.Result, err error) {
 	e.Status = toolmetrics.StatusSuccess
 }
 
-// callToolResultText joins the text content blocks of r, which is where
-// tools put the human-readable error message for isError results.
+// callToolResultText は r のテキストコンテンツを連結する。isError の結果では、
+// ツールは人が読めるエラーメッセージをここに入れる。
 func callToolResultText(r *mcp.CallToolResult) string {
 	var parts []string
 	for _, c := range r.Content {
@@ -93,7 +92,7 @@ func callToolResultText(r *mcp.CallToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
-// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+// truncateUTF8 は s を、文字の途中で切らずに最大 n バイトに切り詰める。
 func truncateUTF8(s string, n int) string {
 	if len(s) <= n {
 		return s

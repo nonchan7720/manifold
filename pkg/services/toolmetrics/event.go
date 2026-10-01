@@ -1,6 +1,5 @@
-// Package toolmetrics records one Event per tools/call and ships them to a
-// queue service asynchronously, so that a slow or unavailable queue never
-// delays the tool call itself.
+// Package toolmetrics は tools/call 1 回ごとに Event を記録し、キューサービスへ
+// 非同期で送信する。キューが遅い・止まっている場合でもイベントは破棄しない。
 package toolmetrics
 
 import (
@@ -8,22 +7,23 @@ import (
 	"time"
 )
 
-// Status classifies how a tools/call ended.
+// Status は tools/call の終わり方の分類。
 type Status string
 
 const (
-	// StatusSuccess: the handler returned a result whose isError is false.
+	// StatusSuccess: ハンドラーが isError: false の結果を返した。
 	StatusSuccess Status = "success"
-	// StatusToolError: the handler returned a result with isError: true
-	// (the tool itself reported a failure, e.g. an upstream 4xx/5xx).
+	// StatusToolError: ハンドラーが isError: true の結果を返した
+	// （ツール自身が失敗を報告した。例: 上流の 4xx/5xx）。
 	StatusToolError Status = "tool_error"
-	// StatusError: the handler returned a JSON-RPC error (authz denial,
-	// unknown tool, backend unreachable, ...).
+	// StatusError: ハンドラーが JSON-RPC エラーを返した
+	// （認可拒否・未知のツール・バックエンドに接続できない等）。
 	StatusError Status = "error"
 )
 
-// Event is one tools/call, serialized as JSON into the queue message body.
+// Event は tools/call 1 回分の記録。JSON にしてキューのメッセージ本文に入れる。
 type Event struct {
+	// ID はイベントごとに一意。再送で重複した場合に受信側で排除するのに使う。
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
 	Server    string    `json:"server"`
@@ -31,23 +31,22 @@ type Event struct {
 	Tool      string    `json:"tool"`
 	User      string    `json:"user,omitempty"`
 	Status    Status    `json:"status"`
-	// DurationMs is the wall-clock time spent in the handler chain.
+	// DurationMs はハンドラーチェーンでかかった時間。
 	DurationMs int64 `json:"durationMs"`
-	// ErrorCode is the JSON-RPC error code; set only for StatusError.
+	// ErrorCode は JSON-RPC のエラーコード。StatusError の場合のみ設定する。
 	ErrorCode int64 `json:"errorCode,omitempty"`
-	// ErrorMessage is the JSON-RPC error message (StatusError) or the
-	// result's text content (StatusToolError), truncated to
-	// MaxErrorMessageLength bytes.
+	// ErrorMessage は JSON-RPC エラーのメッセージ（StatusError）または
+	// 結果のテキスト（StatusToolError）。MaxErrorMessageLength バイトで切り詰める。
 	ErrorMessage string `json:"errorMessage,omitempty"`
 	TraceID      string `json:"traceId,omitempty"`
 }
 
-// MaxErrorMessageLength caps Event.ErrorMessage so a large error body does
-// not blow the queue's message size limit (SQS: 256KiB per batch).
+// MaxErrorMessageLength は Event.ErrorMessage の上限バイト数。大きなエラー本文で
+// キューのメッセージサイズ上限（SQS はバッチあたり 256KiB）を超えないようにする。
 const MaxErrorMessageLength = 1024
 
-// Publisher delivers a batch of events to a queue service. Publish is only
-// ever called from the Recorder's single worker goroutine.
+// Publisher はイベントのバッチをキューサービスへ送る。Publish は Recorder の
+// 単一のワーカー goroutine からのみ呼ばれる。
 type Publisher interface {
 	Publish(ctx context.Context, events []Event) error
 	Close() error

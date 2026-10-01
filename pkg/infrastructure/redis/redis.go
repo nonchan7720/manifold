@@ -29,8 +29,8 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 	return &Client{client: rdb}, nil
 }
 
-// NewUniversalClient builds an instrumented go-redis client for cfg and
-// verifies the connection with a PING. Callers own the returned client.
+// NewUniversalClient は cfg の go-redis クライアントを計装付きで作り、PING で接続を
+// 確認する。返したクライアントは呼び出し側が閉じる。
 func NewUniversalClient(
 	ctx context.Context,
 	cfg *config.RedisConfig,

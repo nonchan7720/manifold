@@ -226,17 +226,18 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
 	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
 
-	// Same reasoning as fileFetch above — also makes TOOLMETRICS_ENABLED,
-	// TOOLMETRICS_TYPE, TOOLMETRICS_BUFFERSIZE, TOOLMETRICS_BATCHSIZE,
-	// TOOLMETRICS_FLUSHINTERVAL and TOOLMETRICS_PUBLISHTIMEOUT effective
-	// overrides. The sqs / redis blocks get no defaults: a non-nil block is
-	// validated even when type selects the other one.
+	// fileFetch と同じ理由。TOOLMETRICS_ENABLED, TOOLMETRICS_TYPE,
+	// TOOLMETRICS_BUFFERSIZE, TOOLMETRICS_BATCHSIZE, TOOLMETRICS_FLUSHINTERVAL,
+	// TOOLMETRICS_PUBLISHTIMEOUT, TOOLMETRICS_SHUTDOWNTIMEOUT で上書きできる
+	// ようにする。sqs / redis ブロックには既定値を入れない（nil でないブロックは
+	// type がもう一方を選んでいても検証されてしまうため）。
 	v.SetDefault("toolMetrics.enabled", false)
 	v.SetDefault("toolMetrics.type", "")
 	v.SetDefault("toolMetrics.bufferSize", DefaultToolMetricsBufferSize)
 	v.SetDefault("toolMetrics.batchSize", DefaultToolMetricsBatchSize)
 	v.SetDefault("toolMetrics.flushInterval", DefaultToolMetricsFlushInterval)
 	v.SetDefault("toolMetrics.publishTimeout", DefaultToolMetricsPublishTimeout)
+	v.SetDefault("toolMetrics.shutdownTimeout", DefaultToolMetricsShutdownTimeout)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)

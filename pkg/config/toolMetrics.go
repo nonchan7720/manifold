@@ -16,11 +16,12 @@ const (
 
 // 既定値（toolMetrics の各フィールド省略時）。
 const (
-	DefaultToolMetricsBufferSize     = 1024
-	DefaultToolMetricsBatchSize      = 10
-	DefaultToolMetricsFlushInterval  = time.Second
-	DefaultToolMetricsPublishTimeout = 5 * time.Second
-	DefaultToolMetricsRedisStream    = "manifold:tool-metrics"
+	DefaultToolMetricsBufferSize      = 1024
+	DefaultToolMetricsBatchSize       = 10
+	DefaultToolMetricsFlushInterval   = time.Second
+	DefaultToolMetricsPublishTimeout  = 5 * time.Second
+	DefaultToolMetricsShutdownTimeout = 10 * time.Second
+	DefaultToolMetricsRedisStream     = "manifold:tool-metrics"
 )
 
 // ToolMetricsConfig は tools/call ごとのメトリクスイベント（呼び出し回数・
@@ -31,14 +32,19 @@ type ToolMetricsConfig struct {
 	Type    string `mapstructure:"type"`
 
 	// BufferSize はキュー送信待ちイベントを溜めるメモリ上のバッファ長。
-	// 満杯の間に発生したイベントはツール呼び出しを遅らせないよう破棄する。
+	// イベントは記録として必須のため破棄しない。満杯の間は空きが出るまで
+	// ツール呼び出し側が待つ。
 	BufferSize int `mapstructure:"bufferSize"`
 	// BatchSize は 1 回の送信にまとめる最大イベント数。
 	BatchSize int `mapstructure:"batchSize"`
 	// FlushInterval は BatchSize に満たなくても溜まったイベントを送信する間隔。
 	FlushInterval time.Duration `mapstructure:"flushInterval"`
-	// PublishTimeout は 1 回の送信のタイムアウト。
+	// PublishTimeout は 1 回の送信のタイムアウト。失敗した送信は成功するまで
+	// 指数バックオフで再試行する。
 	PublishTimeout time.Duration `mapstructure:"publishTimeout"`
+	// ShutdownTimeout は停止時に未送信イベントを送り切るまで待つ上限。
+	// 超えた場合、残りのイベントは全文を error ログに出力する。
+	ShutdownTimeout time.Duration `mapstructure:"shutdownTimeout"`
 
 	SQS   *ToolMetricsSQS   `mapstructure:"sqs"`
 	Redis *ToolMetricsRedis `mapstructure:"redis"`
@@ -62,8 +68,7 @@ type ToolMetricsRedis struct {
 	Client *RedisConfig `mapstructure:"client"`
 }
 
-// WithDefaults returns a copy of c with zero-value fields replaced by the
-// documented defaults.
+// WithDefaults はゼロ値のフィールドを既定値で埋めた c のコピーを返す。
 func (c ToolMetricsConfig) WithDefaults() ToolMetricsConfig {
 	if c.BufferSize == 0 {
 		c.BufferSize = DefaultToolMetricsBufferSize
@@ -77,6 +82,9 @@ func (c ToolMetricsConfig) WithDefaults() ToolMetricsConfig {
 	if c.PublishTimeout == 0 {
 		c.PublishTimeout = DefaultToolMetricsPublishTimeout
 	}
+	if c.ShutdownTimeout == 0 {
+		c.ShutdownTimeout = DefaultToolMetricsShutdownTimeout
+	}
 	if c.Redis != nil && c.Redis.Stream == "" {
 		redis := *c.Redis
 		redis.Stream = DefaultToolMetricsRedisStream
@@ -85,8 +93,8 @@ func (c ToolMetricsConfig) WithDefaults() ToolMetricsConfig {
 	return c
 }
 
-// redisContextKey carries the top-level Config.Redis into ToolMetricsConfig
-// validation, so type: redis can fall back to it when redis.client is unset.
+// redisContextKey はトップレベルの Config.Redis を ToolMetricsConfig の検証へ渡す。
+// type: redis で redis.client が未設定の場合にそれを使えるか確認するため。
 type redisContextKey struct{}
 
 func (c ToolMetricsConfig) ValidateWithContext(ctx context.Context) error {
@@ -104,6 +112,7 @@ func (c ToolMetricsConfig) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.BatchSize, validation.Min(1)),
 		validation.Field(&c.FlushInterval, validation.By(validatePositiveDuration)),
 		validation.Field(&c.PublishTimeout, validation.By(validatePositiveDuration)),
+		validation.Field(&c.ShutdownTimeout, validation.By(validatePositiveDuration)),
 		validation.Field(&c.SQS,
 			validation.When(c.Type == ToolMetricsTypeSQS, validation.NotNil),
 		),

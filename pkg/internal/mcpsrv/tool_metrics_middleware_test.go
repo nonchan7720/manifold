@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeToolMetricsRecorder collects every recorded event.
+// fakeToolMetricsRecorder は記録されたイベントをすべて集める。
 type fakeToolMetricsRecorder struct {
 	mu     sync.Mutex
 	events []toolmetrics.Event
@@ -33,9 +33,9 @@ func (r *fakeToolMetricsRecorder) recorded() []toolmetrics.Event {
 	return append([]toolmetrics.Event(nil), r.events...)
 }
 
-// newToolMetricsTestServer serves srv with mws as receiving middleware
-// (first is outermost, as in pkg/cmd/server.go) and returns a connected
-// session sending headers on every request.
+// newToolMetricsTestServer は mws を受信ミドルウェアとして srv を公開し
+// （pkg/cmd/server.go と同じく先頭が最も外側）、毎リクエストで headers を送る
+// 接続済みセッションを返す。
 func newToolMetricsTestServer(
 	t *testing.T, srv *mcp.Server, headers http.Header, mws ...mcp.Middleware,
 ) *mcp.ClientSession {

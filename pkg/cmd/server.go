@@ -252,7 +252,7 @@ func authzMiddlewareFn(
 	}
 }
 
-// serviceCodeOf returns the service code of server name. 設定に無い名前
+// serviceCodeOf はサーバー name のサービスコードを返す。設定に無い名前
 // （通常は起こらない）はサーバー名をそのまま使う（ServiceCode の既定と同じ）。
 func serviceCodeOf(servers config.Servers, name string) string {
 	if srv, ok := servers[name]; ok && srv != nil {
@@ -358,10 +358,14 @@ func runGatewayServer(ctx context.Context) error {
 		defer func() { //nolint: contextcheck
 			// ctx はシャットダウン時点で既にキャンセル済みのため、残りの
 			// イベントを送り切る猶予は独立したコンテキストで与える。
-			closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// 猶予を超えた分は Recorder が全文を error ログに出す。
+			closeCtx, cancel := context.WithTimeout(
+				context.Background(), globalConfig.ToolMetrics.WithDefaults().ShutdownTimeout,
+			)
 			defer cancel()
 			if err := toolMetricsRecorder.Close(closeCtx); err != nil {
-				slog.Warn("tool metrics: shutdown did not finish", slog.Any("error", err))
+				slog.Error("tool metrics: shutdown timed out; undelivered events were logged",
+					slog.Any("error", err))
 			}
 		}()
 	}
