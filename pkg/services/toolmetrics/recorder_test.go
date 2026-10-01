@@ -23,11 +23,17 @@ type fakePublisher struct {
 	failAll  bool
 	closed   bool
 	block    chan struct{}
+	// hang は Publish を ctx が終わるまで返さない（応答しないキューの再現）。
+	hang bool
 }
 
-func (p *fakePublisher) Publish(_ context.Context, events []*Event) error {
+func (p *fakePublisher) Publish(ctx context.Context, events []*Event) error {
 	if p.block != nil {
 		<-p.block
+	}
+	if p.hang {
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -240,4 +246,56 @@ func TestRecorder_CloseTimeoutReleasesBlockedRecord(t *testing.T) {
 	require.ErrorIs(t, r.Close(ctx), context.DeadlineExceeded)
 	<-returned
 	require.Equal(t, 3, logs.undelivered())
+}
+
+func TestRecorder_CloseTimeoutCancelsInFlightPublish(t *testing.T) {
+	logs := captureLogs(t)
+	pub := &fakePublisher{hang: true}
+	opts := testOptions()
+	opts.BatchSize = 1
+	opts.PublishTimeout = time.Hour // shutdownTimeout より長い
+	r := NewRecorder(t.Context(), pub, opts)
+
+	r.Record(&Event{})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	require.ErrorIs(t, r.Close(ctx), context.DeadlineExceeded)
+
+	// 実行中の Publish が打ち切られ、PublishTimeout を待たずに終わること
+	require.Less(t, time.Since(start), 5*time.Second)
+	require.Equal(t, 1, logs.undelivered())
+}
+
+func TestRecorder_CloseTimeoutNeverLosesBlockedRecords(t *testing.T) {
+	// abort 直後に ch に空きができ、待っていた Record が ch への送信を選んでも
+	// 失われないこと（select の選択はランダムなので繰り返して確かめる）。
+	for range 20 {
+		logs := captureLogs(t)
+		pub := &fakePublisher{failAll: true}
+		opts := testOptions()
+		opts.BufferSize = 1
+		opts.BatchSize = 1
+		r := NewRecorder(t.Context(), pub, opts)
+
+		r.Record(&Event{}) // ワーカーが取り出して再試行し続ける
+		require.Eventually(t, func() bool { return len(r.ch) == 0 }, time.Second, time.Millisecond)
+		r.Record(&Event{}) // バッファを埋める
+
+		const blocked = 20
+		var wg sync.WaitGroup
+		for range blocked {
+			wg.Go(func() { r.Record(&Event{}) })
+		}
+		// 全員が満杯のバッファで待つまで少し待つ
+		time.Sleep(20 * time.Millisecond)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		require.ErrorIs(t, r.Close(ctx), context.DeadlineExceeded)
+		cancel()
+		wg.Wait()
+
+		require.Equal(t, 2+blocked, logs.undelivered(), "every event is logged")
+		require.Empty(t, r.ch)
+	}
 }

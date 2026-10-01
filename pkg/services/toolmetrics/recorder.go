@@ -126,6 +126,18 @@ func (r *Recorder) run(ctx context.Context) {
 		}
 	}()
 
+	// Close が打ち切った（abort）ら実行中の Publish も中断させ、shutdownTimeout を
+	// 超えて待たないようにする。run の終了時に cancel するので監視 goroutine は残らない。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-r.abort:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	ticker := time.NewTicker(r.opts.FlushInterval)
 	defer ticker.Stop()
 
@@ -211,9 +223,13 @@ func (r *Recorder) publish(ctx context.Context, batch []*Event) bool {
 }
 
 // drainToLog はバッファに残っているイベントをすべてログに出力する。abort 後
-// にのみ呼ばれ、その時点で Record は ch に送らない（ログに出す）ので ch は
-// 減る一方になる。
+// にのみ呼ばれる。
 func (r *Recorder) drainToLog(ctx context.Context) {
+	// abort の時点で満杯のバッファを待っていた Record は、ch に空きができると
+	// select で ch への送信を選ぶことがある。ワーカーが先に終わるとそのイベントが
+	// 失われるため、Record がすべて終わるのを待ってから排出する。abort は
+	// closed = true の後にしか起きないので、待っている間に inflight は増えない。
+	r.inflight.Wait()
 	for {
 		select {
 		case e := <-r.ch:
