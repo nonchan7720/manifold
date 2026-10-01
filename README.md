@@ -51,6 +51,7 @@ Server
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management backed by Redis or SQLite
 - **OpenTelemetry support**: OTLP export of traces, metrics, and logs (metrics also support Prometheus-style pull)
+- **Tool-call metrics to a queue**: Asynchronously ship one event per `tools/call` (status, error message, latency) to Amazon SQS or Redis Streams (`toolMetrics`)
 
 ## Requirements
 
@@ -781,6 +782,63 @@ fileFetch:
   # allowedHosts:
   #   - example.com
   #   - files.example.com:8443
+```
+
+#### `toolMetrics`
+
+Sends one event per `tools/call` (call count, status, error message, latency) to a queue service asynchronously. Events are buffered in memory and published in batches by a background worker, so a slow or unavailable queue never delays the tool call: when the buffer is full, new events are dropped and the drop count is logged. Disabled by default.
+
+| Field                  | Type     | Description                                                                                                       |
+| ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
+| `enabled`              | bool     | Enable tool metrics (default: `false`)                                                                            |
+| `type`                 | string   | Queue service: `sqs` (Amazon SQS) or `redis` (Redis Streams)                                                      |
+| `bufferSize`           | int      | In-memory buffer length; events beyond it are dropped (default: `1024`)                                            |
+| `batchSize`            | int      | Max events per publish (default: `10`; SQS is split into chunks of 10 regardless)                                  |
+| `flushInterval`        | duration | Publish buffered events at least this often (default: `1s`)                                                       |
+| `publishTimeout`       | duration | Timeout of one publish (default: `5s`)                                                                            |
+| `sqs.queueURL`         | string   | SQS queue URL (required for `type: sqs`). Credentials and region follow the AWS SDK default chain, like `storage.s3` |
+| `sqs.messageGroupID`   | string   | Set for a FIFO queue; the event `id` is used as the `MessageDeduplicationId`                                       |
+| `redis.stream`         | string   | Stream key (default: `manifold:tool-metrics`)                                                                     |
+| `redis.maxLen`         | int      | When positive, trims the stream to approximately this length (`XADD MAXLEN ~`)                                     |
+| `redis.client`         | object   | Connection, same fields as [`redis`](#redis). Defaults to the top-level `redis`                                   |
+
+The metrics middleware wraps authz, so calls denied by policy are counted too. Each SQS message body / the `event` field of each stream entry is the event as JSON:
+
+```json
+{
+  "id": "4f6c2a1e-...",
+  "timestamp": "2026-10-01T02:11:25.123Z",
+  "server": "billing-svc",
+  "service": "billing",
+  "tool": "create_invoice",
+  "user": "user-042",
+  "status": "error",
+  "durationMs": 12,
+  "errorCode": -32603,
+  "errorMessage": "tool not allowed by policy",
+  "traceId": "0af7651916cd43dd8448eb211c80319c"
+}
+```
+
+- `status`: `success`, `tool_error` (the tool returned `isError: true`; `errorMessage` is its text content), or `error` (a JSON-RPC error; `errorCode` / `errorMessage` are its code and message)
+- `user`: the value of the `authz.headers.userID` header (default `x-user-id`), when present
+- `errorMessage` is truncated to 1024 bytes
+
+```yaml
+toolMetrics:
+  enabled: true
+  type: sqs
+  sqs:
+    queueURL: https://sqs.ap-northeast-1.amazonaws.com/123456789012/manifold-tool-metrics
+```
+
+```yaml
+toolMetrics:
+  enabled: true
+  type: redis
+  redis:
+    stream: manifold:tool-metrics
+    maxLen: 100000
 ```
 
 #### `telemetry`

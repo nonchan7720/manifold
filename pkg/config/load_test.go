@@ -464,3 +464,24 @@ func TestFileFetchConfig_WithDefaults(t *testing.T) {
 		})
 	}
 }
+
+// --- toolMetrics ---
+
+func TestLoadInternal_ToolMetrics_DisabledByDefault(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.False(t, cfg.ToolMetrics.Enabled)
+	require.Nil(t, cfg.ToolMetrics.SQS)
+	require.Nil(t, cfg.ToolMetrics.Redis)
+}
+
+func TestLoadInternal_ToolMetrics_EnvOverride_FlushInterval(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "dummy")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "dummy")
+	t.Setenv("TOOLMETRICS_FLUSHINTERVAL", "250ms")
+	cfg, err := loadInternal(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, 250*time.Millisecond, cfg.ToolMetrics.FlushInterval)
+}

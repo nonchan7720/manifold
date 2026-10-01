@@ -32,6 +32,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/services/authz"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
 	"github.com/nonchan7720/manifold/pkg/services/identity"
+	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -243,16 +244,21 @@ func authzMiddlewareFn(
 	}
 	cfg = cfg.WithDefaults()
 	return func(name string) []mcp.Middleware {
-		// 判定 input の service はサーバーのサービスコード。設定に無い名前
-		// （通常は起こらない）はサーバー名をそのまま使う（ServiceCode の既定と同じ）。
-		service := name
-		if srv, ok := servers[name]; ok && srv != nil {
-			service = srv.ServiceCode()
-		}
 		return []mcp.Middleware{
-			mcpsrv.NewAuthzMiddleware(name, service, decider, cfg.Headers, cfg.Input.FromHeaders),
+			mcpsrv.NewAuthzMiddleware(
+				name, serviceCodeOf(servers, name), decider, cfg.Headers, cfg.Input.FromHeaders,
+			),
 		}
 	}
+}
+
+// serviceCodeOf returns the service code of server name. 設定に無い名前
+// （通常は起こらない）はサーバー名をそのまま使う（ServiceCode の既定と同じ）。
+func serviceCodeOf(servers config.Servers, name string) string {
+	if srv, ok := servers[name]; ok && srv != nil {
+		return srv.ServiceCode()
+	}
+	return name
 }
 
 func newMCPServer(
@@ -341,15 +347,35 @@ func runGatewayServer(ctx context.Context) error {
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzDecider := newAuthzDecider(globalConfig.Authz)
-	authzMiddleware := authzMiddlewareFn(
-		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
+	var toolMetricsRecorder *toolmetrics.Recorder
+	if globalConfig.ToolMetrics.Enabled {
+		toolMetricsRecorder, err = newToolMetricsRecorder(
+			ctx, globalConfig.ToolMetrics, globalConfig.Redis,
+		)
+		if err != nil {
+			return err
+		}
+		defer func() { //nolint: contextcheck
+			// ctx はシャットダウン時点で既にキャンセル済みのため、残りの
+			// イベントを送り切る猶予は独立したコンテキストで与える。
+			closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := toolMetricsRecorder.Close(closeCtx); err != nil {
+				slog.Warn("tool metrics: shutdown did not finish", slog.Any("error", err))
+			}
+		}()
+	}
+	// ツールメトリクスは authz より外側に置き、認可で拒否された呼び出しも数える。
+	mcpMiddleware := combineMiddlewareFns(
+		toolMetricsMiddlewareFn(toolMetricsRecorder, globalConfig.Authz, globalConfig.MCPServer),
+		authzMiddlewareFn(globalConfig.Authz, authzDecider, globalConfig.MCPServer),
 	)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
 		contentManagementService,
 		globalConfig.Gateway,
-		authzMiddleware,
+		mcpMiddleware,
 	)
 	if err != nil {
 		return err
@@ -363,9 +389,9 @@ func runGatewayServer(ctx context.Context) error {
 	pairingService := edgeservices.NewPairingService(storeClient)
 	edgeRegistry := edgeservices.NewInMemoryRegistry()
 	var reverseGatewayOpts []mcpsrv.ReverseGatewayOption
-	if authzMiddleware != nil {
+	if mcpMiddleware != nil {
 		reverseGatewayOpts = append(
-			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(authzMiddleware),
+			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(mcpMiddleware),
 		)
 	}
 	reverseGateway := mcpsrv.NewReverseGateway(

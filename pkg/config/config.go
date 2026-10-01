@@ -33,6 +33,8 @@ type Config struct {
 	Authz AuthzConfig `mapstructure:"authz"`
 
 	OAuth OAuthConfig `mapstructure:"oauth"`
+
+	ToolMetrics ToolMetricsConfig `mapstructure:"toolMetrics"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -47,6 +49,7 @@ type edgeContextKey struct{}
 func (c *Config) ValidateWithContext(ctx context.Context) error {
 	ctx = context.WithValue(ctx, edgeContextKey{}, c.Gateway.Edge.WithDefaults())
 	ctx = context.WithValue(ctx, identitiesContextKey{}, c.Identities)
+	ctx = context.WithValue(ctx, redisContextKey{}, c.Redis)
 	return validation.ValidateStructWithContext(
 		ctx,
 		c,
@@ -124,6 +127,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.Storage),
 		validation.Field(&c.Authz),
 		validation.Field(&c.OAuth),
+		validation.Field(&c.ToolMetrics),
 	)
 }
 

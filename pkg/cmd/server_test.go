@@ -1228,3 +1228,28 @@ func TestNewMCPServer_InitError(t *testing.T) {
 	)
 	require.Error(t, err)
 }
+
+func TestCombineMiddlewareFns(t *testing.T) {
+	require.Nil(t, combineMiddlewareFns(nil, nil))
+
+	var order []string
+	mk := func(tag string) func(string) []mcp.Middleware {
+		return func(name string) []mcp.Middleware {
+			order = append(order, tag+":"+name)
+			return []mcp.Middleware{func(next mcp.MethodHandler) mcp.MethodHandler { return next }}
+		}
+	}
+	fn := combineMiddlewareFns(mk("metrics"), nil, mk("authz"))
+	require.NotNil(t, fn)
+	require.Len(t, fn("billing"), 2)
+	require.Equal(t, []string{"metrics:billing", "authz:billing"}, order)
+}
+
+func TestToolMetricsMiddlewareFn_NilRecorder(t *testing.T) {
+	require.Nil(t, toolMetricsMiddlewareFn(nil, config.AuthzConfig{}, nil))
+}
+
+func TestNewToolMetricsRecorder_UnsupportedType(t *testing.T) {
+	_, err := newToolMetricsRecorder(t.Context(), config.ToolMetricsConfig{Type: "kafka"}, nil)
+	require.ErrorContains(t, err, "unsupported type")
+}

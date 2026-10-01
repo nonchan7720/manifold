@@ -22,6 +22,19 @@ type Client struct {
 
 // NewClient initializes a new Redis connection based on the provided configuration.
 func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
+	rdb, err := NewUniversalClient(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{client: rdb}, nil
+}
+
+// NewUniversalClient builds an instrumented go-redis client for cfg and
+// verifies the connection with a PING. Callers own the returned client.
+func NewUniversalClient(
+	ctx context.Context,
+	cfg *config.RedisConfig,
+) (redis.UniversalClient, error) {
 	var tlsConfig *tls.Config
 	if cfg.TLS {
 		// Provide a basic TLS configuration
@@ -84,10 +97,11 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 	defer cancel()
 
 	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		_ = rdb.Close()
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
 
-	return &Client{client: rdb}, nil
+	return rdb, nil
 }
 
 // Set stores a value with an expiration type

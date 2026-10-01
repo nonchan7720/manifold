@@ -51,6 +51,7 @@ Server
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
 - **ストレージ選択可能**: Redis または SQLite によるセッション・トークン管理
 - **OpenTelemetry 対応**: トレース・メトリクス・ログの OTLP エクスポート（メトリクスは Prometheus 形式の pull にも対応）
+- **ツール呼び出しメトリクスのキュー送信**: `tools/call` ごとのイベント（ステータス・エラーメッセージ・所要時間）を Amazon SQS / Redis Streams へ非同期送信（`toolMetrics`）
 
 ## 必要要件
 
@@ -781,6 +782,63 @@ fileFetch:
   # allowedHosts:
   #   - example.com
   #   - files.example.com:8443
+```
+
+#### `toolMetrics`
+
+`tools/call` 1 回ごとのイベント（呼び出し回数・ステータス・エラーメッセージ・所要時間）をキューサービスへ非同期送信します。イベントはメモリ上にバッファされ、バックグラウンドのワーカーがまとめて送信するため、キューが遅い・落ちている場合でもツール呼び出しは遅延しません（バッファが満杯の間のイベントは破棄され、破棄件数がログに出ます）。既定では無効です。
+
+| フィールド             | 型       | 説明                                                                                                     |
+| ---------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `enabled`              | bool     | ツールメトリクスを有効化（既定: `false`）                                                                |
+| `type`                 | string   | 送信先: `sqs`（Amazon SQS）または `redis`（Redis Streams）                                               |
+| `bufferSize`           | int      | メモリ上のバッファ長。超えたイベントは破棄（既定: `1024`）                                               |
+| `batchSize`            | int      | 1 回の送信にまとめる最大件数（既定: `10`。SQS はこれとは別に 10 件ずつに分割）                            |
+| `flushInterval`        | duration | 件数に満たなくても送信する間隔（既定: `1s`）                                                             |
+| `publishTimeout`       | duration | 1 回の送信のタイムアウト（既定: `5s`）                                                                   |
+| `sqs.queueURL`         | string   | SQS キューの URL（`type: sqs` の場合必須）。認証情報・リージョンは `storage.s3` と同じく AWS SDK の既定に従う |
+| `sqs.messageGroupID`   | string   | FIFO キューの場合に設定。イベントの `id` を `MessageDeduplicationId` に使う                              |
+| `redis.stream`         | string   | ストリームのキー（既定: `manifold:tool-metrics`）                                                        |
+| `redis.maxLen`         | int      | 正の値ならストリームを概ねこの長さに保つ（`XADD MAXLEN ~`）                                              |
+| `redis.client`         | object   | 接続先（[`redis`](#redis) と同じフィールド）。省略時はトップレベルの `redis` を使う                        |
+
+メトリクスのミドルウェアは authz の外側に置かれるため、ポリシーで拒否された呼び出しも記録されます。SQS のメッセージ本文 / ストリームエントリの `event` フィールドは次の JSON です。
+
+```json
+{
+  "id": "4f6c2a1e-...",
+  "timestamp": "2026-10-01T02:11:25.123Z",
+  "server": "billing-svc",
+  "service": "billing",
+  "tool": "create_invoice",
+  "user": "user-042",
+  "status": "error",
+  "durationMs": 12,
+  "errorCode": -32603,
+  "errorMessage": "tool not allowed by policy",
+  "traceId": "0af7651916cd43dd8448eb211c80319c"
+}
+```
+
+- `status`: `success`、`tool_error`（ツールが `isError: true` を返した。`errorMessage` はそのテキスト）、`error`（JSON-RPC エラー。`errorCode` / `errorMessage` はそのコードとメッセージ）
+- `user`: `authz.headers.userID` のヘッダー（既定 `x-user-id`）の値（ある場合のみ）
+- `errorMessage` は 1024 バイトで切り詰める
+
+```yaml
+toolMetrics:
+  enabled: true
+  type: sqs
+  sqs:
+    queueURL: https://sqs.ap-northeast-1.amazonaws.com/123456789012/manifold-tool-metrics
+```
+
+```yaml
+toolMetrics:
+  enabled: true
+  type: redis
+  redis:
+    stream: manifold:tool-metrics
+    maxLen: 100000
 ```
 
 #### `telemetry`

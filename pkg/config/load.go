@@ -226,6 +226,18 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
 	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
 
+	// Same reasoning as fileFetch above — also makes TOOLMETRICS_ENABLED,
+	// TOOLMETRICS_TYPE, TOOLMETRICS_BUFFERSIZE, TOOLMETRICS_BATCHSIZE,
+	// TOOLMETRICS_FLUSHINTERVAL and TOOLMETRICS_PUBLISHTIMEOUT effective
+	// overrides. The sqs / redis blocks get no defaults: a non-nil block is
+	// validated even when type selects the other one.
+	v.SetDefault("toolMetrics.enabled", false)
+	v.SetDefault("toolMetrics.type", "")
+	v.SetDefault("toolMetrics.bufferSize", DefaultToolMetricsBufferSize)
+	v.SetDefault("toolMetrics.batchSize", DefaultToolMetricsBatchSize)
+	v.SetDefault("toolMetrics.flushInterval", DefaultToolMetricsFlushInterval)
+	v.SetDefault("toolMetrics.publishTimeout", DefaultToolMetricsPublishTimeout)
+
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
