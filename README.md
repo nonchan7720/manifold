@@ -790,7 +790,7 @@ Sends one event per `tools/call` (call count, status, error message, latency) to
 
 Events are records and are never discarded:
 
-- A failed batch is retried with exponential backoff (0.5s doubling up to 30s) until it succeeds. Delivery is at-least-once, so consumers should dedupe by the event `id`.
+- A failed batch is retried with exponential backoff (0.5s doubling up to 30s) until it succeeds. Delivery is at-least-once, so consumers should dedupe by the event `messageId` (a UUID v7 issued once per event and kept across retries).
 - While the queue is slow or down and the buffer (`bufferSize`) is full, tool calls wait until there is room.
 - On shutdown, Manifold waits up to `shutdownTimeout` for the remaining events to be delivered. Any event still undelivered after that is written in full to the error log (`tool metrics: event could not be delivered to the queue`).
 
@@ -804,7 +804,7 @@ Events are records and are never discarded:
 | `publishTimeout`       | duration | Timeout of one publish (default: `5s`)                                                                            |
 | `shutdownTimeout`      | duration | How long shutdown waits for undelivered events (default: `10s`); the rest is written to the error log            |
 | `sqs.queueURL`         | string   | SQS queue URL (required for `type: sqs`). Credentials and region follow the AWS SDK default chain, like `storage.s3` |
-| `sqs.messageGroupID`   | string   | Set for a FIFO queue; the event `id` is used as the `MessageDeduplicationId`                                       |
+| `sqs.messageGroupID`   | string   | Set for a FIFO queue; the event `messageId` is used as the `MessageDeduplicationId`                                |
 | `redis.stream`         | string   | Stream key (default: `manifold:tool-metrics`)                                                                     |
 | `redis.maxLen`         | int      | When positive, trims the stream to approximately this length (`XADD MAXLEN ~`)                                     |
 | `redis.client`         | object   | Connection, same fields as [`redis`](#redis). Defaults to the top-level `redis`                                   |
@@ -817,7 +817,7 @@ The message schema is managed as Protocol Buffers in [`proto/manifold/toolmetric
 
 ```json
 {
-  "id": "4f6c2a1e-...",
+  "messageId": "0199a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
   "timestamp": "2026-10-01T02:11:25.123Z",
   "server": "billing-svc",
   "service": "billing",
@@ -832,16 +832,26 @@ The message schema is managed as Protocol Buffers in [`proto/manifold/toolmetric
 ```
 
 - `status`: `TOOL_CALL_STATUS_SUCCESS`, `TOOL_CALL_STATUS_TOOL_ERROR` (the tool returned `isError: true`; `errorMessage` is its text content), or `TOOL_CALL_STATUS_ERROR` (a JSON-RPC error; `errorCode` / `errorMessage` are its code and message)
+- `messageId`: a UUID v7 issued once per event; retries resend the same value. It starts with the creation time in milliseconds, so it sorts in creation order and works as-is as the index for duplicate detection
 - `user`: the value of the `authz.headers.userID` header (default `x-user-id`), when present
 - `errorMessage` is truncated to 1024 bytes
 - Fields holding a zero value (empty string, 0) are omitted, per proto3 JSON
 
 The schema name and format of the body are also attached to each message:
 
-| Destination | Schema name (`manifold.toolmetrics.v1.ToolCallEvent`) | Format (`application/json`) |
-| ----------- | ----------------------------------------------------- | --------------------------- |
-| SQS         | message attribute `schema`                            | message attribute `contentType` |
-| Redis       | entry field `schema`                                  | entry field `contentType`   |
+| Destination | Schema name (`manifold.toolmetrics.v1.ToolCallEvent`) | Format (`application/json`) | Message ID (the body's `messageId`) |
+| ----------- | ----------------------------------------------------- | --------------------------- | ----------------------------------- |
+| SQS         | message attribute `schema`                            | message attribute `contentType` | message attribute `messageId`   |
+| Redis       | entry field `schema`                                  | entry field `contentType`   | entry field `messageId`             |
+
+##### Handling duplicate deliveries
+
+A consumer may receive the same event more than once:
+
+- Resent by Manifold: a retried publish delivers the same event as a new message (the SQS `MessageId` or Redis entry ID differs)
+- Redelivered by the queue: when a consumer dies mid-processing, the same message is delivered again (SQS visibility timeout expiry, Redis Streams pending entries reclaimed with `XCLAIM` / `XAUTOCLAIM`)
+
+`messageId` is the same in both cases. Record the processed `messageId` values (e.g. a unique constraint in a database, or Redis `SET NX` with a TTL) and skip any message whose `messageId` is already recorded.
 
 When changing the schema, never renumber or reuse a field number (mark removed fields `reserved`); add incompatible changes as a `v2` package. CI runs `buf lint`, checks that the generated code (`pkg/proto`) is up to date, and checks for breaking changes with `buf breaking`. Regenerate the code with `make proto`.
 

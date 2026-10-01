@@ -40,7 +40,7 @@ func NewToolMetricsMiddleware(
 			res, err := next(ctx, method, req)
 
 			e := &toolmetrics.Event{
-				Id:        uuid.NewString(),
+				MessageId: newMessageID(),
 				Timestamp: timestamppb.New(start),
 				Server:    serverName,
 				Service:   serviceCode,
@@ -60,6 +60,16 @@ func NewToolMetricsMiddleware(
 			return res, err
 		}
 	}
+}
+
+// newMessageID はメッセージ ID（UUID v7）を発行する。v7 の生成は乱数の取得に
+// 失敗したときだけエラーになる。その場合も記録を止めないよう v4 で代用する。
+func newMessageID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return uuid.NewString()
+	}
+	return id.String()
 }
 
 func setToolMetricsStatus(e *toolmetrics.Event, res mcp.Result, err error) {

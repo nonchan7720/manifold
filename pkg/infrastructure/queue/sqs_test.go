@@ -37,10 +37,10 @@ func events(n int) []*toolmetrics.Event {
 	es := make([]*toolmetrics.Event, n)
 	for i := range es {
 		es[i] = &toolmetrics.Event{
-			Id:       string(rune('a' + i)),
-			Tool:     "t",
-			Status:   toolmetrics.StatusSuccess,
-			Duration: durationpb.New(0),
+			MessageId: string(rune('a' + i)),
+			Tool:      "t",
+			Status:    toolmetrics.StatusSuccess,
+			Duration:  durationpb.New(0),
 		}
 	}
 	return es
@@ -59,13 +59,14 @@ func TestSQSPublisher_ChunksIntoBatchesOfTen(t *testing.T) {
 	entry := f.inputs[0].Entries[0]
 	got := &toolmetrics.Event{}
 	require.NoError(t, protojson.Unmarshal([]byte(aws.ToString(entry.MessageBody)), got))
-	require.Equal(t, "a", got.GetId())
+	require.Equal(t, "a", got.GetMessageId())
 	require.Equal(t, toolmetrics.StatusSuccess, got.GetStatus())
 	require.Nil(t, entry.MessageGroupId, "standard queue sets no group")
 	require.Equal(t, "manifold.toolmetrics.v1.ToolCallEvent",
 		aws.ToString(entry.MessageAttributes[SQSAttributeSchema].StringValue))
 	require.Equal(t, toolmetrics.ContentType,
 		aws.ToString(entry.MessageAttributes[SQSAttributeContentType].StringValue))
+	require.Equal(t, "a", aws.ToString(entry.MessageAttributes[SQSAttributeMessageID].StringValue))
 }
 
 func TestSQSPublisher_FIFOSetsGroupAndDeduplicationID(t *testing.T) {

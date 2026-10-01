@@ -94,9 +94,11 @@ func (ToolCallStatus) EnumDescriptor() ([]byte, []int) {
 // ToolCallEvent は tools/call 1 回分の記録。
 type ToolCallEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// イベントごとに一意な ID（UUID）。配送は at-least-once のため、
-	// 受信側はこの ID で重複を排除する。
-	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// メッセージごとに一意な ID（UUID v7）。イベントの作成時に 1 回だけ発行し、
+	// 再送でも同じ値を送る。配送は at-least-once のため、受信側はこの ID で
+	// 重複を判定する。UUID v7 は先頭が作成時刻のミリ秒なので、文字列の辞書順が
+	// 作成順になり、重複判定用のインデックスにもそのまま使える。
+	MessageId string `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
 	// tools/call を受け付けた時刻。
 	Timestamp *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// サーバー名（mcpServers / agents のキー）。
@@ -151,9 +153,9 @@ func (*ToolCallEvent) Descriptor() ([]byte, []int) {
 	return file_manifold_toolmetrics_v1_tool_metrics_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ToolCallEvent) GetId() string {
+func (x *ToolCallEvent) GetMessageId() string {
 	if x != nil {
-		return x.Id
+		return x.MessageId
 	}
 	return ""
 }
@@ -232,9 +234,10 @@ var File_manifold_toolmetrics_v1_tool_metrics_proto protoreflect.FileDescriptor
 
 const file_manifold_toolmetrics_v1_tool_metrics_proto_rawDesc = "" +
 	"\n" +
-	"*manifold/toolmetrics/v1/tool_metrics.proto\x12\x17manifold.toolmetrics.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8a\x03\n" +
-	"\rToolCallEvent\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x128\n" +
+	"*manifold/toolmetrics/v1/tool_metrics.proto\x12\x17manifold.toolmetrics.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x99\x03\n" +
+	"\rToolCallEvent\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x16\n" +
 	"\x06server\x18\x03 \x01(\tR\x06server\x12\x18\n" +
 	"\aservice\x18\x04 \x01(\tR\aservice\x12\x12\n" +

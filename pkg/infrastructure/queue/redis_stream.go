@@ -16,6 +16,9 @@ const (
 	RedisStreamSchemaField = "schema"
 	// RedisStreamContentTypeField は本文の形式（toolmetrics.ContentType）。
 	RedisStreamContentTypeField = "contentType"
+	// RedisStreamMessageIDField は本文の message_id。受信側が本文を解析せずに
+	// 重複（再送・再配信）を判定できるようにする。
+	RedisStreamMessageIDField = "messageId"
 )
 
 // RedisStreamPublisher はイベントを Redis Stream に XADD する。各エントリは
@@ -51,6 +54,7 @@ func (p *RedisStreamPublisher) Publish(ctx context.Context, events []*toolmetric
 				RedisStreamEventField, body,
 				RedisStreamSchemaField, toolmetrics.SchemaName,
 				RedisStreamContentTypeField, toolmetrics.ContentType,
+				RedisStreamMessageIDField, e.GetMessageId(),
 			},
 		}
 		if p.maxLen > 0 {

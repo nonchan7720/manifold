@@ -25,10 +25,11 @@ func TestRedisStreamPublisher_AppendsEventJSON(t *testing.T) {
 		RedisStreamEventField, entries[0].Values[1],
 		RedisStreamSchemaField, "manifold.toolmetrics.v1.ToolCallEvent",
 		RedisStreamContentTypeField, toolmetrics.ContentType,
+		RedisStreamMessageIDField, "a",
 	}, entries[0].Values)
 	got := &toolmetrics.Event{}
 	require.NoError(t, protojson.Unmarshal([]byte(entries[0].Values[1]), got))
-	require.Equal(t, "a", got.GetId())
+	require.Equal(t, "a", got.GetMessageId())
 	require.Equal(t, toolmetrics.StatusSuccess, got.GetStatus())
 }
 

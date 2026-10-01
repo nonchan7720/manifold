@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
@@ -83,7 +84,9 @@ func TestToolMetricsMiddleware_Success(t *testing.T) {
 	events := rec.recorded()
 	require.Len(t, events, 1)
 	e := events[0]
-	require.NotEmpty(t, e.GetId())
+	id, err := uuid.Parse(e.GetMessageId())
+	require.NoError(t, err)
+	require.Equal(t, uuid.Version(7), id.Version())
 	require.NotNil(t, e.GetTimestamp())
 	require.NotNil(t, e.GetDuration())
 	require.Equal(t, "billing-svc", e.Server)

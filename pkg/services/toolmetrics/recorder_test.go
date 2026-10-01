@@ -182,12 +182,12 @@ func TestRecorder_RetriesFailedPublishUntilSuccess(t *testing.T) {
 	opts.BatchSize = 1
 	r := NewRecorder(t.Context(), pub, opts)
 
-	r.Record(&Event{Id: "e1"})
+	r.Record(&Event{MessageId: "e1"})
 	require.NoError(t, r.Close(context.Background()))
 
 	batches, _ := pub.snapshot()
 	require.Len(t, batches, 1)
-	require.Equal(t, "e1", batches[0][0].GetId())
+	require.Equal(t, "e1", batches[0][0].GetMessageId())
 	require.Equal(t, 3, pub.attempts)
 	require.Zero(t, logs.undelivered())
 }

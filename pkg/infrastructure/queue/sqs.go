@@ -22,6 +22,9 @@ const (
 	SQSAttributeSchema = "schema"
 	// SQSAttributeContentType は本文の形式（toolmetrics.ContentType）。
 	SQSAttributeContentType = "contentType"
+	// SQSAttributeMessageID は本文の message_id。受信側が本文を解析せずに
+	// 重複（再送・再配信）を判定できるようにする。
+	SQSAttributeMessageID = "messageId"
 )
 
 // SQSSendMessageBatchAPI は SQSPublisher が使う *sqs.Client のメソッド。
@@ -43,7 +46,7 @@ type SQSPublisher struct {
 var _ toolmetrics.Publisher = (*SQSPublisher)(nil)
 
 // NewSQSPublisher は queueURL 宛ての Publisher を作る。messageGroupID が空でない
-// 場合は FIFO キュー向けとして全メッセージに設定し、イベント ID を
+// 場合は FIFO キュー向けとして全メッセージに設定し、メッセージ ID を
 // MessageDeduplicationId に使う。
 func NewSQSPublisher(
 	client SQSSendMessageBatchAPI, queueURL, messageGroupID string,
@@ -82,11 +85,14 @@ func (p *SQSPublisher) sendBatch(ctx context.Context, events []*toolmetrics.Even
 					),
 					StringValue: aws.String(toolmetrics.ContentType),
 				},
+				SQSAttributeMessageID: {
+					DataType: aws.String("String"), StringValue: aws.String(e.GetMessageId()),
+				},
 			},
 		}
 		if p.messageGroupID != "" {
 			entry.MessageGroupId = aws.String(p.messageGroupID)
-			entry.MessageDeduplicationId = aws.String(e.GetId())
+			entry.MessageDeduplicationId = aws.String(e.GetMessageId())
 		}
 		entries = append(entries, entry)
 	}

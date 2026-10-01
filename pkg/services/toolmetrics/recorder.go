@@ -246,9 +246,9 @@ func logUndelivered(ctx context.Context, events ...*Event) {
 	for _, e := range events {
 		body, err := Marshal(e)
 		if err != nil {
-			// 生成された型の Marshal は通常失敗しない。念のため ID だけでも残す。
+			// 生成された型の Marshal は通常失敗しない。念のためメッセージ ID だけでも残す。
 			slog.ErrorContext(ctx, "tool metrics: event could not be delivered to the queue",
-				slog.String("event_id", e.GetId()), slog.Any("error", err))
+				slog.String("message_id", e.GetMessageId()), slog.Any("error", err))
 			continue
 		}
 		// protojson の本文をそのまま埋め込み、キューの本文と同じ形で復元できるようにする。

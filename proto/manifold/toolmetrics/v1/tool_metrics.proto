@@ -31,9 +31,11 @@ enum ToolCallStatus {
 
 // ToolCallEvent は tools/call 1 回分の記録。
 message ToolCallEvent {
-  // イベントごとに一意な ID（UUID）。配送は at-least-once のため、
-  // 受信側はこの ID で重複を排除する。
-  string id = 1;
+  // メッセージごとに一意な ID（UUID v7）。イベントの作成時に 1 回だけ発行し、
+  // 再送でも同じ値を送る。配送は at-least-once のため、受信側はこの ID で
+  // 重複を判定する。UUID v7 は先頭が作成時刻のミリ秒なので、文字列の辞書順が
+  // 作成順になり、重複判定用のインデックスにもそのまま使える。
+  string message_id = 1;
   // tools/call を受け付けた時刻。
   google.protobuf.Timestamp timestamp = 2;
   // サーバー名（mcpServers / agents のキー）。

@@ -790,7 +790,7 @@ fileFetch:
 
 イベントは記録として扱い、破棄しません。
 
-- 送信に失敗したバッチは、成功するまで指数バックオフ（0.5 秒から倍々、最大 30 秒）で再試行します。配送は at-least-once のため、受信側はイベントの `id` で重複を排除してください。
+- 送信に失敗したバッチは、成功するまで指数バックオフ（0.5 秒から倍々、最大 30 秒）で再試行します。配送は at-least-once のため、受信側はイベントの `messageId`（イベントごとに 1 回だけ発行し、再送でも変わらない UUID v7）で重複を判定してください。
 - キューが遅い・止まっている間にバッファ（`bufferSize`）が満杯になると、空きが出るまでツール呼び出しが待ちます。
 - 停止時は未送信のイベントを送り切るまで最大 `shutdownTimeout` 待ちます。それでも送れなかったイベントは、全文を error ログ（`tool metrics: event could not be delivered to the queue`）に出力します。
 
@@ -804,7 +804,7 @@ fileFetch:
 | `publishTimeout`       | duration | 1 回の送信のタイムアウト（既定: `5s`）                                                                   |
 | `shutdownTimeout`      | duration | 停止時に未送信イベントを送り切るまで待つ上限（既定: `10s`）。超えた分は error ログに出力               |
 | `sqs.queueURL`         | string   | SQS キューの URL（`type: sqs` の場合必須）。認証情報・リージョンは `storage.s3` と同じく AWS SDK の既定に従う |
-| `sqs.messageGroupID`   | string   | FIFO キューの場合に設定。イベントの `id` を `MessageDeduplicationId` に使う                              |
+| `sqs.messageGroupID`   | string   | FIFO キューの場合に設定。イベントの `messageId` を `MessageDeduplicationId` に使う                       |
 | `redis.stream`         | string   | ストリームのキー（既定: `manifold:tool-metrics`）                                                        |
 | `redis.maxLen`         | int      | 正の値ならストリームを概ねこの長さに保つ（`XADD MAXLEN ~`）                                              |
 | `redis.client`         | object   | 接続先（[`redis`](#redis) と同じフィールド）。省略時はトップレベルの `redis` を使う                        |
@@ -817,7 +817,7 @@ fileFetch:
 
 ```json
 {
-  "id": "4f6c2a1e-...",
+  "messageId": "0199a1b2-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
   "timestamp": "2026-10-01T02:11:25.123Z",
   "server": "billing-svc",
   "service": "billing",
@@ -832,16 +832,26 @@ fileFetch:
 ```
 
 - `status`: `TOOL_CALL_STATUS_SUCCESS`、`TOOL_CALL_STATUS_TOOL_ERROR`（ツールが `isError: true` を返した。`errorMessage` はそのテキスト）、`TOOL_CALL_STATUS_ERROR`（JSON-RPC エラー。`errorCode` / `errorMessage` はそのコードとメッセージ）
+- `messageId`: イベントごとに 1 回だけ発行する UUID v7。再送でも同じ値になる。先頭が作成時刻（ミリ秒）なので作成順に並び、重複判定用のインデックスにもそのまま使える
 - `user`: `authz.headers.userID` のヘッダー（既定 `x-user-id`）の値（ある場合のみ）
 - `errorMessage` は 1024 バイトで切り詰める
 - 値がゼロ値（空文字・0）のフィールドは JSON に出力しない（proto3 JSON の仕様）
 
 本文のスキーマ名と形式はメッセージにも付けます。
 
-| 送信先 | スキーマ名（`manifold.toolmetrics.v1.ToolCallEvent`） | 形式（`application/json`） |
-| ------ | ------------------------------------------------------ | -------------------------- |
-| SQS    | メッセージ属性 `schema`                                | メッセージ属性 `contentType` |
-| Redis  | エントリのフィールド `schema`                          | エントリのフィールド `contentType` |
+| 送信先 | スキーマ名（`manifold.toolmetrics.v1.ToolCallEvent`） | 形式（`application/json`） | メッセージ ID（本文の `messageId`） |
+| ------ | ------------------------------------------------------ | -------------------------- | ----------------------------------- |
+| SQS    | メッセージ属性 `schema`                                | メッセージ属性 `contentType` | メッセージ属性 `messageId`        |
+| Redis  | エントリのフィールド `schema`                          | エントリのフィールド `contentType` | エントリのフィールド `messageId` |
+
+##### 重複受信への対処
+
+同じイベントを受信側が複数回受け取ることがあります。
+
+- Manifold 側の再送: 送信失敗時の再試行で、同じイベントが別のメッセージとして届く（SQS の `MessageId` や Redis のエントリ ID は変わる）
+- キュー側の再配信: コンシューマが処理途中で落ちると、同じメッセージが再度配信される（SQS の可視性タイムアウト切れ、Redis Streams の pending エントリの `XCLAIM` / `XAUTOCLAIM`）
+
+どちらの場合も `messageId` は変わりません。受信側は処理済みの `messageId` を記録し（例: DB の一意制約、Redis の `SET NX` と TTL）、記録済みならスキップしてください。
 
 スキーマの変更では、フィールド番号の変更・再利用をしないでください（削除したフィールドは `reserved` にする）。後方互換のない変更は `v2` パッケージとして追加します。CI は `buf lint`、生成コード（`pkg/proto`）が最新であること、`buf breaking` による破壊的変更の有無を検査します。生成コードは `make proto` で更新します。
 
