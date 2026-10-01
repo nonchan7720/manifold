@@ -15,6 +15,20 @@ jobs:
           fetch-depth: 0
       - name: Set up tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - name: Lint proto
+        run: buf lint
+      - name: Check generated proto code is up to date
+        run: |
+          buf generate
+          git diff --exit-code -- pkg/proto
+      - name: Check proto breaking changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # base にまだ proto が無い場合（初回）は比較対象が無いのでスキップする
+          if git cat-file -e "origin/${BASE_REF}:proto" 2>/dev/null; then
+            buf breaking --against ".git#ref=origin/${BASE_REF}"
+          fi
       - name: Start dependencies
         run: docker compose up -d
       - name: Run lint
