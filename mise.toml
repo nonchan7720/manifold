@@ -1,8 +1,13 @@
 [tool_alias]
 golangci-lint = "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 setup-envtest = "go:sigs.k8s.io/controller-runtime/tools/setup-envtest"
+buf = "go:github.com/bufbuild/buf/cmd/buf"
+protoc-gen-go = "go:google.golang.org/protobuf/cmd/protoc-gen-go"
 
 [tools]
 go = "1.27.1"
 golangci-lint = "2.13.2"
 setup-envtest = "0.25.1"
+buf = "1.73.0"
+# go.mod の google.golang.org/protobuf と揃える
+protoc-gen-go = "1.36.12"

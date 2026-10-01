@@ -3,7 +3,6 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -17,6 +16,14 @@ import (
 // sqsMaxBatchEntries は SendMessageBatch の 1 リクエストあたりのエントリ数上限。
 const sqsMaxBatchEntries = 10
 
+// SQS メッセージ属性の名前。
+const (
+	// SQSAttributeSchema は本文の型の完全修飾名（toolmetrics.SchemaName）。
+	SQSAttributeSchema = "schema"
+	// SQSAttributeContentType は本文の形式（toolmetrics.ContentType）。
+	SQSAttributeContentType = "contentType"
+)
+
 // SQSSendMessageBatchAPI は SQSPublisher が使う *sqs.Client のメソッド。
 type SQSSendMessageBatchAPI interface {
 	SendMessageBatch(
@@ -24,8 +31,9 @@ type SQSSendMessageBatchAPI interface {
 	) (*sqs.SendMessageBatchOutput, error)
 }
 
-// SQSPublisher はイベント 1 件を、本文がイベントの JSON である SQS メッセージ
-// 1 件として送る。SendMessageBatch で最大 10 件ずつ送信する。
+// SQSPublisher はイベント 1 件を、本文がイベントの protojson である SQS メッセージ
+// 1 件として送る。SendMessageBatch で最大 10 件ずつ送信する。メッセージ属性
+// SQSAttributeSchema / SQSAttributeContentType に本文のスキーマ名と形式を付ける。
 type SQSPublisher struct {
 	client         SQSSendMessageBatchAPI
 	queueURL       string
@@ -43,7 +51,7 @@ func NewSQSPublisher(
 	return &SQSPublisher{client: client, queueURL: queueURL, messageGroupID: messageGroupID}
 }
 
-func (p *SQSPublisher) Publish(ctx context.Context, events []toolmetrics.Event) error {
+func (p *SQSPublisher) Publish(ctx context.Context, events []*toolmetrics.Event) error {
 	var errs []error
 	for start := 0; start < len(events); start += sqsMaxBatchEntries {
 		end := min(start+sqsMaxBatchEntries, len(events))
@@ -54,20 +62,31 @@ func (p *SQSPublisher) Publish(ctx context.Context, events []toolmetrics.Event) 
 	return errors.Join(errs...)
 }
 
-func (p *SQSPublisher) sendBatch(ctx context.Context, events []toolmetrics.Event) error {
+func (p *SQSPublisher) sendBatch(ctx context.Context, events []*toolmetrics.Event) error {
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(events))
 	for i, e := range events {
-		body, err := json.Marshal(e)
+		body, err := toolmetrics.Marshal(e)
 		if err != nil {
 			return fmt.Errorf("marshal tool metrics event: %w", err)
 		}
 		entry := types.SendMessageBatchRequestEntry{
 			Id:          aws.String(strconv.Itoa(i)),
 			MessageBody: aws.String(string(body)),
+			MessageAttributes: map[string]types.MessageAttributeValue{
+				SQSAttributeSchema: {
+					DataType: aws.String("String"), StringValue: aws.String(toolmetrics.SchemaName),
+				},
+				SQSAttributeContentType: {
+					DataType: aws.String(
+						"String",
+					),
+					StringValue: aws.String(toolmetrics.ContentType),
+				},
+			},
 		}
 		if p.messageGroupID != "" {
 			entry.MessageGroupId = aws.String(p.messageGroupID)
-			entry.MessageDeduplicationId = aws.String(e.ID)
+			entry.MessageDeduplicationId = aws.String(e.GetId())
 		}
 		entries = append(entries, entry)
 	}

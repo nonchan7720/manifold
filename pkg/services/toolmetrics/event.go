@@ -1,53 +1,49 @@
 // Package toolmetrics は tools/call 1 回ごとに Event を記録し、キューサービスへ
 // 非同期で送信する。キューが遅い・止まっている場合でもイベントは破棄しない。
+//
+// イベントのスキーマは proto/manifold/toolmetrics/v1/tool_metrics.proto で管理し、
+// Event はそこから生成した型そのものを使う。
 package toolmetrics
 
 import (
 	"context"
-	"time"
+
+	toolmetricsv1 "github.com/nonchan7720/manifold/pkg/proto/manifold/toolmetrics/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
+
+// Event は tools/call 1 回分の記録（toolmetricsv1.ToolCallEvent）。
+type Event = toolmetricsv1.ToolCallEvent
 
 // Status は tools/call の終わり方の分類。
-type Status string
+type Status = toolmetricsv1.ToolCallStatus
 
 const (
-	// StatusSuccess: ハンドラーが isError: false の結果を返した。
-	StatusSuccess Status = "success"
-	// StatusToolError: ハンドラーが isError: true の結果を返した
-	// （ツール自身が失敗を報告した。例: 上流の 4xx/5xx）。
-	StatusToolError Status = "tool_error"
-	// StatusError: ハンドラーが JSON-RPC エラーを返した
-	// （認可拒否・未知のツール・バックエンドに接続できない等）。
-	StatusError Status = "error"
+	StatusSuccess   = toolmetricsv1.ToolCallStatus_TOOL_CALL_STATUS_SUCCESS
+	StatusToolError = toolmetricsv1.ToolCallStatus_TOOL_CALL_STATUS_TOOL_ERROR
+	StatusError     = toolmetricsv1.ToolCallStatus_TOOL_CALL_STATUS_ERROR
 )
 
-// Event は tools/call 1 回分の記録。JSON にしてキューのメッセージ本文に入れる。
-type Event struct {
-	// ID はイベントごとに一意。再送で重複した場合に受信側で排除するのに使う。
-	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
-	Server    string    `json:"server"`
-	Service   string    `json:"service"`
-	Tool      string    `json:"tool"`
-	User      string    `json:"user,omitempty"`
-	Status    Status    `json:"status"`
-	// DurationMs はハンドラーチェーンでかかった時間。
-	DurationMs int64 `json:"durationMs"`
-	// ErrorCode は JSON-RPC のエラーコード。StatusError の場合のみ設定する。
-	ErrorCode int64 `json:"errorCode,omitempty"`
-	// ErrorMessage は JSON-RPC エラーのメッセージ（StatusError）または
-	// 結果のテキスト（StatusToolError）。MaxErrorMessageLength バイトで切り詰める。
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	TraceID      string `json:"traceId,omitempty"`
-}
+// ContentType はキューメッセージ本文の形式（Event の protojson 表現）。
+const ContentType = "application/json"
+
+// SchemaName はキューメッセージ本文の型の完全修飾名
+// （manifold.toolmetrics.v1.ToolCallEvent）。受信側はこれを見てデコードする型を選ぶ。
+var SchemaName = string(proto.MessageName((*Event)(nil)))
 
 // MaxErrorMessageLength は Event.ErrorMessage の上限バイト数。大きなエラー本文で
 // キューのメッセージサイズ上限（SQS はバッチあたり 256KiB）を超えないようにする。
 const MaxErrorMessageLength = 1024
 
+// Marshal は e をキューメッセージ本文（protojson）にする。
+func Marshal(e *Event) ([]byte, error) {
+	return protojson.Marshal(e)
+}
+
 // Publisher はイベントのバッチをキューサービスへ送る。Publish は Recorder の
 // 単一のワーカー goroutine からのみ呼ばれる。
 type Publisher interface {
-	Publish(ctx context.Context, events []Event) error
+	Publish(ctx context.Context, events []*Event) error
 	Close() error
 }

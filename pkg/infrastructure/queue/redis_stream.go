@@ -2,19 +2,25 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 	"github.com/redis/go-redis/v9"
 )
 
-// RedisStreamEventField はイベントの JSON を入れるストリームエントリのフィールド名。
-const RedisStreamEventField = "event"
+// ストリームエントリのフィールド名。
+const (
+	// RedisStreamEventField はイベントの protojson を入れるフィールド。
+	RedisStreamEventField = "event"
+	// RedisStreamSchemaField は本文の型の完全修飾名（toolmetrics.SchemaName）。
+	RedisStreamSchemaField = "schema"
+	// RedisStreamContentTypeField は本文の形式（toolmetrics.ContentType）。
+	RedisStreamContentTypeField = "contentType"
+)
 
 // RedisStreamPublisher はイベントを Redis Stream に XADD する。各エントリは
-// イベントの JSON を持つフィールド RedisStreamEventField 1 つだけで、バッチ全体を
-// パイプラインで 1 往復で送る。受信側は XREAD / XREADGROUP で読む。
+// イベントの protojson（RedisStreamEventField）と、そのスキーマ名・形式を持つ。
+// バッチ全体をパイプラインで 1 往復で送る。受信側は XREAD / XREADGROUP で読む。
 type RedisStreamPublisher struct {
 	client redis.UniversalClient
 	stream string
@@ -31,16 +37,21 @@ func NewRedisStreamPublisher(
 	return &RedisStreamPublisher{client: client, stream: stream, maxLen: maxLen}
 }
 
-func (p *RedisStreamPublisher) Publish(ctx context.Context, events []toolmetrics.Event) error {
+func (p *RedisStreamPublisher) Publish(ctx context.Context, events []*toolmetrics.Event) error {
 	pipe := p.client.Pipeline()
 	for _, e := range events {
-		body, err := json.Marshal(e)
+		body, err := toolmetrics.Marshal(e)
 		if err != nil {
 			return fmt.Errorf("marshal tool metrics event: %w", err)
 		}
 		args := &redis.XAddArgs{
 			Stream: p.stream,
-			Values: map[string]any{RedisStreamEventField: body},
+			// フィールドの順序を固定するためスライスで渡す。
+			Values: []any{
+				RedisStreamEventField, body,
+				RedisStreamSchemaField, toolmetrics.SchemaName,
+				RedisStreamContentTypeField, toolmetrics.ContentType,
+			},
 		}
 		if p.maxLen > 0 {
 			args.MaxLen = p.maxLen

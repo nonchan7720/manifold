@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -11,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 type fakeSQS struct {
@@ -32,13 +33,14 @@ func (f *fakeSQS) SendMessageBatch(
 	return &sqs.SendMessageBatchOutput{}, nil
 }
 
-func events(n int) []toolmetrics.Event {
-	es := make([]toolmetrics.Event, n)
+func events(n int) []*toolmetrics.Event {
+	es := make([]*toolmetrics.Event, n)
 	for i := range es {
-		es[i] = toolmetrics.Event{
-			ID:     string(rune('a' + i)),
-			Tool:   "t",
-			Status: toolmetrics.StatusSuccess,
+		es[i] = &toolmetrics.Event{
+			Id:       string(rune('a' + i)),
+			Tool:     "t",
+			Status:   toolmetrics.StatusSuccess,
+			Duration: durationpb.New(0),
 		}
 	}
 	return es
@@ -54,13 +56,16 @@ func TestSQSPublisher_ChunksIntoBatchesOfTen(t *testing.T) {
 	require.Len(t, f.inputs[1].Entries, 1)
 	require.Equal(t, "https://sqs.example/queue", aws.ToString(f.inputs[0].QueueUrl))
 
-	var got toolmetrics.Event
-	require.NoError(
-		t,
-		json.Unmarshal([]byte(aws.ToString(f.inputs[0].Entries[0].MessageBody)), &got),
-	)
-	require.Equal(t, "a", got.ID)
-	require.Nil(t, f.inputs[0].Entries[0].MessageGroupId, "standard queue sets no group")
+	entry := f.inputs[0].Entries[0]
+	got := &toolmetrics.Event{}
+	require.NoError(t, protojson.Unmarshal([]byte(aws.ToString(entry.MessageBody)), got))
+	require.Equal(t, "a", got.GetId())
+	require.Equal(t, toolmetrics.StatusSuccess, got.GetStatus())
+	require.Nil(t, entry.MessageGroupId, "standard queue sets no group")
+	require.Equal(t, "manifold.toolmetrics.v1.ToolCallEvent",
+		aws.ToString(entry.MessageAttributes[SQSAttributeSchema].StringValue))
+	require.Equal(t, toolmetrics.ContentType,
+		aws.ToString(entry.MessageAttributes[SQSAttributeContentType].StringValue))
 }
 
 func TestSQSPublisher_FIFOSetsGroupAndDeduplicationID(t *testing.T) {

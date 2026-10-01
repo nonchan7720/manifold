@@ -809,7 +809,11 @@ fileFetch:
 | `redis.maxLen`         | int      | 正の値ならストリームを概ねこの長さに保つ（`XADD MAXLEN ~`）                                              |
 | `redis.client`         | object   | 接続先（[`redis`](#redis) と同じフィールド）。省略時はトップレベルの `redis` を使う                        |
 
-メトリクスのミドルウェアは authz の外側に置かれるため、ポリシーで拒否された呼び出しも記録されます。SQS のメッセージ本文 / ストリームエントリの `event` フィールドは次の JSON です。
+メトリクスのミドルウェアは authz の外側に置かれるため、ポリシーで拒否された呼び出しも記録されます。
+
+##### メッセージのスキーマ
+
+メッセージのスキーマは Protocol Buffers の [`proto/manifold/toolmetrics/v1/tool_metrics.proto`](proto/manifold/toolmetrics/v1/tool_metrics.proto)（`manifold.toolmetrics.v1.ToolCallEvent`）で管理しています。SQS のメッセージ本文 / ストリームエントリの `event` フィールドは、その [Protocol Buffers 正規 JSON 表現](https://protobuf.dev/programming-guides/json/)です。受信側はこの `.proto` から各言語のコードを生成し（例: `buf generate`）、生成されたコードの JSON パーサーで読み込めます。
 
 ```json
 {
@@ -819,17 +823,27 @@ fileFetch:
   "service": "billing",
   "tool": "create_invoice",
   "user": "user-042",
-  "status": "error",
-  "durationMs": 12,
+  "status": "TOOL_CALL_STATUS_ERROR",
+  "duration": "0.012s",
   "errorCode": -32603,
   "errorMessage": "tool not allowed by policy",
   "traceId": "0af7651916cd43dd8448eb211c80319c"
 }
 ```
 
-- `status`: `success`、`tool_error`（ツールが `isError: true` を返した。`errorMessage` はそのテキスト）、`error`（JSON-RPC エラー。`errorCode` / `errorMessage` はそのコードとメッセージ）
+- `status`: `TOOL_CALL_STATUS_SUCCESS`、`TOOL_CALL_STATUS_TOOL_ERROR`（ツールが `isError: true` を返した。`errorMessage` はそのテキスト）、`TOOL_CALL_STATUS_ERROR`（JSON-RPC エラー。`errorCode` / `errorMessage` はそのコードとメッセージ）
 - `user`: `authz.headers.userID` のヘッダー（既定 `x-user-id`）の値（ある場合のみ）
 - `errorMessage` は 1024 バイトで切り詰める
+- 値がゼロ値（空文字・0）のフィールドは JSON に出力しない（proto3 JSON の仕様）
+
+本文のスキーマ名と形式はメッセージにも付けます。
+
+| 送信先 | スキーマ名（`manifold.toolmetrics.v1.ToolCallEvent`） | 形式（`application/json`） |
+| ------ | ------------------------------------------------------ | -------------------------- |
+| SQS    | メッセージ属性 `schema`                                | メッセージ属性 `contentType` |
+| Redis  | エントリのフィールド `schema`                          | エントリのフィールド `contentType` |
+
+スキーマの変更では、フィールド番号の変更・再利用をしないでください（削除したフィールドは `reserved` にする）。後方互換のない変更は `v2` パッケージとして追加します。CI は `buf lint`、生成コード（`pkg/proto`）が最新であること、`buf breaking` による破壊的変更の有無を検査します。生成コードは `make proto` で更新します。
 
 ```yaml
 toolMetrics:

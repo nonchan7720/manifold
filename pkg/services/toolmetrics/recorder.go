@@ -2,6 +2,7 @@ package toolmetrics
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -36,7 +37,7 @@ type Recorder struct {
 	pub  Publisher
 	opts RecorderOptions
 
-	ch chan Event
+	ch chan *Event
 	// mu は closed と Record の inflight.Add を排他し、closed の確認を通過した
 	// Record をすべて Close が待てるようにする。
 	mu       sync.RWMutex
@@ -58,7 +59,7 @@ func NewRecorder(ctx context.Context, pub Publisher, opts RecorderOptions) *Reco
 	r := &Recorder{
 		pub:   pub,
 		opts:  opts,
-		ch:    make(chan Event, opts.BufferSize),
+		ch:    make(chan *Event, opts.BufferSize),
 		stop:  make(chan struct{}),
 		abort: make(chan struct{}),
 		done:  make(chan struct{}),
@@ -72,7 +73,7 @@ func NewRecorder(ctx context.Context, pub Publisher, opts RecorderOptions) *Reco
 // Record は e をワーカーへ渡す。バッファが満杯の間は待つ。並行に呼んでよい。
 // Close の開始後、または Close が待つのを打ち切った後は、キューに積む代わりに
 // e を error ログに出力する。
-func (r *Recorder) Record(e Event) {
+func (r *Recorder) Record(e *Event) {
 	r.mu.RLock()
 	if r.closed {
 		r.mu.RUnlock()
@@ -128,7 +129,7 @@ func (r *Recorder) run(ctx context.Context) {
 	ticker := time.NewTicker(r.opts.FlushInterval)
 	defer ticker.Stop()
 
-	batch := make([]Event, 0, r.opts.BatchSize)
+	batch := make([]*Event, 0, r.opts.BatchSize)
 	// flush は batch を送信する。Close が再試行を打ち切った場合は false を
 	// 返す（batch はログに出力済み。ワーカーは終了処理に入る）。
 	flush := func() bool {
@@ -142,7 +143,7 @@ func (r *Recorder) run(ctx context.Context) {
 		batch = batch[:0]
 		return ok
 	}
-	add := func(e Event) bool {
+	add := func(e *Event) bool {
 		batch = append(batch, e)
 		if len(batch) >= r.opts.BatchSize {
 			return flush()
@@ -185,7 +186,7 @@ func (r *Recorder) run(ctx context.Context) {
 
 // publish は pub.Publish を成功する（true）か Close に打ち切られる（false）まで
 // 指数バックオフで再試行する。
-func (r *Recorder) publish(ctx context.Context, batch []Event) bool {
+func (r *Recorder) publish(ctx context.Context, batch []*Event) bool {
 	wait := initialRetryInterval
 	for attempt := 1; ; attempt++ {
 		pubCtx, cancel := context.WithTimeout(ctx, r.opts.PublishTimeout)
@@ -225,9 +226,17 @@ func (r *Recorder) drainToLog(ctx context.Context) {
 
 // logUndelivered はキューに送れなかったイベントの最後の受け皿。イベントの
 // 全文を error ログに出力し、そこから復元できるようにする。
-func logUndelivered(ctx context.Context, events ...Event) {
+func logUndelivered(ctx context.Context, events ...*Event) {
 	for _, e := range events {
+		body, err := Marshal(e)
+		if err != nil {
+			// 生成された型の Marshal は通常失敗しない。念のため ID だけでも残す。
+			slog.ErrorContext(ctx, "tool metrics: event could not be delivered to the queue",
+				slog.String("event_id", e.GetId()), slog.Any("error", err))
+			continue
+		}
+		// protojson の本文をそのまま埋め込み、キューの本文と同じ形で復元できるようにする。
 		slog.ErrorContext(ctx, "tool metrics: event could not be delivered to the queue",
-			slog.Any("event", e))
+			slog.Any("event", json.RawMessage(body)))
 	}
 }

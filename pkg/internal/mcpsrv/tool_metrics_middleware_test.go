@@ -18,19 +18,19 @@ import (
 // fakeToolMetricsRecorder は記録されたイベントをすべて集める。
 type fakeToolMetricsRecorder struct {
 	mu     sync.Mutex
-	events []toolmetrics.Event
+	events []*toolmetrics.Event
 }
 
-func (r *fakeToolMetricsRecorder) Record(e toolmetrics.Event) {
+func (r *fakeToolMetricsRecorder) Record(e *toolmetrics.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, e)
 }
 
-func (r *fakeToolMetricsRecorder) recorded() []toolmetrics.Event {
+func (r *fakeToolMetricsRecorder) recorded() []*toolmetrics.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]toolmetrics.Event(nil), r.events...)
+	return append([]*toolmetrics.Event(nil), r.events...)
 }
 
 // newToolMetricsTestServer は mws を受信ミドルウェアとして srv を公開し
@@ -83,8 +83,9 @@ func TestToolMetricsMiddleware_Success(t *testing.T) {
 	events := rec.recorded()
 	require.Len(t, events, 1)
 	e := events[0]
-	require.NotEmpty(t, e.ID)
-	require.False(t, e.Timestamp.IsZero())
+	require.NotEmpty(t, e.GetId())
+	require.NotNil(t, e.GetTimestamp())
+	require.NotNil(t, e.GetDuration())
 	require.Equal(t, "billing-svc", e.Server)
 	require.Equal(t, "billing", e.Service)
 	require.Equal(t, "create_invoice", e.Tool)
@@ -125,7 +126,7 @@ func TestToolMetricsMiddleware_AuthzDenied_RecordedAsError(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Equal(t, "delete_invoice", events[0].Tool)
 	require.Equal(t, toolmetrics.StatusError, events[0].Status)
-	require.Equal(t, int64(jsonrpc.CodeInternalError), events[0].ErrorCode)
+	require.Equal(t, int32(jsonrpc.CodeInternalError), events[0].GetErrorCode())
 	require.Equal(t, "tool not allowed by policy", events[0].ErrorMessage)
 }
 
@@ -140,17 +141,17 @@ func TestToolMetricsMiddleware_IgnoresOtherMethods(t *testing.T) {
 }
 
 func TestSetToolMetricsStatus_NonJSONRPCError(t *testing.T) {
-	var e toolmetrics.Event
-	setToolMetricsStatus(&e, nil, errors.New("connection refused"))
+	e := &toolmetrics.Event{}
+	setToolMetricsStatus(e, nil, errors.New("connection refused"))
 	require.Equal(t, toolmetrics.StatusError, e.Status)
 	require.Zero(t, e.ErrorCode)
 	require.Equal(t, "connection refused", e.ErrorMessage)
 }
 
 func TestSetToolMetricsStatus_TruncatesLongMessage(t *testing.T) {
-	var e toolmetrics.Event
+	e := &toolmetrics.Event{}
 	setToolMetricsStatus(
-		&e,
+		e,
 		nil,
 		errors.New(strings.Repeat("x", toolmetrics.MaxErrorMessageLength+10)),
 	)

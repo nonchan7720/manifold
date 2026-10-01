@@ -12,8 +12,9 @@ Thank you for your interest in contributing to Manifold! Contributions of all ki
 - Docker / Docker Compose (for Redis and integration tests)
 - [golangci-lint](https://golangci-lint.run/) (for linting)
 - [setup-envtest](https://book.kubebuilder.io/reference/envtest.html) (for the Kubernetes integration tests)
+- [buf](https://buf.build/) and [protoc-gen-go](https://pkg.go.dev/google.golang.org/protobuf/cmd/protoc-gen-go) (for the `.proto` schemas under `proto/`)
 
-golangci-lint and setup-envtest are declared in [`mise.toml`](mise.toml), so `mise install` installs both.
+These tools are declared in [`mise.toml`](mise.toml), so `mise install` installs all of them.
 
 ### Setup
 
@@ -41,6 +42,16 @@ The ConfigMap spec-loading tests run against a real `kube-apiserver` and `etcd` 
 
 ```bash
 make lint
+```
+
+### Protocol Buffers
+
+Message schemas live under `proto/`, and the Go code generated from them is committed under `pkg/proto`. After editing a `.proto` file, regenerate and check it:
+
+```bash
+make proto           # regenerate pkg/proto
+make proto-lint      # buf lint
+make proto-breaking  # buf breaking against origin/main
 ```
 
 CI runs both lint and tests on every pull request, so running them locally first saves a round trip.

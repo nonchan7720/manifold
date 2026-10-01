@@ -12,12 +12,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ToolMetricsRecorder は tools/call 1 回ごとのイベントを受け取る。
 // 実装は *toolmetrics.Recorder。
 type ToolMetricsRecorder interface {
-	Record(e toolmetrics.Event)
+	Record(e *toolmetrics.Event)
 }
 
 // NewToolMetricsMiddleware はサーバー serverName（サービス serviceCode）への
@@ -37,12 +39,12 @@ func NewToolMetricsMiddleware(
 			start := time.Now()
 			res, err := next(ctx, method, req)
 
-			e := toolmetrics.Event{
-				ID:         uuid.NewString(),
-				Timestamp:  start.UTC(),
-				Server:     serverName,
-				Service:    serviceCode,
-				DurationMs: time.Since(start).Milliseconds(),
+			e := &toolmetrics.Event{
+				Id:        uuid.NewString(),
+				Timestamp: timestamppb.New(start),
+				Server:    serverName,
+				Service:   serviceCode,
+				Duration:  durationpb.New(time.Since(start)),
 			}
 			if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
 				e.Tool = params.Name
@@ -51,9 +53,9 @@ func NewToolMetricsMiddleware(
 				e.User = extra.Header.Get(userHeader)
 			}
 			if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
-				e.TraceID = sc.TraceID().String()
+				e.TraceId = sc.TraceID().String()
 			}
-			setToolMetricsStatus(&e, res, err)
+			setToolMetricsStatus(e, res, err)
 			rec.Record(e)
 			return res, err
 		}
@@ -65,7 +67,7 @@ func setToolMetricsStatus(e *toolmetrics.Event, res mcp.Result, err error) {
 		e.Status = toolmetrics.StatusError
 		var rpcErr *jsonrpc.Error
 		if errors.As(err, &rpcErr) {
-			e.ErrorCode = rpcErr.Code
+			e.ErrorCode = int32(rpcErr.Code) //nolint: gosec // JSON-RPC のエラーコードは int32 の範囲
 			e.ErrorMessage = truncateUTF8(rpcErr.Message, toolmetrics.MaxErrorMessageLength)
 		} else {
 			e.ErrorMessage = truncateUTF8(err.Error(), toolmetrics.MaxErrorMessageLength)

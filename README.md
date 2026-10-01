@@ -809,7 +809,11 @@ Events are records and are never discarded:
 | `redis.maxLen`         | int      | When positive, trims the stream to approximately this length (`XADD MAXLEN ~`)                                     |
 | `redis.client`         | object   | Connection, same fields as [`redis`](#redis). Defaults to the top-level `redis`                                   |
 
-The metrics middleware wraps authz, so calls denied by policy are counted too. Each SQS message body / the `event` field of each stream entry is the event as JSON:
+The metrics middleware wraps authz, so calls denied by policy are counted too.
+
+##### Message schema
+
+The message schema is managed as Protocol Buffers in [`proto/manifold/toolmetrics/v1/tool_metrics.proto`](proto/manifold/toolmetrics/v1/tool_metrics.proto) (`manifold.toolmetrics.v1.ToolCallEvent`). Each SQS message body / the `event` field of each stream entry is its [canonical Protocol Buffers JSON](https://protobuf.dev/programming-guides/json/). Consumers generate code for their language from the `.proto` (e.g. `buf generate`) and parse the body with the generated JSON parser.
 
 ```json
 {
@@ -819,17 +823,27 @@ The metrics middleware wraps authz, so calls denied by policy are counted too. E
   "service": "billing",
   "tool": "create_invoice",
   "user": "user-042",
-  "status": "error",
-  "durationMs": 12,
+  "status": "TOOL_CALL_STATUS_ERROR",
+  "duration": "0.012s",
   "errorCode": -32603,
   "errorMessage": "tool not allowed by policy",
   "traceId": "0af7651916cd43dd8448eb211c80319c"
 }
 ```
 
-- `status`: `success`, `tool_error` (the tool returned `isError: true`; `errorMessage` is its text content), or `error` (a JSON-RPC error; `errorCode` / `errorMessage` are its code and message)
+- `status`: `TOOL_CALL_STATUS_SUCCESS`, `TOOL_CALL_STATUS_TOOL_ERROR` (the tool returned `isError: true`; `errorMessage` is its text content), or `TOOL_CALL_STATUS_ERROR` (a JSON-RPC error; `errorCode` / `errorMessage` are its code and message)
 - `user`: the value of the `authz.headers.userID` header (default `x-user-id`), when present
 - `errorMessage` is truncated to 1024 bytes
+- Fields holding a zero value (empty string, 0) are omitted, per proto3 JSON
+
+The schema name and format of the body are also attached to each message:
+
+| Destination | Schema name (`manifold.toolmetrics.v1.ToolCallEvent`) | Format (`application/json`) |
+| ----------- | ----------------------------------------------------- | --------------------------- |
+| SQS         | message attribute `schema`                            | message attribute `contentType` |
+| Redis       | entry field `schema`                                  | entry field `contentType`   |
+
+When changing the schema, never renumber or reuse a field number (mark removed fields `reserved`); add incompatible changes as a `v2` package. CI runs `buf lint`, checks that the generated code (`pkg/proto`) is up to date, and checks for breaking changes with `buf breaking`. Regenerate the code with `make proto`.
 
 ```yaml
 toolMetrics:

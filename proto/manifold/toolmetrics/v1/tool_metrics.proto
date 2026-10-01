@@ -1,0 +1,57 @@
+// ツールメトリクスのキューメッセージのスキーマ。
+//
+// Manifold は tools/call 1 回ごとに ToolCallEvent を 1 件、キューサービス
+// （Amazon SQS / Redis Streams）へ送る。メッセージ本文は ToolCallEvent の
+// Protocol Buffers 正規 JSON 表現（protojson）。受信側はこのファイルから
+// 各言語のコードを生成し、その JSON パーサーで読み込む。
+//
+// 互換性のルール: フィールド番号は変更・再利用しない。フィールドの削除は
+// reserved にする。後方互換のない変更は v2 パッケージとして追加する。
+syntax = "proto3";
+
+package manifold.toolmetrics.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nonchan7720/manifold/pkg/proto/manifold/toolmetrics/v1;toolmetricsv1";
+
+// ToolCallStatus は tools/call の終わり方の分類。
+enum ToolCallStatus {
+  TOOL_CALL_STATUS_UNSPECIFIED = 0;
+  // ハンドラーが isError: false の結果を返した。
+  TOOL_CALL_STATUS_SUCCESS = 1;
+  // ハンドラーが isError: true の結果を返した（ツール自身が失敗を報告した。
+  // 例: 上流の 4xx/5xx）。
+  TOOL_CALL_STATUS_TOOL_ERROR = 2;
+  // ハンドラーが JSON-RPC エラーを返した（認可拒否・未知のツール・
+  // バックエンドに接続できない等）。
+  TOOL_CALL_STATUS_ERROR = 3;
+}
+
+// ToolCallEvent は tools/call 1 回分の記録。
+message ToolCallEvent {
+  // イベントごとに一意な ID（UUID）。配送は at-least-once のため、
+  // 受信側はこの ID で重複を排除する。
+  string id = 1;
+  // tools/call を受け付けた時刻。
+  google.protobuf.Timestamp timestamp = 2;
+  // サーバー名（mcpServers / agents のキー）。
+  string server = 3;
+  // サービスコード（mcpServers.<name>.service.code。未設定ならサーバー名）。
+  string service = 4;
+  // ツール名。
+  string tool = 5;
+  // 呼び出し元ユーザー（authz.headers.userID ヘッダーの値）。無ければ空。
+  string user = 6;
+  ToolCallStatus status = 7;
+  // ハンドラーチェーンでかかった時間。
+  google.protobuf.Duration duration = 8;
+  // JSON-RPC のエラーコード。status が TOOL_CALL_STATUS_ERROR の場合のみ設定する。
+  int32 error_code = 9;
+  // JSON-RPC エラーのメッセージ（TOOL_CALL_STATUS_ERROR）または結果のテキスト
+  // （TOOL_CALL_STATUS_TOOL_ERROR）。1024 バイトで切り詰める。
+  string error_message = 10;
+  // OpenTelemetry のトレース ID（16 進 32 文字）。無ければ空。
+  string trace_id = 11;
+}

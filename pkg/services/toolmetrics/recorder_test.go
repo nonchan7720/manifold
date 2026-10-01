@@ -17,7 +17,7 @@ import (
 // 失敗させ、block を設定すると close されるまで Publish を止める。
 type fakePublisher struct {
 	mu       sync.Mutex
-	batches  [][]Event
+	batches  [][]*Event
 	attempts int
 	failures int
 	failAll  bool
@@ -25,7 +25,7 @@ type fakePublisher struct {
 	block    chan struct{}
 }
 
-func (p *fakePublisher) Publish(_ context.Context, events []Event) error {
+func (p *fakePublisher) Publish(_ context.Context, events []*Event) error {
 	if p.block != nil {
 		<-p.block
 	}
@@ -36,7 +36,7 @@ func (p *fakePublisher) Publish(_ context.Context, events []Event) error {
 		p.failures--
 		return errors.New("queue unavailable")
 	}
-	p.batches = append(p.batches, append([]Event(nil), events...))
+	p.batches = append(p.batches, append([]*Event(nil), events...))
 	return nil
 }
 
@@ -47,10 +47,10 @@ func (p *fakePublisher) Close() error {
 	return nil
 }
 
-func (p *fakePublisher) snapshot() ([][]Event, bool) {
+func (p *fakePublisher) snapshot() ([][]*Event, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([][]Event(nil), p.batches...), p.closed
+	return append([][]*Event(nil), p.batches...), p.closed
 }
 
 func (p *fakePublisher) total() int {
@@ -104,7 +104,7 @@ func TestRecorder_FlushesWhenBatchIsFull(t *testing.T) {
 	t.Cleanup(func() { _ = r.Close(context.Background()) })
 
 	for i := range 3 {
-		r.Record(Event{Tool: string(rune('a' + i))})
+		r.Record(&Event{Tool: string(rune('a' + i))})
 	}
 	require.Eventually(t, func() bool { return pub.total() == 3 }, time.Second, 5*time.Millisecond)
 	batches, _ := pub.snapshot()
@@ -120,7 +120,7 @@ func TestRecorder_FlushesOnInterval(t *testing.T) {
 	r := NewRecorder(t.Context(), pub, opts)
 	t.Cleanup(func() { _ = r.Close(context.Background()) })
 
-	r.Record(Event{Tool: "only"})
+	r.Record(&Event{Tool: "only"})
 	require.Eventually(t, func() bool { return pub.total() == 1 }, time.Second, 5*time.Millisecond)
 }
 
@@ -129,7 +129,7 @@ func TestRecorder_CloseDrainsBufferAndClosesPublisher(t *testing.T) {
 	r := NewRecorder(t.Context(), pub, testOptions())
 
 	for range 5 {
-		r.Record(Event{})
+		r.Record(&Event{})
 	}
 	require.NoError(t, r.Close(context.Background()))
 
@@ -147,14 +147,14 @@ func TestRecorder_BlocksInsteadOfDroppingWhenBufferIsFull(t *testing.T) {
 	r := NewRecorder(t.Context(), pub, opts)
 
 	// 1 件目でワーカーが Publish に入ってブロックするのを待つ。
-	r.Record(Event{})
+	r.Record(&Event{})
 	require.Eventually(t, func() bool { return len(r.ch) == 0 }, time.Second, time.Millisecond)
 	// バッファ（2 件）を埋めると、3 件目の Record は空きが出るまで待つ。
-	r.Record(Event{})
-	r.Record(Event{})
+	r.Record(&Event{})
+	r.Record(&Event{})
 	returned := make(chan struct{})
 	go func() {
-		r.Record(Event{})
+		r.Record(&Event{})
 		close(returned)
 	}()
 	select {
@@ -176,12 +176,12 @@ func TestRecorder_RetriesFailedPublishUntilSuccess(t *testing.T) {
 	opts.BatchSize = 1
 	r := NewRecorder(t.Context(), pub, opts)
 
-	r.Record(Event{ID: "e1"})
+	r.Record(&Event{Id: "e1"})
 	require.NoError(t, r.Close(context.Background()))
 
 	batches, _ := pub.snapshot()
 	require.Len(t, batches, 1)
-	require.Equal(t, "e1", batches[0][0].ID)
+	require.Equal(t, "e1", batches[0][0].GetId())
 	require.Equal(t, 3, pub.attempts)
 	require.Zero(t, logs.undelivered())
 }
@@ -195,7 +195,7 @@ func TestRecorder_CloseTimeoutLogsEveryUndeliveredEvent(t *testing.T) {
 
 	// 2 件はワーカーの再試行中のバッチ、残り 3 件はバッファに残る。
 	for range 5 {
-		r.Record(Event{})
+		r.Record(&Event{})
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -214,7 +214,7 @@ func TestRecorder_RecordAfterCloseIsLogged(t *testing.T) {
 	r := NewRecorder(t.Context(), pub, testOptions())
 	require.NoError(t, r.Close(context.Background()))
 
-	r.Record(Event{})
+	r.Record(&Event{})
 	require.Equal(t, 1, logs.undelivered())
 }
 
@@ -226,12 +226,12 @@ func TestRecorder_CloseTimeoutReleasesBlockedRecord(t *testing.T) {
 	opts.BatchSize = 1
 	r := NewRecorder(t.Context(), pub, opts)
 
-	r.Record(Event{}) // ワーカーが取り出して再試行し続ける
+	r.Record(&Event{}) // ワーカーが取り出して再試行し続ける
 	require.Eventually(t, func() bool { return len(r.ch) == 0 }, time.Second, time.Millisecond)
-	r.Record(Event{}) // バッファを埋める
+	r.Record(&Event{}) // バッファを埋める
 	returned := make(chan struct{})
 	go func() {
-		r.Record(Event{}) // 空きが出ないのでブロックする
+		r.Record(&Event{}) // 空きが出ないのでブロックする
 		close(returned)
 	}()
 

@@ -1,13 +1,13 @@
 package queue
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/nonchan7720/manifold/pkg/services/toolmetrics"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestRedisStreamPublisher_AppendsEventJSON(t *testing.T) {
@@ -21,11 +21,15 @@ func TestRedisStreamPublisher_AppendsEventJSON(t *testing.T) {
 	entries, err := mr.Stream("tool-metrics")
 	require.NoError(t, err)
 	require.Len(t, entries, 3)
-	require.Equal(t, RedisStreamEventField, entries[0].Values[0])
-	var got toolmetrics.Event
-	require.NoError(t, json.Unmarshal([]byte(entries[0].Values[1]), &got))
-	require.Equal(t, "a", got.ID)
-	require.Equal(t, toolmetrics.StatusSuccess, got.Status)
+	require.Equal(t, []string{
+		RedisStreamEventField, entries[0].Values[1],
+		RedisStreamSchemaField, "manifold.toolmetrics.v1.ToolCallEvent",
+		RedisStreamContentTypeField, toolmetrics.ContentType,
+	}, entries[0].Values)
+	got := &toolmetrics.Event{}
+	require.NoError(t, protojson.Unmarshal([]byte(entries[0].Values[1]), got))
+	require.Equal(t, "a", got.GetId())
+	require.Equal(t, toolmetrics.StatusSuccess, got.GetStatus())
 }
 
 func TestRedisStreamPublisher_TrimsToMaxLen(t *testing.T) {
