@@ -7,7 +7,7 @@ services:
   #     - redis_data:/data
 
   otel:
-    image: grafana/otel-lgtm:0.30.1@sha256:bb182ac3174a20923fa58f00d1790fa71eb06cc0150078c0b0e8feb9e6611492
+    image: grafana/otel-lgtm:0.34.0@sha256:b966ea107831d526d9eb8fe4d2d86c9e5731392fad9dce8296bcf2072031f07c
     ports:
       - "3000:3000"   # Grafana UI
       - "4317:4317"   # OTLP gRPC
