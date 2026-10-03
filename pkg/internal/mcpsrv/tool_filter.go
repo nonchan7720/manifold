@@ -127,8 +127,8 @@ func unknownToolError(name string) error {
 // newToolFilterMiddleware returns the middleware applying cfg's include /
 // exclude / overrides, or nil when cfg sets none of them. It sits right
 // outside the backend (passthrough, service agents, or the SDK's own tool
-// handlers), so every outer layer — cache, authz, audit and tool search —
-// only ever sees the exposed names.
+// handlers), so every outer layer — cache, authz and audit — only ever sees
+// the exposed names.
 func newToolFilterMiddleware(cfg *config.ToolsConfig) mcp.Middleware {
 	f := newToolFilter(cfg)
 	if f == nil {

@@ -45,7 +45,6 @@ Server
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
-- **Tool search (lazy loading)**: Replace hundreds of tool schemas with `search_tools` / `call_tool`, so large APIs don't flood the model's context (`toolSearch`)
 - **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
@@ -531,27 +530,8 @@ mcpServers:
 ```
 
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
-- Filtering happens before authz, caching and tool search, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
+- Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-
-### Tool search (lazy loading)
-
-With `toolSearch.enabled`, `tools/list` returns only two meta tools instead of every tool's schema:
-
-- `search_tools` — `{"query": "...", "limit": 10}` returns the matching tools (name, description and `inputSchema`), best match first. Names count more than descriptions; an empty query lists everything.
-- `call_tool` — `{"name": "<tool>", "arguments": {...}}` calls a tool found with `search_tools`.
-
-```yaml
-mcpServers:
-  bigapi:
-    description: An API with hundreds of operations
-    spec: https://api.example.com/openapi.json
-    toolSearch:
-      enabled: true
-      maxResults: 10   # default limit of search_tools
-```
-
-`search_tools` only finds the tools the caller may see (the search runs after the tool filter and authz), and `call_tool` is authorized, cached and audited exactly like a direct call. Clients can still call a real tool by name directly.
 
 ### Caching results (`cache`)
 
@@ -588,7 +568,6 @@ Every `tools/call` writes one JSON line, separate from the application log:
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
-- Calls through `call_tool` are recorded with the real tool name.
 
 ### Configuration reference
 
@@ -657,7 +636,6 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 | `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
-| `toolSearch`    | object            | `enabled` / `maxResults`: expose `search_tools` / `call_tool` instead of every tool (see [Tool search](#tool-search-lazy-loading)). Not for `transport: reverse` |
 | `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 

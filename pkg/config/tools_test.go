@@ -125,14 +125,6 @@ func TestCacheConfig(t *testing.T) {
 	require.ErrorContains(t, err, "zero or positive")
 }
 
-func TestToolSearchConfig_Defaults(t *testing.T) {
-	var nilCfg *ToolSearchConfig
-	require.False(t, nilCfg.IsEnabled())
-	require.Equal(t, DefaultToolSearchMaxResults, nilCfg.MaxResultsOrDefault())
-	require.Equal(t, 3, (&ToolSearchConfig{Enabled: true, MaxResults: 3}).MaxResultsOrDefault())
-	require.Error(t, ToolSearchConfig{MaxResults: -1}.ValidateWithContext(t.Context()))
-}
-
 func TestLoadInternal_ToolSettings(t *testing.T) {
 	cfg, err := loadFromYAML(t, `
 mcpServers:
@@ -149,9 +141,6 @@ mcpServers:
         mixed:
           tool: ListDocs
           name: list_docs
-    toolSearch:
-      enabled: true
-      maxResults: 5
     cache:
       toolsList: 1m
       toolCall: 30s
@@ -169,8 +158,6 @@ audit:
 	require.Equal(t, "get_pet", overrides["getpetbyid"].Name)
 	require.Equal(t, "Look up a pet", overrides["getpetbyid"].Description)
 	require.Equal(t, "list_docs", overrides["ListDocs"].Name)
-	require.True(t, srv.ToolSearch.IsEnabled())
-	require.Equal(t, 5, srv.ToolSearch.MaxResultsOrDefault())
 	require.Equal(t, time.Minute, srv.Cache.ToolsList)
 	require.Equal(t, 30*time.Second, srv.Cache.ToolCall)
 	require.True(t, cfg.Audit.Enabled)
@@ -184,20 +171,6 @@ audit:
 func TestServer_ValidateWithContext_SpecWithoutBaseURL_IsValid(t *testing.T) {
 	s := Server{Description: "d", Spec: "https://example.com/openapi.json"}
 	require.NoError(t, s.ValidateWithContext(t.Context()))
-}
-
-func TestServer_ValidateWithContext_ReverseToolSearch_Invalid(t *testing.T) {
-	cfg := newValidConfigWithServers(Servers{
-		"r": {
-			Description: "r",
-			Transport:   MCPTransportReverse,
-			Origin:      "https://app.example.com",
-			ToolSearch:  &ToolSearchConfig{Enabled: true},
-		},
-	})
-	cfg.Gateway.Edge.Pairing.Type = "static"
-	err := cfg.ValidateWithContext(t.Context())
-	require.ErrorContains(t, err, "toolSearch is not supported")
 }
 
 func TestAuditConfig_OutputOrDefault(t *testing.T) {

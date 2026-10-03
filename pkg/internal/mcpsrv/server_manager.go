@@ -215,9 +215,6 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		srv.AddReceivingMiddleware(
 			ServerToolMiddlewares(name, server, authzMiddlewares, s.toolCache, s.auditLogger)...,
 		)
-		if m := newToolSearchMiddleware(server.ToolSearch); m != nil {
-			srv.AddReceivingMiddleware(m)
-		}
 
 		if !passthrough {
 			// OpenAPI モード

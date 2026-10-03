@@ -50,10 +50,6 @@ type Server struct {
 	// 名前変更の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
 
-	// ToolSearch を有効にすると、tools/list は全ツールの代わりに
-	// search_tools / call_tool のメタツールだけを返す。
-	ToolSearch *ToolSearchConfig `mapstructure:"toolSearch"`
-
 	// Cache は tools/list・tools/call の結果のキャッシュ設定。
 	Cache *CacheConfig `mapstructure:"cache"`
 
@@ -240,12 +236,6 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
-		validation.Field(&s.ToolSearch, validation.By(func(any) error {
-			if s.ToolSearch.IsEnabled() && s.Transport == MCPTransportReverse {
-				return fmt.Errorf("toolSearch is not supported for the reverse transport")
-			}
-			return nil
-		})),
 		validation.Field(&s.Cache),
 		validation.Field(&s.AgentCardPath, validation.By(func(any) error {
 			if s.AgentCardPath != "" {

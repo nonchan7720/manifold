@@ -131,40 +131,6 @@ func matchAny(patterns []string, name string) bool {
 	return false
 }
 
-// DefaultToolSearchMaxResults is used when ToolSearchConfig.MaxResults is unset.
-const DefaultToolSearchMaxResults = 10
-
-// ToolSearchConfig enables lazy tool loading: tools/list returns only the
-// search_tools / call_tool meta tools, and the client discovers the real
-// tools through search_tools instead of receiving every tool's schema up front.
-type ToolSearchConfig struct {
-	Enabled bool `mapstructure:"enabled"`
-	// MaxResults は search_tools が返す既定の最大件数。未設定/0 以下は
-	// DefaultToolSearchMaxResults。
-	MaxResults int `mapstructure:"maxResults"`
-}
-
-// IsEnabled reports whether tool search is configured and enabled.
-func (c *ToolSearchConfig) IsEnabled() bool {
-	return c != nil && c.Enabled
-}
-
-// MaxResultsOrDefault returns MaxResults, falling back to
-// DefaultToolSearchMaxResults when unset.
-func (c *ToolSearchConfig) MaxResultsOrDefault() int {
-	if c == nil || c.MaxResults <= 0 {
-		return DefaultToolSearchMaxResults
-	}
-	return c.MaxResults
-}
-
-func (c ToolSearchConfig) ValidateWithContext(context.Context) error {
-	if c.MaxResults < 0 {
-		return fmt.Errorf("maxResults must be zero or positive")
-	}
-	return nil
-}
-
 // CacheConfig caches tools/list and tools/call results in the gateway's memory.
 //
 // Cached entries are keyed by the caller's bearer token (and, for tools/call,

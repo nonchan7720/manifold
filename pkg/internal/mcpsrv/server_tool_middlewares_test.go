@@ -124,24 +124,3 @@ func TestMCPServer_ToolCatalog_AppliesToolFilter(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"get_pet", "findpetsbystatus"}, names)
 }
-
-func TestMCPServer_PerServerToolSearch(t *testing.T) {
-	var buf bytes.Buffer
-	audit := newAuditLoggerTo(&buf, config.AuthzHeaders{}, false)
-	p := newPetstoreTestMCPServer(t, audit, func(s *config.Server) {
-		s.ToolSearch = &config.ToolSearchConfig{Enabled: true}
-	})
-	cs := p.connect(t, "caller-token")
-
-	require.Equal(t, []string{ToolSearchToolName, ToolCallToolName}, sessionToolNames(t, cs))
-
-	got := callText(t, cs, ToolCallToolName, map[string]any{
-		"name": "get_pet", "arguments": map[string]any{"petId": 2},
-	})
-	require.Contains(t, got, `"path":"/pet/2"`)
-
-	// call_tool 経由の呼び出しも実際のツール名で監査ログに残る
-	lines := decodeAuditLines(t, &buf)
-	require.Len(t, lines, 1)
-	require.Equal(t, "get_pet", lines[0]["tool"])
-}

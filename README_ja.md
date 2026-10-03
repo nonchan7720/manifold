@@ -45,7 +45,6 @@ Server
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **ツール検索（遅延読み込み）**: 数百のツール定義の代わりに `search_tools` / `call_tool` だけを公開し、大きな API でもモデルのコンテキストを圧迫しない（`toolSearch`）
 - **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
@@ -531,27 +530,8 @@ mcpServers:
 ```
 
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
-- 絞り込みは authz・キャッシュ・ツール検索より前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
+- 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-
-### ツール検索（遅延読み込み）
-
-`toolSearch.enabled` を有効にすると、`tools/list` はすべてのツール定義の代わりに 2 つのメタツールだけを返します。
-
-- `search_tools` — `{"query": "...", "limit": 10}` で一致するツール（名前・説明・`inputSchema`）を一致度の高い順に返す。名前の一致は説明の一致より重く評価される。空のクエリは全ツールを返す。
-- `call_tool` — `{"name": "<tool>", "arguments": {...}}` で `search_tools` で見つけたツールを呼ぶ。
-
-```yaml
-mcpServers:
-  bigapi:
-    description: An API with hundreds of operations
-    spec: https://api.example.com/openapi.json
-    toolSearch:
-      enabled: true
-      maxResults: 10   # search_tools の既定の件数
-```
-
-`search_tools` は呼び出し元が見られるツールしか見つけません（検索はツールの絞り込みと authz の後に行う）。`call_tool` は直接の呼び出しとまったく同じく認可・キャッシュ・監査の対象になります。実在のツールを名前で直接呼ぶこともできます。
 
 ### 結果のキャッシュ（`cache`）
 
@@ -588,7 +568,6 @@ audit:
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
 - `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
-- `call_tool` 経由の呼び出しも、実際のツール名で記録されます。
 
 ### 設定リファレンス
 
@@ -657,7 +636,6 @@ gateway:
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 | `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
-| `toolSearch`    | object            | `enabled` / `maxResults`: すべてのツールの代わりに `search_tools` / `call_tool` を公開（[ツール検索](#ツール検索遅延読み込み) 参照）。`transport: reverse` では使えない |
 | `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 

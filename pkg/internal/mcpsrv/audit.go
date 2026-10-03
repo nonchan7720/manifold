@@ -144,7 +144,7 @@ func (l *AuditLogger) record(
 
 // newAuditMiddleware returns the middleware recording every tools/call on
 // server, or nil when l is nil. It sits outside authz so denied calls are
-// recorded too, and inside tool search so the record names the real tool.
+// recorded too.
 func newAuditMiddleware(server, service string, l *AuditLogger) mcp.Middleware {
 	if l == nil {
 		return nil
