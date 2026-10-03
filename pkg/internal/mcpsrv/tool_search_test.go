@@ -488,3 +488,32 @@ func TestMCPServer_ToolSearch_OpenAPIMode(t *testing.T) {
 	)
 	require.Contains(t, got, "getpetbyid")
 }
+
+func TestListVisibleTools_TooManyPages(t *testing.T) {
+	// 何ページ読んでも nextCursor を返し続けるバックエンド。
+	endless := func(context.Context, string, mcp.Request) (mcp.Result, error) {
+		return &mcp.ListToolsResult{
+			Tools:      []*mcp.Tool{{Name: "x", InputSchema: map[string]any{"type": "object"}}},
+			NextCursor: "more",
+		}, nil
+	}
+	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
+	_, _, err := listVisibleTools(t.Context(), endless, req)
+	require.ErrorContains(t, err, "did not finish within")
+
+	// 最後のページで nextCursor が空になれば全件返る。
+	pages := 0
+	finite := func(context.Context, string, mcp.Request) (mcp.Result, error) {
+		pages++
+		res := &mcp.ListToolsResult{
+			Tools: []*mcp.Tool{{Name: "x", InputSchema: map[string]any{"type": "object"}}},
+		}
+		if pages < 3 {
+			res.NextCursor = "more"
+		}
+		return res, nil
+	}
+	_, tools, err := listVisibleTools(t.Context(), finite, req)
+	require.NoError(t, err)
+	require.Len(t, tools, 3)
+}

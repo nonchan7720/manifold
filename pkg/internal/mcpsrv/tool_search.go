@@ -148,7 +148,10 @@ func truncateRunes(s string, maxRunes int) string {
 
 // listVisibleTools reads every tools/list page from next — the handler chain
 // inside tool search, so the tool filter and authz have already been applied —
-// and returns the first page (for its Cacheable and Meta) and all tools.
+// and returns the first page (for its Cacheable and Meta) and all tools. A
+// backend still handing out cursors after maxToolSearchListPages pages is an
+// error rather than a silently truncated list, since the threshold, the
+// digest and the search would all miss the tools beyond it.
 func listVisibleTools(
 	ctx context.Context, next mcp.MethodHandler, req mcp.Request,
 ) (*mcp.ListToolsResult, []*mcp.Tool, error) {
@@ -158,6 +161,7 @@ func listVisibleTools(
 		tools  []*mcp.Tool
 		cursor string
 	)
+	complete := false
 	for range maxToolSearchListPages {
 		res, err := next(ctx, authzMethodToolsList, &mcp.ListToolsRequest{
 			Session: session,
@@ -176,9 +180,15 @@ func listVisibleTools(
 		}
 		tools = append(tools, result.Tools...)
 		if result.NextCursor == "" {
+			complete = true
 			break
 		}
 		cursor = result.NextCursor
+	}
+	if !complete {
+		return nil, nil, fmt.Errorf(
+			"tools/list did not finish within %d pages", maxToolSearchListPages,
+		)
 	}
 	return first, tools, nil
 }
