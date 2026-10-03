@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.19.0](https://github.com/nonchan7720/manifold/compare/v1.18.0...v1.19.0) (2026-10-03)
+
+
+### Features
+
+* tool filtering/renaming, result cache and audit log ([#231](https://github.com/nonchan7720/manifold/issues/231)) ([2c710cf](https://github.com/nonchan7720/manifold/commit/2c710cf82f15851f347b10a39877297c4b8fd93c))
+* **toolsearch:** port tool_search from [#52](https://github.com/nonchan7720/manifold/issues/52) as a policy-aware middleware ([#232](https://github.com/nonchan7720/manifold/issues/232)) ([103a310](https://github.com/nonchan7720/manifold/commit/103a31016e778f734998c91d8579e9eedb6f285f))
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies to v0.37.1 ([#228](https://github.com/nonchan7720/manifold/issues/228)) ([2cee614](https://github.com/nonchan7720/manifold/commit/2cee614ebf251999f3b8df9b47862df9e5d6f972))
+* **deps:** update module github.com/sahilm/fuzzy to v0.1.3 ([#234](https://github.com/nonchan7720/manifold/issues/234)) ([8d1fa19](https://github.com/nonchan7720/manifold/commit/8d1fa19074304a7340df34e35e08e9c75fe09c06))
+
+
+### Miscellaneous
+
+* **deps:** update dependency golangci-lint to v2.14.0 ([#230](https://github.com/nonchan7720/manifold/issues/230)) ([938a1c9](https://github.com/nonchan7720/manifold/commit/938a1c974c512c1426a8f5945dbfd8dffa33b5ca))
+* **deps:** update dependency jsdom to v30.1.1 ([#224](https://github.com/nonchan7720/manifold/issues/224)) ([b96b92a](https://github.com/nonchan7720/manifold/commit/b96b92aa4d3d01aa2a7690a772afba34a823a205))
+
 ## [1.18.0](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.18.0) (2026-09-30)
 
 
