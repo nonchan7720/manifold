@@ -44,9 +44,6 @@ Server
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
-- **Runs without a config file**: `manifold stdio --openapi <spec>` turns any OpenAPI spec into an MCP server for Claude Desktop, Cursor or Claude Code in one line, and `manifold gateway --openapi <spec>` does the same over HTTP
-- **stdio mode**: Serve one or several servers over stdin/stdout (`manifold stdio`), so local MCP clients can launch Manifold as a command
-- **One endpoint for every server**: `/mcp` exposes the tools of several servers together as `<server>__<tool>` (`gateway.aggregate`)
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
 - **Tool search (lazy loading)**: Replace hundreds of tool schemas with `search_tools` / `call_tool`, so large APIs don't flood the model's context (`toolSearch`)
 - **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
@@ -84,81 +81,6 @@ docker pull ghcr.io/nonchan7720/manifold:latest
 ```
 
 ## Usage
-
-### Quick start (no config file)
-
-Point Manifold at an OpenAPI / Swagger spec and every operation becomes an MCP tool:
-
-```bash
-# stdio: for MCP clients that launch a command (Claude Desktop, Cursor, Claude Code, ...)
-manifold stdio --openapi https://petstore3.swagger.io/api/v3/openapi.json
-
-# HTTP: Streamable HTTP on http://localhost:9999/mcp/api
-manifold gateway --openapi https://petstore3.swagger.io/api/v3/openapi.json
-```
-
-Claude Desktop / Cursor (`mcpServers` in their JSON config):
-
-```json
-{
-  "mcpServers": {
-    "petstore": {
-      "command": "manifold",
-      "args": ["stdio", "--openapi", "https://petstore3.swagger.io/api/v3/openapi.json"]
-    }
-  }
-}
-```
-
-Or with Docker (keep `-i` for stdio):
-
-```json
-{
-  "mcpServers": {
-    "petstore": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm", "ghcr.io/nonchan7720/manifold:latest",
-        "manifold", "stdio", "--openapi", "https://petstore3.swagger.io/api/v3/openapi.json"
-      ]
-    }
-  }
-}
-```
-
-Claude Code:
-
-```bash
-claude mcp add petstore -- manifold stdio --openapi https://petstore3.swagger.io/api/v3/openapi.json
-```
-
-Quick start flags (shared by `stdio` and `gateway`):
-
-| Flag | Description |
-| ---- | ----------- |
-| `--openapi <spec>` | Spec URL or file. Repeatable; `name=<spec>` names the server (default `api`, then `api2`, ...). With several specs, the tools are served together as `<name>__<tool>` |
-| `--base-url <url>` | API base URL (single `--openapi` only). Default: the spec's first `servers` entry, resolved against the spec URL |
-| `--header "Name: value"` | Header sent with every API request, e.g. an API key. Repeatable |
-| `--include <glob>` / `--exclude <glob>` | Expose only / hide tools matching the pattern. Repeatable |
-| `--tool-search` | Expose `search_tools` / `call_tool` instead of every tool (see [Tool search](#tool-search-lazy-loading)) |
-| `--port <port>` | `gateway` only: listening port (default `9999`) |
-
-```bash
-# A few read-only tools of an authenticated API
-manifold stdio --openapi https://api.example.com/openapi.json \
-  --header "Authorization: Bearer $API_TOKEN" \
-  --include 'get*' --include 'list*'
-```
-
-### stdio mode with a config file
-
-`manifold stdio` also serves the servers of a config file. `--server <name>` serves one of them; without it, a config with a single server serves that server, and otherwise every server that can run over stdio is served together, each tool named `<server>__<tool>` (`gateway.aggregate.servers` / `separator` / `toolSearch` apply).
-
-```bash
-manifold stdio -c config --server petstore
-```
-
-Logs go to stderr, since stdout carries the MCP messages. Servers that need the caller's own credentials (`oauth2`, `tokenExchange`) or a browser (`transport: reverse`) can't be served over stdio, and `authz` must be disabled (there are no HTTP headers identifying the caller). Binary responses are returned inline (`storage` is not used).
 
 ### Start the gateway
 
@@ -609,26 +531,8 @@ mcpServers:
 ```
 
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
-- Filtering happens before authz, caching, the aggregated endpoint and tool search, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
+- Filtering happens before authz, caching and tool search, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-
-### One endpoint for several servers (`gateway.aggregate`)
-
-Each server normally has its own endpoint (`/mcp/{server_name}`). With `gateway.aggregate.enabled`, `/mcp` serves the tools of several servers together, each named `<server>__<tool>`, so an MCP client only has to be configured once.
-
-```yaml
-gateway:
-  aggregate:
-    enabled: true
-    servers: [petstore, github]   # default: every server that can be aggregated
-    # separator: "__"
-    # toolSearch: { enabled: true }
-```
-
-- A call to `/mcp` goes through the member server's own tool filter, cache, authz and audit, exactly as if it had been sent to `/mcp/{server_name}`: the authz input and audit records carry the member's server name and tool name.
-- `/mcp` requires a bearer token like every other MCP endpoint, and the same token is presented to every member server. Servers with `oauth2` (each needs its own OAuth flow) and `transport: reverse` servers can't be aggregated; listing them in `servers` is a configuration error, and they are left out of the default member list.
-- Server names must not contain the separator (`__` by default). Choose another `separator` or leave the server out of `servers` if one does.
-- If a member's `tools/list` fails (backend down, or authz denying everything), it is logged and left out instead of failing the whole list.
 
 ### Tool search (lazy loading)
 
@@ -647,7 +551,7 @@ mcpServers:
       maxResults: 10   # default limit of search_tools
 ```
 
-`search_tools` only finds the tools the caller may see (the search runs after the tool filter and authz), and `call_tool` is authorized, cached and audited exactly like a direct call. Clients can still call a real tool by name directly. Set `gateway.aggregate.toolSearch` to do the same on the aggregated `/mcp` endpoint (it then searches every member's tools).
+`search_tools` only finds the tools the caller may see (the search runs after the tool filter and authz), and `call_tool` is authorized, cached and audited exactly like a direct call. Clients can still call a real tool by name directly.
 
 ### Caching results (`cache`)
 
@@ -684,7 +588,7 @@ Every `tools/call` writes one JSON line, separate from the application log:
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
-- Calls through the aggregated endpoint and `call_tool` are recorded with the real server and tool names.
+- Calls through `call_tool` are recorded with the real tool name.
 
 ### Configuration reference
 
@@ -698,10 +602,6 @@ Every `tools/call` writes one JSON line, separate from the application log:
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
-| `aggregate.enabled` | bool | Serve several servers' tools together on `/mcp` (see [One endpoint for several servers](#one-endpoint-for-several-servers-gatewayaggregate)) |
-| `aggregate.servers` | []string | Servers to aggregate (default: every server without `oauth2` and not `transport: reverse`) |
-| `aggregate.separator` | string | Separator between server and tool name (default: `__`) |
-| `aggregate.toolSearch` | object | `enabled` / `maxResults`: tool search on `/mcp` (see [Tool search](#tool-search-lazy-loading)) |
 
 #### `gateway.specRefresh`
 
@@ -961,7 +861,7 @@ storage:
 | Field              | Type   | Description |
 | ------------------ | ------ | ----------- |
 | `enabled`          | bool   | Write one JSON line per `tools/call` (see [Audit log](#audit-log-audit)) |
-| `output`           | string | `stdout`, `stderr` (default) or a file path (appended to). `stdout` is rejected in stdio mode |
+| `output`           | string | `stdout`, `stderr` (default) or a file path (appended to) |
 | `includeArguments` | bool   | Also record the call's arguments (default: `false`) |
 
 #### `fileFetch`
@@ -1401,7 +1301,6 @@ The HTTP endpoints exposed by Manifold.
 | Method | Path                 | Description                                      |
 | ------ | -------------------- | ------------------------------------------------ |
 | `POST` | `/mcp/{server_name}` | MCP requests (Streamable HTTP). `{server_name}` is an `mcpServers` or `agents` entry |
-| `POST` | `/mcp`               | Aggregated MCP endpoint, tools named `<server>__<tool>` (only when `gateway.aggregate.enabled`) |
 | `GET`  | `/mcp/list`          | List registered servers (names, descriptions and services). Add `?tools=true` for the tool catalog (see "Tool catalog for policy authoring" above) |
 
 ### OAuth 2.1

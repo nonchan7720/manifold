@@ -24,40 +24,20 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 				next.ServeHTTP(w, r)
 				return
 			}
+			tokenStr := extractBearerToken(r)
+			if tokenStr == "" {
+				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+					`Bearer resource_metadata="%s"`,
+					ProtectedResourceMetadataURL(r),
+				))
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			ctx = contexts.ToRequestAuthHeader(ctx, tokenStr)
 			*r = *r.WithContext(ctx)
-			requireBearer(w, r, next)
+			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// RequireBearer is JWT for a route with no {server_name}, such as the
-// aggregated /mcp endpoint: it requires a bearer token and passes it on to
-// the backends through the request context.
-func RequireBearer(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := trace.StartSpan(r.Context(), "Middleware/RequireBearer")
-		defer func() { trace.EndSpan(ctx, nil) }()
-		*r = *r.WithContext(ctx)
-		requireBearer(w, r, next)
-	})
-}
-
-// requireBearer answers 401 (with the RFC 9728 resource metadata challenge)
-// when r carries no bearer token, and otherwise stores the token in r's
-// context for the backends and calls next. r is updated in place, so the
-// outer middlewares see the token too.
-func requireBearer(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	tokenStr := extractBearerToken(r)
-	if tokenStr == "" {
-		w.Header().Set("WWW-Authenticate", fmt.Sprintf(
-			`Bearer resource_metadata="%s"`,
-			ProtectedResourceMetadataURL(r),
-		))
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	*r = *r.WithContext(contexts.ToRequestAuthHeader(r.Context(), tokenStr))
-	next.ServeHTTP(w, r)
 }
 
 // ProtectedResourceMetadataURL builds the RFC 9728 resource metadata URL for

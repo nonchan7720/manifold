@@ -21,8 +21,7 @@ const DefaultToolCacheMaxEntries = 10000
 
 // ToolCache is the in-process store behind mcpServers.<name>.cache, shared by
 // every server. Entries are kept as JSON so a hit always hands out a fresh
-// copy: outer middlewares (authz, the tool filter of an aggregated endpoint)
-// modify the results they receive.
+// copy: outer middlewares (authz) modify the results they receive.
 type ToolCache struct {
 	mu         sync.Mutex
 	entries    map[string]toolCacheEntry

@@ -44,9 +44,6 @@ Server
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
-- **設定ファイル無しで起動**: `manifold stdio --openapi <spec>` の 1 行で、任意の OpenAPI spec を Claude Desktop・Cursor・Claude Code 用の MCP サーバーにできる。`manifold gateway --openapi <spec>` なら HTTP で同じことができる
-- **stdio モード**: 1 つまたは複数のサーバーを標準入出力で提供（`manifold stdio`）。ローカルの MCP クライアントからコマンドとして起動できる
-- **全サーバーを 1 エンドポイントに集約**: `/mcp` で複数サーバーのツールを `<server>__<tool>` としてまとめて提供（`gateway.aggregate`）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
 - **ツール検索（遅延読み込み）**: 数百のツール定義の代わりに `search_tools` / `call_tool` だけを公開し、大きな API でもモデルのコンテキストを圧迫しない（`toolSearch`）
 - **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
@@ -84,81 +81,6 @@ docker pull ghcr.io/nonchan7720/manifold:latest
 ```
 
 ## 使い方
-
-### クイックスタート（設定ファイル無し）
-
-OpenAPI / Swagger の spec を指定するだけで、すべての operation が MCP ツールになります。
-
-```bash
-# stdio: コマンドを起動する MCP クライアント向け（Claude Desktop・Cursor・Claude Code など）
-manifold stdio --openapi https://petstore3.swagger.io/api/v3/openapi.json
-
-# HTTP: http://localhost:9999/mcp/api で Streamable HTTP
-manifold gateway --openapi https://petstore3.swagger.io/api/v3/openapi.json
-```
-
-Claude Desktop / Cursor（JSON 設定の `mcpServers`）:
-
-```json
-{
-  "mcpServers": {
-    "petstore": {
-      "command": "manifold",
-      "args": ["stdio", "--openapi", "https://petstore3.swagger.io/api/v3/openapi.json"]
-    }
-  }
-}
-```
-
-Docker の場合（stdio のため `-i` が必要）:
-
-```json
-{
-  "mcpServers": {
-    "petstore": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm", "ghcr.io/nonchan7720/manifold:latest",
-        "manifold", "stdio", "--openapi", "https://petstore3.swagger.io/api/v3/openapi.json"
-      ]
-    }
-  }
-}
-```
-
-Claude Code:
-
-```bash
-claude mcp add petstore -- manifold stdio --openapi https://petstore3.swagger.io/api/v3/openapi.json
-```
-
-クイックスタート用のフラグ（`stdio` と `gateway` で共通）:
-
-| フラグ | 説明 |
-| ------ | ---- |
-| `--openapi <spec>` | spec の URL またはファイル。複数指定可。`name=<spec>` でサーバー名を指定（デフォルトは `api`、2 つ目以降は `api2`, ...）。複数指定するとツールは `<name>__<tool>` としてまとめて提供される |
-| `--base-url <url>` | API のベース URL（`--openapi` が 1 つのときのみ）。デフォルトは spec の最初の `servers`（spec の URL を基準に解決） |
-| `--header "Name: value"` | すべての API リクエストに付けるヘッダー（API キーなど）。複数指定可 |
-| `--include <glob>` / `--exclude <glob>` | パターンに一致するツールだけを公開 / 隠す。複数指定可 |
-| `--tool-search` | すべてのツールの代わりに `search_tools` / `call_tool` を公開（[ツール検索](#ツール検索遅延読み込み) 参照） |
-| `--port <port>` | `gateway` のみ: リスニングポート（デフォルト `9999`） |
-
-```bash
-# 認証付き API の読み取り系ツールだけを公開
-manifold stdio --openapi https://api.example.com/openapi.json \
-  --header "Authorization: Bearer $API_TOKEN" \
-  --include 'get*' --include 'list*'
-```
-
-### 設定ファイルを使った stdio モード
-
-`manifold stdio` は設定ファイルのサーバーも提供できます。`--server <name>` を指定するとそのサーバーを、指定しない場合はサーバーが 1 つならそれを、複数あれば stdio で動かせるサーバーをまとめて（各ツールは `<server>__<tool>`）提供します（`gateway.aggregate.servers` / `separator` / `toolSearch` が適用される）。
-
-```bash
-manifold stdio -c config --server petstore
-```
-
-標準出力は MCP のメッセージに使うため、ログは標準エラー出力に出ます。呼び出し元自身の認証情報が必要なサーバー（`oauth2`・`tokenExchange`）やブラウザが必要なサーバー（`transport: reverse`）は stdio では提供できません。また呼び出し元を識別する HTTP ヘッダーが無いため `authz` は無効にする必要があります。バイナリのレスポンスはそのまま埋め込んで返します（`storage` は使わない）。
 
 ### 起動
 
@@ -609,26 +531,8 @@ mcpServers:
 ```
 
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
-- 絞り込みは authz・キャッシュ・集約エンドポイント・ツール検索より前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
+- 絞り込みは authz・キャッシュ・ツール検索より前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-
-### 複数サーバーを 1 エンドポイントにまとめる（`gateway.aggregate`）
-
-通常はサーバーごとにエンドポイント（`/mcp/{server_name}`）があります。`gateway.aggregate.enabled` を有効にすると、`/mcp` で複数サーバーのツールを `<server>__<tool>` という名前でまとめて提供するため、MCP クライアントの設定は 1 つで済みます。
-
-```yaml
-gateway:
-  aggregate:
-    enabled: true
-    servers: [petstore, github]   # デフォルト: 集約できる全サーバー
-    # separator: "__"
-    # toolSearch: { enabled: true }
-```
-
-- `/mcp` への呼び出しは、`/mcp/{server_name}` に送った場合とまったく同じく、メンバーのサーバー自身のツール絞り込み・キャッシュ・authz・監査ログを通ります。authz の input と監査ログにはメンバーのサーバー名とツール名が入ります。
-- `/mcp` も他の MCP エンドポイントと同じく bearer トークンが必須で、同じトークンがすべてのメンバーに渡ります。`oauth2` のサーバー（サーバーごとに OAuth フローが必要）と `transport: reverse` のサーバーは集約できません。`servers` に書くと設定エラーになり、デフォルトのメンバーからは外れます。
-- サーバー名に区切り文字（デフォルト `__`）を含めることはできません。含む場合は別の `separator` を選ぶか、そのサーバーを `servers` から外してください。
-- メンバーの `tools/list` が失敗した場合（バックエンドの停止や、authz ですべて拒否された場合など）は、ログを出してそのメンバーだけを一覧から外します。
 
 ### ツール検索（遅延読み込み）
 
@@ -647,7 +551,7 @@ mcpServers:
       maxResults: 10   # search_tools の既定の件数
 ```
 
-`search_tools` は呼び出し元が見られるツールしか見つけません（検索はツールの絞り込みと authz の後に行う）。`call_tool` は直接の呼び出しとまったく同じく認可・キャッシュ・監査の対象になります。実在のツールを名前で直接呼ぶこともできます。集約エンドポイント `/mcp` で同じことをするには `gateway.aggregate.toolSearch` を設定します（全メンバーのツールを検索する）。
+`search_tools` は呼び出し元が見られるツールしか見つけません（検索はツールの絞り込みと authz の後に行う）。`call_tool` は直接の呼び出しとまったく同じく認可・キャッシュ・監査の対象になります。実在のツールを名前で直接呼ぶこともできます。
 
 ### 結果のキャッシュ（`cache`）
 
@@ -684,7 +588,7 @@ audit:
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
 - `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
-- 集約エンドポイントや `call_tool` 経由の呼び出しも、実際のサーバー名とツール名で記録されます。
+- `call_tool` 経由の呼び出しも、実際のツール名で記録されます。
 
 ### 設定リファレンス
 
@@ -698,10 +602,6 @@ audit:
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
-| `aggregate.enabled` | bool | 複数サーバーのツールを `/mcp` でまとめて提供する（[複数サーバーを 1 エンドポイントにまとめる](#複数サーバーを-1-エンドポイントにまとめるgatewayaggregate) 参照） |
-| `aggregate.servers` | []string | まとめるサーバー（デフォルト: `oauth2` を持たず `transport: reverse` でない全サーバー） |
-| `aggregate.separator` | string | サーバー名とツール名の区切り（デフォルト: `__`） |
-| `aggregate.toolSearch` | object | `enabled` / `maxResults`: `/mcp` でのツール検索（[ツール検索](#ツール検索遅延読み込み) 参照） |
 
 #### `gateway.specRefresh`
 
@@ -961,7 +861,7 @@ storage:
 | フィールド         | 型     | 説明 |
 | ------------------ | ------ | ---- |
 | `enabled`          | bool   | `tools/call` ごとに JSON を 1 行書く（[監査ログ](#監査ログaudit) 参照） |
-| `output`           | string | `stdout`・`stderr`（デフォルト）・ファイルパス（追記）。stdio モードでは `stdout` は使えない |
+| `output`           | string | `stdout`・`stderr`（デフォルト）・ファイルパス（追記） |
 | `includeArguments` | bool   | 呼び出しの引数も記録する（デフォルト: `false`） |
 
 #### `fileFetch`
@@ -1400,7 +1300,6 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | メソッド | パス                 | 説明                                     |
 | -------- | -------------------- | ---------------------------------------- |
 | `POST`   | `/mcp/{server_name}` | MCP リクエスト（Streamable HTTP）。`{server_name}` は `mcpServers` または `agents` のエントリ |
-| `POST`   | `/mcp`               | 集約 MCP エンドポイント。ツール名は `<server>__<tool>`（`gateway.aggregate.enabled` のときのみ） |
 | `GET`    | `/mcp/list`          | 登録済みサーバーの一覧（名前・説明・サービス）取得。`?tools=true` でツール一覧も取得（前述の「ポリシー作成用のツール一覧」参照） |
 
 ### OAuth 2.1

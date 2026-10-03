@@ -38,20 +38,13 @@ import (
 )
 
 func newGatewayCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "gateway",
 		Short: "Start mcp gateway server",
-		Example: `  # Run from config.yaml
-  manifold gateway
-
-  # Serve an OpenAPI spec without a config file (http://localhost:9999/mcp/api)
-  manifold gateway --openapi https://petstore3.swagger.io/api/v3/openapi.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGatewayServer(cmd.Context())
 		},
 	}
-	quickStart.register(cmd.Flags(), true)
-	return cmd
 }
 
 // storageHostURL は設定されたホスト URL を解析する。空文字や不正な値は起動を止めず、
@@ -325,11 +318,26 @@ func runGatewayServer(ctx context.Context) error {
 	const mediaDownloadPath = "/media/download"
 	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL, mediaDownloadPath)
 	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
-	metricsHandler, telemetryCleanup, err := setupTelemetry(ctx)
+	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
 	if err != nil {
 		return err
 	}
-	defer telemetryCleanup()
+	defer cleanup()
+
+	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
+		ctx,
+		&globalConfig.Telemetry,
+	)
+	if err != nil {
+		return err
+	}
+	defer metricsCleanup()
+
+	_, logsCleanup, err := telemetry.NewLoggerProvider(ctx, &globalConfig.Telemetry)
+	if err != nil {
+		return err
+	}
+	defer logsCleanup()
 
 	toolCache, auditLogger, err := newToolCacheAndAudit()
 	if err != nil {
@@ -357,15 +365,6 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer mcpSrv.Close()
-	var aggregateSrv *mcp.Server
-	if globalConfig.Gateway.Aggregate.Enabled {
-		aggregateSrv, err = newAggregateServer(
-			ctx, mcpSrv, globalConfig.Gateway.Aggregate, globalConfig.MCPServer,
-		)
-		if err != nil {
-			return err
-		}
-	}
 	mcpHandler := httphandler.NewMCPHandler(
 		globalConfig.MCPServer, mcpSrv, globalConfig.Authz.WithDefaults(), authzDecider,
 	)
@@ -416,14 +415,6 @@ func runGatewayServer(ctx context.Context) error {
 			globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
 		)(mcpHTTPSrv),
 	)
-	if aggregateSrv != nil {
-		// 集約エンドポイントはサーバー名を持たないため、個別の
-		// /mcp/{server_name} と同じ bearer 必須チェックだけを掛ける。
-		mux.Handle("/mcp", middleware.RequireBearer(mcp.NewStreamableHTTPHandler(
-			func(*http.Request) *mcp.Server { return aggregateSrv },
-			&mcp.StreamableHTTPOptions{Stateless: true},
-		)))
-	}
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
 	mux.Handle("GET /edge/ws", edgeWSHandler)
@@ -464,35 +455,6 @@ func runGatewayServer(ctx context.Context) error {
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
 }
 
-// setupTelemetry starts the OpenTelemetry trace, metric and log providers
-// for globalConfig.Telemetry. metricsHandler is the Prometheus pull handler,
-// or nil when not configured.
-func setupTelemetry(ctx context.Context) (metricsHandler http.Handler, cleanup func(), err error) {
-	_, traceCleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
-	if err != nil {
-		return nil, nil, err
-	}
-	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
-		ctx,
-		&globalConfig.Telemetry,
-	)
-	if err != nil {
-		traceCleanup()
-		return nil, nil, err
-	}
-	_, logsCleanup, err := telemetry.NewLoggerProvider(ctx, &globalConfig.Telemetry)
-	if err != nil {
-		metricsCleanup()
-		traceCleanup()
-		return nil, nil, err
-	}
-	return metricsHandler, func() {
-		logsCleanup()
-		metricsCleanup()
-		traceCleanup()
-	}, nil
-}
-
 // newToolCacheAndAudit builds the tool result cache shared by every server
 // and the audit logger for globalConfig.Audit (nil when disabled).
 func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
@@ -525,21 +487,6 @@ func reverseServerMiddlewareFn(
 		}
 		return mcpsrv.ServerToolMiddlewares(name, servers[name], authzMiddlewares, cache, audit)
 	}
-}
-
-// newAggregateServer builds the server behind the aggregated /mcp endpoint
-// for an enabled gateway.aggregate.
-func newAggregateServer(
-	ctx context.Context,
-	mcpSrv *mcpsrv.MCPServer,
-	cfg config.AggregateConfig,
-	servers config.Servers,
-) (*mcp.Server, error) {
-	members := cfg.Members(servers)
-	if len(members) == 0 {
-		slog.WarnContext(ctx, "gateway.aggregate is enabled but no server can be aggregated")
-	}
-	return mcpSrv.NewAggregateServer(ctx, members, cfg.SeparatorOrDefault(), cfg.ToolSearch)
 }
 
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。

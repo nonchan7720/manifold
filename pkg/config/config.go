@@ -138,9 +138,6 @@ type Gateway struct {
 	Edge EdgeConfig `mapstructure:"edge"`
 
 	SpecRefresh SpecRefreshConfig `mapstructure:"specRefresh"`
-
-	// Aggregate は複数サーバーのツールを /mcp の 1 エンドポイントにまとめる。
-	Aggregate AggregateConfig `mapstructure:"aggregate"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -166,7 +163,6 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Edge),
 		validation.Field(&c.SpecRefresh),
-		validation.Field(&c.Aggregate),
 	)
 }
 

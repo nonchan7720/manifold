@@ -46,11 +46,6 @@ type MCPServer struct {
 	toolCache    *ToolCache
 	auditLogger  *AuditLogger
 
-	// dispatch は各サーバーのミドルウェアチェーン（ツール検索を除く）。
-	// 集約エンドポイント（NewAggregateServer）がサーバーを直接呼ぶために使う。
-	dispatch   map[string]mcp.MethodHandler
-	aggregates []*aggregator
-
 	meterProvider metric.MeterProvider
 	metrics       *specRefreshMetrics
 }
@@ -98,7 +93,6 @@ func NewMCPServer(
 		serviceAgents:  map[string]*serviceAgents{},
 		openAPIStates:  map[string]*openAPIServerState{},
 		mediaUploader:  mediaUploader,
-		dispatch:       map[string]mcp.MethodHandler{},
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -221,7 +215,6 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		srv.AddReceivingMiddleware(
 			ServerToolMiddlewares(name, server, authzMiddlewares, s.toolCache, s.auditLogger)...,
 		)
-		srv.AddReceivingMiddleware(s.newDispatchCaptureMiddleware(name))
 		if m := newToolSearchMiddleware(server.ToolSearch); m != nil {
 			srv.AddReceivingMiddleware(m)
 		}
@@ -329,15 +322,6 @@ func (s *MCPServer) Close() {
 	}
 	for _, sa := range s.serviceAgents {
 		sa.close()
-	}
-	s.mu.Lock()
-	aggregates := s.aggregates
-	s.aggregates = nil
-	s.mu.Unlock()
-	for _, agg := range aggregates {
-		for _, m := range agg.members {
-			m.close()
-		}
 	}
 }
 
