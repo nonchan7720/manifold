@@ -1,0 +1,10 @@
+{
+  "policies": {
+    "readers": {
+      "tools": ["petstore/get_pet", "petstore/findpetsbystatus", "petstore_small/*"]
+    },
+    "operators": {
+      "tools": ["petstore/*", "petstore_small/*"]
+    }
+  }
+}

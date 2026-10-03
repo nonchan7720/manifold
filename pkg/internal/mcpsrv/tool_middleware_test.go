@@ -309,7 +309,7 @@ func TestAuditMiddleware_RecordsDenial(t *testing.T) {
 				return next(ctx, method, req)
 			}
 		},
-	}, nil, logger)...)
+	}, nil, logger, config.ToolSearchConfig{})...)
 	cs := connectTestClient(t, t.Context(), srv)
 	_, err := cs.CallTool(
 		t.Context(),
