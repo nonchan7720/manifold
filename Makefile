@@ -1,4 +1,4 @@
-.PHONY: test lint serve
+.PHONY: test lint serve postman
 
 test: ## Run all tests with coverage
 	setup-envtest use 1.36.2 -p path > /dev/null
@@ -7,6 +7,9 @@ test: ## Run all tests with coverage
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...
+
+postman: ## Run the Postman CLI end-to-end suite (needs docker and the Postman CLI)
+	tests/postman/run.sh
 
 ENVFILE = .env
 

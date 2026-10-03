@@ -40,4 +40,5 @@ config-test.yaml
 .claude/hooks
 examples/webmcp-reverse/tmp/
 examples/opa/tmp/
+tests/postman/tmp/
 /tmp/
