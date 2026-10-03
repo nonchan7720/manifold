@@ -43,6 +43,8 @@ type MCPServer struct {
 	mediaUploader *storage.ContentManagementService
 
 	middlewareFn func(name string) []mcp.Middleware
+	toolCache    *ToolCache
+	auditLogger  *AuditLogger
 
 	meterProvider metric.MeterProvider
 	metrics       *specRefreshMetrics
@@ -55,6 +57,17 @@ type Option func(*MCPServer)
 // per-backend *mcp.Server it creates, right after construction.
 func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
 	return func(s *MCPServer) { s.middlewareFn = fn }
+}
+
+// WithToolCache makes servers with mcpServers.<name>.cache store their
+// results in cache. Without it, cache settings are ignored.
+func WithToolCache(cache *ToolCache) Option {
+	return func(s *MCPServer) { s.toolCache = cache }
+}
+
+// WithAuditLogger records every tools/call on every server to l.
+func WithAuditLogger(l *AuditLogger) Option {
+	return func(s *MCPServer) { s.auditLogger = l }
 }
 
 // WithMeterProvider records the spec refresh metrics to mp instead of the
@@ -195,9 +208,13 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			srv.AddReceivingMiddleware(newServiceAgentsMiddleware(sa))
 			sa.ensureCards(ctx)
 		}
+		var authzMiddlewares []mcp.Middleware
 		if s.middlewareFn != nil {
-			srv.AddReceivingMiddleware(s.middlewareFn(name)...)
+			authzMiddlewares = s.middlewareFn(name)
 		}
+		srv.AddReceivingMiddleware(
+			ServerToolMiddlewares(name, server, authzMiddlewares, s.toolCache, s.auditLogger)...,
+		)
 
 		if !passthrough {
 			// OpenAPI モード
@@ -270,6 +287,10 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 	// エージェントのツールは、tools/list と同じくサービスを優先して外す。
 	if sa, ok := s.serviceAgents[name]; ok {
 		infos = append(infos, sa.dropCollidingInfos(ctx, infos, sa.listToolInfos(ctx))...)
+	}
+	// tools.include / exclude / overrides を tools/list と同じく反映する。
+	if server, ok := s.servers[name]; ok && server != nil {
+		infos = newToolFilter(server.Tools).applyInfos(infos)
 	}
 	return infos, nil
 }

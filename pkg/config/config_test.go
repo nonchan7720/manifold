@@ -92,12 +92,60 @@ func TestConfig_ValidateWithContext_Memory_Only_Valid(t *testing.T) {
 	require.NoError(t, err, "memoryのみの設定でも有効になるべき")
 }
 
-func TestConfig_ValidateWithContext_NoStorageBackend_Invalid(t *testing.T) {
+func TestConfig_ValidateWithContext_NoStorageBackend_Valid(t *testing.T) {
 	cfg := &Config{
 		Gateway: Gateway{EncryptKey: validEncryptKey},
 	}
 	err := cfg.ValidateWithContext(t.Context())
-	require.Error(t, err, "Redis/SQLite/Memoryのいずれも未設定ならエラーになるべき")
+	require.NoError(t, err, "Redis/SQLite/Memoryのいずれも未設定ならインメモリで動くので有効")
+	require.True(t, cfg.UsesEphemeralStore())
+}
+
+func TestConfig_UsesEphemeralStore(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{name: "none", cfg: Config{}, want: true},
+		{name: "memory", cfg: Config{Memory: &MemoryConfig{Enabled: true}}, want: true},
+		{name: "redis", cfg: Config{Redis: &RedisConfig{}}, want: false},
+		{
+			name: "memory wins over redis",
+			cfg:  Config{Redis: &RedisConfig{}, Memory: &MemoryConfig{Enabled: true}},
+			want: true,
+		},
+		{name: "sqlite", cfg: Config{SQLite: &SQLiteConfig{Path: "x.db"}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.cfg.UsesEphemeralStore())
+		})
+	}
+}
+
+func TestConfig_ApplyEphemeralDefaults(t *testing.T) {
+	t.Run("generates a key for the in-memory store", func(t *testing.T) {
+		cfg := &Config{}
+		generated, err := cfg.ApplyEphemeralDefaults()
+		require.NoError(t, err)
+		require.True(t, generated)
+		require.NoError(t, cfg.Gateway.ValidateWithContext(t.Context()))
+	})
+	t.Run("keeps a configured key", func(t *testing.T) {
+		cfg := &Config{Gateway: Gateway{EncryptKey: validEncryptKey}}
+		generated, err := cfg.ApplyEphemeralDefaults()
+		require.NoError(t, err)
+		require.False(t, generated)
+		require.Equal(t, validEncryptKey, cfg.Gateway.EncryptKey)
+	})
+	t.Run("persistent store still requires a key", func(t *testing.T) {
+		cfg := &Config{SQLite: &SQLiteConfig{Path: "x.db"}}
+		generated, err := cfg.ApplyEphemeralDefaults()
+		require.NoError(t, err)
+		require.False(t, generated)
+		require.Error(t, cfg.ValidateWithContext(t.Context()))
+	})
 }
 
 func TestConfig_ValidateWithContext_SQLiteOnly_StillValid(t *testing.T) {

@@ -44,18 +44,20 @@ Server
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
+- **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
+- **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
 - **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
-- **Selectable storage**: Session / token management backed by Redis or SQLite
+- **Selectable storage**: Session / token management in memory (default), Redis or SQLite
 - **OpenTelemetry support**: OTLP export of traces, metrics, and logs (metrics also support Prometheus-style pull)
 
 ## Requirements
 
-- Go 1.26+
-- Redis or SQLite (for session management)
+- Nothing else for the prebuilt binary or Docker image. Go 1.26+ to build from source
+- Optional: Redis or SQLite, to keep sessions and OAuth tokens across restarts or share them between replicas. Without either, Manifold keeps them in memory
 
 ## Installation
 
@@ -506,6 +508,67 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
+
+APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents attached to a service, WebMCP).
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    tools:
+      include: ["get*", "find*", "addpet"]
+      exclude: ["*inventory*"]
+      overrides:
+        getpetbyid:
+          name: get_pet
+          description: Look up a single pet by its numeric ID.
+        mixedcase:          # config keys are lower-cased; name the tool in `tool` when it has upper-case letters
+          tool: listDocuments
+          name: list_documents
+```
+
+- A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
+- Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
+- A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
+
+### Caching results (`cache`)
+
+```yaml
+mcpServers:
+  github:
+    description: GitHub MCP server
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    cache:
+      toolsList: 5m                 # cache tools/list
+      toolCall: 30s                 # cache tools/call results...
+      tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
+```
+
+- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller's bearer token, so one caller's result is never served to another. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
+- `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
+- The cache sits inside authz: every call is still authorized before a cached result is returned. A cached `tools/list` can be up to `toolsList` stale after the backend or the spec changes.
+
+### Audit log (`audit`)
+
+```yaml
+audit:
+  enabled: true
+  output: /var/log/manifold/audit.jsonl   # stdout, stderr (default) or a file path
+  includeArguments: false                 # arguments may contain personal or secret data
+```
+
+Every `tools/call` writes one JSON line, separate from the application log:
+
+```json
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+```
+
+- `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
+- `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+
 ### Configuration reference
 
 #### `gateway`
@@ -515,7 +578,7 @@ redis:
 | `port`       | int    | Listening port (default: 8081)                                                                                   |
 | `key`        | string | TLS private key file path (optional)                                                                             |
 | `cert`       | string | TLS certificate file path (optional)                                                                             |
-| `encryptKey` | string | Token encryption key (**required**). Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32` |
+| `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
 
@@ -563,7 +626,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL, required in OpenAPI mode (i.e. when `spec` or `tools.file` is set) |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
@@ -571,6 +634,9 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
+| `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
+| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
+| `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
@@ -740,7 +806,13 @@ Accepts downstream clients that present an HTTPS `client_id` resolving to a clie
 | ------ | ------ | --------------------------------------------- |
 | `path` | string | Database file path (`:memory:` for in-memory) |
 
-Either `redis` or `sqlite` must be configured.
+#### `memory`
+
+| Field     | Type | Description |
+| --------- | ---- | ----------- |
+| `enabled` | bool | Keep sessions and tokens in process memory, even when `redis` is configured |
+
+The store is chosen in this order: `sqlite.path` → `memory.enabled` → `redis` → in memory. The in-memory store loses sessions and OAuth tokens on restart and is not shared between replicas; use `redis` or `sqlite` for production.
 
 #### `storage`
 
@@ -761,6 +833,14 @@ storage:
     bucket: my-bucket
     keyPrefix: manifold/media
 ```
+
+#### `audit`
+
+| Field              | Type   | Description |
+| ------------------ | ------ | ----------- |
+| `enabled`          | bool   | Write one JSON line per `tools/call` (see [Audit log](#audit-log-audit)) |
+| `output`           | string | `stdout`, `stderr` (default) or a file path (appended to) |
+| `includeArguments` | bool   | Also record the call's arguments (default: `false`) |
 
 #### `fileFetch`
 

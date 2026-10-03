@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -261,8 +262,9 @@ func newMCPServer(
 	contentManagementService *storage.ContentManagementService,
 	gateway config.Gateway,
 	middlewareFn func(name string) []mcp.Middleware,
+	extraOpts ...mcpsrv.Option,
 ) (*mcpsrv.MCPServer, error) {
-	var opts []mcpsrv.Option
+	opts := slices.Clone(extraOpts)
 	if middlewareFn != nil {
 		opts = append(opts, mcpsrv.WithServerMiddleware(middlewareFn))
 	}
@@ -337,6 +339,12 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer logsCleanup()
 
+	toolCache, auditLogger, err := newToolCacheAndAudit()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = auditLogger.Close() }()
+
 	authHandler := newAuthHandler(globalConfig, storeClient)
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
@@ -350,6 +358,8 @@ func runGatewayServer(ctx context.Context) error {
 		contentManagementService,
 		globalConfig.Gateway,
 		authzMiddleware,
+		mcpsrv.WithToolCache(toolCache),
+		mcpsrv.WithAuditLogger(auditLogger),
 	)
 	if err != nil {
 		return err
@@ -362,18 +372,14 @@ func runGatewayServer(ctx context.Context) error {
 	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()
 	pairingService := edgeservices.NewPairingService(storeClient)
 	edgeRegistry := edgeservices.NewInMemoryRegistry()
-	var reverseGatewayOpts []mcpsrv.ReverseGatewayOption
-	if authzMiddleware != nil {
-		reverseGatewayOpts = append(
-			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(authzMiddleware),
-		)
-	}
 	reverseGateway := mcpsrv.NewReverseGateway(
 		edgeRegistry,
 		pairingService,
 		edgeCfg,
 		globalConfig.MCPServer,
-		reverseGatewayOpts...,
+		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
+			globalConfig.MCPServer, authzMiddleware, toolCache, auditLogger,
+		)),
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
@@ -447,6 +453,40 @@ func runGatewayServer(ctx context.Context) error {
 		),
 	}
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
+}
+
+// newToolCacheAndAudit builds the tool result cache shared by every server
+// and the audit logger for globalConfig.Audit (nil when disabled).
+func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
+	var auditLogger *mcpsrv.AuditLogger
+	if globalConfig.Audit.Enabled {
+		var err error
+		auditLogger, err = mcpsrv.NewAuditLogger(
+			globalConfig.Audit, globalConfig.Authz.WithDefaults().Headers,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return mcpsrv.NewToolCache(0), auditLogger, nil
+}
+
+// reverseServerMiddlewareFn builds the per-server middleware factory for
+// reverse (WebMCP) servers: the same tool filter, cache, authz and audit
+// layers as every other server (see mcpsrv.ServerToolMiddlewares).
+func reverseServerMiddlewareFn(
+	servers config.Servers,
+	authzFn func(name string) []mcp.Middleware,
+	cache *mcpsrv.ToolCache,
+	audit *mcpsrv.AuditLogger,
+) func(name string) []mcp.Middleware {
+	return func(name string) []mcp.Middleware {
+		var authzMiddlewares []mcp.Middleware
+		if authzFn != nil {
+			authzMiddlewares = authzFn(name)
+		}
+		return mcpsrv.ServerToolMiddlewares(name, servers[name], authzMiddlewares, cache, audit)
+	}
 }
 
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。

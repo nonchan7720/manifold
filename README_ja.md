@@ -44,18 +44,20 @@ Server
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
+- **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
+- **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
-- **ストレージ選択可能**: Redis または SQLite によるセッション・トークン管理
+- **ストレージ選択可能**: インメモリ（デフォルト）・Redis・SQLite によるセッション・トークン管理
 - **OpenTelemetry 対応**: トレース・メトリクス・ログの OTLP エクスポート（メトリクスは Prometheus 形式の pull にも対応）
 
 ## 必要要件
 
-- Go 1.26+
-- Redis または SQLite（セッション管理用）
+- ビルド済みバイナリ・Docker イメージなら追加の依存なし。ソースからビルドする場合は Go 1.26+
+- 任意: Redis または SQLite。セッションや OAuth トークンを再起動後も保持したい場合や、レプリカ間で共有したい場合に使う。どちらも無ければメモリ上に保持する
 
 ## インストール
 
@@ -506,6 +508,67 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
+
+OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・サービスにぶら下げた A2A エージェント・WebMCP）で使えます。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    tools:
+      include: ["get*", "find*", "addpet"]
+      exclude: ["*inventory*"]
+      overrides:
+        getpetbyid:
+          name: get_pet
+          description: Look up a single pet by its numeric ID.
+        mixedcase:          # 設定のキーは小文字化されるため、大文字を含むツール名は tool に書く
+          tool: listDocuments
+          name: list_documents
+```
+
+- リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
+- 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
+- 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
+
+### 結果のキャッシュ（`cache`）
+
+```yaml
+mcpServers:
+  github:
+    description: GitHub MCP server
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    cache:
+      toolsList: 5m                 # tools/list をキャッシュ
+      toolCall: 30s                 # tools/call の結果をキャッシュ...
+      tools: ["get_*", "list_*"]    # ...ただしこの（読み取り専用の）ツールだけ
+```
+
+- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件）、呼び出し元の bearer トークンごとに分かれるため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
+- `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
+- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。キャッシュした `tools/list` は、バックエンドや spec が変わってから最大 `toolsList` の間だけ古いままになりえます。
+
+### 監査ログ（`audit`）
+
+```yaml
+audit:
+  enabled: true
+  output: /var/log/manifold/audit.jsonl   # stdout・stderr（デフォルト）・ファイルパス
+  includeArguments: false                 # 引数には個人情報や秘密情報が含まれうる
+```
+
+`tools/call` ごとに、アプリケーションログとは別に JSON を 1 行書きます。
+
+```json
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+```
+
+- `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
+- `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+
 ### 設定リファレンス
 
 #### `gateway`
@@ -515,7 +578,7 @@ redis:
 | `port`       | int    | リスニングポート（デフォルト: 8081）                                              |
 | `key`        | string | TLS 秘密鍵ファイルパス（オプション）                                              |
 | `cert`       | string | TLS 証明書ファイルパス（オプション）                                              |
-| `encryptKey` | string | トークン暗号化キー（**必須**）。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成 |
+| `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
 
@@ -563,7 +626,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL（`spec` か `tools.file` のいずれかを設定した場合は必須） |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
@@ -571,6 +634,9 @@ gateway:
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
+| `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
+| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
+| `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
@@ -740,7 +806,13 @@ DCR で登録する代わりに、Client ID Metadata Document を指す HTTPS �
 | ---------- | ------ | --------------------------------------------------- |
 | `path`     | string | データベースファイルパス（`:memory:` でインメモリ） |
 
-`redis` と `sqlite` はどちらか一方の設定が必須です。
+#### `memory`
+
+| フィールド | 型   | 説明 |
+| ---------- | ---- | ---- |
+| `enabled`  | bool | `redis` を設定していても、セッションとトークンをプロセスのメモリに保持する |
+
+ストアは `sqlite.path` → `memory.enabled` → `redis` → インメモリ の順に選ばれます。インメモリのストアは再起動でセッションと OAuth トークンを失い、レプリカ間でも共有されません。本番では `redis` か `sqlite` を使ってください。
 
 #### `storage`
 
@@ -761,6 +833,14 @@ storage:
     bucket: my-bucket
     keyPrefix: manifold/media
 ```
+
+#### `audit`
+
+| フィールド         | 型     | 説明 |
+| ------------------ | ------ | ---- |
+| `enabled`          | bool   | `tools/call` ごとに JSON を 1 行書く（[監査ログ](#監査ログaudit) 参照） |
+| `output`           | string | `stdout`・`stderr`（デフォルト）・ファイルパス（追記） |
+| `includeArguments` | bool   | 呼び出しの引数も記録する（デフォルト: `false`） |
 
 #### `fileFetch`
 
