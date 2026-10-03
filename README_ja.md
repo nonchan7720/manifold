@@ -45,6 +45,7 @@ Server
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
+- **ツール検索**: 見えるツールが設定した数を超えたエンドポイントでは、`tools/list` を 1 つの `tool_search` ツールに置き換える（BM25 / 正規表現 / ファジー、Claude の Tool Search Tool 互換）。大きな API でもモデルのコンテキストを圧迫せず、検索の対象は呼び出し元に許可されたツールだけ（`gateway.toolSearch`）
 - **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
@@ -533,6 +534,39 @@ mcpServers:
 - 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
 
+### ツール検索（`gateway.toolSearch`）
+
+大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。
+
+```yaml
+gateway:
+  toolSearch:
+    threshold: 100        # 見えるツール数がこれを超えると tool_search に切り替わる（デフォルト 100）
+    defaultLimit: 10      # limit 未指定時の検索結果件数（デフォルト 10）
+    resultFormat: default # または claude
+    digestMaxTools: -1    # tool_search の説明に列挙するツール数。-1 / 0 で全件、N で名前順の先頭 N 件
+```
+
+`tool_search` の引数は `query`（必須）・`method`・`limit` です。どの方式でも、検索対象はツール名・説明・引数名・引数の説明（入れ子のオブジェクトや配列の要素も再帰的に対象）で、Claude API の Tool Search Tool と同じ範囲です。
+
+| `method` | 説明 |
+| -------- | ---- |
+| `bm25`   | （デフォルト）BM25 スコアリングによるランク付き全文検索。CJK（漢字・かな・ハングル）はバイグラムでトークン化するため、日本語の説明文でも検索できる |
+| `regexp` | 大文字小文字を区別しない正規表現による一致 |
+| `fuzzy`  | 曖昧一致（サブシーケンス）検索 |
+
+| `resultFormat` | 説明 |
+| -------------- | ---- |
+| `default`      | （デフォルト）一致したツールの完全な定義（`name` / `description` / `inputSchema`）の配列 |
+| `claude`       | [Claude API の Tool Search Tool のカスタム検索実装規約](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation)に沿った `tool_reference` ブロック（`{"type": "tool_reference", "tool_name": "..."}`）の配列。Claude API 側が完全なツール定義に展開する |
+
+ヒット 0 件のときは `null` ではなく `[]` を返します。
+
+- 判定はすべて呼び出し元ごとに行います。閾値の判定・検索・説明文の一覧は、`tools.include` / `exclude` / `overrides` と[ツール認可](#ツール認可opa-サイドカー)を通った後の「呼び出し元に実際に見えるツール」に対して行います。ポリシーで拒否されたツールは `tool_search` の結果にも説明文にも現れず、隠れているツールの呼び出しも直接呼んだ場合と同じ認可と監査ログを通ります。`tool_search` の呼び出し自体も監査ログに残り、ポリシーで全面的に拒否された呼び出し元には `tool_search` も同じ `tool not allowed by policy` エラーを返します。
+- `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
+- 閾値は全サーバー合計ではなく、エンドポイントごとに呼び出し元に見えるツール数と比較します。
+- バックエンドに `tool_search` という名前のツールがあっても、合成ツールがその名前を使うため隠れます（警告ログを出す）。
+
 ### 結果のキャッシュ（`cache`）
 
 ```yaml
@@ -581,6 +615,10 @@ audit:
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
+| `toolSearch.threshold` | int | エンドポイントで見えるツール数がこれを超えると `tools/list` が `tool_search` だけを返す（デフォルト: 100）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
+| `toolSearch.defaultLimit` | int | `limit` 未指定時に `tool_search` が返す件数（デフォルト: 10） |
+| `toolSearch.resultFormat` | string | `default`（ツール定義）または `claude`（`tool_reference` ブロック） |
+| `toolSearch.digestMaxTools` | int | `tool_search` の説明に列挙するツール数。`-1` / `0` で全件（デフォルト）、`N` で名前順の先頭 `N` 件 |
 
 #### `gateway.specRefresh`
 

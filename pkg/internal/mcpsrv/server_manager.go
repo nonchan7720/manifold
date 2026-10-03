@@ -45,6 +45,8 @@ type MCPServer struct {
 	middlewareFn func(name string) []mcp.Middleware
 	toolCache    *ToolCache
 	auditLogger  *AuditLogger
+	// toolSearchCfg は gateway.toolSearch（WithToolSearchConfig で設定、未設定なら既定値）。
+	toolSearchCfg config.ToolSearchConfig
 
 	meterProvider metric.MeterProvider
 	metrics       *specRefreshMetrics
@@ -63,6 +65,12 @@ func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
 // results in cache. Without it, cache settings are ignored.
 func WithToolCache(cache *ToolCache) Option {
 	return func(s *MCPServer) { s.toolCache = cache }
+}
+
+// WithToolSearchConfig sets gateway.toolSearch for every server. Without it
+// the defaults apply (tool_search above 100 visible tools).
+func WithToolSearchConfig(cfg config.ToolSearchConfig) Option {
+	return func(s *MCPServer) { s.toolSearchCfg = cfg }
 }
 
 // WithAuditLogger records every tools/call on every server to l.
@@ -213,7 +221,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			authzMiddlewares = s.middlewareFn(name)
 		}
 		srv.AddReceivingMiddleware(
-			ServerToolMiddlewares(name, server, authzMiddlewares, s.toolCache, s.auditLogger)...,
+			ServerToolMiddlewares(
+				name, server, authzMiddlewares, s.toolCache, s.auditLogger, s.toolSearchCfg,
+			)...,
 		)
 
 		if !passthrough {

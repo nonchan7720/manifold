@@ -45,6 +45,7 @@ Server
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
+- **Tool search**: Above a configurable number of visible tools, an endpoint's `tools/list` becomes a single `tool_search` tool (BM25 / regexp / fuzzy, Claude Tool Search Tool compatible), so large APIs don't flood the model's context — and it only ever searches the tools the caller is allowed to see (`gateway.toolSearch`)
 - **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
@@ -533,6 +534,39 @@ mcpServers:
 - Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
 
+### Tool search (`gateway.toolSearch`)
+
+An endpoint backed by a large OpenAPI spec or MCP server can expose hundreds of tools, and every one of them lands in the model's context through `tools/list`. When the caller can see more than `gateway.toolSearch.threshold` tools on an endpoint (default: 100), that endpoint's `tools/list` returns a single synthetic `tool_search` tool instead. The client calls `tool_search` with a query, receives the matching tools' full definitions (`name` / `description` / `inputSchema`), and then calls the real tool directly through `tools/call` — hidden tools stay callable.
+
+```yaml
+gateway:
+  toolSearch:
+    threshold: 100        # switch to tool_search above this many visible tools (default 100)
+    defaultLimit: 10      # results returned when the caller omits limit (default 10)
+    resultFormat: default # or claude
+    digestMaxTools: -1    # tools listed in tool_search's description: -1 / 0 = all, N = first N by name
+```
+
+`tool_search` takes `query` (required), `method` and `limit`. Every method searches tool names, descriptions, argument names and argument descriptions (recursively through nested objects and arrays) — the same fields as the Claude API's Tool Search Tool.
+
+| `method` | Description |
+| -------- | ----------- |
+| `bm25`   | (default) Ranked full-text search with BM25 scoring. CJK text (kanji, kana, hangul) is tokenized into bigrams, so Japanese descriptions are searchable |
+| `regexp` | Case-insensitive regular expression match |
+| `fuzzy`  | Subsequence (fuzzy) match |
+
+| `resultFormat` | Description |
+| -------------- | ----------- |
+| `default`      | (default) An array of the matching tools' full definitions (`name` / `description` / `inputSchema`) |
+| `claude`       | An array of `tool_reference` blocks (`{"type": "tool_reference", "tool_name": "..."}`) per the [Claude API's Tool Search Tool custom search contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation); the Claude API expands them into full tool definitions |
+
+No match returns `[]`, never `null`.
+
+- Everything is decided per caller: the threshold, the search and the description digest all work on the tools the caller can actually see, after `tools.include` / `exclude` / `overrides` and [tool authorization](#tool-authorization-opa-sidecar). A tool the policy denies never appears in `tool_search` results or in its description, and calling a hidden tool goes through the same authorization and audit log as a direct call. `tool_search` calls are audited too, and a caller the policy denies entirely gets the same `tool not allowed by policy` error from `tool_search`.
+- `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools`, so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
+- The threshold is compared per endpoint against the caller's visible tools, not against the total across all servers.
+- A backend tool named `tool_search` is hidden (with a warning), since the synthetic tool takes that name.
+
 ### Caching results (`cache`)
 
 ```yaml
@@ -581,6 +615,10 @@ Every `tools/call` writes one JSON line, separate from the application log:
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
+| `toolSearch.threshold` | int | Number of visible tools on an endpoint above which `tools/list` returns only `tool_search` (default: 100). See [Tool search](#tool-search-gatewaytoolsearch) |
+| `toolSearch.defaultLimit` | int | Results returned by `tool_search` when the caller omits `limit` (default: 10) |
+| `toolSearch.resultFormat` | string | `default` (tool definitions) or `claude` (`tool_reference` blocks) |
+| `toolSearch.digestMaxTools` | int | Tools listed in `tool_search`'s description: `-1` or `0` for all (default), `N` for the first `N` by name |
 
 #### `gateway.specRefresh`
 

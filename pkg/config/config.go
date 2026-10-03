@@ -138,6 +138,10 @@ type Gateway struct {
 	Edge EdgeConfig `mapstructure:"edge"`
 
 	SpecRefresh SpecRefreshConfig `mapstructure:"specRefresh"`
+
+	// ToolSearch は、見えるツールが多いエンドポイントの tools/list を合成ツール
+	// tool_search に置き換える閾値などの設定。
+	ToolSearch ToolSearchConfig `mapstructure:"toolSearch"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -163,6 +167,7 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Edge),
 		validation.Field(&c.SpecRefresh),
+		validation.Field(&c.ToolSearch),
 	)
 }
 
