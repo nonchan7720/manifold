@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"maps"
@@ -33,6 +34,8 @@ type Config struct {
 	Authz AuthzConfig `mapstructure:"authz"`
 
 	OAuth OAuthConfig `mapstructure:"oauth"`
+
+	Audit AuditConfig `mapstructure:"audit"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -113,15 +116,12 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 			}
 			return validateServiceNames(servers)
 		})),
-		validation.Field(
-			&c.Redis,
-			validation.When(c.SQLite == nil && c.Memory == nil, validation.Required),
-		),
-		validation.Field(
-			&c.SQLite,
-			validation.When(c.Redis == nil && c.Memory == nil, validation.Required),
-		),
+		// redis / sqlite / memory のいずれも未設定ならインメモリストアで動く
+		// （UsesEphemeralStore 参照）ため、どれも必須にしない。
+		validation.Field(&c.Redis),
+		validation.Field(&c.SQLite),
 		validation.Field(&c.Storage),
+		validation.Field(&c.Audit),
 		validation.Field(&c.Authz),
 		validation.Field(&c.OAuth),
 	)
@@ -138,6 +138,9 @@ type Gateway struct {
 	Edge EdgeConfig `mapstructure:"edge"`
 
 	SpecRefresh SpecRefreshConfig `mapstructure:"specRefresh"`
+
+	// Aggregate は複数サーバーのツールを /mcp の 1 エンドポイントにまとめる。
+	Aggregate AggregateConfig `mapstructure:"aggregate"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -163,5 +166,36 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Edge),
 		validation.Field(&c.SpecRefresh),
+		validation.Field(&c.Aggregate),
 	)
+}
+
+// UsesEphemeralStore reports whether the gateway keeps sessions and tokens in
+// process memory (see cmd.newStoreClient): sqlite.path unset and either
+// memory.enabled or no redis configured.
+func (c *Config) UsesEphemeralStore() bool {
+	if c.SQLite != nil && c.SQLite.Path != "" {
+		return false
+	}
+	if c.Memory != nil && c.Memory.Enabled {
+		return true
+	}
+	return c.Redis == nil
+}
+
+// ApplyEphemeralDefaults fills in gateway.encryptKey with a random key when it
+// is unset and the store is in memory: the key only protects tokens held by
+// this process, which are lost on restart anyway. A persistent store (redis,
+// sqlite) still requires a configured key, so tokens stay readable across
+// restarts and replicas.
+func (c *Config) ApplyEphemeralDefaults() (generated bool, err error) {
+	if c.Gateway.EncryptKey != "" || !c.UsesEphemeralStore() {
+		return false, nil
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return false, fmt.Errorf("generate gateway.encryptKey: %w", err)
+	}
+	c.Gateway.EncryptKey = base64.StdEncoding.EncodeToString(key)
+	return true, nil
 }

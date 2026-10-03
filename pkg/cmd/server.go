@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -37,13 +38,20 @@ import (
 )
 
 func newGatewayCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Start mcp gateway server",
+		Example: `  # Run from config.yaml
+  manifold gateway
+
+  # Serve an OpenAPI spec without a config file (http://localhost:9999/mcp/api)
+  manifold gateway --openapi https://petstore3.swagger.io/api/v3/openapi.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runGatewayServer(cmd.Context())
 		},
 	}
+	quickStart.register(cmd.Flags(), true)
+	return cmd
 }
 
 // storageHostURL は設定されたホスト URL を解析する。空文字や不正な値は起動を止めず、
@@ -261,8 +269,9 @@ func newMCPServer(
 	contentManagementService *storage.ContentManagementService,
 	gateway config.Gateway,
 	middlewareFn func(name string) []mcp.Middleware,
+	extraOpts ...mcpsrv.Option,
 ) (*mcpsrv.MCPServer, error) {
-	var opts []mcpsrv.Option
+	opts := slices.Clone(extraOpts)
 	if middlewareFn != nil {
 		opts = append(opts, mcpsrv.WithServerMiddleware(middlewareFn))
 	}
@@ -316,26 +325,17 @@ func runGatewayServer(ctx context.Context) error {
 	const mediaDownloadPath = "/media/download"
 	hostURL := storageHostURL(ctx, globalConfig.Storage.HostURL, mediaDownloadPath)
 	contentManagementService := storage.NewContentManagementService(hostURL, mediaService)
-	_, cleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
+	metricsHandler, telemetryCleanup, err := setupTelemetry(ctx)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer telemetryCleanup()
 
-	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
-		ctx,
-		&globalConfig.Telemetry,
-	)
+	toolCache, auditLogger, err := newToolCacheAndAudit()
 	if err != nil {
 		return err
 	}
-	defer metricsCleanup()
-
-	_, logsCleanup, err := telemetry.NewLoggerProvider(ctx, &globalConfig.Telemetry)
-	if err != nil {
-		return err
-	}
-	defer logsCleanup()
+	defer func() { _ = auditLogger.Close() }()
 
 	authHandler := newAuthHandler(globalConfig, storeClient)
 	healthHandler := httphandler.NewHealthHandler()
@@ -350,11 +350,22 @@ func runGatewayServer(ctx context.Context) error {
 		contentManagementService,
 		globalConfig.Gateway,
 		authzMiddleware,
+		mcpsrv.WithToolCache(toolCache),
+		mcpsrv.WithAuditLogger(auditLogger),
 	)
 	if err != nil {
 		return err
 	}
 	defer mcpSrv.Close()
+	var aggregateSrv *mcp.Server
+	if globalConfig.Gateway.Aggregate.Enabled {
+		aggregateSrv, err = newAggregateServer(
+			ctx, mcpSrv, globalConfig.Gateway.Aggregate, globalConfig.MCPServer,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	mcpHandler := httphandler.NewMCPHandler(
 		globalConfig.MCPServer, mcpSrv, globalConfig.Authz.WithDefaults(), authzDecider,
 	)
@@ -362,18 +373,14 @@ func runGatewayServer(ctx context.Context) error {
 	edgeCfg := globalConfig.Gateway.Edge.WithDefaults()
 	pairingService := edgeservices.NewPairingService(storeClient)
 	edgeRegistry := edgeservices.NewInMemoryRegistry()
-	var reverseGatewayOpts []mcpsrv.ReverseGatewayOption
-	if authzMiddleware != nil {
-		reverseGatewayOpts = append(
-			reverseGatewayOpts, mcpsrv.WithReverseServerMiddleware(authzMiddleware),
-		)
-	}
 	reverseGateway := mcpsrv.NewReverseGateway(
 		edgeRegistry,
 		pairingService,
 		edgeCfg,
 		globalConfig.MCPServer,
-		reverseGatewayOpts...,
+		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
+			globalConfig.MCPServer, authzMiddleware, toolCache, auditLogger,
+		)),
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
@@ -409,6 +416,14 @@ func runGatewayServer(ctx context.Context) error {
 			globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
 		)(mcpHTTPSrv),
 	)
+	if aggregateSrv != nil {
+		// 集約エンドポイントはサーバー名を持たないため、個別の
+		// /mcp/{server_name} と同じ bearer 必須チェックだけを掛ける。
+		mux.Handle("/mcp", middleware.RequireBearer(mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return aggregateSrv },
+			&mcp.StreamableHTTPOptions{Stateless: true},
+		)))
+	}
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
 	mux.Handle("GET /edge/ws", edgeWSHandler)
@@ -447,6 +462,84 @@ func runGatewayServer(ctx context.Context) error {
 		),
 	}
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
+}
+
+// setupTelemetry starts the OpenTelemetry trace, metric and log providers
+// for globalConfig.Telemetry. metricsHandler is the Prometheus pull handler,
+// or nil when not configured.
+func setupTelemetry(ctx context.Context) (metricsHandler http.Handler, cleanup func(), err error) {
+	_, traceCleanup, err := telemetry.NewTracerProvider(ctx, &globalConfig.Telemetry)
+	if err != nil {
+		return nil, nil, err
+	}
+	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
+		ctx,
+		&globalConfig.Telemetry,
+	)
+	if err != nil {
+		traceCleanup()
+		return nil, nil, err
+	}
+	_, logsCleanup, err := telemetry.NewLoggerProvider(ctx, &globalConfig.Telemetry)
+	if err != nil {
+		metricsCleanup()
+		traceCleanup()
+		return nil, nil, err
+	}
+	return metricsHandler, func() {
+		logsCleanup()
+		metricsCleanup()
+		traceCleanup()
+	}, nil
+}
+
+// newToolCacheAndAudit builds the tool result cache shared by every server
+// and the audit logger for globalConfig.Audit (nil when disabled).
+func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
+	var auditLogger *mcpsrv.AuditLogger
+	if globalConfig.Audit.Enabled {
+		var err error
+		auditLogger, err = mcpsrv.NewAuditLogger(
+			globalConfig.Audit, globalConfig.Authz.WithDefaults().Headers,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return mcpsrv.NewToolCache(0), auditLogger, nil
+}
+
+// reverseServerMiddlewareFn builds the per-server middleware factory for
+// reverse (WebMCP) servers: the same tool filter, cache, authz and audit
+// layers as every other server (see mcpsrv.ServerToolMiddlewares).
+func reverseServerMiddlewareFn(
+	servers config.Servers,
+	authzFn func(name string) []mcp.Middleware,
+	cache *mcpsrv.ToolCache,
+	audit *mcpsrv.AuditLogger,
+) func(name string) []mcp.Middleware {
+	return func(name string) []mcp.Middleware {
+		var authzMiddlewares []mcp.Middleware
+		if authzFn != nil {
+			authzMiddlewares = authzFn(name)
+		}
+		return mcpsrv.ServerToolMiddlewares(name, servers[name], authzMiddlewares, cache, audit)
+	}
+}
+
+// newAggregateServer builds the server behind the aggregated /mcp endpoint
+// for an enabled gateway.aggregate.
+func newAggregateServer(
+	ctx context.Context,
+	mcpSrv *mcpsrv.MCPServer,
+	cfg config.AggregateConfig,
+	servers config.Servers,
+) (*mcp.Server, error) {
+	members := cfg.Members(servers)
+	if len(members) == 0 {
+		slog.WarnContext(ctx, "gateway.aggregate is enabled but no server can be aggregated")
+	}
+	return mcpSrv.NewAggregateServer(ctx, members, cfg.SeparatorOrDefault(), cfg.ToolSearch)
 }
 
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。

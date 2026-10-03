@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -267,15 +268,35 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	}
 	normalizeReverseOrigins(conf.MCPServer)
 
-	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
+	if generated, err := conf.ApplyEphemeralDefaults(); err != nil {
 		return nil, err
+	} else if generated {
+		slog.WarnContext(ctx, "gateway.encryptKey is not set; using a random key "+
+			"(fine for the in-memory store, set it for redis or sqlite)")
+	}
+
+	if err := Finalize(ctx, &conf); err != nil {
+		return nil, err
+	}
+	return &conf, nil
+}
+
+// Finalize validates conf and merges agents into the server list, the same
+// as Load does after decoding the config file. It is exported for configs
+// built in code (e.g. the gateway's --openapi quick start flags).
+func Finalize(ctx context.Context, conf *Config) error {
+	for name, srv := range conf.MCPServer {
+		srv.Name = name
+	}
+	if err := validation.ValidateWithContext(ctx, conf); err != nil {
+		return err
 	}
 	// agents は両方を個別に検証した後でサーバー一覧へ加える。こうすることで
 	// エージェントが Server.ValidateWithContext を通ることはなく、上の名前
 	// 重複チェックも設定ファイルどおりの 2 つの map を比較できる。
 	conf.MCPServer = mergeAgentsIntoServers(conf.MCPServer, conf.Agents)
 	resolveServiceNames(conf.MCPServer)
-	return &conf, nil
+	return conf.Gateway.Aggregate.ValidateServers(ctx, conf.MCPServer)
 }
 
 // normalizeReverseOrigins rewrites each reverse Server's Origin to its

@@ -46,8 +46,16 @@ type Server struct {
 	// nil は gateway.specRefresh.rejectOn を使う、"" / NONE はこのサーバーのみ拒否しない。
 	SpecRefreshRejectOn *string `mapstructure:"specRefreshRejectOn"`
 
-	// Tools は静的ツールカタログ（生成物）関連の設定。
+	// Tools は静的ツールカタログ（生成物）と、公開するツールの絞り込み・
+	// 名前変更の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
+
+	// ToolSearch を有効にすると、tools/list は全ツールの代わりに
+	// search_tools / call_tool のメタツールだけを返す。
+	ToolSearch *ToolSearchConfig `mapstructure:"toolSearch"`
+
+	// Cache は tools/list・tools/call の結果のキャッシュ設定。
+	Cache *CacheConfig `mapstructure:"cache"`
 
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
@@ -134,7 +142,12 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		&s,
 		validation.Field(&s.Description, validation.Required),
 		validation.Field(&s.Service),
-		validation.Field(&s.BaseURL, validation.When(s.IsOpenAPI(), validation.Required)),
+		// spec があれば baseURL は spec の servers（無ければ spec の URL）から
+		// 導出できるため、必須なのは spec 無しで tools.file だけを使う場合に限る。
+		validation.Field(
+			&s.BaseURL,
+			validation.When(s.IsOpenAPI() && s.Spec == "", validation.Required),
+		),
 		validation.Field(
 			&s.Transport,
 			validation.When(
@@ -227,6 +240,13 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
+		validation.Field(&s.ToolSearch, validation.By(func(any) error {
+			if s.ToolSearch.IsEnabled() && s.Transport == MCPTransportReverse {
+				return fmt.Errorf("toolSearch is not supported for the reverse transport")
+			}
+			return nil
+		})),
+		validation.Field(&s.Cache),
 		validation.Field(&s.AgentCardPath, validation.By(func(any) error {
 			if s.AgentCardPath != "" {
 				return fmt.Errorf("agentCardPath is only supported under agents")
@@ -338,11 +358,6 @@ func (s *Server) IsA2ABackend() bool {
 // IsReverseBackend はこの Server が WebMCP reverse connection gateway 経由かどうかを返す。
 func (s *Server) IsReverseBackend() bool {
 	return s.Transport == MCPTransportReverse
-}
-
-// ToolsConfig groups static tool catalog settings under mcpServers.<name>.tools.
-type ToolsConfig struct {
-	File string `mapstructure:"file"`
 }
 
 // OAuth2.UnknownClient が取る値。clients にマッピングの無い下流クライアントを
