@@ -131,14 +131,13 @@ var petTools = []searchTool{
 	{"cancel_pet", "cancel a pet order"},
 }
 
-func TestToolSearch_Disabled_PassesThrough(t *testing.T) {
-	disabled := false
+// 既定（enabled 未設定）では tool_search は無効で、閾値を超えても tools/list はそのまま。
+func TestToolSearch_DisabledByDefault_PassesThrough(t *testing.T) {
 	srv := newToolSearchTestServer(
-		t, config.ToolSearchConfig{Enabled: &disabled, Threshold: 1}, nil, nil, nil, petTools...,
+		t, config.ToolSearchConfig{Threshold: 1}, nil, nil, nil, petTools...,
 	)
 	cs := connectTestClient(t, t.Context(), srv)
 
-	// 閾値を超えていても tools/list はそのまま
 	require.ElementsMatch(
 		t, []string{"list_pets", "get_pet", "cancel_pet"}, sessionToolNames(t, cs),
 	)
@@ -147,13 +146,14 @@ func TestToolSearch_Disabled_PassesThrough(t *testing.T) {
 		Name: ToolSearchName, Arguments: map[string]any{"query": "pet"},
 	})
 	require.ErrorContains(t, err, "unknown tool")
-	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: &disabled}))
+	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}))
+	require.NotNil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}))
 }
 
 func TestToolSearch_BelowThreshold_RealToolsVisible(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 100},
+		config.ToolSearchConfig{Enabled: true, Threshold: 100},
 		nil,
 		nil,
 		nil,
@@ -167,7 +167,7 @@ func TestToolSearch_BelowThreshold_RealToolsVisible(t *testing.T) {
 func TestToolSearch_AboveThreshold_OnlyToolSearchVisible_HiddenToolsCallable(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 1},
+		config.ToolSearchConfig{Enabled: true, Threshold: 1},
 		nil,
 		nil,
 		nil,
@@ -188,7 +188,7 @@ func TestToolSearch_AboveThreshold_OnlyToolSearchVisible_HiddenToolsCallable(t *
 func TestToolSearch_DefaultMethodBM25_RoundTripsDefinitions(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 1},
+		config.ToolSearchConfig{Enabled: true, Threshold: 1},
 		nil,
 		nil,
 		nil,
@@ -226,7 +226,7 @@ func TestToolSearch_MethodAndLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newToolSearchTestServer(
 				t,
-				config.ToolSearchConfig{Threshold: 1},
+				config.ToolSearchConfig{Enabled: true, Threshold: 1},
 				nil,
 				nil,
 				nil,
@@ -246,7 +246,7 @@ func TestToolSearch_NoMatch_ReturnsEmptyArrayJSON(t *testing.T) {
 	for _, format := range []string{config.ToolSearchResultFormatDefault, config.ToolSearchResultFormatClaude} {
 		for _, method := range []string{"bm25", "regexp", "fuzzy"} {
 			t.Run(format+"_"+method, func(t *testing.T) {
-				cfg := config.ToolSearchConfig{Threshold: 1, ResultFormat: format}
+				cfg := config.ToolSearchConfig{Enabled: true, Threshold: 1, ResultFormat: format}
 				srv := newToolSearchTestServer(t, cfg, nil, nil, nil, petTools...)
 				cs := connectTestClient(t, t.Context(), srv)
 				res := callToolSearch(
@@ -265,7 +265,9 @@ func TestToolSearch_NoMatch_ReturnsEmptyArrayJSON(t *testing.T) {
 }
 
 func TestToolSearch_ClaudeFormat_ReturnsToolReferenceBlocks(t *testing.T) {
-	cfg := config.ToolSearchConfig{Threshold: 1, ResultFormat: config.ToolSearchResultFormatClaude}
+	cfg := config.ToolSearchConfig{
+		Enabled: true, Threshold: 1, ResultFormat: config.ToolSearchResultFormatClaude,
+	}
 	srv := newToolSearchTestServer(t, cfg, nil, nil, nil, petTools...)
 	cs := connectTestClient(t, t.Context(), srv)
 
@@ -286,7 +288,7 @@ func TestToolSearch_ClaudeFormat_ReturnsToolReferenceBlocks(t *testing.T) {
 func TestToolSearch_RegexpInvalidPattern_ReturnsToolError(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 1},
+		config.ToolSearchConfig{Enabled: true, Threshold: 1},
 		nil,
 		nil,
 		nil,
@@ -302,7 +304,7 @@ func TestToolSearch_UpstreamToolSearchIsHidden(t *testing.T) {
 	tools := append([]searchTool{{ToolSearchName, "upstream tool_search"}}, petTools[:1]...)
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 100},
+		config.ToolSearchConfig{Enabled: true, Threshold: 100},
 		nil,
 		nil,
 		nil,
@@ -320,7 +322,7 @@ func TestToolSearch_Authz_OnlyVisibleToolsAreCountedSearchedAndDigested(t *testi
 	var buf bytes.Buffer
 	audit := newAuditLoggerTo(&buf, config.AuthzHeaders{}, false)
 	srv := newToolSearchTestServer(
-		t, config.ToolSearchConfig{Threshold: 1}, nil,
+		t, config.ToolSearchConfig{Enabled: true, Threshold: 1}, nil,
 		[]mcp.Middleware{allowOnlyMiddleware("list_pets", "get_pet")}, audit, petTools...,
 	)
 	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
@@ -353,7 +355,7 @@ func TestToolSearch_Authz_OnlyVisibleToolsAreCountedSearchedAndDigested(t *testi
 
 func TestToolSearch_Authz_FewVisibleTools_StaysBelowThreshold(t *testing.T) {
 	srv := newToolSearchTestServer(
-		t, config.ToolSearchConfig{Threshold: 1}, nil,
+		t, config.ToolSearchConfig{Enabled: true, Threshold: 1}, nil,
 		[]mcp.Middleware{allowOnlyMiddleware("list_pets")}, nil, petTools...,
 	)
 	cs := connectTestClient(t, t.Context(), srv)
@@ -364,7 +366,7 @@ func TestToolSearch_Authz_FewVisibleTools_StaysBelowThreshold(t *testing.T) {
 func TestToolSearch_Authz_DeniedCaller_CannotSearch(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 1},
+		config.ToolSearchConfig{Enabled: true, Threshold: 1},
 		nil,
 		[]mcp.Middleware{denyAllMiddleware},
 		nil,
@@ -386,7 +388,7 @@ func TestToolSearch_SearchesExposedNamesAfterToolFilter(t *testing.T) {
 	}
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 1},
+		config.ToolSearchConfig{Enabled: true, Threshold: 1},
 		tools,
 		nil,
 		nil,
@@ -400,7 +402,7 @@ func TestToolSearch_SearchesExposedNamesAfterToolFilter(t *testing.T) {
 func TestToolSearch_NewToolsShowUpWithoutRestart(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,
-		config.ToolSearchConfig{Threshold: 5},
+		config.ToolSearchConfig{Enabled: true, Threshold: 5},
 		nil,
 		nil,
 		nil,
@@ -495,11 +497,11 @@ func TestMCPServer_ToolSearch_OpenAPIMode(t *testing.T) {
 	}
 
 	// 既定の閾値（100）はフィクスチャのツール数（19）を上回るため実ツールがそのまま見える
-	names := sessionToolNames(t, build(config.ToolSearchConfig{}))
+	names := sessionToolNames(t, build(config.ToolSearchConfig{Enabled: true}))
 	require.Len(t, names, 19)
 	require.NotContains(t, names, ToolSearchName)
 
-	cs := build(config.ToolSearchConfig{Threshold: 1})
+	cs := build(config.ToolSearchConfig{Enabled: true, Threshold: 1})
 	require.Equal(t, []string{ToolSearchName}, sessionToolNames(t, cs))
 	got := searchResultNames(
 		t,

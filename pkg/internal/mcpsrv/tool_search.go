@@ -319,8 +319,8 @@ func handleToolSearchCall(
 }
 
 // newToolSearchMiddleware returns the tool_search middleware for serverName
-// (cfg's zero fields take their defaults), or nil when cfg.Enabled is false:
-// tools/list then passes through untouched and a tools/call of tool_search
+// (cfg's zero fields take their defaults), or nil unless cfg.Enabled: without
+// it tools/list passes through untouched and a tools/call of tool_search
 // reaches the backend like any other name. It sits outside authz and the tool
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the

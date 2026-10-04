@@ -30,18 +30,19 @@ const ToolSearchResultFormatClaude = "claude"
 // digest" (no truncation).
 const DefaultToolSearchDigestMaxTools = -1
 
-// ToolSearchConfig controls the tool_search fallback: once the caller can see
-// more than Threshold tools on an endpoint, that endpoint's tools/list response
+// ToolSearchConfig controls the tool_search fallback (off unless Enabled):
+// once the caller can see more than Threshold tools on an endpoint, that
+// endpoint's tools/list response
 // is replaced by a single synthetic tool_search tool that the client queries
 // for the full tool definitions (name / description / inputSchema) and then
 // calls directly. The decision and the search both work on the tools the
 // caller can see after tools.include / exclude / overrides and authz.
 type ToolSearchConfig struct {
-	// Enabled turns the tool_search fallback on (nil or true, the default) or
-	// off. Off, every endpoint's tools/list is passed through as the backend
-	// returns it, however many tools the caller can see, and tool_search is
-	// not registered. A pointer so a zero-value Config still means "on".
-	Enabled *bool `mapstructure:"enabled"`
+	// Enabled turns the tool_search fallback on. Off (the default), every
+	// endpoint's tools/list is passed through as the backend returns it,
+	// however many tools the caller can see, and tool_search is not
+	// registered.
+	Enabled bool `mapstructure:"enabled"`
 
 	// Threshold is the number of visible tools on an endpoint above which
 	// tool_search replaces the real tool list. 0 (or unset) falls back to
@@ -64,17 +65,14 @@ type ToolSearchConfig struct {
 	DigestMaxTools int `mapstructure:"digestMaxTools"`
 }
 
-// IsEnabled reports whether tool_search is on: Enabled unset or true.
+// IsEnabled reports whether tool_search is on (Enabled: true).
 func (c ToolSearchConfig) IsEnabled() bool {
-	return c.Enabled == nil || *c.Enabled
+	return c.Enabled
 }
 
-// WithDefaults returns a copy of c with zero-value (or negative) fields replaced by defaults.
+// WithDefaults returns a copy of c with zero-value (or negative) fields
+// replaced by defaults. Enabled has no default: unset is off.
 func (c ToolSearchConfig) WithDefaults() ToolSearchConfig {
-	if c.Enabled == nil {
-		enabled := true
-		c.Enabled = &enabled
-	}
 	if c.Threshold <= 0 {
 		c.Threshold = DefaultToolSearchThreshold
 	}

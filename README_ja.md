@@ -45,7 +45,7 @@ Server
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **ツール検索**: 見えるツールが設定した数を超えたエンドポイントでは、`tools/list` を 1 つの `tool_search` ツールに置き換える（BM25 / 正規表現 / ファジー、Claude の Tool Search Tool 互換）。大きな API でもモデルのコンテキストを圧迫せず、検索の対象は呼び出し元に許可されたツールだけ（`gateway.toolSearch`）
+- **ツール検索**（任意で有効化）: 見えるツールが設定した数を超えたエンドポイントでは、`tools/list` を 1 つの `tool_search` ツールに置き換える（BM25 / 正規表現 / ファジー、Claude の Tool Search Tool 互換）。大きな API でもモデルのコンテキストを圧迫せず、検索の対象は呼び出し元に許可されたツールだけ（`gateway.toolSearch`）
 - **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
@@ -536,12 +536,12 @@ mcpServers:
 
 ### ツール検索（`gateway.toolSearch`）
 
-大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。既定で有効で、`enabled: false` で全エンドポイントまとめて無効にできます。
+大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。既定では無効で、`enabled: true` で全エンドポイントまとめて有効にします。
 
 ```yaml
 gateway:
   toolSearch:
-    enabled: true         # false ならツール数に関わらず tools/list をそのまま返す（デフォルト true）
+    enabled: true         # デフォルトは false（ツール数に関わらず tools/list をそのまま返す）
     threshold: 100        # 見えるツール数がこれを超えると tool_search に切り替わる（デフォルト 100）
     defaultLimit: 10      # limit 未指定時の検索結果件数（デフォルト 10）
     resultFormat: default # または claude
@@ -567,7 +567,7 @@ gateway:
 - `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
 - 閾値は全サーバー合計ではなく、エンドポイントごとに呼び出し元に見えるツール数と比較します。
 - バックエンドに `tool_search` という名前のツールがあっても、合成ツールがその名前を使うため隠れます（警告ログを出す）。
-- `enabled: false` にすると、`tools/list` はバックエンドの返したとおり（ページネーションも含めて）返し、`tool_search` は登録されず、バックエンドの `tool_search` という名前のツールも隠れません。`toolSearch` の他の設定は使われません。
+- `enabled: true` にしない限り、`tools/list` はバックエンドの返したとおり（ページネーションも含めて）返し、`tool_search` は登録されず、バックエンドの `tool_search` という名前のツールも隠れません。`toolSearch` の他の設定は使われません。
 
 ### 結果のキャッシュ（`cache`）
 
@@ -617,7 +617,7 @@ audit:
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
-| `toolSearch.enabled` | bool | `tool_search` への置き換えを全エンドポイントで有効 / 無効にする（デフォルト: `true`）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
+| `toolSearch.enabled` | bool | `tool_search` への置き換えを全エンドポイントで有効にする（デフォルト: `false`）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
 | `toolSearch.threshold` | int | エンドポイントで見えるツール数がこれを超えると `tools/list` が `tool_search` だけを返す（デフォルト: 100）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
 | `toolSearch.defaultLimit` | int | `limit` 未指定時に `tool_search` が返す件数（デフォルト: 10） |
 | `toolSearch.resultFormat` | string | `default`（ツール定義）または `claude`（`tool_reference` ブロック） |
