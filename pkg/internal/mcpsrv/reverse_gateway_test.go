@@ -571,12 +571,22 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 		AppSession:  "session-1",
 		ConnID:      "conn-1",
 	}
+	replaced := srv
 	connectFakeTab(t, gateway, binding)
 	require.Equal(t, 0, cache.Len(), "rebuilding the per-user server drops its cached entries")
 
 	srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)
+	require.NotSame(t, replaced, srv)
 	cs = connectTestClient(t, staticResolveCtx(t), srv)
+	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
+	require.Equal(t, 1, cache.Len())
+
+	// 置き換えられた旧サーバーにまだ届いているリクエストは、旧タブの一覧を
+	// キャッシュに書き戻さない（新サーバーのエントリを上書きしない）。
+	csOld := connectTestClient(t, staticResolveCtx(t), replaced)
+	require.ElementsMatch(t, []string{"create_pairing_code"}, sessionToolNames(t, csOld))
+	require.Equal(t, 1, cache.Len())
 	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
 }
 

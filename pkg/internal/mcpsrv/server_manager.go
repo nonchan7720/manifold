@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -163,10 +164,12 @@ var errBaseURLUnresolved = errors.New(
 )
 
 // checkCatalogBaseURL returns errBaseURLUnresolved unless register's base
-// URL is an absolute http(s) URL.
+// URL is an absolute http(s) URL with a host (so "https:///api" or a bare
+// "http://" are rejected too).
 func checkCatalogBaseURL(register *MCPToolRegistry) error {
 	baseURL := register.BaseURL()
-	if strings.HasPrefix(baseURL, "http://") || strings.HasPrefix(baseURL, "https://") {
+	u, err := url.Parse(baseURL)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
 		return nil
 	}
 	return fmt.Errorf("%w (derived %q)", errBaseURLUnresolved, baseURL)

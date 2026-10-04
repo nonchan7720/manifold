@@ -921,6 +921,9 @@ func TestCheckCatalogBaseURL(t *testing.T) {
 		"":                         true,
 		"/api/v3":                  true,
 		"api.example.com":          true,
+		"https:///api":             true, // スキームはあってもホストが無い
+		"http://":                  true,
+		"ftp://api.example.com":    true,
 	} {
 		r := NewMCPToolRegistry()
 		r.setBaseURL(baseURL)

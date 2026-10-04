@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -45,7 +46,7 @@ type ReverseGateway struct {
 	byOrigin map[string]*config.Server
 
 	mu          sync.Mutex
-	userServers map[string]*mcp.Server
+	userServers map[string]*reverseUserServer
 
 	// lazyBuildMu serializes ResolveServer's lazy first-build path (see
 	// ResolveServer) so concurrent first accesses for a brand-new
@@ -94,7 +95,7 @@ func NewReverseGateway(
 		edgeCfg:     edgeCfg.WithDefaults(),
 		byName:      map[string]*config.Server{},
 		byOrigin:    map[string]*config.Server{},
-		userServers: map[string]*mcp.Server{},
+		userServers: map[string]*reverseUserServer{},
 	}
 	for name, srv := range servers {
 		if !srv.IsReverseBackend() {
@@ -351,8 +352,37 @@ func (g *ReverseGateway) ResolveServer(ctx context.Context, name string) (*mcp.S
 func (g *ReverseGateway) lookupUserServer(key string) (*mcp.Server, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	srv, ok := g.userServers[key]
-	return srv, ok
+	entry, ok := g.userServers[key]
+	if !ok {
+		return nil, false
+	}
+	return entry.srv, true
+}
+
+// reverseUserServer is one per-user *mcp.Server with the flag
+// rebuildUserServer raises once it has been replaced.
+type reverseUserServer struct {
+	srv *mcp.Server
+	// retired is set when a newer server took this one's place in
+	// userServers. The HTTP handler resolves the server per request, so only
+	// requests that were already in flight still reach a retired one; their
+	// results describe the previous tab, so retiredServerMiddleware keeps
+	// them out of the tool cache.
+	retired atomic.Bool
+}
+
+// retiredServerMiddleware bypasses the tool cache (withToolCacheBypass) for
+// every request once retired is set. It is added outermost, so it covers
+// the cache middleware WithReverseServerMiddleware installed.
+func retiredServerMiddleware(retired *atomic.Bool) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if retired.Load() {
+				ctx = withToolCacheBypass(ctx)
+			}
+			return next(ctx, method, req)
+		}
+	}
 }
 
 // rebuildUserServer (re)builds the per-user server for binding, merging
@@ -376,6 +406,8 @@ func (g *ReverseGateway) rebuildUserServer(
 	if g.middlewareFn != nil {
 		srv.AddReceivingMiddleware(g.middlewareFn(name)...)
 	}
+	entry := &reverseUserServer{srv: srv}
+	srv.AddReceivingMiddleware(retiredServerMiddleware(&entry.retired))
 	g.registerPairingTool(srv, binding.IdentityKey)
 
 	if session != nil {
@@ -394,7 +426,14 @@ func (g *ReverseGateway) rebuildUserServer(
 			return nil
 		}
 	}
-	g.userServers[key] = srv
+	// Retire the server being replaced before dropping the cache, so a
+	// request it is still handling can neither be served from nor stored in
+	// the cache (a fetch already past that point is caught by the new
+	// generation InvalidateServer starts).
+	if previous, ok := g.userServers[key]; ok {
+		previous.retired.Store(true)
+	}
+	g.userServers[key] = entry
 	if g.toolCache != nil {
 		g.toolCache.InvalidateServer(name)
 	}

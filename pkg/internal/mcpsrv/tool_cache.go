@@ -24,10 +24,15 @@ const DefaultToolCacheMaxEntries = 10000
 // every server. Entries are kept as JSON so a hit always hands out a fresh
 // copy: outer middlewares (authz) modify the results they receive.
 type ToolCache struct {
-	mu         sync.Mutex
-	entries    map[string]toolCacheEntry
-	maxEntries int
-	now        func() time.Time
+	mu      sync.Mutex
+	entries map[string]toolCacheEntry
+	// generations counts InvalidateServer calls per server. cachedResult
+	// reads a server's generation before fetching and set refuses a result
+	// fetched under an older one, so a fetch that was in flight when the
+	// server's tools were replaced can't re-register the stale result.
+	generations map[string]uint64
+	maxEntries  int
+	now         func() time.Time
 }
 
 type toolCacheEntry struct {
@@ -45,10 +50,19 @@ func NewToolCache(maxEntries int) *ToolCache {
 		maxEntries = DefaultToolCacheMaxEntries
 	}
 	return &ToolCache{
-		entries:    map[string]toolCacheEntry{},
-		maxEntries: maxEntries,
-		now:        time.Now,
+		entries:     map[string]toolCacheEntry{},
+		generations: map[string]uint64{},
+		maxEntries:  maxEntries,
+		now:         time.Now,
 	}
+}
+
+// generation returns server's current invalidation generation, to pass to
+// set with a result fetched from now on.
+func (c *ToolCache) generation(server string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.generations[server]
 }
 
 func (c *ToolCache) get(key string) ([]byte, bool) {
@@ -65,9 +79,16 @@ func (c *ToolCache) get(key string) ([]byte, bool) {
 	return entry.value, true
 }
 
-func (c *ToolCache) set(server, key string, value []byte, ttl time.Duration) {
+// set stores value for key under server, unless gen (server's generation
+// when the value was fetched, see generation) is no longer current: the
+// server's tools were replaced while the fetch was in flight, so the value
+// is stale and is dropped. It reports whether the value was stored.
+func (c *ToolCache) set(server, key string, gen uint64, value []byte, ttl time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.generations[server] != gen {
+		return false
+	}
 	now := c.now()
 	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.maxEntries {
 		for k, entry := range c.entries {
@@ -84,13 +105,15 @@ func (c *ToolCache) set(server, key string, value []byte, ttl time.Duration) {
 		}
 	}
 	c.entries[key] = toolCacheEntry{server: server, value: value, expires: now.Add(ttl)}
+	return true
 }
 
 // InvalidateServer drops every entry cached for server (its tools/list pages
-// and tools/call results, for every caller). Call it whenever the server's
-// tools are replaced underneath the cache — a spec refresh adopting a new
-// spec, or a reverse (WebMCP) per-user server being rebuilt — so a result
-// fetched before the change isn't served for up to its TTL afterwards.
+// and tools/call results, for every caller) and starts a new generation for
+// it, so a result fetched before the call is neither served nor stored
+// afterwards. Call it whenever the server's tools are replaced underneath
+// the cache — a spec refresh adopting a new spec, or a reverse (WebMCP)
+// per-user server being rebuilt.
 func (c *ToolCache) InvalidateServer(server string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -99,6 +122,22 @@ func (c *ToolCache) InvalidateServer(server string) {
 			delete(c.entries, k)
 		}
 	}
+	c.generations[server]++
+}
+
+type toolCacheBypassKey struct{}
+
+// withToolCacheBypass marks ctx so newToolCacheMiddleware neither serves nor
+// stores results for the request: used for a request still being handled by
+// a reverse per-user server that has since been replaced (see
+// retiredServerMiddleware), whose results describe the previous tab.
+func withToolCacheBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, toolCacheBypassKey{}, true)
+}
+
+func toolCacheBypassed(ctx context.Context) bool {
+	v, _ := ctx.Value(toolCacheBypassKey{}).(bool)
+	return v
 }
 
 // Len returns the number of entries currently held (expired ones included
@@ -177,7 +216,7 @@ func newToolCacheMiddleware(
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if _, _, ok := cacheCaller(ctx); !ok {
+			if _, _, ok := cacheCaller(ctx); !ok || toolCacheBypassed(ctx) {
 				return next(ctx, method, req)
 			}
 			switch method {
@@ -228,7 +267,8 @@ func newToolCacheMiddleware(
 
 // cachedResult serves key from cache, or calls fetch and stores its result
 // under server when it succeeded (no error, and not a tool error for
-// tools/call).
+// tools/call) and server's tools weren't replaced meanwhile (see
+// ToolCache.set).
 func cachedResult[R mcp.Result](
 	ctx context.Context,
 	cache *ToolCache,
@@ -237,6 +277,7 @@ func cachedResult[R mcp.Result](
 	fetch func() (mcp.Result, error),
 	newResult func() R,
 ) (mcp.Result, error) {
+	gen := cache.generation(server)
 	if raw, ok := cache.get(key); ok {
 		res := newResult()
 		if err := json.Unmarshal(raw, res); err == nil {
@@ -252,7 +293,7 @@ func cachedResult[R mcp.Result](
 		return res, nil
 	}
 	if raw, err := json.Marshal(res); err == nil {
-		cache.set(server, key, raw, ttl)
+		cache.set(server, key, gen, raw, ttl)
 	}
 	return res, nil
 }
