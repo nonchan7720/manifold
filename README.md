@@ -45,7 +45,7 @@ Server
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
-- **Tool search**: Above a configurable number of visible tools, an endpoint's `tools/list` becomes a single `tool_search` tool (BM25 / regexp / fuzzy, Claude Tool Search Tool compatible), so large APIs don't flood the model's context — and it only ever searches the tools the caller is allowed to see (`gateway.toolSearch`)
+- **Tool search** (opt-in): Above a configurable number of visible tools, an endpoint's `tools/list` becomes a single `tool_search` tool (BM25 / regexp / fuzzy, Claude Tool Search Tool compatible), so large APIs don't flood the model's context — and it only ever searches the tools the caller is allowed to see (`gateway.toolSearch`)
 - **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
@@ -536,11 +536,12 @@ mcpServers:
 
 ### Tool search (`gateway.toolSearch`)
 
-An endpoint backed by a large OpenAPI spec or MCP server can expose hundreds of tools, and every one of them lands in the model's context through `tools/list`. When the caller can see more than `gateway.toolSearch.threshold` tools on an endpoint (default: 100), that endpoint's `tools/list` returns a single synthetic `tool_search` tool instead. The client calls `tool_search` with a query, receives the matching tools' full definitions (`name` / `description` / `inputSchema`), and then calls the real tool directly through `tools/call` — hidden tools stay callable.
+An endpoint backed by a large OpenAPI spec or MCP server can expose hundreds of tools, and every one of them lands in the model's context through `tools/list`. When the caller can see more than `gateway.toolSearch.threshold` tools on an endpoint (default: 100), that endpoint's `tools/list` returns a single synthetic `tool_search` tool instead. The client calls `tool_search` with a query, receives the matching tools' full definitions (`name` / `description` / `inputSchema`), and then calls the real tool directly through `tools/call` — hidden tools stay callable. It is off by default; `enabled: true` turns it on for every endpoint.
 
 ```yaml
 gateway:
   toolSearch:
+    enabled: true         # off by default: tools/list is passed through untouched, however many tools
     threshold: 100        # switch to tool_search above this many visible tools (default 100)
     defaultLimit: 10      # results returned when the caller omits limit (default 10)
     resultFormat: default # or claude
@@ -566,6 +567,7 @@ No match returns `[]`, never `null`.
 - `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools`, so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
 - The threshold is compared per endpoint against the caller's visible tools, not against the total across all servers.
 - A backend tool named `tool_search` is hidden (with a warning), since the synthetic tool takes that name.
+- Without `enabled: true`, `tools/list` is returned exactly as the backend produces it (pagination included), `tool_search` is not registered, and a backend tool named `tool_search` is not hidden. The other `toolSearch` settings are then unused.
 
 ### Caching results (`cache`)
 
@@ -581,7 +583,7 @@ mcpServers:
       tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
 ```
 
-- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller's bearer token, so one caller's result is never served to another. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
+- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
 - `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
 - The cache sits inside authz: every call is still authorized before a cached result is returned. A cached `tools/list` can be up to `toolsList` stale after the backend or the spec changes.
 
@@ -615,6 +617,7 @@ Every `tools/call` writes one JSON line, separate from the application log:
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
+| `toolSearch.enabled` | bool | Turn the `tool_search` fallback on for every endpoint (default: `false`). See [Tool search](#tool-search-gatewaytoolsearch) |
 | `toolSearch.threshold` | int | Number of visible tools on an endpoint above which `tools/list` returns only `tool_search` (default: 100). See [Tool search](#tool-search-gatewaytoolsearch) |
 | `toolSearch.defaultLimit` | int | Results returned by `tool_search` when the caller omits `limit` (default: 10) |
 | `toolSearch.resultFormat` | string | `default` (tool definitions) or `claude` (`tool_reference` blocks) |
@@ -1353,7 +1356,7 @@ make test
 
 ### End-to-end (Postman CLI)
 
-`make postman` builds the gateway, starts OPA and a stub Petstore API, and runs the Postman collection in [`tests/postman/`](tests/postman/) that checks tool search, tool filtering and tool authorization together. CI runs it on every pull request.
+`make postman` builds the gateway, starts OPA and a stub Petstore API, and runs the Postman collection in [`tests/postman/`](tests/postman/) that checks tool search, tool filtering and tool authorization together. The Postman CLI comes from `mise install` (`postman-cli` in [`mise.toml`](mise.toml)). CI runs it on every pull request.
 
 ### Lint
 

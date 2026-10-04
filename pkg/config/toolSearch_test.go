@@ -35,11 +35,11 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 		{
 			name: "explicit values kept",
 			in: ToolSearchConfig{
-				Threshold: 5, DefaultLimit: 3,
+				Enabled: true, Threshold: 5, DefaultLimit: 3,
 				ResultFormat: ToolSearchResultFormatClaude, DigestMaxTools: 20,
 			},
 			want: ToolSearchConfig{
-				Threshold: 5, DefaultLimit: 3,
+				Enabled: true, Threshold: 5, DefaultLimit: 3,
 				ResultFormat: ToolSearchResultFormatClaude, DigestMaxTools: 20,
 			},
 		},
@@ -51,6 +51,13 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 	}
 }
 
+func TestToolSearchConfig_IsEnabled(t *testing.T) {
+	require.False(t, ToolSearchConfig{}.IsEnabled(), "unset means off")
+	require.False(t, ToolSearchConfig{}.WithDefaults().IsEnabled(), "WithDefaults keeps it off")
+	require.True(t, ToolSearchConfig{Enabled: true}.IsEnabled())
+	require.True(t, ToolSearchConfig{Enabled: true}.WithDefaults().IsEnabled())
+}
+
 func TestToolSearchConfig_ValidateWithContext(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -59,6 +66,7 @@ func TestToolSearchConfig_ValidateWithContext(t *testing.T) {
 	}{
 		{"zero value valid", ToolSearchConfig{}, false},
 		{"defaults valid", ToolSearchConfig{}.WithDefaults(), false},
+		{"enabled valid", ToolSearchConfig{Enabled: true}, false},
 		{"negative threshold invalid", ToolSearchConfig{Threshold: -1}, true},
 		{"negative default limit invalid", ToolSearchConfig{DefaultLimit: -1}, true},
 		{
@@ -114,6 +122,7 @@ func TestLoadInternal_ToolSearch_FromFile(t *testing.T) {
 	cfg, err := loadFromYAML(t, `
 gateway:
   toolSearch:
+    enabled: true
     threshold: 5
     defaultLimit: 3
     resultFormat: claude
@@ -121,6 +130,7 @@ gateway:
 `+toolSearchTestYAML)
 	require.NoError(t, err)
 	require.Equal(t, ToolSearchConfig{
+		Enabled:        true,
 		Threshold:      5,
 		DefaultLimit:   3,
 		ResultFormat:   ToolSearchResultFormatClaude,
@@ -128,7 +138,29 @@ gateway:
 	}, cfg.Gateway.ToolSearch)
 }
 
+func TestLoadInternal_ToolSearch_DisabledByDefault(t *testing.T) {
+	cfg, err := loadFromYAML(t, toolSearchTestYAML)
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.ToolSearch.IsEnabled())
+	require.Equal(t, DefaultToolSearchThreshold, cfg.Gateway.ToolSearch.Threshold,
+		"the other fields still take their defaults")
+
+	cfg, err = loadFromYAML(t, `
+gateway:
+  toolSearch:
+    enabled: true
+`+toolSearchTestYAML)
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.ToolSearch.IsEnabled())
+
+	t.Setenv("GATEWAY_TOOLSEARCH_ENABLED", "true")
+	cfg, err = loadFromYAML(t, toolSearchTestYAML)
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.ToolSearch.IsEnabled(), "env override")
+}
+
 func TestLoadInternal_ToolSearch_EnvOverrides(t *testing.T) {
+	t.Setenv("GATEWAY_TOOLSEARCH_ENABLED", "true")
 	t.Setenv("GATEWAY_TOOLSEARCH_THRESHOLD", "5")
 	t.Setenv("GATEWAY_TOOLSEARCH_DEFAULTLIMIT", "3")
 	t.Setenv("GATEWAY_TOOLSEARCH_RESULTFORMAT", "claude")
@@ -136,6 +168,7 @@ func TestLoadInternal_ToolSearch_EnvOverrides(t *testing.T) {
 	cfg, err := loadFromYAML(t, toolSearchTestYAML)
 	require.NoError(t, err)
 	require.Equal(t, ToolSearchConfig{
+		Enabled:        true,
 		Threshold:      5,
 		DefaultLimit:   3,
 		ResultFormat:   ToolSearchResultFormatClaude,

@@ -45,7 +45,7 @@ type MCPServer struct {
 	middlewareFn func(name string) []mcp.Middleware
 	toolCache    *ToolCache
 	auditLogger  *AuditLogger
-	// toolSearchCfg は gateway.toolSearch（WithToolSearchConfig で設定、未設定なら既定値）。
+	// toolSearchCfg は gateway.toolSearch（WithToolSearchConfig で設定、未設定なら無効）。
 	toolSearchCfg config.ToolSearchConfig
 
 	meterProvider metric.MeterProvider
@@ -67,8 +67,8 @@ func WithToolCache(cache *ToolCache) Option {
 	return func(s *MCPServer) { s.toolCache = cache }
 }
 
-// WithToolSearchConfig sets gateway.toolSearch for every server. Without it
-// the defaults apply (tool_search above 100 visible tools).
+// WithToolSearchConfig sets gateway.toolSearch for every server. Without it,
+// or with cfg.Enabled false, tool_search is off.
 func WithToolSearchConfig(cfg config.ToolSearchConfig) Option {
 	return func(s *MCPServer) { s.toolSearchCfg = cfg }
 }
