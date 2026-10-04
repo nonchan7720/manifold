@@ -70,12 +70,13 @@ func WithReverseServerMiddleware(fn func(name string) []mcp.Middleware) ReverseG
 	return func(g *ReverseGateway) { g.middlewareFn = fn }
 }
 
-// WithReverseToolCache makes rebuildUserServer drop cache's entries for a
-// server each time it replaces that server's per-user *mcp.Server (a tab
-// connected, disconnected or changed its tools): the cache middleware
+// WithReverseToolCache makes rebuildUserServer drop cache's entries for the
+// identityKey whose per-user *mcp.Server it replaces (a tab connected,
+// disconnected or changed its tools): the cache middleware
 // WithReverseServerMiddleware installs (see ServerToolMiddlewares) keys its
 // results by server and caller, so without this a tools/list cached from the
 // previous tab would be served for up to cache.toolsList after the rebuild.
+// Other users' entries for the server are left alone.
 func WithReverseToolCache(cache *ToolCache) ReverseGatewayOption {
 	return func(g *ReverseGateway) { g.toolCache = cache }
 }
@@ -429,13 +430,13 @@ func (g *ReverseGateway) rebuildUserServer(
 	// Retire the server being replaced before dropping the cache, so a
 	// request it is still handling can neither be served from nor stored in
 	// the cache (a fetch already past that point is caught by the new
-	// generation InvalidateServer starts).
+	// generation InvalidateCaller starts).
 	if previous, ok := g.userServers[key]; ok {
 		previous.retired.Store(true)
 	}
 	g.userServers[key] = entry
 	if g.toolCache != nil {
-		g.toolCache.InvalidateServer(name)
+		g.toolCache.InvalidateCaller(name, string(binding.IdentityKey))
 	}
 	return nil
 }

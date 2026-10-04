@@ -240,6 +240,39 @@ func TestMCPServer_RefreshServer_InvalidatesToolCache(t *testing.T) {
 	require.ElementsMatch(t, []string{"ping", "pong"}, sessionToolNames(t, cs))
 }
 
+// baseURL 未設定で spec の URL から導出している場合、refresh で servers にホストの無い
+// URL が入っても採用せず、同じリビジョンの間は再び WARN（エラー）を返さないこと。
+func TestMCPServer_RefreshServer_UnresolvableBaseURL_RejectedOnce(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	s := newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
+		srv.BaseURL = "" // spec の URL（http）から導出させる
+	})
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
+
+	broken := strings.Replace(
+		specWithOperations("ping", "pong"),
+		`"paths"`, `"servers":[{"url":"api.example.com"}],"paths"`, 1,
+	)
+	spec.setBody(broken)
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.ErrorIs(t, err, errBaseURLUnresolved)
+	require.False(t, changed)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv), "current tools are kept")
+
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err, "the same rejected revision is not reported again")
+	require.False(t, changed)
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed, "a fixed spec is adopted")
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+}
+
 func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	spec := newSpecTestServer(t, specWithOperations("ping"))

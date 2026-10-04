@@ -91,12 +91,6 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 	if newHash == baseHash {
 		return false, nil
 	}
-	// Same rule as at startup (registerOpenAPIServer): a spec that lost its
-	// servers entry would leave every tools/call without a base URL, so keep
-	// the current tools instead of adopting it.
-	if err := checkCatalogBaseURL(register); err != nil {
-		return false, err
-	}
 	if newHash == rejectedHash {
 		slog.DebugContext(
 			ctx,
@@ -104,6 +98,17 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 			slog.String("server", name),
 		)
 		return false, nil
+	}
+	// Same rule as at startup (registerOpenAPIServer): a spec that lost its
+	// servers entry would leave every tools/call without a base URL, so keep
+	// the current tools instead of adopting it. Remember the revision like a
+	// rejected breaking change, so the WARN is logged once per revision
+	// rather than on every tick until the spec is fixed.
+	if err := checkCatalogBaseURL(register); err != nil {
+		s.mu.Lock()
+		state.rejectedHash = newHash
+		s.mu.Unlock()
+		return false, err
 	}
 	if s.rejectSpecChanges(ctx, name, baseSpec, baseOps, register, rejectOn) {
 		s.mu.Lock()

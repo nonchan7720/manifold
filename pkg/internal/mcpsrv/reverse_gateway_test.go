@@ -571,9 +571,23 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 		AppSession:  "session-1",
 		ConnID:      "conn-1",
 	}
+	// 同じサーバーの別ユーザー（bob）のエントリは、alice 側のタブ接続で消えない
+	bob := cacheScope{server: "app1", identity: "bob"}
+	require.True(t, cache.set(bob, "bob-list", cache.generation(bob), []byte("{}"), time.Hour))
+	require.Equal(t, 2, cache.Len())
+
 	replaced := srv
 	connectFakeTab(t, gateway, binding)
-	require.Equal(t, 0, cache.Len(), "rebuilding the per-user server drops its cached entries")
+	require.Equal(
+		t,
+		1,
+		cache.Len(),
+		"rebuilding the per-user server drops that identity's entries only",
+	)
+	_, ok := cache.get("bob-list")
+	require.True(t, ok)
+	cache.InvalidateCaller("app1", "bob")
+	require.Equal(t, 0, cache.Len())
 
 	srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
 	require.NoError(t, err)

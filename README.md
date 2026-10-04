@@ -585,7 +585,7 @@ mcpServers:
 
 - Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
 - `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
-- The cache sits inside authz: every call is still authorized before a cached result is returned. A server's entries are dropped as soon as its tools are replaced by the gateway itself (a `specRefresh` adopting a new spec, or a reverse (WebMCP) per-user server being rebuilt when a tab connects, disconnects or changes its tools); only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
+- The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
 
 ### Audit log (`audit`)
 
