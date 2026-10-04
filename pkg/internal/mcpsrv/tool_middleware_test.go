@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -271,7 +272,7 @@ func TestToolCache_ExpiryAndBound(t *testing.T) {
 	now := time.Unix(0, 0)
 	cache.now = func() time.Time { return now }
 
-	cache.set("a", []byte("1"), time.Second)
+	cache.set(cacheScope{server: "s"}, "a", 0, []byte("1"), time.Second)
 	got, ok := cache.get("a")
 	require.True(t, ok)
 	require.Equal(t, []byte("1"), got)
@@ -280,12 +281,162 @@ func TestToolCache_ExpiryAndBound(t *testing.T) {
 	_, ok = cache.get("a")
 	require.False(t, ok, "entry must expire after its TTL")
 
-	cache.set("a", []byte("1"), time.Minute)
-	cache.set("b", []byte("2"), time.Minute)
-	cache.set("c", []byte("3"), time.Minute)
+	cache.set(cacheScope{server: "s"}, "a", 0, []byte("1"), time.Minute)
+	cache.set(cacheScope{server: "s"}, "b", 0, []byte("2"), time.Minute)
+	cache.set(cacheScope{server: "s"}, "c", 0, []byte("3"), time.Minute)
 	require.Equal(t, 2, cache.Len(), "cache must stay within maxEntries")
 	_, ok = cache.get("c")
 	require.True(t, ok, "the newest entry is always stored")
+}
+
+func TestToolCache_InvalidateServer(t *testing.T) {
+	cache := NewToolCache(0)
+	petstore := cacheScope{server: "petstore"}
+	alice := cacheScope{server: "petstore", identity: "alice"}
+	other := cacheScope{server: "other"}
+	require.True(t, cache.set(petstore, "a", 0, []byte("1"), time.Minute))
+	require.True(t, cache.set(alice, "b", 0, []byte("2"), time.Minute))
+	require.True(t, cache.set(other, "c", 0, []byte("3"), time.Minute))
+
+	gen, aliceGen := cache.generation(petstore), cache.generation(alice)
+	cache.InvalidateServer("petstore")
+	require.Equal(
+		t,
+		1,
+		cache.Len(),
+		"every entry of the named server is dropped, other servers stay",
+	)
+	_, ok := cache.get("a")
+	require.False(t, ok)
+	_, ok = cache.get("b")
+	require.False(t, ok)
+	_, ok = cache.get("c")
+	require.True(t, ok)
+
+	// 無効化前に取得を始めた（= 古い世代の）結果は、サーバー全体でも
+	// 呼び出し元単位のスコープでも登録されない
+	require.False(t, cache.set(petstore, "d", gen, []byte("4"), time.Minute))
+	require.False(t, cache.set(alice, "e", aliceGen, []byte("5"), time.Minute))
+	require.Equal(t, 1, cache.Len())
+	require.True(t, cache.set(petstore, "d", cache.generation(petstore), []byte("4"), time.Minute))
+	require.True(t, cache.set(alice, "e", cache.generation(alice), []byte("5"), time.Minute))
+	require.Equal(t, 3, cache.Len())
+	require.Equal(t, uint64(0), cache.generation(other), "other servers keep their generation")
+
+	cache.InvalidateServer("unknown") // 存在しないサーバーでも何も起きない
+	require.Equal(t, 3, cache.Len())
+}
+
+// reverse の per-user サーバーの再構築は、その identityKey のエントリだけを捨て、
+// 同じサーバーの他ユーザーのエントリと、サーバー全体の世代には触れない。
+func TestToolCache_InvalidateCaller(t *testing.T) {
+	cache := NewToolCache(0)
+	alice := cacheScope{server: "webmcp", identity: "alice"}
+	bob := cacheScope{server: "webmcp", identity: "bob"}
+	require.True(t, cache.set(alice, "a", 0, []byte("1"), time.Minute))
+	require.True(t, cache.set(bob, "b", 0, []byte("2"), time.Minute))
+
+	aliceGen, bobGen := cache.generation(alice), cache.generation(bob)
+	cache.InvalidateCaller("webmcp", "alice")
+	_, ok := cache.get("a")
+	require.False(t, ok, "alice's entry is dropped")
+	_, ok = cache.get("b")
+	require.True(t, ok, "bob's entry survives")
+
+	require.False(t, cache.set(alice, "a", aliceGen, []byte("1"), time.Minute),
+		"alice's in-flight result from before the rebuild is not stored")
+	require.Equal(t, bobGen, cache.generation(bob), "bob's generation is unchanged")
+	require.True(t, cache.set(bob, "c", bobGen, []byte("3"), time.Minute))
+	require.Equal(t, uint64(0), cache.generation(cacheScope{server: "webmcp"}),
+		"the whole-server generation is unchanged")
+}
+
+// 取得の途中で InvalidateServer が走った場合、その取得結果（更新前のもの）を
+// 完了時に再登録して TTL の間返し続けないこと。
+func TestToolCacheMiddleware_InvalidationDuringFetchIsNotUndone(t *testing.T) {
+	var (
+		calls   atomic.Int32
+		entered sync.Once
+	)
+	enteredCh := make(chan struct{})
+	release := make(chan struct{})
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "getpet", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			calls.Add(1)
+			entered.Do(func() { close(enteredCh) })
+			<-release
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "pet"}},
+			}, nil
+		},
+	)
+	cache := NewToolCache(0)
+	srv.AddReceivingMiddleware(newToolCacheMiddleware("petstore", &config.CacheConfig{
+		ToolCall: time.Minute,
+		Tools:    []string{"getpet"},
+	}, cache))
+	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := cs.CallTool(
+			t.Context(),
+			&mcp.CallToolParams{Name: "getpet", Arguments: map[string]any{}},
+		)
+		done <- err
+	}()
+	<-enteredCh
+	cache.InvalidateServer("petstore") // 取得中にツールが差し替わった
+	close(release)
+	require.NoError(t, <-done)
+	require.Equal(
+		t,
+		0,
+		cache.Len(),
+		"the result fetched before the invalidation must not be stored",
+	)
+
+	callText(t, cs, "getpet", map[string]any{})
+	require.Equal(
+		t,
+		int32(2),
+		calls.Load(),
+		"the next call fetches again and caches the fresh result",
+	)
+	require.Equal(t, 1, cache.Len())
+}
+
+// 2^53 を超える整数が float64 に丸められて別の引数が同じキーに衝突しないこと。
+func TestCanonicalArguments_PreservesLargeIntegers(t *testing.T) {
+	a := canonicalArguments(json.RawMessage(`{"id": 9007199254740993}`))
+	b := canonicalArguments(json.RawMessage(`{"id": 9007199254740992}`))
+	require.NotEqual(t, a, b)
+	require.Equal(t, `{"id":9007199254740993}`, a)
+
+	// キー順と空白の違いは引き続き同一視する
+	require.Equal(t,
+		canonicalArguments(json.RawMessage(`{"b": 2, "a": 1}`)),
+		canonicalArguments(json.RawMessage(`{"a":1,"b":2}`)),
+	)
+	require.Equal(t, "", canonicalArguments(json.RawMessage(` `)))
+	require.Equal(t, "not json", canonicalArguments(json.RawMessage("not json")))
+}
+
+func TestToolCacheMiddleware_LargeIntegerArgumentsDoNotCollide(t *testing.T) {
+	var calls atomic.Int32
+	srv := newToolTestServer(t, &calls, "get_order")
+	srv.AddReceivingMiddleware(newToolCacheMiddleware("orders", &config.CacheConfig{
+		ToolCall: time.Minute,
+		Tools:    []string{"get_order"},
+	}, NewToolCache(0)))
+	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
+
+	first := callText(t, cs, "get_order", json.RawMessage(`{"id": 9007199254740993}`))
+	second := callText(t, cs, "get_order", json.RawMessage(`{"id": 9007199254740992}`))
+	require.NotEqual(t, first, second, "a different id must not get the cached order")
+	require.Equal(t, int32(2), calls.Load())
 }
 
 func TestToolCacheMiddleware_NilWhenNothingCached(t *testing.T) {
