@@ -138,31 +138,34 @@ func (c *ToolCache) set(
 // afterwards. Call it whenever the server's tools are replaced underneath
 // the cache for everyone, as when a spec refresh adopts a new spec.
 func (c *ToolCache) InvalidateServer(server string) {
-	c.invalidate(func(scope cacheScope) bool { return scope.server == server })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.generations[cacheScope{server: server}]++
+	c.invalidateLocked(cacheScope{server: server}, func(scope cacheScope) bool {
+		return scope.server == server
+	})
 }
 
 // InvalidateCaller is InvalidateServer for one identityKey's entries of
 // server only: a reverse (WebMCP) per-user server being rebuilt changes the
 // tools of that identity alone, so other users' entries stay.
 func (c *ToolCache) InvalidateCaller(server, identity string) {
-	scope := cacheScope{server: server, identity: identity}
-	c.invalidate(func(s cacheScope) bool { return s == scope })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.generations[scope]++
+	scope := cacheScope{server: server, identity: identity}
+	c.invalidateLocked(scope, func(s cacheScope) bool { return s == scope })
 }
 
-func (c *ToolCache) invalidate(match func(cacheScope) bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// invalidateLocked drops the entries match selects and bumps gen's
+// generation in one critical section (c.mu held by the caller): done as two
+// separate ones, a set with the old generation could slip in between the
+// deletion and the bump and leave a stale entry behind.
+func (c *ToolCache) invalidateLocked(gen cacheScope, match func(cacheScope) bool) {
 	for k, entry := range c.entries {
 		if match(entry.scope) {
 			delete(c.entries, k)
 		}
 	}
+	c.generations[gen]++
 }
 
 type toolCacheBypassKey struct{}
