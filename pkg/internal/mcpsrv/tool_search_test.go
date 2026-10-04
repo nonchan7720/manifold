@@ -131,6 +131,25 @@ var petTools = []searchTool{
 	{"cancel_pet", "cancel a pet order"},
 }
 
+func TestToolSearch_Disabled_PassesThrough(t *testing.T) {
+	disabled := false
+	srv := newToolSearchTestServer(
+		t, config.ToolSearchConfig{Enabled: &disabled, Threshold: 1}, nil, nil, nil, petTools...,
+	)
+	cs := connectTestClient(t, t.Context(), srv)
+
+	// 閾値を超えていても tools/list はそのまま
+	require.ElementsMatch(
+		t, []string{"list_pets", "get_pet", "cancel_pet"}, sessionToolNames(t, cs),
+	)
+	// tool_search は登録されていない
+	_, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: ToolSearchName, Arguments: map[string]any{"query": "pet"},
+	})
+	require.ErrorContains(t, err, "unknown tool")
+	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: &disabled}))
+}
+
 func TestToolSearch_BelowThreshold_RealToolsVisible(t *testing.T) {
 	srv := newToolSearchTestServer(
 		t,

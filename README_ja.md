@@ -536,11 +536,12 @@ mcpServers:
 
 ### ツール検索（`gateway.toolSearch`）
 
-大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。
+大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。既定で有効で、`enabled: false` で全エンドポイントまとめて無効にできます。
 
 ```yaml
 gateway:
   toolSearch:
+    enabled: true         # false ならツール数に関わらず tools/list をそのまま返す（デフォルト true）
     threshold: 100        # 見えるツール数がこれを超えると tool_search に切り替わる（デフォルト 100）
     defaultLimit: 10      # limit 未指定時の検索結果件数（デフォルト 10）
     resultFormat: default # または claude
@@ -566,6 +567,7 @@ gateway:
 - `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
 - 閾値は全サーバー合計ではなく、エンドポイントごとに呼び出し元に見えるツール数と比較します。
 - バックエンドに `tool_search` という名前のツールがあっても、合成ツールがその名前を使うため隠れます（警告ログを出す）。
+- `enabled: false` にすると、`tools/list` はバックエンドの返したとおり（ページネーションも含めて）返し、`tool_search` は登録されず、バックエンドの `tool_search` という名前のツールも隠れません。`toolSearch` の他の設定は使われません。
 
 ### 結果のキャッシュ（`cache`）
 
@@ -581,7 +583,7 @@ mcpServers:
       tools: ["get_*", "list_*"]    # ...ただしこの（読み取り専用の）ツールだけ
 ```
 
-- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件）、呼び出し元の bearer トークンごとに分かれるため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
+- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件）、呼び出し元ごとに分かれます。呼び出し元は bearer トークンと、reverse（WebMCP）サーバーではリクエストの振り分けに使った識別子（identityKey）で区別するため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。どちらも無いリクエストはキャッシュしません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
 - `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
 - キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。キャッシュした `tools/list` は、バックエンドや spec が変わってから最大 `toolsList` の間だけ古いままになりえます。
 
@@ -615,6 +617,7 @@ audit:
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
+| `toolSearch.enabled` | bool | `tool_search` への置き換えを全エンドポイントで有効 / 無効にする（デフォルト: `true`）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
 | `toolSearch.threshold` | int | エンドポイントで見えるツール数がこれを超えると `tools/list` が `tool_search` だけを返す（デフォルト: 100）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
 | `toolSearch.defaultLimit` | int | `limit` 未指定時に `tool_search` が返す件数（デフォルト: 10） |
 | `toolSearch.resultFormat` | string | `default`（ツール定義）または `claude`（`tool_reference` ブロック） |
@@ -1352,7 +1355,7 @@ make test
 
 ### 結合テスト（Postman CLI）
 
-`make postman` はゲートウェイをビルドし、OPA とスタブの Petstore API を起動して、[`tests/postman/`](tests/postman/) の Postman コレクションを実行します。ツール検索・ツールの絞り込み・ツール認可をまとめて検証するもので、CI では PR ごとに実行します。
+`make postman` はゲートウェイをビルドし、OPA とスタブの Petstore API を起動して、[`tests/postman/`](tests/postman/) の Postman コレクションを実行します。ツール検索・ツールの絞り込み・ツール認可をまとめて検証するもので、Postman CLI は `mise install` で入ります（[`mise.toml`](mise.toml) の `postman-cli`）。CI では PR ごとに実行します。
 
 ### Lint
 

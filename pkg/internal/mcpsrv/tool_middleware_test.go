@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
+	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 )
@@ -207,6 +208,62 @@ func TestToolCacheMiddleware(t *testing.T) {
 	require.Equal(t, before+1, cache.Len())
 	require.ElementsMatch(t, []string{"getpet", "addpet", "fails"}, sessionToolNames(t, alice))
 	require.Equal(t, before+1, cache.Len())
+}
+
+// reverse（WebMCP）サーバーは JWT ミドルウェアを通らず bearer が空で、
+// identityKey だけが呼び出し元を区別する。キャッシュもそれで分かれること。
+func TestToolCacheMiddleware_SeparatesIdentityKeys(t *testing.T) {
+	var calls atomic.Int32
+	srv := newToolTestServer(t, &calls, "getpet")
+	cache := NewToolCache(0)
+	srv.AddReceivingMiddleware(newToolCacheMiddleware("webmcp", &config.CacheConfig{
+		ToolsList: time.Minute,
+		ToolCall:  time.Minute,
+		Tools:     []string{"getpet"},
+	}, cache))
+
+	alice := connectTestClient(
+		t, domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("alice")), srv,
+	)
+	bob := connectTestClient(
+		t, domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("bob")), srv,
+	)
+
+	callText(t, alice, "getpet", map[string]any{"id": 1})
+	callText(t, alice, "getpet", map[string]any{"id": 1})
+	require.Equal(t, int32(1), calls.Load(), "same identityKey hits the cache")
+	callText(t, bob, "getpet", map[string]any{"id": 1})
+	require.Equal(t, int32(2), calls.Load(), "another identityKey never sees alice's result")
+
+	sessionToolNames(t, alice)
+	before := cache.Len()
+	sessionToolNames(t, bob)
+	require.Equal(t, before+1, cache.Len(), "tools/list is cached per identityKey too")
+
+	// bearer と identityKey は別スロット: 同じ文字列でも衝突しない
+	require.NotEqual(t,
+		toolCacheKey(contexts.ToRequestAuthHeader(t.Context(), "x"), "s"),
+		toolCacheKey(domainedge.WithIdentityKey(t.Context(), domainedge.IdentityKey("x")), "s"),
+	)
+}
+
+// bearer も identityKey も無い呼び出し元は区別できないため、キャッシュしない。
+func TestToolCacheMiddleware_SkipsAnonymousCaller(t *testing.T) {
+	var calls atomic.Int32
+	srv := newToolTestServer(t, &calls, "getpet")
+	cache := NewToolCache(0)
+	srv.AddReceivingMiddleware(newToolCacheMiddleware("petstore", &config.CacheConfig{
+		ToolsList: time.Minute,
+		ToolCall:  time.Minute,
+		Tools:     []string{"getpet"},
+	}, cache))
+	cs := connectTestClient(t, t.Context(), srv)
+
+	callText(t, cs, "getpet", map[string]any{"id": 1})
+	callText(t, cs, "getpet", map[string]any{"id": 1})
+	sessionToolNames(t, cs)
+	require.Equal(t, int32(2), calls.Load())
+	require.Equal(t, 0, cache.Len())
 }
 
 func TestToolCache_ExpiryAndBound(t *testing.T) {

@@ -10,6 +10,9 @@ import (
 //
 //	audit → tool search → authz (from authzMiddlewares) → cache → tool filter
 //
+// Each of audit, tool search, cache and tool filter is left out when its
+// configuration turns it off (no audit logger, gateway.toolSearch.enabled:
+// false, no cache settings, no include / exclude / overrides).
 // The tool filter sits right outside the backend so every outer layer sees
 // the exposed names; the cache sits inside authz so a cached result is only
 // returned to a caller allowed to call the tool; tool search sits outside
@@ -36,7 +39,9 @@ func ServerToolMiddlewares(
 	if m := newAuditMiddleware(name, service, audit); m != nil {
 		out = append(out, m)
 	}
-	out = append(out, newToolSearchMiddleware(name, search))
+	if m := newToolSearchMiddleware(name, search); m != nil {
+		out = append(out, m)
+	}
 	out = append(out, authzMiddlewares...)
 	if m := newToolCacheMiddleware(name, cacheCf, cache); m != nil {
 		out = append(out, m)

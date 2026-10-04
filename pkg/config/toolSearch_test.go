@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestToolSearchConfig_WithDefaults(t *testing.T) {
 	tests := []struct {
 		name string
@@ -16,6 +18,7 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 			name: "zero value gets defaults",
 			in:   ToolSearchConfig{},
 			want: ToolSearchConfig{
+				Enabled:        boolPtr(true),
 				Threshold:      DefaultToolSearchThreshold,
 				DefaultLimit:   DefaultToolSearchLimit,
 				ResultFormat:   ToolSearchResultFormatDefault,
@@ -26,6 +29,7 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 			name: "negative gets defaults",
 			in:   ToolSearchConfig{Threshold: -1, DefaultLimit: -1},
 			want: ToolSearchConfig{
+				Enabled:        boolPtr(true),
 				Threshold:      DefaultToolSearchThreshold,
 				DefaultLimit:   DefaultToolSearchLimit,
 				ResultFormat:   ToolSearchResultFormatDefault,
@@ -35,11 +39,11 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 		{
 			name: "explicit values kept",
 			in: ToolSearchConfig{
-				Threshold: 5, DefaultLimit: 3,
+				Enabled: boolPtr(false), Threshold: 5, DefaultLimit: 3,
 				ResultFormat: ToolSearchResultFormatClaude, DigestMaxTools: 20,
 			},
 			want: ToolSearchConfig{
-				Threshold: 5, DefaultLimit: 3,
+				Enabled: boolPtr(false), Threshold: 5, DefaultLimit: 3,
 				ResultFormat: ToolSearchResultFormatClaude, DigestMaxTools: 20,
 			},
 		},
@@ -51,6 +55,14 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 	}
 }
 
+func TestToolSearchConfig_IsEnabled(t *testing.T) {
+	require.True(t, ToolSearchConfig{}.IsEnabled(), "unset means on")
+	require.True(t, ToolSearchConfig{Enabled: boolPtr(true)}.IsEnabled())
+	require.False(t, ToolSearchConfig{Enabled: boolPtr(false)}.IsEnabled())
+	require.False(t, ToolSearchConfig{Enabled: boolPtr(false)}.WithDefaults().IsEnabled(),
+		"WithDefaults keeps an explicit false")
+}
+
 func TestToolSearchConfig_ValidateWithContext(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -59,6 +71,7 @@ func TestToolSearchConfig_ValidateWithContext(t *testing.T) {
 	}{
 		{"zero value valid", ToolSearchConfig{}, false},
 		{"defaults valid", ToolSearchConfig{}.WithDefaults(), false},
+		{"disabled valid", ToolSearchConfig{Enabled: boolPtr(false)}, false},
 		{"negative threshold invalid", ToolSearchConfig{Threshold: -1}, true},
 		{"negative default limit invalid", ToolSearchConfig{DefaultLimit: -1}, true},
 		{
@@ -121,6 +134,7 @@ gateway:
 `+toolSearchTestYAML)
 	require.NoError(t, err)
 	require.Equal(t, ToolSearchConfig{
+		Enabled:        boolPtr(true),
 		Threshold:      5,
 		DefaultLimit:   3,
 		ResultFormat:   ToolSearchResultFormatClaude,
@@ -128,7 +142,25 @@ gateway:
 	}, cfg.Gateway.ToolSearch)
 }
 
+func TestLoadInternal_ToolSearch_Disabled(t *testing.T) {
+	cfg, err := loadFromYAML(t, `
+gateway:
+  toolSearch:
+    enabled: false
+`+toolSearchTestYAML)
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.ToolSearch.IsEnabled())
+	require.Equal(t, DefaultToolSearchThreshold, cfg.Gateway.ToolSearch.Threshold,
+		"the other fields still take their defaults")
+
+	t.Setenv("GATEWAY_TOOLSEARCH_ENABLED", "false")
+	cfg, err = loadFromYAML(t, toolSearchTestYAML)
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.ToolSearch.IsEnabled(), "env override")
+}
+
 func TestLoadInternal_ToolSearch_EnvOverrides(t *testing.T) {
+	t.Setenv("GATEWAY_TOOLSEARCH_ENABLED", "true")
 	t.Setenv("GATEWAY_TOOLSEARCH_THRESHOLD", "5")
 	t.Setenv("GATEWAY_TOOLSEARCH_DEFAULTLIMIT", "3")
 	t.Setenv("GATEWAY_TOOLSEARCH_RESULTFORMAT", "claude")
@@ -136,6 +168,7 @@ func TestLoadInternal_ToolSearch_EnvOverrides(t *testing.T) {
 	cfg, err := loadFromYAML(t, toolSearchTestYAML)
 	require.NoError(t, err)
 	require.Equal(t, ToolSearchConfig{
+		Enabled:        boolPtr(true),
 		Threshold:      5,
 		DefaultLimit:   3,
 		ResultFormat:   ToolSearchResultFormatClaude,

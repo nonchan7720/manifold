@@ -319,12 +319,17 @@ func handleToolSearchCall(
 }
 
 // newToolSearchMiddleware returns the tool_search middleware for serverName
-// (cfg's zero fields take their defaults). It sits outside authz and the tool
+// (cfg's zero fields take their defaults), or nil when cfg.Enabled is false:
+// tools/list then passes through untouched and a tools/call of tool_search
+// reaches the backend like any other name. It sits outside authz and the tool
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the
 // same authz and audit as before.
 func newToolSearchMiddleware(serverName string, cfg config.ToolSearchConfig) mcp.Middleware {
 	cfg = cfg.WithDefaults()
+	if !cfg.IsEnabled() {
+		return nil
+	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {

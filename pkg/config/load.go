@@ -227,9 +227,11 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
 	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
 
-	// Same reasoning as fileFetch above — also makes GATEWAY_TOOLSEARCH_THRESHOLD,
-	// GATEWAY_TOOLSEARCH_DEFAULTLIMIT, GATEWAY_TOOLSEARCH_RESULTFORMAT and
-	// GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS effective overrides.
+	// Same reasoning as fileFetch above — also makes GATEWAY_TOOLSEARCH_ENABLED,
+	// GATEWAY_TOOLSEARCH_THRESHOLD, GATEWAY_TOOLSEARCH_DEFAULTLIMIT,
+	// GATEWAY_TOOLSEARCH_RESULTFORMAT and GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS
+	// effective overrides.
+	v.SetDefault("gateway.toolSearch.enabled", true)
 	v.SetDefault("gateway.toolSearch.threshold", DefaultToolSearchThreshold)
 	v.SetDefault("gateway.toolSearch.defaultLimit", DefaultToolSearchLimit)
 	v.SetDefault("gateway.toolSearch.resultFormat", ToolSearchResultFormatDefault)
