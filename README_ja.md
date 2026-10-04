@@ -585,7 +585,7 @@ mcpServers:
 
 - 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件）、呼び出し元ごとに分かれます。呼び出し元は bearer トークンと、reverse（WebMCP）サーバーではリクエストの振り分けに使った識別子（identityKey）で区別するため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。どちらも無いリクエストはキャッシュしません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
 - `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
-- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。キャッシュした `tools/list` は、バックエンドや spec が変わってから最大 `toolsList` の間だけ古いままになりえます。
+- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。ゲートウェイ自身がサーバーのツールを入れ替えたとき（`specRefresh` が新しい spec を採用したとき、reverse（WebMCP）の per-user サーバーがタブの接続・切断・ツール変更で作り直されたとき）は、そのサーバーのキャッシュを即座に捨てます。MCP バックエンドがゲートウェイの裏でツールを変えた場合だけ、キャッシュした `tools/list` は最大 `toolsList` の間古いままになりえます。
 
 ### 監査ログ（`audit`）
 
@@ -667,7 +667,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。`tools.file` だけの場合は必須 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合（例: `servers` の無いローカルの spec ファイル）は起動時にエラーになる。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |

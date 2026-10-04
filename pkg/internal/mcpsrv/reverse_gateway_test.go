@@ -538,6 +538,48 @@ func TestReverseGateway_WithReverseServerMiddleware_AppliedToBuiltServer(t *test
 	require.Equal(t, []string{"app1"}, calls)
 }
 
+// per-user サーバーを作り直したら（タブの接続・切断・list_changed）、その
+// サーバーのキャッシュ済み tools/list は捨てられ、次の tools/list が新しい
+// サーバーに届くこと。
+func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.T) {
+	storeClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storeClient.Close() })
+	pairing := edgeservices.NewPairingService(storeClient)
+	registry := edgeservices.NewInMemoryRegistry()
+
+	cache := NewToolCache(0)
+	cacheCfg := &config.CacheConfig{ToolsList: time.Hour}
+	gateway := NewReverseGateway(
+		registry, pairing, staticEdgeConfig().WithDefaults(), staticReverseServers(),
+		WithReverseServerMiddleware(func(name string) []mcp.Middleware {
+			return []mcp.Middleware{newToolCacheMiddleware(name, cacheCfg, cache)}
+		}),
+		WithReverseToolCache(cache),
+	)
+	gateway.Init(t.Context())
+
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	cs := connectTestClient(t, staticResolveCtx(t), srv)
+	require.ElementsMatch(t, []string{"create_pairing_code"}, sessionToolNames(t, cs))
+	require.Equal(t, 1, cache.Len(), "tools/list is cached per identityKey")
+
+	binding := domainedge.Binding{
+		IdentityKey: domainedge.StaticIdentityKey,
+		Origin:      "https://app1.example.com",
+		AppSession:  "session-1",
+		ConnID:      "conn-1",
+	}
+	connectFakeTab(t, gateway, binding)
+	require.Equal(t, 0, cache.Len(), "rebuilding the per-user server drops its cached entries")
+
+	srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	cs = connectTestClient(t, staticResolveCtx(t), srv)
+	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
+}
+
 func TestReverseGateway_NoMiddlewareOption_LeavesServerUnaffected(t *testing.T) {
 	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
 	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")

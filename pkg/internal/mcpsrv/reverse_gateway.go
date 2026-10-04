@@ -53,6 +53,9 @@ type ReverseGateway struct {
 	lazyBuildMu sync.Mutex
 
 	middlewareFn func(name string) []mcp.Middleware
+	// toolCache, when set, has its entries for a server dropped whenever that
+	// server's per-user *mcp.Server is rebuilt (see WithReverseToolCache).
+	toolCache *ToolCache
 }
 
 // ReverseGatewayOption configures optional behavior of a ReverseGateway
@@ -64,6 +67,16 @@ type ReverseGatewayOption func(*ReverseGateway)
 // construction.
 func WithReverseServerMiddleware(fn func(name string) []mcp.Middleware) ReverseGatewayOption {
 	return func(g *ReverseGateway) { g.middlewareFn = fn }
+}
+
+// WithReverseToolCache makes rebuildUserServer drop cache's entries for a
+// server each time it replaces that server's per-user *mcp.Server (a tab
+// connected, disconnected or changed its tools): the cache middleware
+// WithReverseServerMiddleware installs (see ServerToolMiddlewares) keys its
+// results by server and caller, so without this a tools/list cached from the
+// previous tab would be served for up to cache.toolsList after the rebuild.
+func WithReverseToolCache(cache *ToolCache) ReverseGatewayOption {
+	return func(g *ReverseGateway) { g.toolCache = cache }
 }
 
 // NewReverseGateway creates a ReverseGateway for the reverse-transport
@@ -382,6 +395,9 @@ func (g *ReverseGateway) rebuildUserServer(
 		}
 	}
 	g.userServers[key] = srv
+	if g.toolCache != nil {
+		g.toolCache.InvalidateServer(name)
+	}
 	return nil
 }
 

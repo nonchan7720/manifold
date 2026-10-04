@@ -271,7 +271,7 @@ func TestToolCache_ExpiryAndBound(t *testing.T) {
 	now := time.Unix(0, 0)
 	cache.now = func() time.Time { return now }
 
-	cache.set("a", []byte("1"), time.Second)
+	cache.set("s", "a", []byte("1"), time.Second)
 	got, ok := cache.get("a")
 	require.True(t, ok)
 	require.Equal(t, []byte("1"), got)
@@ -280,12 +280,60 @@ func TestToolCache_ExpiryAndBound(t *testing.T) {
 	_, ok = cache.get("a")
 	require.False(t, ok, "entry must expire after its TTL")
 
-	cache.set("a", []byte("1"), time.Minute)
-	cache.set("b", []byte("2"), time.Minute)
-	cache.set("c", []byte("3"), time.Minute)
+	cache.set("s", "a", []byte("1"), time.Minute)
+	cache.set("s", "b", []byte("2"), time.Minute)
+	cache.set("s", "c", []byte("3"), time.Minute)
 	require.Equal(t, 2, cache.Len(), "cache must stay within maxEntries")
 	_, ok = cache.get("c")
 	require.True(t, ok, "the newest entry is always stored")
+}
+
+func TestToolCache_InvalidateServer(t *testing.T) {
+	cache := NewToolCache(0)
+	cache.set("petstore", "a", []byte("1"), time.Minute)
+	cache.set("petstore", "b", []byte("2"), time.Minute)
+	cache.set("other", "c", []byte("3"), time.Minute)
+
+	cache.InvalidateServer("petstore")
+	require.Equal(t, 1, cache.Len(), "only the named server's entries are dropped")
+	_, ok := cache.get("a")
+	require.False(t, ok)
+	_, ok = cache.get("c")
+	require.True(t, ok)
+
+	cache.InvalidateServer("unknown") // 存在しないサーバーでも何も起きない
+	require.Equal(t, 1, cache.Len())
+}
+
+// 2^53 を超える整数が float64 に丸められて別の引数が同じキーに衝突しないこと。
+func TestCanonicalArguments_PreservesLargeIntegers(t *testing.T) {
+	a := canonicalArguments(json.RawMessage(`{"id": 9007199254740993}`))
+	b := canonicalArguments(json.RawMessage(`{"id": 9007199254740992}`))
+	require.NotEqual(t, a, b)
+	require.Equal(t, `{"id":9007199254740993}`, a)
+
+	// キー順と空白の違いは引き続き同一視する
+	require.Equal(t,
+		canonicalArguments(json.RawMessage(`{"b": 2, "a": 1}`)),
+		canonicalArguments(json.RawMessage(`{"a":1,"b":2}`)),
+	)
+	require.Equal(t, "", canonicalArguments(json.RawMessage(` `)))
+	require.Equal(t, "not json", canonicalArguments(json.RawMessage("not json")))
+}
+
+func TestToolCacheMiddleware_LargeIntegerArgumentsDoNotCollide(t *testing.T) {
+	var calls atomic.Int32
+	srv := newToolTestServer(t, &calls, "get_order")
+	srv.AddReceivingMiddleware(newToolCacheMiddleware("orders", &config.CacheConfig{
+		ToolCall: time.Minute,
+		Tools:    []string{"get_order"},
+	}, NewToolCache(0)))
+	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
+
+	first := callText(t, cs, "get_order", json.RawMessage(`{"id": 9007199254740993}`))
+	second := callText(t, cs, "get_order", json.RawMessage(`{"id": 9007199254740992}`))
+	require.NotEqual(t, first, second, "a different id must not get the cached order")
+	require.Equal(t, int32(2), calls.Load())
 }
 
 func TestToolCacheMiddleware_NilWhenNothingCached(t *testing.T) {

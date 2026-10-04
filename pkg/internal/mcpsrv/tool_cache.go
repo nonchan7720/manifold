@@ -31,6 +31,9 @@ type ToolCache struct {
 }
 
 type toolCacheEntry struct {
+	// server is the mcpServers entry the result belongs to, so
+	// InvalidateServer can drop a server's entries without knowing their keys.
+	server  string
 	value   []byte
 	expires time.Time
 }
@@ -62,7 +65,7 @@ func (c *ToolCache) get(key string) ([]byte, bool) {
 	return entry.value, true
 }
 
-func (c *ToolCache) set(key string, value []byte, ttl time.Duration) {
+func (c *ToolCache) set(server, key string, value []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -80,7 +83,22 @@ func (c *ToolCache) set(key string, value []byte, ttl time.Duration) {
 			delete(c.entries, k)
 		}
 	}
-	c.entries[key] = toolCacheEntry{value: value, expires: now.Add(ttl)}
+	c.entries[key] = toolCacheEntry{server: server, value: value, expires: now.Add(ttl)}
+}
+
+// InvalidateServer drops every entry cached for server (its tools/list pages
+// and tools/call results, for every caller). Call it whenever the server's
+// tools are replaced underneath the cache — a spec refresh adopting a new
+// spec, or a reverse (WebMCP) per-user server being rebuilt — so a result
+// fetched before the change isn't served for up to its TTL afterwards.
+func (c *ToolCache) InvalidateServer(server string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, entry := range c.entries {
+		if entry.server == server {
+			delete(c.entries, k)
+		}
+	}
 }
 
 // Len returns the number of entries currently held (expired ones included
@@ -121,12 +139,17 @@ func toolCacheKey(ctx context.Context, parts ...string) string {
 
 // canonicalArguments re-encodes tool arguments so that semantically equal
 // JSON objects (different key order or whitespace) share a cache entry.
+// Numbers are kept verbatim (json.Number) rather than going through float64,
+// so integers beyond 2^53 — ids, for instance — that differ in their last
+// digits never collapse into the same key.
 func canonicalArguments(raw json.RawMessage) string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return ""
 	}
 	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
 		return string(raw)
 	}
 	out, err := json.Marshal(v) // map のキーはソートされて出力される
@@ -167,9 +190,17 @@ func newToolCacheMiddleware(
 					cursor = params.Cursor
 				}
 				key := toolCacheKey(ctx, server, method, cursor)
-				return cachedResult(ctx, cache, key, cfg.ToolsList, func() (mcp.Result, error) {
-					return next(ctx, method, req)
-				}, func() *mcp.ListToolsResult { return &mcp.ListToolsResult{} })
+				return cachedResult(
+					ctx,
+					cache,
+					server,
+					key,
+					cfg.ToolsList,
+					func() (mcp.Result, error) {
+						return next(ctx, method, req)
+					},
+					func() *mcp.ListToolsResult { return &mcp.ListToolsResult{} },
+				)
 			case authzMethodToolsCall:
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 				if !ok || !cfg.CachesToolCall(params.Name) {
@@ -177,9 +208,17 @@ func newToolCacheMiddleware(
 				}
 				key := toolCacheKey(ctx, server, method, params.Name,
 					canonicalArguments(params.Arguments))
-				return cachedResult(ctx, cache, key, cfg.ToolCall, func() (mcp.Result, error) {
-					return next(ctx, method, req)
-				}, func() *mcp.CallToolResult { return &mcp.CallToolResult{} })
+				return cachedResult(
+					ctx,
+					cache,
+					server,
+					key,
+					cfg.ToolCall,
+					func() (mcp.Result, error) {
+						return next(ctx, method, req)
+					},
+					func() *mcp.CallToolResult { return &mcp.CallToolResult{} },
+				)
 			default:
 				return next(ctx, method, req)
 			}
@@ -188,11 +227,12 @@ func newToolCacheMiddleware(
 }
 
 // cachedResult serves key from cache, or calls fetch and stores its result
-// when it succeeded (no error, and not a tool error for tools/call).
+// under server when it succeeded (no error, and not a tool error for
+// tools/call).
 func cachedResult[R mcp.Result](
 	ctx context.Context,
 	cache *ToolCache,
-	key string,
+	server, key string,
 	ttl time.Duration,
 	fetch func() (mcp.Result, error),
 	newResult func() R,
@@ -212,7 +252,7 @@ func cachedResult[R mcp.Result](
 		return res, nil
 	}
 	if raw, err := json.Marshal(res); err == nil {
-		cache.set(key, raw, ttl)
+		cache.set(server, key, raw, ttl)
 	}
 	return res, nil
 }

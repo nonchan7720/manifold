@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -212,6 +213,31 @@ func TestMCPServer_RefreshServer_AddedOperation(t *testing.T) {
 	srv, err := s.Server("api")
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+}
+
+// cache.toolsList と specRefresh を併用したとき、spec の採用後にキャッシュ済みの
+// tools/list（および tools/call の結果）が TTL いっぱい返り続けないこと。
+func TestMCPServer_RefreshServer_InvalidatesToolCache(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	cache := NewToolCache(0)
+	s := newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
+		srv.Cache = &config.CacheConfig{ToolsList: time.Hour}
+	}, WithToolCache(cache))
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
+
+	require.ElementsMatch(t, []string{"ping"}, sessionToolNames(t, cs))
+	require.Equal(t, 1, cache.Len(), "tools/list is cached")
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.Equal(t, 0, cache.Len(), "adopting a new spec drops the server's cache entries")
+	require.ElementsMatch(t, []string{"ping", "pong"}, sessionToolNames(t, cs))
 }
 
 func TestMCPServer_RefreshServer_UpdatesToolCatalogDescriptions(t *testing.T) {
