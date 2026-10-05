@@ -517,7 +517,7 @@ func TestAuditMiddleware_RecordsDenial(t *testing.T) {
 				return next(ctx, method, req)
 			}
 		},
-	}, nil, logger, config.ToolSearchConfig{Enabled: true})...)
+	}, nil, nil, logger, config.ToolSearchConfig{Enabled: true})...)
 	cs := connectTestClient(t, t.Context(), srv)
 	_, err := cs.CallTool(
 		t.Context(),
@@ -542,4 +542,31 @@ func TestNewAuditLogger(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, l)
 	require.NoError(t, l.Close())
+}
+
+// reverse（WebMCP）のエンドポイントは JWT を検証せず user / groups / token が
+// 空になるため、監査ログには identityKey が呼び出し元として残ること。
+func TestAuditMiddleware_RecordsIdentityKey(t *testing.T) {
+	srv := newToolTestServer(t, nil, "getpet")
+	var buf bytes.Buffer
+	logger := newAuditLoggerTo(&buf, config.AuthzHeaders{}, false)
+	srv.AddReceivingMiddleware(newAuditMiddleware("app", "app", logger))
+
+	ctx := domainedge.WithIdentityKey(t.Context(), "oauth:user-a")
+	cs := connectTestClient(t, ctx, srv)
+	callText(t, cs, "getpet", map[string]any{"id": 1})
+
+	lines := decodeAuditLines(t, &buf)
+	require.Len(t, lines, 1)
+	require.Equal(t, "oauth:user-a", lines[0]["identity"])
+	require.NotContains(t, lines[0], "token")
+	require.NotContains(t, lines[0], "user")
+
+	// identityKey の無い（bearer トークンの）エンドポイントでは出力しない。
+	buf.Reset()
+	cs = connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "tok"), srv)
+	callText(t, cs, "getpet", map[string]any{"id": 1})
+	lines = decodeAuditLines(t, &buf)
+	require.Len(t, lines, 1)
+	require.NotContains(t, lines[0], "identity")
 }

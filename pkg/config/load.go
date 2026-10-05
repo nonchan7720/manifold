@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -172,6 +171,18 @@ func stringToJSONHookFunc() mapstructure.DecodeHookFunc {
 	}
 }
 
+// markBaseURLSet sets Server.BaseURLSet for each server whose baseURL key is
+// present in the loaded settings (after include merging and env expansion),
+// so an empty value can be told apart from an absent key. viper lower-cases
+// keys, hence the case-insensitive match.
+func markBaseURLSet(v *viper.Viper, servers Servers) {
+	raw, _ := v.Get("mcpServers").(map[string]any)
+	for name, srv := range servers {
+		fields, _ := raw[strings.ToLower(name)].(map[string]any)
+		_, srv.BaseURLSet = fields["baseurl"]
+	}
+}
+
 func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	if configName == "" {
 		configName = "config"
@@ -260,6 +271,8 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
 
+	markBaseURLSet(v, conf.MCPServer)
+
 	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
 	conf.FileFetch = conf.FileFetch.WithDefaults()
@@ -278,13 +291,6 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		agent.Name = name
 	}
 	normalizeReverseOrigins(conf.MCPServer)
-
-	if generated, err := conf.ApplyEphemeralDefaults(); err != nil {
-		return nil, err
-	} else if generated {
-		slog.WarnContext(ctx, "gateway.encryptKey is not set; using a random key "+
-			"(fine for the in-memory store, set it for redis or sqlite)")
-	}
 
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err

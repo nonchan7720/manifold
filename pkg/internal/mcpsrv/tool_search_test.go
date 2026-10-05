@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -38,7 +41,8 @@ func newToolSearchTestServer(
 	if tools != nil {
 		server = &config.Server{Name: "petstore", Tools: tools}
 	}
-	srv.AddReceivingMiddleware(ServerToolMiddlewares("petstore", server, inner, nil, audit, cfg)...)
+	srv.AddReceivingMiddleware(
+		ServerToolMiddlewares("petstore", server, inner, nil, nil, audit, cfg)...)
 	return srv
 }
 
@@ -146,8 +150,11 @@ func TestToolSearch_DisabledByDefault_PassesThrough(t *testing.T) {
 		Name: ToolSearchName, Arguments: map[string]any{"query": "pet"},
 	})
 	require.ErrorContains(t, err, "unknown tool")
-	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}))
-	require.NotNil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}))
+	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}, nil, nil))
+	require.NotNil(
+		t,
+		newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}, nil, nil),
+	)
 }
 
 func TestToolSearch_BelowThreshold_RealToolsVisible(t *testing.T) {
@@ -420,6 +427,118 @@ func TestToolSearch_NewToolsShowUpWithoutRestart(t *testing.T) {
 	require.Contains(t, list.Tools[0].Description, "6 searchable tools:")
 }
 
+// pagedListHandler is an inner tools/list handler serving names pageSize at a
+// time with numeric cursors, counting its calls.
+func pagedListHandler(names []string, pageSize int, calls *int) mcp.MethodHandler {
+	return func(_ context.Context, _ string, req mcp.Request) (mcp.Result, error) {
+		*calls++
+		start := 0
+		if params, _ := req.GetParams().(*mcp.ListToolsParams); params != nil &&
+			params.Cursor != "" {
+			n, err := strconv.Atoi(params.Cursor)
+			if err != nil {
+				return nil, err
+			}
+			start = n
+		}
+		end := min(start+pageSize, len(names))
+		res := &mcp.ListToolsResult{}
+		for _, name := range names[start:end] {
+			res.Tools = append(res.Tools, &mcp.Tool{
+				Name: name, Description: name, InputSchema: map[string]any{"type": "object"},
+			})
+		}
+		if end < len(names) {
+			res.NextCursor = strconv.Itoa(end)
+		}
+		return res, nil
+	}
+}
+
+func listToolsViaMiddleware(
+	t *testing.T, h mcp.MethodHandler, cursor string,
+) *mcp.ListToolsResult {
+	t.Helper()
+	res, err := h(t.Context(), authzMethodToolsList, &mcp.ListToolsRequest{
+		Params: &mcp.ListToolsParams{Cursor: cursor},
+	})
+	require.NoError(t, err)
+	list, ok := res.(*mcp.ListToolsResult)
+	require.True(t, ok)
+	return list
+}
+
+// 閾値以下ではクライアントの cursor を無視せず、ページングをそのまま保つ。
+func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
+	names := []string{"a", "b", "c", "d", "e"}
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil, nil,
+	)(pagedListHandler(names, 2, &calls))
+
+	page1 := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{"a", "b"}, toolNames(page1.Tools))
+	require.Equal(t, "2", page1.NextCursor)
+
+	// cursor 付きは内部ハンドラへそのまま転送される（全ページを読み直さない）。
+	calls = 0
+	page2 := listToolsViaMiddleware(t, h, page1.NextCursor)
+	require.Equal(t, []string{"c", "d"}, toolNames(page2.Tools))
+	require.Equal(t, "4", page2.NextCursor)
+	require.Equal(t, 1, calls)
+
+	page3 := listToolsViaMiddleware(t, h, page2.NextCursor)
+	require.Equal(t, []string{"e"}, toolNames(page3.Tools))
+	require.Empty(t, page3.NextCursor)
+}
+
+// 閾値を超えたら cursor なしの tools/list は tool_search のみ（NextCursor なし）。
+func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3}, nil, nil,
+	)(pagedListHandler([]string{"a", "b", "c", "d", "e"}, 2, &calls))
+
+	res := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{ToolSearchName}, toolNames(res.Tools))
+	require.Empty(t, res.NextCursor)
+}
+
+// 閾値以下でも、バックエンドの tool_search は隠す（どのページでも）。
+func TestToolSearch_BelowThreshold_PagedUpstreamToolSearchIsHidden(t *testing.T) {
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil, nil,
+	)(pagedListHandler([]string{ToolSearchName, "b", "c"}, 2, &calls))
+
+	page1 := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{"b"}, toolNames(page1.Tools))
+	require.Equal(t, "2", page1.NextCursor)
+	page2 := listToolsViaMiddleware(t, h, "2")
+	require.Equal(t, []string{"c"}, toolNames(page2.Tools))
+}
+
+// バックエンドの tool_search との衝突は WARN をサーバーごとに 1 回だけ出す。
+func TestDropReservedTool_WarnsOncePerServer(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tools := []*mcp.Tool{{Name: ToolSearchName}, {Name: "x"}}
+	const msg = "collides with the synthetic tool_search"
+	for range 3 {
+		got := dropReservedTool(t.Context(), "warn-once-a", tools)
+		require.Equal(t, []string{"x"}, toolNames(got))
+	}
+	require.Equal(t, 1, strings.Count(buf.String(), msg))
+
+	// 別サーバーは別に 1 回。
+	dropReservedTool(t.Context(), "warn-once-b", tools)
+	dropReservedTool(t.Context(), "warn-once-b", tools)
+	require.Equal(t, 2, strings.Count(buf.String(), msg))
+}
+
 // --- digest ---
 
 func digestDescription(cfg config.ToolSearchConfig, docs ...toolsearch.ToolDef) string {
@@ -456,6 +575,24 @@ func TestToolSearchDef_Digest(t *testing.T) {
 		require.Contains(t, desc, "- toolE", n)
 		require.NotContains(t, desc, "showing first", n)
 	}
+}
+
+// 既定の digestMaxTools は有限で、ツールが多いエンドポイントでも説明文が肥大化しない。
+func TestToolSearchDef_Digest_DefaultCapsLargeCatalogs(t *testing.T) {
+	cfg := config.ToolSearchConfig{Enabled: true}.WithDefaults()
+	docs := make([]toolsearch.ToolDef, 500)
+	for i := range docs {
+		docs[i] = toolsearch.ToolDef{Name: fmt.Sprintf("tool_%03d", i), Description: "d"}
+	}
+	desc := digestDescription(cfg, docs...)
+	require.Contains(t, desc, "500 searchable tools (showing first 50):")
+	require.Equal(t, 50, strings.Count(desc, "\n- "))
+
+	// -1 を明示すれば従来どおり全件。
+	cfg.DigestMaxTools = -1
+	desc = digestDescription(cfg, docs...)
+	require.NotContains(t, desc, "showing first")
+	require.Equal(t, 500, strings.Count(desc, "\n- "))
 }
 
 func TestToolSearchDef_Digest_TruncatesDescriptionsByRune(t *testing.T) {

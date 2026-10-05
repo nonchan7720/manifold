@@ -19,11 +19,14 @@ import (
 // returned to a caller allowed to call the tool; tool search sits outside
 // authz so it only ever searches (and counts against its threshold) the tools
 // authz lets the caller see; audit sits outside everything so denied calls
-// and tool_search calls are recorded too.
+// and tool_search calls are recorded too. authzKey (see NewAuthzCacheKeyer)
+// lets tool search key its per-caller index cache by what authz decides on;
+// with authz middlewares but no authzKey, tool search doesn't cache at all.
 func ServerToolMiddlewares(
 	name string,
 	server *config.Server,
 	authzMiddlewares []mcp.Middleware,
+	authzKey AuthzCacheKeyer,
 	cache *ToolCache,
 	audit *AuditLogger,
 	search config.ToolSearchConfig,
@@ -36,11 +39,16 @@ func ServerToolMiddlewares(
 	if server != nil {
 		tools, cacheCf, service = server.Tools, server.Cache, server.ServiceCode()
 	}
+	if len(authzMiddlewares) > 0 && authzKey == nil {
+		// authz decides per principal but we can't tell principals apart:
+		// tool_search must not reuse an index across requests.
+		authzKey = func(mcp.Request) (string, bool) { return "", false }
+	}
 	var out []mcp.Middleware
 	if m := newAuditMiddleware(name, service, audit); m != nil {
 		out = append(out, m)
 	}
-	if m := newToolSearchMiddleware(name, search); m != nil {
+	if m := newToolSearchMiddleware(name, search, cache, authzKey); m != nil {
 		out = append(out, m)
 	}
 	out = append(out, authzMiddlewares...)
