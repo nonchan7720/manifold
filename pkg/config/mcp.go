@@ -187,6 +187,16 @@ func validateLocalSpecBaseURL(spec string) error {
 	return fmt.Errorf("%w (servers[0].url is %q)", errSpecBaseURLUnresolved, doc.Servers[0].URL)
 }
 
+// validateDerivableBaseURL checks that an omitted baseURL can be derived from
+// a local spec. An explicit baseURL, or tools.file (which carries its own
+// base URL), needs no derivation.
+func (s Server) validateDerivableBaseURL() error {
+	if s.BaseURL != "" || s.BaseURLSet || s.GeneratedToolsFile() != "" {
+		return nil
+	}
+	return validateLocalSpecBaseURL(s.Spec)
+}
+
 func (s Server) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
@@ -200,10 +210,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(
 			&s.BaseURL,
 			validation.When(s.IsOpenAPI() && (s.Spec == "" || s.BaseURLSet), validation.Required),
-			validation.When(
-				s.BaseURL == "" && !s.BaseURLSet && s.GeneratedToolsFile() == "",
-				validation.By(func(any) error { return validateLocalSpecBaseURL(s.Spec) }),
-			),
+			validation.By(func(any) error { return s.validateDerivableBaseURL() }),
 		),
 		validation.Field(
 			&s.Transport,
