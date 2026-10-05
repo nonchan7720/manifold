@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -193,15 +194,22 @@ func listVisibleTools(
 	return first, tools, nil
 }
 
+// reservedToolWarned remembers the servers already warned about a backend tool
+// named tool_search, so the WARN is logged once per server rather than on every
+// tools/list and tool_search call.
+var reservedToolWarned sync.Map
+
 // dropReservedTool hides a backend tool named tool_search: the synthetic tool
 // takes that name, and a tools/call for it never reaches the backend.
 func dropReservedTool(ctx context.Context, serverName string, tools []*mcp.Tool) []*mcp.Tool {
 	out := tools[:0:0]
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName {
-			slog.WarnContext(ctx,
-				"upstream tool name collides with the synthetic tool_search; hiding it",
-				slog.String("server", serverName))
+			if _, warned := reservedToolWarned.LoadOrStore(serverName, struct{}{}); !warned {
+				slog.WarnContext(ctx,
+					"upstream tool name collides with the synthetic tool_search; hiding it",
+					slog.String("server", serverName))
+			}
 			continue
 		}
 		out = append(out, tool)
@@ -228,8 +236,11 @@ func toolErrorResult(err error) *mcp.CallToolResult {
 }
 
 // handleToolSearchList answers tools/list: only tool_search when the caller
-// can see more than cfg.Threshold tools, otherwise the visible tools merged
-// into a single page.
+// can see more than cfg.Threshold tools, otherwise what the inner handler
+// returns, unchanged but for a backend tool named tool_search. Pagination is
+// preserved below the threshold: a request carrying a cursor is forwarded
+// as is, and one without gets the inner first page with its NextCursor (every
+// page is still read once to count the tools against the threshold).
 func handleToolSearchList(
 	ctx context.Context,
 	serverName string,
@@ -237,24 +248,41 @@ func handleToolSearchList(
 	next mcp.MethodHandler,
 	req mcp.Request,
 ) (mcp.Result, error) {
+	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil && params.Cursor != "" {
+		// Only a page of a list we passed through hands out cursors, so the
+		// client is already paging through the real tools.
+		res, err := next(ctx, authzMethodToolsList, req)
+		if err != nil {
+			return nil, err
+		}
+		if page, ok := res.(*mcp.ListToolsResult); ok {
+			out := *page
+			out.Tools = dropReservedTool(ctx, serverName, page.Tools)
+			if out.Tools == nil {
+				out.Tools = []*mcp.Tool{} // avoid JSON null
+			}
+			normalizeCacheable(&out.Cacheable)
+			return &out, nil
+		}
+		return res, nil
+	}
 	first, tools, err := listVisibleTools(ctx, next, req)
 	if err != nil {
 		return nil, err
 	}
-	tools = dropReservedTool(ctx, serverName, tools)
-	if len(tools) > cfg.Threshold {
+	visible := dropReservedTool(ctx, serverName, tools)
+	if len(visible) > cfg.Threshold {
 		res := &mcp.ListToolsResult{
-			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(tools))},
+			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(visible))},
 		}
 		normalizeCacheable(&res.Cacheable)
 		return res, nil
 	}
 	out := *first
-	out.Tools = tools
+	out.Tools = dropReservedTool(ctx, serverName, first.Tools)
 	if out.Tools == nil {
 		out.Tools = []*mcp.Tool{} // avoid JSON null
 	}
-	out.NextCursor = ""
 	normalizeCacheable(&out.Cacheable)
 	return &out, nil
 }

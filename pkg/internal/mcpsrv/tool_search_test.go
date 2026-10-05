@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -419,6 +421,117 @@ func TestToolSearch_NewToolsShowUpWithoutRestart(t *testing.T) {
 	require.Len(t, list.Tools, 1)
 	require.Equal(t, ToolSearchName, list.Tools[0].Name)
 	require.Contains(t, list.Tools[0].Description, "6 searchable tools:")
+}
+
+// pagedListHandler is an inner tools/list handler serving names pageSize at a
+// time with numeric cursors, counting its calls.
+func pagedListHandler(names []string, pageSize int, calls *int) mcp.MethodHandler {
+	return func(_ context.Context, _ string, req mcp.Request) (mcp.Result, error) {
+		*calls++
+		start := 0
+		if params, _ := req.GetParams().(*mcp.ListToolsParams); params != nil && params.Cursor != "" {
+			n, err := strconv.Atoi(params.Cursor)
+			if err != nil {
+				return nil, err
+			}
+			start = n
+		}
+		end := min(start+pageSize, len(names))
+		res := &mcp.ListToolsResult{}
+		for _, name := range names[start:end] {
+			res.Tools = append(res.Tools, &mcp.Tool{
+				Name: name, Description: name, InputSchema: map[string]any{"type": "object"},
+			})
+		}
+		if end < len(names) {
+			res.NextCursor = strconv.Itoa(end)
+		}
+		return res, nil
+	}
+}
+
+func listToolsViaMiddleware(
+	t *testing.T, h mcp.MethodHandler, cursor string,
+) *mcp.ListToolsResult {
+	t.Helper()
+	res, err := h(t.Context(), authzMethodToolsList, &mcp.ListToolsRequest{
+		Params: &mcp.ListToolsParams{Cursor: cursor},
+	})
+	require.NoError(t, err)
+	list, ok := res.(*mcp.ListToolsResult)
+	require.True(t, ok)
+	return list
+}
+
+// 閾値以下ではクライアントの cursor を無視せず、ページングをそのまま保つ。
+func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
+	names := []string{"a", "b", "c", "d", "e"}
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10},
+	)(pagedListHandler(names, 2, &calls))
+
+	page1 := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{"a", "b"}, toolNames(page1.Tools))
+	require.Equal(t, "2", page1.NextCursor)
+
+	// cursor 付きは内部ハンドラへそのまま転送される（全ページを読み直さない）。
+	calls = 0
+	page2 := listToolsViaMiddleware(t, h, page1.NextCursor)
+	require.Equal(t, []string{"c", "d"}, toolNames(page2.Tools))
+	require.Equal(t, "4", page2.NextCursor)
+	require.Equal(t, 1, calls)
+
+	page3 := listToolsViaMiddleware(t, h, page2.NextCursor)
+	require.Equal(t, []string{"e"}, toolNames(page3.Tools))
+	require.Empty(t, page3.NextCursor)
+}
+
+// 閾値を超えたら cursor なしの tools/list は tool_search のみ（NextCursor なし）。
+func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3},
+	)(pagedListHandler([]string{"a", "b", "c", "d", "e"}, 2, &calls))
+
+	res := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{ToolSearchName}, toolNames(res.Tools))
+	require.Empty(t, res.NextCursor)
+}
+
+// 閾値以下でも、バックエンドの tool_search は隠す（どのページでも）。
+func TestToolSearch_BelowThreshold_PagedUpstreamToolSearchIsHidden(t *testing.T) {
+	calls := 0
+	h := newToolSearchMiddleware(
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10},
+	)(pagedListHandler([]string{ToolSearchName, "b", "c"}, 2, &calls))
+
+	page1 := listToolsViaMiddleware(t, h, "")
+	require.Equal(t, []string{"b"}, toolNames(page1.Tools))
+	require.Equal(t, "2", page1.NextCursor)
+	page2 := listToolsViaMiddleware(t, h, "2")
+	require.Equal(t, []string{"c"}, toolNames(page2.Tools))
+}
+
+// バックエンドの tool_search との衝突は WARN をサーバーごとに 1 回だけ出す。
+func TestDropReservedTool_WarnsOncePerServer(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tools := []*mcp.Tool{{Name: ToolSearchName}, {Name: "x"}}
+	const msg = "collides with the synthetic tool_search"
+	for range 3 {
+		got := dropReservedTool(t.Context(), "warn-once-a", tools)
+		require.Equal(t, []string{"x"}, toolNames(got))
+	}
+	require.Equal(t, 1, strings.Count(buf.String(), msg))
+
+	// 別サーバーは別に 1 回。
+	dropReservedTool(t.Context(), "warn-once-b", tools)
+	dropReservedTool(t.Context(), "warn-once-b", tools)
+	require.Equal(t, 2, strings.Count(buf.String(), msg))
 }
 
 // --- digest ---
