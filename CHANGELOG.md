@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/nonchan7720/manifold/compare/v1.18.0...v1.18.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **openapi:** base64-encode binary responses only for successful non-text responses ([#248](https://github.com/nonchan7720/manifold/issues/248)) ([01b32da](https://github.com/nonchan7720/manifold/commit/01b32da9db1391521379709fd7df5f77e12eba9f))
+
 ## [1.18.0](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.18.0) (2026-09-30)
 
 
