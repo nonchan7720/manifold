@@ -307,6 +307,21 @@ func TestResolveSwaggerSchemaRef_WithRef(t *testing.T) {
 	require.Equal(t, petSchema, got)
 }
 
+func TestResolveSwaggerSchemaRef_EscapedName(t *testing.T) {
+	slashSchema := &openapi2.Schema{}
+	tildeSchema := &openapi2.Schema{}
+	spec := &openapi2.T{
+		Definitions: map[string]*openapi2.SchemaRef{
+			"attachments/v1": {Value: slashSchema},
+			"a~b":            {Value: tildeSchema},
+		},
+	}
+	require.Equal(t, slashSchema,
+		resolveSwaggerSchemaRef(&openapi2.SchemaRef{Ref: "#/definitions/attachments~1v1"}, spec))
+	require.Equal(t, tildeSchema,
+		resolveSwaggerSchemaRef(&openapi2.SchemaRef{Ref: "#/definitions/a~0b"}, spec))
+}
+
 func TestResolveSwaggerSchemaRef_RefNotFound(t *testing.T) {
 	spec := &openapi2.T{}
 	ref := &openapi2.SchemaRef{Ref: "#/definitions/NotExist"}
@@ -1084,4 +1099,225 @@ func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, result)
+}
+
+// --- Swagger 2 JSON body: format: binary ---
+
+func swaggerBinaryProp() *openapi2.SchemaRef {
+	return &openapi2.SchemaRef{
+		Value: &openapi2.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+	}
+}
+
+func swaggerStringProp() *openapi2.SchemaRef {
+	return &openapi2.SchemaRef{Value: &openapi2.Schema{Type: &openapi3.Types{"string"}}}
+}
+
+func swaggerJSONBodyOp(schema *openapi2.SchemaRef) *openapi2.Operation {
+	return &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{{Name: "body", In: "body", Schema: schema}},
+	}
+}
+
+// swaggerJSONBodyCapture はアップストリームが受け取った JSON ボディを capture へ格納する httptest サーバーを返す。
+func swaggerJSONBodyCapture(t *testing.T, capture *map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(capture))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func callSwaggerJSONBody(
+	t *testing.T,
+	op *openapi2.Operation,
+	spec *openapi2.T,
+	baseURL string,
+	body map[string]any,
+) error {
+	t.Helper()
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient,
+		"/upload",
+		"post",
+		op,
+		nil,
+		spec,
+		baseURL,
+		nil,
+	)
+	_, _, err := fn(context.Background(), map[string]any{"body": body})
+	return err
+}
+
+func swaggerFileServer(t *testing.T, content []byte) *httptest.Server {
+	t.Helper()
+	// テスト用のダウンロード先は httptest のループバックなので AllowLocal を有効化する。
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content) //nolint: errcheck
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCreateToolFunctionSwagger_JSONBody_BinaryBase64(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var got map[string]any
+	srv := swaggerJSONBodyCapture(t, &got)
+	op := swaggerJSONBodyOp(swaggerSchemaRefForTest{props: map[string]*openapi2.SchemaRef{
+		"file": swaggerBinaryProp(), "name": swaggerStringProp(),
+	}}.ref())
+	b64 := base64.StdEncoding.EncodeToString([]byte("hello"))
+	require.NoError(t, callSwaggerJSONBody(t, op, &openapi2.T{}, srv.URL,
+		map[string]any{"file": b64, "name": "n"}))
+	require.Equal(t, b64, got["file"])
+	require.Equal(t, "n", got["name"])
+}
+
+func TestCreateToolFunctionSwagger_JSONBody_BinaryFromURLAndObject(t *testing.T) {
+	t.Setenv("TEST", "true")
+	content := []byte("swagger json file")
+	fileSrv := swaggerFileServer(t, content)
+	var got map[string]any
+	srv := swaggerJSONBodyCapture(t, &got)
+	op := swaggerJSONBodyOp(swaggerSchemaRefForTest{props: map[string]*openapi2.SchemaRef{
+		"file": swaggerBinaryProp(),
+	}}.ref())
+
+	require.NoError(t, callSwaggerJSONBody(t, op, &openapi2.T{}, srv.URL,
+		map[string]any{"file": fileSrv.URL + "/a.bin"}))
+	require.Equal(t, base64.StdEncoding.EncodeToString(content), got["file"])
+
+	got = nil
+	require.NoError(t, callSwaggerJSONBody(t, op, &openapi2.T{}, srv.URL,
+		map[string]any{"file": map[string]any{"url": fileSrv.URL + "/a.bin"}}))
+	require.Equal(t, base64.StdEncoding.EncodeToString(content), got["file"])
+}
+
+func TestCreateToolFunctionSwagger_JSONBody_MultipleBinaryFields(t *testing.T) {
+	t.Setenv("TEST", "true")
+	content := []byte("from url")
+	fileSrv := swaggerFileServer(t, content)
+	var got map[string]any
+	srv := swaggerJSONBodyCapture(t, &got)
+	op := swaggerJSONBodyOp(swaggerSchemaRefForTest{props: map[string]*openapi2.SchemaRef{
+		"front": swaggerBinaryProp(), "back": swaggerBinaryProp(), "title": swaggerStringProp(),
+	}}.ref())
+	b64 := base64.StdEncoding.EncodeToString([]byte("raw"))
+	require.NoError(t, callSwaggerJSONBody(t, op, &openapi2.T{}, srv.URL, map[string]any{
+		"front": b64, "back": fileSrv.URL + "/b", "title": "t",
+	}))
+	require.Equal(t, b64, got["front"])
+	require.Equal(t, base64.StdEncoding.EncodeToString(content), got["back"])
+	require.Equal(t, "t", got["title"])
+}
+
+func TestCreateToolFunctionSwagger_JSONBody_NestedArrayNullAndRef(t *testing.T) {
+	t.Setenv("TEST", "true")
+	content := []byte("nested")
+	fileSrv := swaggerFileServer(t, content)
+	want := base64.StdEncoding.EncodeToString(content)
+	var got map[string]any
+	srv := swaggerJSONBodyCapture(t, &got)
+
+	objType := openapi3.Types{"object"}
+	arrType := openapi3.Types{"array"}
+	spec := &openapi2.T{Definitions: map[string]*openapi2.SchemaRef{
+		"Attachment": {Value: &openapi2.Schema{
+			Type: &objType,
+			Properties: map[string]*openapi2.SchemaRef{
+				"data": swaggerBinaryProp(), "label": swaggerStringProp(),
+			},
+		}},
+	}}
+	body := &openapi2.SchemaRef{Value: &openapi2.Schema{
+		Type: &objType,
+		Properties: map[string]*openapi2.SchemaRef{
+			"nested": {Value: &openapi2.Schema{
+				Type:       &objType,
+				Properties: map[string]*openapi2.SchemaRef{"doc": swaggerBinaryProp()},
+			}},
+			"files": {Value: &openapi2.Schema{Type: &arrType, Items: swaggerBinaryProp()}},
+			"att":   {Ref: "#/definitions/Attachment"},
+			"opt":   swaggerBinaryProp(),
+			"plain": swaggerStringProp(),
+		},
+	}}
+	op := swaggerJSONBodyOp(body)
+	require.NoError(t, callSwaggerJSONBody(t, op, spec, srv.URL, map[string]any{
+		"nested": map[string]any{"doc": fileSrv.URL + "/x"},
+		"files":  []any{fileSrv.URL + "/1", map[string]any{"url": fileSrv.URL + "/2"}},
+		"att":    map[string]any{"data": fileSrv.URL + "/3", "label": "l"},
+		"opt":    nil,
+		"plain":  fileSrv.URL + "/not-resolved",
+	}))
+	require.Equal(t, want, got["nested"].(map[string]any)["doc"])
+	require.Equal(t, []any{want, want}, got["files"])
+	att := got["att"].(map[string]any)
+	require.Equal(t, want, att["data"])
+	require.Equal(t, "l", att["label"])
+	v, ok := got["opt"]
+	require.True(t, ok)
+	require.Nil(t, v)
+	require.Equal(t, fileSrv.URL+"/not-resolved", got["plain"])
+}
+
+func TestBuildInputSchemaSwagger_BodyBinaryProperties(t *testing.T) {
+	objType := openapi3.Types{"object"}
+	arrType := openapi3.Types{"array"}
+	spec := &openapi2.T{Definitions: map[string]*openapi2.SchemaRef{
+		"Att": {Value: &openapi2.Schema{
+			Type:       &objType,
+			Properties: map[string]*openapi2.SchemaRef{"data": swaggerBinaryProp()},
+		}},
+	}}
+	op := swaggerJSONBodyOp(&openapi2.SchemaRef{Value: &openapi2.Schema{
+		Type: &objType,
+		Properties: map[string]*openapi2.SchemaRef{
+			"file":  swaggerBinaryProp(),
+			"files": {Value: &openapi2.Schema{Type: &arrType, Items: swaggerBinaryProp()}},
+			"att":   {Ref: "#/definitions/Att"},
+			"name":  swaggerStringProp(),
+		},
+	}})
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	body := schema["properties"].(map[string]any)["body"].(map[string]any)
+	props := body["properties"].(map[string]any)
+
+	isFileMeta := func(m map[string]any) bool {
+		meta, _ := m["_meta"].(map[string]any)
+		mf, _ := meta["manifold"].(map[string]any)
+		return mf["file"] == true
+	}
+	file := props["file"].(map[string]any)
+	require.NotNil(t, file["oneOf"])
+	require.True(t, isFileMeta(file))
+
+	files := props["files"].(map[string]any)
+	require.Equal(t, "array", files["type"])
+	require.True(t, isFileMeta(files["items"].(map[string]any)))
+
+	att := props["att"].(map[string]any)
+	data := att["properties"].(map[string]any)["data"].(map[string]any)
+	require.True(t, isFileMeta(data))
+
+	// 非 binary は従来どおりフラットな {type, description}
+	require.Equal(t, map[string]any{"type": "string", "description": ""}, props["name"])
+}
+
+// swaggerSchemaRefForTest は object スキーマの SchemaRef を組み立てる小さなヘルパー。
+type swaggerSchemaRefForTest struct {
+	props map[string]*openapi2.SchemaRef
+}
+
+func (s swaggerSchemaRefForTest) ref() *openapi2.SchemaRef {
+	return &openapi2.SchemaRef{Value: &openapi2.Schema{
+		Type:       &openapi3.Types{"object"},
+		Properties: s.props,
+	}}
 }
