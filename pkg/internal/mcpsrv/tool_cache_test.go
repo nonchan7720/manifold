@@ -80,8 +80,10 @@ func TestToolCache_Expired_RemovedOnGet(t *testing.T) {
 
 func TestToolCache_Invalidate_ReleasesBytes(t *testing.T) {
 	c := newToolCache(10, 100)
-	require.True(t, c.set(cacheScope{server: "s", identity: "u1"}, "a", 0, []byte("12"), time.Minute))
-	require.True(t, c.set(cacheScope{server: "s", identity: "u2"}, "b", 0, []byte("123"), time.Minute))
+	u1 := cacheScope{server: "s", identity: "u1"}
+	u2 := cacheScope{server: "s", identity: "u2"}
+	require.True(t, c.set(u1, "a", 0, []byte("12"), time.Minute))
+	require.True(t, c.set(u2, "b", 0, []byte("123"), time.Minute))
 
 	c.InvalidateCaller("s", "u1")
 	require.Equal(t, 1, c.Len())

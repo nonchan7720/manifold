@@ -20,19 +20,31 @@ func TestCacheCaller_Identifiable(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ctx  context.Context
+		ctx  func() context.Context
 		want bool
 	}{
-		{"nothing", base, false},
-		{"token", contexts.ToRequestAuthHeader(base, "Bearer a"), true},
-		{"remote identity", domainedge.WithIdentityKey(base, "oauth:user-a"), true},
+		{"nothing", func() context.Context { return base }, false},
+		{
+			"token",
+			func() context.Context { return contexts.ToRequestAuthHeader(base, "Bearer a") },
+			true,
+		},
+		{
+			"remote identity",
+			func() context.Context { return domainedge.WithIdentityKey(base, "oauth:user-a") },
+			true,
+		},
 		// static pairing: 全 HTTP クライアントが同じ identityKey を共有する。
-		{"static identity only", static, false},
-		{"static identity with token", contexts.ToRequestAuthHeader(static, "Bearer a"), true},
+		{"static identity only", func() context.Context { return static }, false},
+		{
+			"static identity with token",
+			func() context.Context { return contexts.ToRequestAuthHeader(static, "Bearer a") },
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, ok := cacheCaller(tt.ctx)
+			_, _, ok := cacheCaller(tt.ctx())
 			require.Equal(t, tt.want, ok)
 		})
 	}
