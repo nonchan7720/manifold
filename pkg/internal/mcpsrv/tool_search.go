@@ -248,7 +248,8 @@ func handleToolSearchList(
 	next mcp.MethodHandler,
 	req mcp.Request,
 ) (mcp.Result, error) {
-	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil && params.Cursor != "" {
+	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil &&
+		params.Cursor != "" {
 		// Only a page of a list we passed through hands out cursors, so the
 		// client is already paging through the real tools.
 		res, err := next(ctx, authzMethodToolsList, req)
@@ -288,7 +289,8 @@ func handleToolSearchList(
 }
 
 // handleToolSearchCall answers a tools/call of tool_search by searching the
-// tools the caller can see. Search errors (unknown method, bad regexp) are
+// tools the caller can see (read through indexes, which reuses them for a
+// short while per caller). Search errors (unknown method, bad regexp) are
 // tool errors; an error from the inner tools/list (e.g. authz denying the
 // caller) is returned as is.
 func handleToolSearchCall(
@@ -296,6 +298,7 @@ func handleToolSearchCall(
 	serverName string,
 	cfg config.ToolSearchConfig,
 	next mcp.MethodHandler,
+	indexes *toolSearchIndexes,
 	req mcp.Request,
 	params *mcp.CallToolParamsRaw,
 ) (_ mcp.Result, rErr error) {
@@ -318,14 +321,13 @@ func handleToolSearchCall(
 		limit = cfg.DefaultLimit
 	}
 
-	_, tools, err := listVisibleTools(ctx, next, req)
+	index, err := indexes.indexFor(ctx, next, req)
 	if err != nil {
 		traceErr = err
 		return nil, err
 	}
-	docs := toolDefs(dropReservedTool(ctx, serverName, tools))
 
-	defs, err := toolsearch.Search(docs, args.Query, toolsearch.Method(args.Method), limit)
+	defs, err := index.Search(args.Query, toolsearch.Method(args.Method), limit)
 	if err != nil {
 		traceErr = err
 		return toolErrorResult(err), nil
@@ -352,12 +354,16 @@ func handleToolSearchCall(
 // reaches the backend like any other name. It sits outside authz and the tool
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the
-// same authz and audit as before.
-func newToolSearchMiddleware(serverName string, cfg config.ToolSearchConfig) mcp.Middleware {
+// same authz and audit as before. toolCache (may be nil) is only consulted for
+// its invalidation generations, see toolSearchIndexes.
+func newToolSearchMiddleware(
+	serverName string, cfg config.ToolSearchConfig, toolCache *ToolCache,
+) mcp.Middleware {
 	cfg = cfg.WithDefaults()
 	if !cfg.IsEnabled() {
 		return nil
 	}
+	indexes := newToolSearchIndexes(serverName, toolCache)
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {
@@ -368,7 +374,7 @@ func newToolSearchMiddleware(serverName string, cfg config.ToolSearchConfig) mcp
 				if !ok || params.Name != ToolSearchName {
 					return next(ctx, method, req)
 				}
-				return handleToolSearchCall(ctx, serverName, cfg, next, req, params)
+				return handleToolSearchCall(ctx, serverName, cfg, next, indexes, req, params)
 			default:
 				return next(ctx, method, req)
 			}

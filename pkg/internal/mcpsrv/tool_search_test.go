@@ -149,8 +149,11 @@ func TestToolSearch_DisabledByDefault_PassesThrough(t *testing.T) {
 		Name: ToolSearchName, Arguments: map[string]any{"query": "pet"},
 	})
 	require.ErrorContains(t, err, "unknown tool")
-	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}))
-	require.NotNil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}))
+	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}, nil))
+	require.NotNil(
+		t,
+		newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}, nil),
+	)
 }
 
 func TestToolSearch_BelowThreshold_RealToolsVisible(t *testing.T) {
@@ -429,7 +432,8 @@ func pagedListHandler(names []string, pageSize int, calls *int) mcp.MethodHandle
 	return func(_ context.Context, _ string, req mcp.Request) (mcp.Result, error) {
 		*calls++
 		start := 0
-		if params, _ := req.GetParams().(*mcp.ListToolsParams); params != nil && params.Cursor != "" {
+		if params, _ := req.GetParams().(*mcp.ListToolsParams); params != nil &&
+			params.Cursor != "" {
 			n, err := strconv.Atoi(params.Cursor)
 			if err != nil {
 				return nil, err
@@ -468,7 +472,7 @@ func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
 	names := []string{"a", "b", "c", "d", "e"}
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10},
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil,
 	)(pagedListHandler(names, 2, &calls))
 
 	page1 := listToolsViaMiddleware(t, h, "")
@@ -491,7 +495,7 @@ func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
 func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3},
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3}, nil,
 	)(pagedListHandler([]string{"a", "b", "c", "d", "e"}, 2, &calls))
 
 	res := listToolsViaMiddleware(t, h, "")
@@ -503,7 +507,7 @@ func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
 func TestToolSearch_BelowThreshold_PagedUpstreamToolSearchIsHidden(t *testing.T) {
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10},
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil,
 	)(pagedListHandler([]string{ToolSearchName, "b", "c"}, 2, &calls))
 
 	page1 := listToolsViaMiddleware(t, h, "")
