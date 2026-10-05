@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -37,6 +39,13 @@ type ToolCache struct {
 	// lru orders entries from most (front) to least (back) recently used.
 	lru   *list.List
 	bytes int
+	// byServer and byScope index the entries by what they can be invalidated
+	// by (the server, one server's one caller), so InvalidateServer /
+	// InvalidateCaller visit only the matching entries instead of the whole
+	// LRU. Kept in step with entries by add / removeLocked; a set left empty
+	// is deleted.
+	byServer map[string]map[*list.Element]struct{}
+	byScope  map[cacheScope]map[*list.Element]struct{}
 	// generations counts invalidations per scope: InvalidateServer bumps the
 	// server's whole-server scope (identity ""), InvalidateCaller one
 	// caller's scope. cachedResult reads a scope's generation (the sum of
@@ -82,6 +91,8 @@ func newToolCache(maxEntries, maxBytes int) *ToolCache {
 	return &ToolCache{
 		entries:     map[string]*list.Element{},
 		lru:         list.New(),
+		byServer:    map[string]map[*list.Element]struct{}{},
+		byScope:     map[cacheScope]map[*list.Element]struct{}{},
 		generations: map[cacheScope]uint64{},
 		maxEntries:  maxEntries,
 		maxBytes:    maxBytes,
@@ -127,6 +138,27 @@ func (c *ToolCache) removeLocked(elem *list.Element) {
 	entry := c.lru.Remove(elem).(*toolCacheEntry)
 	delete(c.entries, entry.key)
 	c.bytes -= len(entry.value)
+	unindex(c.byServer, entry.scope.server, elem)
+	unindex(c.byScope, entry.scope, elem)
+}
+
+// index adds elem to the set m holds under key.
+func index[K comparable](m map[K]map[*list.Element]struct{}, key K, elem *list.Element) {
+	set := m[key]
+	if set == nil {
+		set = map[*list.Element]struct{}{}
+		m[key] = set
+	}
+	set[elem] = struct{}{}
+}
+
+// unindex is the inverse of index; it deletes the set once empty.
+func unindex[K comparable](m map[K]map[*list.Element]struct{}, key K, elem *list.Element) {
+	set := m[key]
+	delete(set, elem)
+	if len(set) == 0 {
+		delete(m, key)
+	}
 }
 
 // set stores value for key under scope, unless gen (scope's generation when
@@ -152,9 +184,12 @@ func (c *ToolCache) set(
 	if elem, ok := c.entries[key]; ok {
 		c.removeLocked(elem)
 	}
-	c.entries[key] = c.lru.PushFront(&toolCacheEntry{
+	elem := c.lru.PushFront(&toolCacheEntry{
 		key: key, scope: scope, value: value, expires: c.now().Add(ttl),
 	})
+	c.entries[key] = elem
+	index(c.byServer, scope.server, elem)
+	index(c.byScope, scope, elem)
 	c.bytes += len(value)
 	// 上限を超えたら、最も長く使われていないものから捨てる。
 	for c.lru.Len() > c.maxEntries || c.bytes > c.maxBytes {
@@ -171,9 +206,7 @@ func (c *ToolCache) set(
 func (c *ToolCache) InvalidateServer(server string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.invalidateLocked(cacheScope{server: server}, func(scope cacheScope) bool {
-		return scope.server == server
-	})
+	c.invalidateLocked(cacheScope{server: server}, c.byServer[server])
 }
 
 // InvalidateCaller is InvalidateServer for one identityKey's entries of
@@ -183,20 +216,19 @@ func (c *ToolCache) InvalidateCaller(server, identity string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	scope := cacheScope{server: server, identity: identity}
-	c.invalidateLocked(scope, func(s cacheScope) bool { return s == scope })
+	c.invalidateLocked(scope, c.byScope[scope])
 }
 
-// invalidateLocked drops the entries match selects and bumps gen's
-// generation in one critical section (c.mu held by the caller): done as two
-// separate ones, a set with the old generation could slip in between the
-// deletion and the bump and leave a stale entry behind.
-func (c *ToolCache) invalidateLocked(gen cacheScope, match func(cacheScope) bool) {
-	for elem := c.lru.Front(); elem != nil; {
-		next := elem.Next()
-		if match(elem.Value.(*toolCacheEntry).scope) {
-			c.removeLocked(elem)
-		}
-		elem = next
+// invalidateLocked drops victims (the entries to invalidate, taken from one
+// of the indexes) and bumps gen's generation in one critical section (c.mu
+// held by the caller): done as two separate ones, a set with the old
+// generation could slip in between the deletion and the bump and leave a
+// stale entry behind. The cost is the number of victims, not of cached
+// entries. victims is the index's own set, which removeLocked empties, so it
+// is copied first.
+func (c *ToolCache) invalidateLocked(gen cacheScope, victims map[*list.Element]struct{}) {
+	for _, elem := range slices.Collect(maps.Keys(victims)) {
+		c.removeLocked(elem)
 	}
 	c.generations[gen]++
 }
