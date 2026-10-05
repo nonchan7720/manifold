@@ -307,6 +307,21 @@ func TestResolveSwaggerSchemaRef_WithRef(t *testing.T) {
 	require.Equal(t, petSchema, got)
 }
 
+func TestResolveSwaggerSchemaRef_EscapedName(t *testing.T) {
+	slashSchema := &openapi2.Schema{}
+	tildeSchema := &openapi2.Schema{}
+	spec := &openapi2.T{
+		Definitions: map[string]*openapi2.SchemaRef{
+			"attachments/v1": {Value: slashSchema},
+			"a~b":            {Value: tildeSchema},
+		},
+	}
+	require.Equal(t, slashSchema,
+		resolveSwaggerSchemaRef(&openapi2.SchemaRef{Ref: "#/definitions/attachments~1v1"}, spec))
+	require.Equal(t, tildeSchema,
+		resolveSwaggerSchemaRef(&openapi2.SchemaRef{Ref: "#/definitions/a~0b"}, spec))
+}
+
 func TestResolveSwaggerSchemaRef_RefNotFound(t *testing.T) {
 	spec := &openapi2.T{}
 	ref := &openapi2.SchemaRef{Ref: "#/definitions/NotExist"}

@@ -121,6 +121,9 @@ func resolveSwaggerParamRef(p *openapi2.Parameter, spec *openapi2.T) *openapi2.P
 	return nil
 }
 
+// jsonPointerUnescaper は JSON Pointer の参照トークンのエスケープを復号する。
+var jsonPointerUnescaper = strings.NewReplacer("~1", "/", "~0", "~")
+
 // resolveSwaggerSchemaRef resolves a $ref SchemaRef to the concrete *openapi2.Schema.
 // In Swagger 2.x, refs look like "#/definitions/Name" and resolve against spec.Definitions.
 func resolveSwaggerSchemaRef(ref *openapi2.SchemaRef, spec *openapi2.T) *openapi2.Schema {
@@ -131,6 +134,8 @@ func resolveSwaggerSchemaRef(ref *openapi2.SchemaRef, spec *openapi2.T) *openapi
 		return ref.Value
 	}
 	name := strings.TrimPrefix(ref.Ref, "#/definitions/")
+	// JSON Pointer のエスケープ（~1 → /、~0 → ~）を復号する（1 パスで置換するため ~01 は ~1 になる）
+	name = jsonPointerUnescaper.Replace(name)
 	if resolved, ok := spec.Definitions[name]; ok {
 		return resolved.Value
 	}
