@@ -235,13 +235,18 @@ func (c *ToolCache) Bytes() int {
 // token middleware.JWT stored (every non-reverse endpoint) and the identityKey
 // mcpAuthMiddleware resolved for a reverse (WebMCP) endpoint, which skips the
 // JWT middleware and so has no token. Both are kept in their own slot so an
-// empty one can't collide with the other. ok is false when neither is set:
-// such a caller can't be told apart from any other, so nothing is cached for
+// empty one can't collide with the other. ok is false when neither is set, or
+// when the identityKey is the fixed domainedge.StaticIdentityKey and there is
+// no token: under static pairing every HTTP client shares that one key, so
+// such a caller can't be told apart from any other and nothing is cached for
 // it (see newToolCacheMiddleware).
 func cacheCaller(ctx context.Context) (token, identity string, ok bool) {
 	token = contexts.FromRequestAuthHeader(ctx)
 	if key, found := domainedge.IdentityKeyFromContext(ctx); found {
 		identity = string(key)
+	}
+	if token == "" && identity == string(domainedge.StaticIdentityKey) {
+		return token, identity, false
 	}
 	return token, identity, token != "" || identity != ""
 }
@@ -287,8 +292,8 @@ func canonicalArguments(raw json.RawMessage) string {
 // before a cached result is returned, and outside the tool filter, so it
 // caches the exposed names. Only successful results are cached, and only for
 // a caller the gateway can identify (cacheCaller): a request carrying neither
-// a bearer token nor an identityKey bypasses the cache rather than sharing
-// entries with every other such request.
+// a bearer token nor an identityKey (or only the shared static one) bypasses
+// the cache rather than sharing entries with every other such request.
 func newToolCacheMiddleware(
 	server string,
 	cfg *config.CacheConfig,

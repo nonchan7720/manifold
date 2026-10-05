@@ -58,6 +58,10 @@ func staticReverseServers() config.Servers {
 	}
 }
 
+func remoteEdgeConfig() config.EdgeConfig {
+	return config.EdgeConfig{Pairing: config.PairingConfig{Type: config.PairingTypeRemote}}
+}
+
 func staticEdgeConfig() config.EdgeConfig {
 	return config.EdgeConfig{
 		Auth:    config.EdgeAuthPairing,
@@ -551,7 +555,7 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 	cache := NewToolCache(0)
 	cacheCfg := &config.CacheConfig{ToolsList: time.Hour}
 	gateway := NewReverseGateway(
-		registry, pairing, staticEdgeConfig().WithDefaults(), staticReverseServers(),
+		registry, pairing, remoteEdgeConfig().WithDefaults(), staticReverseServers(),
 		WithReverseServerMiddleware(func(name string) []mcp.Middleware {
 			return []mcp.Middleware{newToolCacheMiddleware(name, cacheCfg, cache)}
 		}),
@@ -559,14 +563,19 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 	)
 	gateway.Init(t.Context())
 
-	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	// static pairing は全員が同じ identityKey を共有しキャッシュしないので、
+	// 呼び出し元ごとに区別できる remote pairing で確かめる。
+	alice := domainedge.IdentityKey("oauth:alice")
+	aliceCtx := domainedge.WithIdentityKey(t.Context(), alice)
+
+	srv, err := gateway.ResolveServer(aliceCtx, "app1")
 	require.NoError(t, err)
-	cs := connectTestClient(t, staticResolveCtx(t), srv)
+	cs := connectTestClient(t, aliceCtx, srv)
 	require.ElementsMatch(t, []string{"create_pairing_code"}, sessionToolNames(t, cs))
 	require.Equal(t, 1, cache.Len(), "tools/list is cached per identityKey")
 
 	binding := domainedge.Binding{
-		IdentityKey: domainedge.StaticIdentityKey,
+		IdentityKey: alice,
 		Origin:      "https://app1.example.com",
 		AppSession:  "session-1",
 		ConnID:      "conn-1",
@@ -589,16 +598,16 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 	cache.InvalidateCaller("app1", "bob")
 	require.Equal(t, 0, cache.Len())
 
-	srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
+	srv, err = gateway.ResolveServer(aliceCtx, "app1")
 	require.NoError(t, err)
 	require.NotSame(t, replaced, srv)
-	cs = connectTestClient(t, staticResolveCtx(t), srv)
+	cs = connectTestClient(t, aliceCtx, srv)
 	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
 	require.Equal(t, 1, cache.Len())
 
 	// 置き換えられた旧サーバーにまだ届いているリクエストは、旧タブの一覧を
 	// キャッシュに書き戻さない（新サーバーのエントリを上書きしない）。
-	csOld := connectTestClient(t, staticResolveCtx(t), replaced)
+	csOld := connectTestClient(t, aliceCtx, replaced)
 	require.ElementsMatch(t, []string{"create_pairing_code"}, sessionToolNames(t, csOld))
 	require.Equal(t, 1, cache.Len())
 	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
