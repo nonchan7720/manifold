@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,12 +21,22 @@ import (
 // across all servers.
 const DefaultToolCacheMaxEntries = 10000
 
+// DefaultToolCacheMaxBytes bounds the total size of the results a ToolCache
+// holds (the sum of their encoded lengths), so a few large results can't
+// exhaust memory well before the entry cap is reached.
+const DefaultToolCacheMaxBytes = 64 << 20
+
 // ToolCache is the in-process store behind mcpServers.<name>.cache, shared by
 // every server. Entries are kept as JSON so a hit always hands out a fresh
-// copy: outer middlewares (authz) modify the results they receive.
+// copy: outer middlewares (authz) modify the results they receive. It is
+// bounded by entry count and by total bytes; when either is exceeded the
+// least recently used entries are evicted.
 type ToolCache struct {
 	mu      sync.Mutex
-	entries map[string]toolCacheEntry
+	entries map[string]*list.Element // value: *toolCacheEntry
+	// lru orders entries from most (front) to least (back) recently used.
+	lru   *list.List
+	bytes int
 	// generations counts invalidations per scope: InvalidateServer bumps the
 	// server's whole-server scope (identity ""), InvalidateCaller one
 	// caller's scope. cachedResult reads a scope's generation (the sum of
@@ -34,6 +45,7 @@ type ToolCache struct {
 	// re-register the stale result.
 	generations map[cacheScope]uint64
 	maxEntries  int
+	maxBytes    int
 	now         func() time.Time
 }
 
@@ -47,21 +59,32 @@ type cacheScope struct {
 }
 
 type toolCacheEntry struct {
+	key     string
 	scope   cacheScope
 	value   []byte
 	expires time.Time
 }
 
 // NewToolCache returns an empty ToolCache holding at most maxEntries results
-// (DefaultToolCacheMaxEntries when maxEntries <= 0).
+// (DefaultToolCacheMaxEntries when maxEntries <= 0) and
+// DefaultToolCacheMaxBytes bytes of them.
 func NewToolCache(maxEntries int) *ToolCache {
+	return newToolCache(maxEntries, DefaultToolCacheMaxBytes)
+}
+
+func newToolCache(maxEntries, maxBytes int) *ToolCache {
 	if maxEntries <= 0 {
 		maxEntries = DefaultToolCacheMaxEntries
 	}
+	if maxBytes <= 0 {
+		maxBytes = DefaultToolCacheMaxBytes
+	}
 	return &ToolCache{
-		entries:     map[string]toolCacheEntry{},
+		entries:     map[string]*list.Element{},
+		lru:         list.New(),
 		generations: map[cacheScope]uint64{},
 		maxEntries:  maxEntries,
+		maxBytes:    maxBytes,
 		now:         time.Now,
 	}
 }
@@ -86,15 +109,24 @@ func (c *ToolCache) generationLocked(scope cacheScope) uint64 {
 func (c *ToolCache) get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[key]
+	elem, ok := c.entries[key]
 	if !ok {
 		return nil, false
 	}
+	entry := elem.Value.(*toolCacheEntry)
 	if !c.now().Before(entry.expires) {
-		delete(c.entries, key)
+		c.removeLocked(elem)
 		return nil, false
 	}
+	c.lru.MoveToFront(elem)
 	return entry.value, true
+}
+
+// removeLocked drops elem (c.mu held by the caller).
+func (c *ToolCache) removeLocked(elem *list.Element) {
+	entry := c.lru.Remove(elem).(*toolCacheEntry)
+	delete(c.entries, entry.key)
+	c.bytes -= len(entry.value)
 }
 
 // set stores value for key under scope, unless gen (scope's generation when
@@ -113,22 +145,21 @@ func (c *ToolCache) set(
 	if c.generationLocked(scope) != gen {
 		return false
 	}
-	now := c.now()
-	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.maxEntries {
-		for k, entry := range c.entries {
-			if !now.Before(entry.expires) {
-				delete(c.entries, k)
-			}
-		}
-		// 期限切れが無ければ任意の 1 件を捨てて上限を守る。
-		for k := range c.entries {
-			if len(c.entries) < c.maxEntries {
-				break
-			}
-			delete(c.entries, k)
-		}
+	// 1 件で予算を超える結果は、他のエントリを追い出すだけなので保持しない。
+	if len(value) > c.maxBytes {
+		return false
 	}
-	c.entries[key] = toolCacheEntry{scope: scope, value: value, expires: now.Add(ttl)}
+	if elem, ok := c.entries[key]; ok {
+		c.removeLocked(elem)
+	}
+	c.entries[key] = c.lru.PushFront(&toolCacheEntry{
+		key: key, scope: scope, value: value, expires: c.now().Add(ttl),
+	})
+	c.bytes += len(value)
+	// 上限を超えたら、最も長く使われていないものから捨てる。
+	for c.lru.Len() > c.maxEntries || c.bytes > c.maxBytes {
+		c.removeLocked(c.lru.Back())
+	}
 	return true
 }
 
@@ -160,10 +191,12 @@ func (c *ToolCache) InvalidateCaller(server, identity string) {
 // separate ones, a set with the old generation could slip in between the
 // deletion and the bump and leave a stale entry behind.
 func (c *ToolCache) invalidateLocked(gen cacheScope, match func(cacheScope) bool) {
-	for k, entry := range c.entries {
-		if match(entry.scope) {
-			delete(c.entries, k)
+	for elem := c.lru.Front(); elem != nil; {
+		next := elem.Next()
+		if match(elem.Value.(*toolCacheEntry).scope) {
+			c.removeLocked(elem)
 		}
+		elem = next
 	}
 	c.generations[gen]++
 }
@@ -184,11 +217,18 @@ func toolCacheBypassed(ctx context.Context) bool {
 }
 
 // Len returns the number of entries currently held (expired ones included
-// until they are next touched).
+// until they are next touched or evicted).
 func (c *ToolCache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
+}
+
+// Bytes returns the total size of the results currently held.
+func (c *ToolCache) Bytes() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
 }
 
 // cacheCaller identifies the caller a cached result belongs to: the bearer
