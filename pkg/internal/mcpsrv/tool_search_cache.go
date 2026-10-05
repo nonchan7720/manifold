@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -62,6 +64,13 @@ type toolSearchIndexes struct {
 	maxEntries int
 	maxBytes   int
 	now        func() time.Time
+
+	// reservedWarned is set once the collision of a backend tool with the
+	// synthetic tool_search has been logged, so the WARN isn't repeated on
+	// every tools/list and tool_search call. It is cleared when a complete
+	// read of the backend's tools no longer holds that tool, so adding it
+	// again warns again.
+	reservedWarned atomic.Bool
 
 	mu      sync.Mutex
 	entries map[string]*list.Element // value: *toolSearchIndexEntry
@@ -123,8 +132,11 @@ func (c *toolSearchIndexes) snapshotFor(
 		if err != nil {
 			return nil, err
 		}
+		if !slices.ContainsFunc(tools, func(t *mcp.Tool) bool { return t.Name == ToolSearchName }) {
+			c.reservedWarned.Store(false)
+		}
 		return &toolSearchSnapshot{
-			index: toolsearch.NewIndex(toolDefs(dropReservedTool(ctx, c.serverName, tools))),
+			index: toolsearch.NewIndex(toolDefs(c.dropReservedTool(ctx, tools))),
 			first: first,
 		}, nil
 	}

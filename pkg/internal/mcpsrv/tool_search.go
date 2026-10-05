@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -194,21 +193,17 @@ func listVisibleTools(
 	return first, tools, nil
 }
 
-// reservedToolWarned remembers the servers already warned about a backend tool
-// named tool_search, so the WARN is logged once per server rather than on every
-// tools/list and tool_search call.
-var reservedToolWarned sync.Map
-
 // dropReservedTool hides a backend tool named tool_search: the synthetic tool
-// takes that name, and a tools/call for it never reaches the backend.
-func dropReservedTool(ctx context.Context, serverName string, tools []*mcp.Tool) []*mcp.Tool {
+// takes that name, and a tools/call for it never reaches the backend. It logs
+// a WARN once per collision (see toolSearchIndexes.reservedWarned).
+func (c *toolSearchIndexes) dropReservedTool(ctx context.Context, tools []*mcp.Tool) []*mcp.Tool {
 	out := tools[:0:0]
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName {
-			if _, warned := reservedToolWarned.LoadOrStore(serverName, struct{}{}); !warned {
+			if c.reservedWarned.CompareAndSwap(false, true) {
 				slog.WarnContext(ctx,
 					"upstream tool name collides with the synthetic tool_search; hiding it",
-					slog.String("server", serverName))
+					slog.String("server", c.serverName))
 			}
 			continue
 		}
@@ -260,7 +255,7 @@ func handleToolSearchList(
 		}
 		if page, ok := res.(*mcp.ListToolsResult); ok {
 			out := *page
-			out.Tools = dropReservedTool(ctx, serverName, page.Tools)
+			out.Tools = indexes.dropReservedTool(ctx, page.Tools)
 			if out.Tools == nil {
 				out.Tools = []*mcp.Tool{} // avoid JSON null
 			}
@@ -281,7 +276,7 @@ func handleToolSearchList(
 		return res, nil
 	}
 	out := *snap.first
-	out.Tools = dropReservedTool(ctx, serverName, snap.first.Tools)
+	out.Tools = indexes.dropReservedTool(ctx, snap.first.Tools)
 	if out.Tools == nil {
 		out.Tools = []*mcp.Tool{} // avoid JSON null
 	}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -518,7 +519,8 @@ func TestToolSearch_BelowThreshold_PagedUpstreamToolSearchIsHidden(t *testing.T)
 	require.Equal(t, []string{"c"}, toolNames(page2.Tools))
 }
 
-// バックエンドの tool_search との衝突は WARN をサーバーごとに 1 回だけ出す。
+// バックエンドの tool_search との衝突は WARN をサーバー（ミドルウェア）ごとに
+// 1 回だけ出し、衝突が解消されたら再び出す。
 func TestDropReservedTool_WarnsOncePerServer(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -527,16 +529,50 @@ func TestDropReservedTool_WarnsOncePerServer(t *testing.T) {
 
 	tools := []*mcp.Tool{{Name: ToolSearchName}, {Name: "x"}}
 	const msg = "collides with the synthetic tool_search"
+	a := newToolSearchIndexes("warn-once-a", nil, nil)
 	for range 3 {
-		got := dropReservedTool(t.Context(), "warn-once-a", tools)
+		got := a.dropReservedTool(t.Context(), tools)
 		require.Equal(t, []string{"x"}, toolNames(got))
 	}
 	require.Equal(t, 1, strings.Count(buf.String(), msg))
 
 	// 別サーバーは別に 1 回。
-	dropReservedTool(t.Context(), "warn-once-b", tools)
-	dropReservedTool(t.Context(), "warn-once-b", tools)
+	b := newToolSearchIndexes("warn-once-b", nil, nil)
+	b.dropReservedTool(t.Context(), tools)
+	b.dropReservedTool(t.Context(), tools)
 	require.Equal(t, 2, strings.Count(buf.String(), msg))
+}
+
+func TestToolSearchIndexes_ReservedWarningResetsWhenToolDisappears(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	const msg = "collides with the synthetic tool_search"
+	inner := &callerTools{byToken: map[string][]string{"tok": {ToolSearchName, "x"}}}
+	c := newToolSearchIndexes("petstore", nil, nil)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	ctx := withToken(t.Context(), "tok")
+	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
+	read := func() {
+		_, err := c.snapshotFor(ctx, inner.handler, req)
+		require.NoError(t, err)
+		now = now.Add(2 * toolSearchIndexTTL) // next read goes to the backend
+	}
+
+	read()
+	read()
+	require.Equal(t, 1, strings.Count(buf.String(), msg), "warns once while it stays")
+
+	inner.byToken["tok"] = []string{"x"}
+	read()
+	require.Equal(t, 1, strings.Count(buf.String(), msg))
+
+	inner.byToken["tok"] = []string{ToolSearchName, "x"}
+	read()
+	require.Equal(t, 2, strings.Count(buf.String(), msg), "re-added tool warns again")
 }
 
 // --- digest ---
