@@ -48,7 +48,8 @@
           "path": "server.json",
           "jsonpath": "$.version"
         }
-      ]
+      ],
+      "release-as": "1.20.0"
     }
   }
 }
