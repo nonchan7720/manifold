@@ -14,8 +14,8 @@ import (
 // doesn't turn it on (no audit logger, no cache settings, no include /
 // exclude / overrides).
 // The tool filter sits right outside the backend so every outer layer sees
-// the exposed names (on a reverse server it leaves the gateway's own
-// create_pairing_code alone); the cache sits inside authz so a cached result is only
+// the exposed names (it leaves the gateway's own create_pairing_code and
+// the <agent>__<skill> tools of agents alone); the cache sits inside authz so a cached result is only
 // returned to a caller allowed to call the tool; audit sits outside authz so
 // denied calls are recorded too.
 func ServerToolMiddlewares(
@@ -47,6 +47,13 @@ func ServerToolMiddlewares(
 		// (registerPairingTool), not by the tab: it has to stay listed and
 		// callable whatever tools.include / exclude say, or nobody can pair.
 		builtin = append(builtin, createPairingCodeToolName)
+	}
+	if server != nil {
+		// <agent>__<skill> tools come from mcpServers.<name>.agents, not the
+		// backend: matched by their <agent>__ prefix (see toolFilter.builtinPrefixes).
+		for agent := range server.Agents {
+			builtin = append(builtin, config.AgentToolName(agent, ""))
+		}
 	}
 	if m := newToolFilterMiddleware(tools, builtin...); m != nil {
 		out = append(out, m)
