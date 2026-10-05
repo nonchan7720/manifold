@@ -4865,3 +4865,53 @@ func TestCreateToolFunction_JSONBody_SanitizedKeyRestored_WithoutBinary(t *testi
 	require.NotContains(t, capturedBody, "user_name")
 	require.Equal(t, "x", capturedBody["user[name]"])
 }
+
+func TestCreateToolFunction_JSONBody_MultipleSiblingBinaryFields(t *testing.T) {
+	t.Setenv("TEST", "true")
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	content := []byte("sibling file from url")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	binary := func() *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{
+			Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+		}
+	}
+	op := jsonOperation(&openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"front": binary(),
+			"back":  binary(),
+			"third": binary(),
+			"title": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+		},
+	})
+
+	rawB64 := base64.StdEncoding.EncodeToString([]byte("raw bytes"))
+	fn := CreateToolFunction(http.DefaultClient, "/upload", "post", op, srv.URL, nil, false)
+	_, _, err := fn(context.Background(), map[string]any{
+		"body": map[string]any{
+			"front": rawB64,
+			"back":  fileSrv.URL + "/back.png",
+			"third": map[string]any{"url": fileSrv.URL + "/third.png"},
+			"title": "doc",
+		},
+	})
+	require.NoError(t, err)
+
+	wantURL := base64.StdEncoding.EncodeToString(content)
+	require.Equal(t, rawB64, capturedBody["front"])
+	require.Equal(t, wantURL, capturedBody["back"])
+	require.Equal(t, wantURL, capturedBody["third"])
+	require.Equal(t, "doc", capturedBody["title"])
+}

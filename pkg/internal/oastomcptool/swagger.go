@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi2"
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
@@ -136,6 +137,97 @@ func resolveSwaggerSchemaRef(ref *openapi2.SchemaRef, spec *openapi2.T) *openapi
 	return nil
 }
 
+// swaggerSchemaToV3 は Swagger 2 の body スキーマ（$ref は spec.Definitions で解決）を
+// openapi3.Schema へ変換する。OpenAPI 3 側の formParameter 構築（newFormParameter）・スキーマ生成
+// （buildFormPropertySchema）・実行時解決（normalizeJSONBody）を再利用するための橋渡しで、
+// それらが参照する項目（type/format/description/enum/properties/items/allOf/required）のみ写す。
+// memo は循環参照（自己参照 definitions）による無限再帰の防止と、同一スキーマの共有を兼ねる。
+func swaggerSchemaToV3(
+	ref *openapi2.SchemaRef,
+	spec *openapi2.T,
+	memo map[*openapi2.Schema]*openapi3.Schema,
+) *openapi3.Schema {
+	var src *openapi2.Schema
+	if spec != nil {
+		src = resolveSwaggerSchemaRef(ref, spec)
+	} else if ref != nil && ref.Ref == "" {
+		src = ref.Value
+	}
+	if src == nil {
+		return nil
+	}
+	if dst, ok := memo[src]; ok {
+		return dst
+	}
+	dst := &openapi3.Schema{
+		Type:        src.Type,
+		Format:      src.Format,
+		Description: src.Description,
+		Enum:        src.Enum,
+		Required:    src.Required,
+		Extensions:  src.Extensions,
+	}
+	memo[src] = dst
+	for _, a := range src.AllOf {
+		if c := swaggerSchemaToV3(a, spec, memo); c != nil {
+			dst.AllOf = append(dst.AllOf, &openapi3.SchemaRef{Value: c})
+		}
+	}
+	if src.Items != nil {
+		if c := swaggerSchemaToV3(src.Items, spec, memo); c != nil {
+			dst.Items = &openapi3.SchemaRef{Value: c}
+		}
+	}
+	if len(src.Properties) > 0 {
+		dst.Properties = openapi3.Schemas{}
+		for name, p := range src.Properties {
+			if c := swaggerSchemaToV3(p, spec, memo); c != nil {
+				dst.Properties[name] = &openapi3.SchemaRef{Value: c}
+			}
+		}
+	}
+	return dst
+}
+
+// schemaContainsBinary は schema 配下（properties / items / allOf、循環は打ち切り）に
+// format: binary のリーフが 1 つでもあるかを返す。
+func schemaContainsBinary(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) bool {
+	if schema == nil || visited[schema] {
+		return false
+	}
+	visited[schema] = true
+	if schema.Format == "binary" {
+		return true
+	}
+	if schema.Items != nil && schemaContainsBinary(schema.Items.Value, visited) {
+		return true
+	}
+	for _, p := range schema.Properties {
+		if p != nil && schemaContainsBinary(p.Value, visited) {
+			return true
+		}
+	}
+	for _, a := range schema.AllOf {
+		if a != nil && schemaContainsBinary(a.Value, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+// swaggerBodyV3Schema は in: body パラメータのスキーマを openapi3.Schema へ変換して返す。
+// format: binary を含まない場合は nil を返す（従来の出力・挙動を変えないため）。
+func swaggerBodyV3Schema(p *openapi2.Parameter, spec *openapi2.T) *openapi3.Schema {
+	if p == nil || p.Schema == nil {
+		return nil
+	}
+	conv := swaggerSchemaToV3(p.Schema, spec, map[*openapi2.Schema]*openapi3.Schema{})
+	if !schemaContainsBinary(conv, map[*openapi3.Schema]bool{}) {
+		return nil
+	}
+	return conv
+}
+
 // mergeSwaggerParams merges path-level and operation-level parameters.
 // Operation-level parameters win when the same (in, name) combination appears in both.
 func mergeSwaggerParams(
@@ -184,6 +276,8 @@ func extractParametersSwagger(
 		bodyParams  = []string{}
 		formParams  = formParameters{}
 		isMultipart = false
+
+		bodyFormParam formParameter
 	)
 
 	merged := mergeSwaggerParams(operation, pathItemParams, spec)
@@ -195,6 +289,11 @@ func extractParametersSwagger(
 			queryParams = append(queryParams, p.Name)
 		case "body":
 			bodyParams = append(bodyParams, p.Name)
+			// format: binary を含む場合のみ、実行時に JSON ボディの binary 値を解決するための
+			// formParameter ツリーを構築する（OpenAPI 3 の bodyFormParam と同じ形）。
+			if conv := swaggerBodyV3Schema(p, spec); conv != nil {
+				bodyFormParam = newFormParameter(conv)
+			}
 		case "formData":
 			isFile := p.Type != nil && p.Type.Is("file")
 			formParams[p.Name] = formParameter{isFile: isFile}
@@ -210,6 +309,8 @@ func extractParametersSwagger(
 		bodyParams:  bodyParams,
 		formParams:  formParams,
 		isMultipart: isMultipart,
+
+		bodyFormParam: bodyFormParam,
 	}
 }
 
@@ -356,6 +457,24 @@ func BuildInputSchemaSwagger(
 					bodyProps[propName] = map[string]any{
 						"type":        propType,
 						"description": prop.Description,
+					}
+				}
+				// format: binary を含むプロパティ（ネスト・配列・$ref・allOf 含む）は
+				// OpenAPI 3 の JSON ボディと同じ binaryFieldMCPSchema ベースのスキーマで上書きする。
+				if conv := swaggerBodyV3Schema(p, spec); conv != nil {
+					merged := conv
+					if len(conv.AllOf) > 0 {
+						merged = mergeAllOf(conv)
+					}
+					for propName, propRef := range merged.Properties {
+						if propRef == nil ||
+							!schemaContainsBinary(propRef.Value, map[*openapi3.Schema]bool{}) {
+							continue
+						}
+						delete(bodyProps, propName)
+						bodyProps[sanitizeParamName(propName)] = buildFormPropertySchema(
+							propRef.Value,
+						)
 					}
 				}
 				properties[p.Name] = map[string]any{
@@ -541,6 +660,20 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			}
 
 			if json_body != nil {
+				if len(extractParameter.bodyFormParam.parameters) > 0 {
+					resolved, err := normalizeJSONBody(
+						ctx,
+						"body",
+						json_body,
+						extractParameter.bodyFormParam,
+					)
+					if err != nil {
+						return nil, "", fmt.Errorf("error normalizing json body: %w", err)
+					}
+					if rb, ok := resolved.(map[string]any); ok {
+						json_body = rb
+					}
+				}
 				bodyBytes, err := json.Marshal(json_body)
 				if err != nil {
 					return nil, "", fmt.Errorf("error marshaling request body: %w", err)
