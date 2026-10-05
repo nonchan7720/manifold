@@ -445,7 +445,19 @@ func attachTools(
 					result.SetError(err)
 					return &result, nil
 				}
+				// JSON 内のバイナリフィールドを URL に置き換える（メディアストレージ有効時のみ）
+				var extraLinks []mcp.Content
+				if len(tool.binaryFields) > 0 && isJSONContentType(contentType) {
+					resp, extraLinks, err = rewriteBinaryFields(
+						ctx, resp, tool.binaryFields, mediaUploader,
+					)
+					if err != nil {
+						result.SetError(err)
+						return &result, nil
+					}
+				}
 				content, err := generateContent(ctx, contentType, resp, mediaUploader)
+				content = append(content, extraLinks...)
 				if err != nil {
 					result.SetError(err)
 				} else {
