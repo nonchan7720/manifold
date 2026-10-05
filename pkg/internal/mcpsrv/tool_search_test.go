@@ -670,11 +670,11 @@ func TestMCPServer_ToolSearch_OpenAPIMode(t *testing.T) {
 	}
 
 	// 既定の閾値（100）はフィクスチャのツール数（19）を上回るため実ツールがそのまま見える
-	names := sessionToolNames(t, build(config.ToolSearchConfig{Enabled: true}))
+	names := sessionToolNames(t, build(config.ToolSearchConfig{Enabled: true}.WithDefaults()))
 	require.Len(t, names, 19)
 	require.NotContains(t, names, ToolSearchName)
 
-	cs := build(config.ToolSearchConfig{Enabled: true, Threshold: 1})
+	cs := build(config.ToolSearchConfig{Enabled: true, Threshold: 1}.WithDefaults())
 	require.Equal(t, []string{ToolSearchName}, sessionToolNames(t, cs))
 	got := searchResultNames(
 		t,

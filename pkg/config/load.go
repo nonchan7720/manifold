@@ -322,11 +322,15 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	// GATEWAY_TOOLSEARCH_THRESHOLD, GATEWAY_TOOLSEARCH_DEFAULTLIMIT,
 	// GATEWAY_TOOLSEARCH_RESULTFORMAT and GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS
 	// effective overrides.
-	v.SetDefault("gateway.toolSearch.enabled", false)
-	v.SetDefault("gateway.toolSearch.threshold", DefaultToolSearchThreshold)
-	v.SetDefault("gateway.toolSearch.defaultLimit", DefaultToolSearchLimit)
-	v.SetDefault("gateway.toolSearch.resultFormat", ToolSearchResultFormatDefault)
-	v.SetDefault("gateway.toolSearch.digestMaxTools", DefaultToolSearchDigestMaxTools)
+	// The values come from ToolSearchConfig.WithDefaults, the one place that
+	// knows them; the call after decoding below only covers a key a source
+	// leaves at its zero value.
+	toolSearch := ToolSearchConfig{}.WithDefaults()
+	v.SetDefault("gateway.toolSearch.enabled", toolSearch.Enabled)
+	v.SetDefault("gateway.toolSearch.threshold", toolSearch.Threshold)
+	v.SetDefault("gateway.toolSearch.defaultLimit", toolSearch.DefaultLimit)
+	v.SetDefault("gateway.toolSearch.resultFormat", toolSearch.ResultFormat)
+	v.SetDefault("gateway.toolSearch.digestMaxTools", toolSearch.DigestMaxTools)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
