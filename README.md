@@ -24,18 +24,12 @@ An intake manifold is the component that distributes air and fuel evenly and eff
 
 ## Architecture
 
-```text
-MCP Client
-    │
-    ▼
-┌─────────────┐
-│   Manifold  │   ← this server
-└─────────────┘
-    │       │
-    ▼       ▼
-External  OpenAPI / Swagger
-MCP       REST API Server
-Server
+```mermaid
+flowchart TD
+    client["MCP Client"] --> manifold["Manifold<br/>(this server)"]
+    manifold --> mcp["External MCP Servers"]
+    manifold --> rest["OpenAPI / Swagger<br/>REST API Servers"]
+    manifold --> a2a["A2A Agents"]
 ```
 
 ## Features

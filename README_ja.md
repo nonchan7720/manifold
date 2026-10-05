@@ -24,18 +24,12 @@ Manifold は MCP サーバーとして振る舞いながら、バックエンド
 
 ## アーキテクチャ
 
-```text
-MCP Client
-    │
-    ▼
-┌─────────────┐
-│   Manifold  │   ← このサーバー
-└─────────────┘
-    │       │
-    ▼       ▼
-External  OpenAPI / Swagger
-MCP       REST API Server
-Server
+```mermaid
+flowchart TD
+    client["MCP Client"] --> manifold["Manifold<br/>（このサーバー）"]
+    manifold --> mcp["外部 MCP サーバー"]
+    manifold --> rest["OpenAPI / Swagger<br/>REST API サーバー"]
+    manifold --> a2a["A2A エージェント"]
 ```
 
 ## 主な機能
