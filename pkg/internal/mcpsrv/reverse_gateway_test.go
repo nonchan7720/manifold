@@ -613,6 +613,55 @@ func TestReverseGateway_WithReverseToolCache_RebuildInvalidatesCache(t *testing.
 	require.ElementsMatch(t, []string{"create_pairing_code", "read_dom"}, sessionToolNames(t, cs))
 }
 
+// reverse サーバーに tools.include / exclude を設定しても、ゲートウェイ自身が
+// 登録する create_pairing_code は隠れず、タブ由来のツールだけが絞り込まれること。
+func TestReverseGateway_ToolFilter_KeepsCreatePairingCode(t *testing.T) {
+	storeClient, err := memory.NewClient(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storeClient.Close() })
+	pairing := edgeservices.NewPairingService(storeClient)
+	registry := edgeservices.NewInMemoryRegistry()
+
+	servers := staticReverseServers()
+	servers["app1"].Tools = &config.ToolsConfig{Include: []string{"write_*"}}
+	gateway := NewReverseGateway(
+		registry, pairing, staticEdgeConfig().WithDefaults(), servers,
+		WithReverseServerMiddleware(func(name string) []mcp.Middleware {
+			return ServerToolMiddlewares(
+				name, servers[name], nil, nil, nil, nil, config.ToolSearchConfig{},
+			)
+		}),
+	)
+	gateway.Init(t.Context())
+
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	cs := connectTestClient(t, staticResolveCtx(t), srv)
+	require.Equal(t, []string{createPairingCodeToolName}, sessionToolNames(t, cs),
+		"an unpaired user must still see the pairing tool")
+
+	connectFakeTab(t, gateway, domainedge.Binding{
+		IdentityKey: domainedge.StaticIdentityKey,
+		Origin:      "https://app1.example.com",
+		AppSession:  "session-1",
+		ConnID:      "conn-1",
+	})
+	srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	cs = connectTestClient(t, staticResolveCtx(t), srv)
+	// read_dom は include に一致せず隠れるが、create_pairing_code は残る。
+	require.Equal(t, []string{createPairingCodeToolName}, sessionToolNames(t, cs))
+	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: createPairingCodeToolName, Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	_, err = cs.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "read_dom", Arguments: map[string]any{},
+	})
+	require.ErrorContains(t, err, "unknown tool")
+}
+
 func TestReverseGateway_NoMiddlewareOption_LeavesServerUnaffected(t *testing.T) {
 	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
 	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")

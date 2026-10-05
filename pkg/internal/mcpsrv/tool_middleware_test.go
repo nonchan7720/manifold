@@ -133,6 +133,35 @@ func TestToolFilterMiddleware(t *testing.T) {
 	require.Equal(t, []string{"getpet"}, sessionToolNames(t, unfiltered))
 }
 
+// ゲートウェイ自身が登録するツール（reverse サーバーの create_pairing_code）は
+// include / exclude / overrides の対象外で、常に元の名前で見え、呼べること。
+func TestToolFilterMiddleware_BuiltinToolsBypassFilter(t *testing.T) {
+	srv := newToolTestServer(t, nil, "read_dom", "write_dom", createPairingCodeToolName)
+	srv.AddReceivingMiddleware(newToolFilterMiddleware(&config.ToolsConfig{
+		Include: []string{"read_*"},
+		Overrides: map[string]config.ToolOverride{
+			createPairingCodeToolName: {Name: "pair", Description: "ignored"},
+		},
+	}, createPairingCodeToolName))
+	cs := connectTestClient(t, t.Context(), srv)
+
+	require.ElementsMatch(
+		t, []string{"read_dom", createPairingCodeToolName}, sessionToolNames(t, cs),
+	)
+	require.Equal(
+		t,
+		createPairingCodeToolName+":{}",
+		callText(t, cs, createPairingCodeToolName, map[string]any{}),
+	)
+	for _, hidden := range []string{"write_dom", "pair"} {
+		_, err := cs.CallTool(
+			t.Context(),
+			&mcp.CallToolParams{Name: hidden, Arguments: map[string]any{}},
+		)
+		require.ErrorContains(t, err, "unknown tool", hidden)
+	}
+}
+
 func TestToolFilterMiddleware_NilWithoutSettings(t *testing.T) {
 	require.Nil(t, newToolFilterMiddleware(nil))
 	require.Nil(t, newToolFilterMiddleware(&config.ToolsConfig{File: "x.yaml"}))
