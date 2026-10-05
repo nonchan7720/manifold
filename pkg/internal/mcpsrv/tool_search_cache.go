@@ -23,11 +23,20 @@ const (
 	toolSearchIndexMaxEntries = 1000
 )
 
+// toolSearchSnapshot is what one read of a caller's visible tools yields: the
+// search index over all of them, and the inner first tools/list page (for the
+// pass-through below the threshold: its Cacheable, Meta and NextCursor).
+type toolSearchSnapshot struct {
+	index *toolsearch.Index
+	first *mcp.ListToolsResult
+}
+
 // toolSearchIndexes caches, per caller, the authz-filtered tools tool_search
 // searches together with their prebuilt search index, so a burst of tool_search
-// calls reads the inner tools/list pages (and runs authz / OPA for them) and
-// tokenizes the catalog once rather than once per call. One instance serves one
-// server (its middleware), so entries are keyed by caller alone.
+// calls and tools/list requests reads the inner tools/list pages (and runs
+// authz / OPA for them) and tokenizes the catalog once rather than once per
+// request. One instance serves one server (its middleware), so entries are
+// keyed by caller alone.
 type toolSearchIndexes struct {
 	serverName string
 	// authzKey, when set, identifies what the authz layer (which sits inside
@@ -49,7 +58,7 @@ type toolSearchIndexes struct {
 }
 
 type toolSearchIndexEntry struct {
-	index   *toolsearch.Index
+	snap    *toolSearchSnapshot
 	gen     uint64
 	expires time.Time
 }
@@ -68,20 +77,23 @@ func newToolSearchIndexes(
 	}
 }
 
-// indexFor returns the search index over the tools the caller of ctx can see,
-// from the cache when a fresh entry for that caller exists and otherwise
+// snapshotFor returns the search index (and inner first page) over the tools
+// the caller of ctx can see, from the cache when a fresh entry for that caller exists and otherwise
 // freshly read through next. The caller is identified like the tool cache does
 // (cacheCaller), and a request without one, or one marked to bypass the tool
 // cache, is never cached: it can't be told apart from other callers.
-func (c *toolSearchIndexes) indexFor(
+func (c *toolSearchIndexes) snapshotFor(
 	ctx context.Context, next mcp.MethodHandler, req mcp.Request,
-) (*toolsearch.Index, error) {
-	read := func() (*toolsearch.Index, error) {
-		_, tools, err := listVisibleTools(ctx, next, req)
+) (*toolSearchSnapshot, error) {
+	read := func() (*toolSearchSnapshot, error) {
+		first, tools, err := listVisibleTools(ctx, next, req)
 		if err != nil {
 			return nil, err
 		}
-		return toolsearch.NewIndex(toolDefs(dropReservedTool(ctx, c.serverName, tools))), nil
+		return &toolSearchSnapshot{
+			index: toolsearch.NewIndex(toolDefs(dropReservedTool(ctx, c.serverName, tools))),
+			first: first,
+		}, nil
 	}
 	_, identity, ok := cacheCaller(ctx)
 	if !ok || toolCacheBypassed(ctx) {
@@ -100,19 +112,19 @@ func (c *toolSearchIndexes) indexFor(
 	scope := cacheScope{server: c.serverName, identity: identity}
 	key := c.key(ctx, authzPart)
 	gen := c.generation(scope)
-	if index, hit := c.get(key, gen); hit {
-		return index, nil
+	if snap, hit := c.get(key, gen); hit {
+		return snap, nil
 	}
-	index, err := read()
+	snap, err := read()
 	if err != nil {
 		return nil, err
 	}
 	// The tools may have been replaced while they were being read: store the
 	// index only if the generation it was read under is still current.
 	if c.generation(scope) == gen {
-		c.set(key, gen, index)
+		c.set(key, gen, snap)
 	}
-	return index, nil
+	return snap, nil
 }
 
 func (c *toolSearchIndexes) generation(scope cacheScope) uint64 {
@@ -132,7 +144,7 @@ func (c *toolSearchIndexes) key(ctx context.Context, authzPart string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (c *toolSearchIndexes) get(key string, gen uint64) (*toolsearch.Index, bool) {
+func (c *toolSearchIndexes) get(key string, gen uint64) (*toolSearchSnapshot, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
@@ -143,10 +155,10 @@ func (c *toolSearchIndexes) get(key string, gen uint64) (*toolsearch.Index, bool
 		delete(c.entries, key)
 		return nil, false
 	}
-	return entry.index, true
+	return entry.snap, true
 }
 
-func (c *toolSearchIndexes) set(key string, gen uint64, index *toolsearch.Index) {
+func (c *toolSearchIndexes) set(key string, gen uint64, snap *toolSearchSnapshot) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -164,5 +176,5 @@ func (c *toolSearchIndexes) set(key string, gen uint64, index *toolsearch.Index)
 			delete(c.entries, k)
 		}
 	}
-	c.entries[key] = toolSearchIndexEntry{index: index, gen: gen, expires: now.Add(c.ttl)}
+	c.entries[key] = toolSearchIndexEntry{snap: snap, gen: gen, expires: now.Add(c.ttl)}
 }

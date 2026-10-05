@@ -239,13 +239,15 @@ func toolErrorResult(err error) *mcp.CallToolResult {
 // can see more than cfg.Threshold tools, otherwise what the inner handler
 // returns, unchanged but for a backend tool named tool_search. Pagination is
 // preserved below the threshold: a request carrying a cursor is forwarded
-// as is, and one without gets the inner first page with its NextCursor (every
-// page is still read once to count the tools against the threshold).
+// as is, and one without gets the inner first page with its NextCursor. The
+// tools are counted (and digested) from indexes, so within its TTL a caller's
+// repeated tools/list doesn't read every inner page again.
 func handleToolSearchList(
 	ctx context.Context,
 	serverName string,
 	cfg config.ToolSearchConfig,
 	next mcp.MethodHandler,
+	indexes *toolSearchIndexes,
 	req mcp.Request,
 ) (mcp.Result, error) {
 	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil &&
@@ -267,20 +269,19 @@ func handleToolSearchList(
 		}
 		return res, nil
 	}
-	first, tools, err := listVisibleTools(ctx, next, req)
+	snap, err := indexes.snapshotFor(ctx, next, req)
 	if err != nil {
 		return nil, err
 	}
-	visible := dropReservedTool(ctx, serverName, tools)
-	if len(visible) > cfg.Threshold {
+	if docs := snap.index.Docs(); len(docs) > cfg.Threshold {
 		res := &mcp.ListToolsResult{
-			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(visible))},
+			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, docs)},
 		}
 		normalizeCacheable(&res.Cacheable)
 		return res, nil
 	}
-	out := *first
-	out.Tools = dropReservedTool(ctx, serverName, first.Tools)
+	out := *snap.first
+	out.Tools = dropReservedTool(ctx, serverName, snap.first.Tools)
 	if out.Tools == nil {
 		out.Tools = []*mcp.Tool{} // avoid JSON null
 	}
@@ -321,13 +322,13 @@ func handleToolSearchCall(
 		limit = cfg.DefaultLimit
 	}
 
-	index, err := indexes.indexFor(ctx, next, req)
+	snap, err := indexes.snapshotFor(ctx, next, req)
 	if err != nil {
 		traceErr = err
 		return nil, err
 	}
 
-	defs, err := index.Search(args.Query, toolsearch.Method(args.Method), limit)
+	defs, err := snap.index.Search(args.Query, toolsearch.Method(args.Method), limit)
 	if err != nil {
 		traceErr = err
 		return toolErrorResult(err), nil
@@ -369,7 +370,7 @@ func newToolSearchMiddleware(
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {
 			case authzMethodToolsList:
-				return handleToolSearchList(ctx, serverName, cfg, next, req)
+				return handleToolSearchList(ctx, serverName, cfg, next, indexes, req)
 			case authzMethodToolsCall:
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 				if !ok || params.Name != ToolSearchName {

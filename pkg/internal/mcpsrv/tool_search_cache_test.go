@@ -85,20 +85,20 @@ func TestToolSearchIndexes_TTLExpiry(t *testing.T) {
 	ctx := withToken(t.Context(), "tok")
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 
-	_, err := c.indexFor(ctx, inner.handler, req)
+	_, err := c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	now = now.Add(toolSearchIndexTTL - time.Second)
-	_, err = c.indexFor(ctx, inner.handler, req)
+	_, err = c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	require.Equal(t, 1, inner.calls)
 
 	// 期限後は読み直し、新しいツールが見える。
 	inner.byToken["tok"] = []string{"list_pets", "get_pet"}
 	now = now.Add(2 * time.Second)
-	index, err := c.indexFor(ctx, inner.handler, req)
+	index, err := c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	require.Equal(t, 2, inner.calls)
-	require.Len(t, index.Docs(), 2)
+	require.Len(t, index.index.Docs(), 2)
 }
 
 func TestToolSearchIndexes_CallersAreIsolated(t *testing.T) {
@@ -110,10 +110,10 @@ func TestToolSearchIndexes_CallersAreIsolated(t *testing.T) {
 	c := newToolSearchIndexes("petstore", nil, nil)
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 	docName := func(ctx context.Context) string {
-		index, err := c.indexFor(ctx, inner.handler, req)
+		index, err := c.snapshotFor(ctx, inner.handler, req)
 		require.NoError(t, err)
-		require.Len(t, index.Docs(), 1)
-		return index.Docs()[0].Name
+		require.Len(t, index.index.Docs(), 1)
+		return index.index.Docs()[0].Name
 	}
 
 	require.Equal(t, "alice_tool", docName(withToken(t.Context(), "alice")))
@@ -136,25 +136,25 @@ func TestToolSearchIndexes_InvalidatedWithToolCache(t *testing.T) {
 	ctx := withToken(t.Context(), "tok")
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 
-	_, err := c.indexFor(ctx, inner.handler, req)
+	_, err := c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
-	_, err = c.indexFor(ctx, inner.handler, req)
+	_, err = c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	require.Equal(t, 1, inner.calls)
 
 	// 他サーバーの無効化では影響を受けない。
 	toolCache.InvalidateServer("other")
-	_, err = c.indexFor(ctx, inner.handler, req)
+	_, err = c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	require.Equal(t, 1, inner.calls)
 
 	// spec リフレッシュ等でツールが差し替わったら TTL を待たずに読み直す。
 	inner.byToken["tok"] = []string{"get_pet"}
 	toolCache.InvalidateServer("petstore")
-	index, err := c.indexFor(ctx, inner.handler, req)
+	index, err := c.snapshotFor(ctx, inner.handler, req)
 	require.NoError(t, err)
 	require.Equal(t, 2, inner.calls)
-	require.Equal(t, "get_pet", index.Docs()[0].Name)
+	require.Equal(t, "get_pet", index.index.Docs()[0].Name)
 }
 
 func TestToolSearchIndexes_BoundedSize(t *testing.T) {
@@ -164,7 +164,7 @@ func TestToolSearchIndexes_BoundedSize(t *testing.T) {
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 	for _, tok := range []string{"a", "b", "c", "d", "e"} {
 		inner.byToken[tok] = []string{tok}
-		_, err := c.indexFor(withToken(t.Context(), tok), inner.handler, req)
+		_, err := c.snapshotFor(withToken(t.Context(), tok), inner.handler, req)
 		require.NoError(t, err)
 	}
 	require.LessOrEqual(t, len(c.entries), 3)
@@ -315,4 +315,53 @@ func TestNewAuthzCacheKeyer(t *testing.T) {
 	kb, ok := key(bh)
 	require.True(t, ok)
 	require.NotEqual(t, k1, kb)
+}
+
+func toolsListRequest(header http.Header) *mcp.ServerRequest[*mcp.ListToolsParams] {
+	return &mcp.ServerRequest[*mcp.ListToolsParams]{
+		Params: &mcp.ListToolsParams{},
+		Extra:  &mcp.RequestExtra{Header: header},
+	}
+}
+
+func TestToolSearch_List_RepeatedRequestsReadInnerOnce(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"tok": {"listpets", "getpet"}}}
+	ctx := withToken(t.Context(), "tok")
+	for name, threshold := range map[string]int{"below": 5, "above": 1} {
+		t.Run(name, func(t *testing.T) {
+			inner.calls = 0
+			h := newToolSearchMiddleware(
+				"petstore", config.ToolSearchConfig{Enabled: true, Threshold: threshold}, nil, nil,
+			)(inner.handler)
+			var first []string
+			for i := range 3 {
+				res, err := h(ctx, authzMethodToolsList, toolsListRequest(http.Header{}))
+				require.NoError(t, err)
+				list, ok := res.(*mcp.ListToolsResult)
+				require.True(t, ok)
+				names := toolNames(list.Tools)
+				if i == 0 {
+					first = names
+				}
+				require.Equal(t, first, names)
+			}
+			require.Equal(t, 1, inner.calls)
+			if name == "above" {
+				require.Equal(t, []string{ToolSearchName}, first)
+			} else {
+				require.Equal(t, []string{"listpets", "getpet"}, first)
+			}
+		})
+	}
+}
+
+func TestToolSearch_List_MissingIdentityAfterCachedHitIsDeniedByPolicy(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"tok": {"listpets"}}}
+	h := authzSearchHandler(t, inner)
+	ctx := withToken(t.Context(), "tok")
+
+	_, err := h(ctx, authzMethodToolsList, toolsListRequest(principalHeader("u1", "operators")))
+	require.NoError(t, err)
+	_, err = h(ctx, authzMethodToolsList, toolsListRequest(http.Header{}))
+	require.ErrorIs(t, err, errToolNotAllowedByPolicy)
 }
