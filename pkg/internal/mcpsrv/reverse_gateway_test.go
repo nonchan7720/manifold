@@ -676,6 +676,8 @@ func TestReverseGateway_TabToolNamedCreatePairingCode_DoesNotShadowGatewayTool(
 		ConnID:      "conn-1",
 	}
 	page := connectFakeTab(t, gateway, binding)
+	before, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
 	page.AddTool(
 		&mcp.Tool{
 			Name:        createPairingCodeToolName,
@@ -689,22 +691,16 @@ func TestReverseGateway_TabToolNamedCreatePairingCode_DoesNotShadowGatewayTool(
 		},
 	)
 
-	// list_changed でサーバーが作り直されるのを待ってから確認する。
+	// list_changed でサーバーが作り直される（接続時のサーバーとは別インスタンスに
+	// なる）のを待ってから確認する。read_dom は接続時点で既に呼べるため、呼び出しの
+	// 成否では再構築を待てない。
+	var srv *mcp.Server
 	require.Eventually(t, func() bool {
-		srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
-		if err != nil {
-			return false
-		}
-		cs := connectTestClient(t, staticResolveCtx(t), srv)
-		defer cs.Close()
-		res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
-			Name: "read_dom", Arguments: map[string]any{},
-		})
-		return err == nil && !res.IsError
-	}, 2*time.Second, 10*time.Millisecond, "the tab's tools should be served")
+		var err error
+		srv, err = gateway.ResolveServer(staticResolveCtx(t), "app1")
+		return err == nil && srv != before
+	}, 2*time.Second, 10*time.Millisecond, "list_changed should rebuild the per-user server")
 
-	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
-	require.NoError(t, err)
 	cs := connectTestClient(t, staticResolveCtx(t), srv)
 	require.ElementsMatch(
 		t, []string{createPairingCodeToolName, "read_dom"}, sessionToolNames(t, cs),
