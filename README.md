@@ -669,7 +669,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); the gateway refuses to start when that yields no absolute http(s) URL (e.g. a local spec file without `servers`). Required with `tools.file` alone |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); config validation (and gateway startup) fails when that yields no absolute http(s) URL, so set `baseURL` explicitly when a local spec file has no `servers` or only relative ones such as `/api/v1` (behavior change in 1.19). Required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
@@ -678,7 +678,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 | `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
-| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
+| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 

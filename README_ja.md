@@ -669,7 +669,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合（例: `servers` の無いローカルの spec ファイル）は起動時にエラーになる。`tools.file` だけの場合は必須 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合は、設定の検証（および起動）がエラーになる。ローカルの spec ファイルに `servers` が無い、または `/api/v1` のような相対 URL しか無い場合は `baseURL` を明示すること（1.19 での挙動変更）。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
@@ -678,7 +678,7 @@ gateway:
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 | `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
-| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
+| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 
