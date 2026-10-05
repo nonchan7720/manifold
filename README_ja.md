@@ -604,6 +604,7 @@ audit:
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
 - `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+- `identity` は reverse（WebMCP）サーバーが呼び出しの振り分けに使った identityKey です（static ペアリングなら `static`、remote ペアリングなら解決したユーザー）。これらのエンドポイントは JWT を検証しないため `user` / `groups` / `token` は空になり、呼び出し元を示すのはこの項目だけです。
 
 ### 設定リファレンス
 
