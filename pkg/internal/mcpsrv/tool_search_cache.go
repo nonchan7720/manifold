@@ -1,9 +1,11 @@
 package mcpsrv
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -21,6 +23,13 @@ const (
 	// toolSearchIndexMaxEntries bounds the callers one tool_search middleware
 	// keeps an index for.
 	toolSearchIndexMaxEntries = 1000
+
+	// toolSearchIndexMaxBytes bounds the estimated size (see snapshotSize) of
+	// everything one tool_search middleware keeps cached: each entry holds the
+	// caller's full tool definitions with their inputSchemas, so a large
+	// catalog times many callers would otherwise outgrow the entry cap's
+	// intent. The budget is per middleware (one per server).
+	toolSearchIndexMaxBytes = 64 << 20
 )
 
 // toolSearchSnapshot is what one read of a caller's visible tools yields: the
@@ -51,16 +60,38 @@ type toolSearchIndexes struct {
 	toolCache  *ToolCache
 	ttl        time.Duration
 	maxEntries int
+	maxBytes   int
 	now        func() time.Time
 
 	mu      sync.Mutex
-	entries map[string]toolSearchIndexEntry
+	entries map[string]*list.Element // value: *toolSearchIndexEntry
+	// lru orders entries from most (front) to least (back) recently used.
+	lru   *list.List
+	bytes int
 }
 
 type toolSearchIndexEntry struct {
+	key     string
 	snap    *toolSearchSnapshot
 	gen     uint64
 	expires time.Time
+	size    int
+}
+
+// snapshotSize estimates the memory a snapshot holds as the encoded size of
+// its tool definitions and of the cached first page, computed once at insert.
+// It ignores the lazily built BM25 tables, which scale with the same text.
+func snapshotSize(snap *toolSearchSnapshot) int {
+	size := 0
+	if snap.index != nil {
+		b, _ := json.Marshal(snap.index.Docs())
+		size += len(b)
+	}
+	if snap.first != nil {
+		b, _ := json.Marshal(snap.first)
+		size += len(b)
+	}
+	return size
 }
 
 func newToolSearchIndexes(
@@ -72,8 +103,10 @@ func newToolSearchIndexes(
 		toolCache:  toolCache,
 		ttl:        toolSearchIndexTTL,
 		maxEntries: toolSearchIndexMaxEntries,
+		maxBytes:   toolSearchIndexMaxBytes,
 		now:        time.Now,
-		entries:    map[string]toolSearchIndexEntry{},
+		entries:    map[string]*list.Element{},
+		lru:        list.New(),
 	}
 }
 
@@ -147,34 +180,43 @@ func (c *toolSearchIndexes) key(ctx context.Context, authzPart string) string {
 func (c *toolSearchIndexes) get(key string, gen uint64) (*toolSearchSnapshot, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[key]
+	elem, ok := c.entries[key]
 	if !ok {
 		return nil, false
 	}
+	entry := elem.Value.(*toolSearchIndexEntry)
 	if !c.now().Before(entry.expires) || entry.gen != gen {
-		delete(c.entries, key)
+		c.removeLocked(elem)
 		return nil, false
 	}
+	c.lru.MoveToFront(elem)
 	return entry.snap, true
 }
 
+// removeLocked drops elem (c.mu held by the caller).
+func (c *toolSearchIndexes) removeLocked(elem *list.Element) {
+	entry := c.lru.Remove(elem).(*toolSearchIndexEntry)
+	delete(c.entries, entry.key)
+	c.bytes -= entry.size
+}
+
 func (c *toolSearchIndexes) set(key string, gen uint64, snap *toolSearchSnapshot) {
+	size := snapshotSize(snap)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
-	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.maxEntries {
-		for k, entry := range c.entries {
-			if !now.Before(entry.expires) {
-				delete(c.entries, k)
-			}
-		}
-		// 期限切れが無ければ任意の 1 件を捨てて上限を守る。
-		for k := range c.entries {
-			if len(c.entries) < c.maxEntries {
-				break
-			}
-			delete(c.entries, k)
-		}
+	if elem, ok := c.entries[key]; ok {
+		c.removeLocked(elem)
 	}
-	c.entries[key] = toolSearchIndexEntry{snap: snap, gen: gen, expires: now.Add(c.ttl)}
+	// 1 件で予算を超えるものは、他のエントリを追い出すだけなので保持しない。
+	if size > c.maxBytes {
+		return
+	}
+	c.entries[key] = c.lru.PushFront(&toolSearchIndexEntry{
+		key: key, snap: snap, gen: gen, expires: c.now().Add(c.ttl), size: size,
+	})
+	c.bytes += size
+	// 上限を超えたら、最も長く使われていないものから捨てる。
+	for c.lru.Len() > c.maxEntries || c.bytes > c.maxBytes {
+		c.removeLocked(c.lru.Back())
+	}
 }

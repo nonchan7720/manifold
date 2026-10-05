@@ -365,3 +365,57 @@ func TestToolSearch_List_MissingIdentityAfterCachedHitIsDeniedByPolicy(t *testin
 	_, err = h(ctx, authzMethodToolsList, toolsListRequest(http.Header{}))
 	require.ErrorIs(t, err, errToolNotAllowedByPolicy)
 }
+
+func TestToolSearchIndexes_EvictsLeastRecentlyUsed(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"a": {"a"}, "b": {"b"}, "c": {"c"}}}
+	c := newToolSearchIndexes("petstore", nil, nil)
+	c.maxEntries = 2
+	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
+	snap := func(tok string) {
+		_, err := c.snapshotFor(withToken(t.Context(), tok), inner.handler, req)
+		require.NoError(t, err)
+	}
+	snap("a")
+	snap("b")
+	snap("a") // a is now most recently used
+	snap("c") // evicts b
+	require.Equal(t, 3, inner.calls)
+	snap("a")
+	require.Equal(t, 3, inner.calls, "a must still be cached")
+	snap("b")
+	require.Equal(t, 4, inner.calls, "b must have been evicted")
+}
+
+func TestToolSearchIndexes_ByteBudget(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"a": {"a"}, "b": {"b"}, "c": {"c"}}}
+	c := newToolSearchIndexes("petstore", nil, nil)
+	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
+	snap := func(tok string) {
+		_, err := c.snapshotFor(withToken(t.Context(), tok), inner.handler, req)
+		require.NoError(t, err)
+	}
+	snap("a")
+	one := c.bytes
+	require.Positive(t, one)
+
+	// 予算は 2 件分: 3 件目で最も古いものが捨てられ、合計は予算内に収まる。
+	c.maxBytes = 2*one + one/2
+	snap("b")
+	snap("c")
+	require.Len(t, c.entries, 2)
+	require.LessOrEqual(t, c.bytes, c.maxBytes)
+	snap("c")
+	require.Equal(t, 3, inner.calls)
+	snap("a")
+	require.Equal(t, 4, inner.calls, "a was the least recently used")
+
+	// 1 件で予算を超えるスナップショットは保持しない。
+	c = newToolSearchIndexes("petstore", nil, nil)
+	c.maxBytes = one - 1
+	inner.calls = 0
+	snap("b")
+	snap("b")
+	require.Equal(t, 2, inner.calls)
+	require.Empty(t, c.entries)
+	require.Zero(t, c.bytes)
+}
