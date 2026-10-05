@@ -605,6 +605,7 @@ Every `tools/call` writes one JSON line, separate from the application log:
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+- With a file `output`, send `SIGHUP` after rotating it (logrotate `postrotate`: `kill -HUP <pid>`) and Manifold reopens the file; otherwise lines keep going to the renamed file. Alternatively use logrotate's `copytruncate`. `SIGHUP` is only handled when `output` is a file path.
 - `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
 ### Configuration reference

@@ -9,6 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,6 +28,52 @@ const (
 	AuditOutcomeError     = "error"
 )
 
+// reopenableFile is an append-only log file that can be reopened after
+// logrotate renames or removes it.
+type reopenableFile struct {
+	path string
+	mu   sync.Mutex
+	f    *os.File
+}
+
+func openAuditFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint: gosec
+}
+
+func openReopenableFile(path string) (*reopenableFile, error) {
+	f, err := openAuditFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return &reopenableFile{path: path, f: f}, nil
+}
+
+func (r *reopenableFile) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.f.Write(p)
+}
+
+// Reopen opens path anew and swaps it in. On failure the current file is
+// kept, so records are not lost.
+func (r *reopenableFile) Reopen() error {
+	f, err := openAuditFile(r.path)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	old := r.f
+	r.f = f
+	r.mu.Unlock()
+	return old.Close()
+}
+
+func (r *reopenableFile) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.f.Close()
+}
+
 // AuditLogger writes one JSON line per tools/call to its output (see
 // config.AuditConfig). It is independent of the application log, so audit
 // records can be shipped and retained separately.
@@ -33,6 +82,7 @@ type AuditLogger struct {
 	headers          config.AuthzHeaders
 	includeArguments bool
 	closer           io.Closer
+	file             *reopenableFile // non-nil when Output is a file path
 	now              func() time.Time
 }
 
@@ -43,6 +93,7 @@ func NewAuditLogger(cfg config.AuditConfig, headers config.AuthzHeaders) (*Audit
 	var (
 		w      io.Writer
 		closer io.Closer
+		file   *reopenableFile
 	)
 	switch output := cfg.OutputOrDefault(); output {
 	case config.AuditOutputStdout:
@@ -50,14 +101,15 @@ func NewAuditLogger(cfg config.AuditConfig, headers config.AuthzHeaders) (*Audit
 	case config.AuditOutputStderr:
 		w = os.Stderr
 	default:
-		f, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint: gosec
+		f, err := openReopenableFile(output)
 		if err != nil {
 			return nil, fmt.Errorf("open audit output %q: %w", output, err)
 		}
-		w, closer = f, f
+		w, closer, file = f, f, f
 	}
 	l := newAuditLoggerTo(w, headers, cfg.IncludeArguments)
 	l.closer = closer
+	l.file = file
 	return l, nil
 }
 
@@ -80,6 +132,33 @@ func (l *AuditLogger) Close() error {
 		return nil
 	}
 	return l.closer.Close()
+}
+
+// ReopenOnSIGHUP reopens the output file on SIGHUP until ctx is done, so
+// logrotate (without copytruncate) can rename it and signal the gateway.
+// It does nothing for stdout / stderr, leaving SIGHUP's default behavior.
+func (l *AuditLogger) ReopenOnSIGHUP(ctx context.Context) {
+	if l == nil || l.file == nil {
+		return
+	}
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(ch)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				if err := l.file.Reopen(); err != nil {
+					slog.ErrorContext(ctx, "audit: reopen output on SIGHUP failed",
+						slog.Any("error", err))
+					continue
+				}
+				slog.InfoContext(ctx, "audit: reopened output on SIGHUP")
+			}
+		}
+	}()
 }
 
 // tokenFingerprint identifies the caller's bearer token without recording
