@@ -38,6 +38,8 @@ func TestShouldBase64EncodeResponse(t *testing.T) {
 	require.True(t, shouldBase64EncodeResponse(true, 200, ""))
 	require.False(t, shouldBase64EncodeResponse(false, 200, "image/png"))
 	require.False(t, shouldBase64EncodeResponse(true, 404, "image/png"))
+	require.False(t, shouldBase64EncodeResponse(true, 304, ""))
+	require.False(t, shouldBase64EncodeResponse(true, 302, "image/png"))
 	require.False(t, shouldBase64EncodeResponse(true, 202, "application/json"))
 }
 
