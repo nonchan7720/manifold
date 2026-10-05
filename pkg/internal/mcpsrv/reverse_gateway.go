@@ -119,6 +119,11 @@ func (g *ReverseGateway) Init(ctx context.Context) {
 		return
 	}
 	for name, srv := range g.byName {
+		if cf := srv.Cache; cf != nil && (cf.CachesToolsList() || cf.ToolCall > 0) {
+			slog.WarnContext(ctx, "cache is ignored on a static pairing reverse server: "+
+				"every caller shares one identityKey, so results can't be kept per caller",
+				slog.String("server", name))
+		}
 		binding := domainedge.Binding{IdentityKey: domainedge.StaticIdentityKey, Origin: srv.Origin}
 		if err := g.rebuildUserServer(ctx, name, binding, nil, false); err != nil {
 			slog.ErrorContext(ctx, "failed to initialize reverse tool server",
