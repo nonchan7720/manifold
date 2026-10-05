@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/nonchan7720/manifold/compare/v1.18.1...v1.19.0) (2026-10-05)
+
+
+### Features
+
+* convert format: binary fields in JSON responses to media URLs and resolve them in Swagger 2 JSON requests ([#252](https://github.com/nonchan7720/manifold/issues/252)) ([80f30f2](https://github.com/nonchan7720/manifold/commit/80f30f2805e4141420aa7c9e2214a00451c4b53b))
+
 ## [1.18.1](https://github.com/nonchan7720/manifold/compare/v1.18.0...v1.18.1) (2026-10-05)
 
 
