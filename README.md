@@ -533,7 +533,7 @@ mcpServers:
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
 - Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it.
+- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed.
 
 ### Tool search (`gateway.toolSearch`)
 
