@@ -21,7 +21,10 @@ type toolFilter struct {
 	// builtin names the tools the gateway itself registers on the server
 	// (a reverse server's create_pairing_code). They aren't the backend's
 	// tools, so include / exclude / overrides never apply to them: they are
-	// always exposed, under their own name.
+	// always exposed, under their own name, and only under it — an override
+	// can neither alias a builtin tool (authz checks exposed names, so an
+	// alias would let a policy that denies the builtin name through) nor
+	// rename a backend tool onto a builtin name (that tool is hidden instead).
 	builtin map[string]bool
 }
 
@@ -38,13 +41,18 @@ func newToolFilter(cfg *config.ToolsConfig, builtin ...string) *toolFilter {
 		renamedFrom: map[string]string{},
 		builtin:     make(map[string]bool, len(builtin)),
 	}
-	for original, override := range f.overrides {
-		if override.Name != "" {
-			f.renamedFrom[override.Name] = original
-		}
-	}
 	for _, name := range builtin {
 		f.builtin[name] = true
+	}
+	for original, override := range f.overrides {
+		if f.builtin[original] {
+			// 組み込みツールへの override は無視する（別名を作らせない）。
+			delete(f.overrides, original)
+			continue
+		}
+		if override.Name != "" && !f.builtin[override.Name] {
+			f.renamedFrom[override.Name] = original
+		}
 	}
 	return f
 }
@@ -59,6 +67,11 @@ func (f *toolFilter) exposedName(original string) (string, bool) {
 		return "", false
 	}
 	if override, ok := f.overrides[original]; ok && override.Name != "" {
+		if f.builtin[override.Name] {
+			// 組み込みツールの名前へはリネームできない。組み込み側がその名前を
+			// 持ち続け、こちらは隠す。
+			return "", false
+		}
 		return override.Name, true
 	}
 	if _, shadowed := f.renamedFrom[original]; shadowed {
@@ -97,7 +110,7 @@ func (f *toolFilter) apply(tools []*mcp.Tool) []*mcp.Tool {
 		if !ok {
 			continue
 		}
-		override := f.override(tool.Name)
+		override := f.overrides[tool.Name]
 		if name == tool.Name && override.Description == "" {
 			out = append(out, tool)
 			continue
@@ -112,15 +125,6 @@ func (f *toolFilter) apply(tools []*mcp.Tool) []*mcp.Tool {
 	return out
 }
 
-// override returns the override for the original tool name; a builtin tool
-// has none.
-func (f *toolFilter) override(original string) config.ToolOverride {
-	if f.builtin[original] {
-		return config.ToolOverride{}
-	}
-	return f.overrides[original]
-}
-
 // applyInfos is apply for the /mcp/list tool catalog.
 func (f *toolFilter) applyInfos(infos []ToolInfo) []ToolInfo {
 	if f == nil {
@@ -132,7 +136,7 @@ func (f *toolFilter) applyInfos(infos []ToolInfo) []ToolInfo {
 		if !ok {
 			continue
 		}
-		if override := f.override(info.Name); override.Description != "" {
+		if override := f.overrides[info.Name]; override.Description != "" {
 			info.Description = override.Description
 		}
 		info.Name = name
