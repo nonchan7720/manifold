@@ -183,3 +183,43 @@ func TestAuditConfig_OutputOrDefault(t *testing.T) {
 	)
 	require.Error(t, AuditConfig{Output: "  "}.ValidateWithContext(t.Context()))
 }
+
+// baseURL は spec があれば省略できるが、キーを明示した空値（未設定の環境変数の
+// 展開結果など）は導出に回さずエラーにする。
+func TestLoadInternal_BaseURL_AbsentVsEmpty(t *testing.T) {
+	load := func(t *testing.T, baseURL string) (*Config, error) {
+		t.Helper()
+		return loadFromYAML(t, `
+mcpServers:
+  api:
+    description: api
+    spec: https://example.com/openapi.json
+`+baseURL)
+	}
+
+	t.Run("absent with spec is derived from the spec", func(t *testing.T) {
+		cfg, err := load(t, "")
+		require.NoError(t, err)
+		require.False(t, cfg.MCPServer["api"].BaseURLSet)
+	})
+	t.Run("present but empty is an error", func(t *testing.T) {
+		_, err := load(t, `    baseURL: ""`)
+		require.ErrorContains(t, err, "BaseURL: cannot be blank")
+	})
+	t.Run("unset env var expanding to empty is an error", func(t *testing.T) {
+		t.Setenv("TEST_BASEURL_UNSET", "")
+		_, err := load(t, `    baseURL: ${TEST_BASEURL_UNSET}`)
+		require.ErrorContains(t, err, "BaseURL: cannot be blank")
+	})
+	t.Run("present non-empty is valid", func(t *testing.T) {
+		cfg, err := load(t, `    baseURL: https://api.example.com`)
+		require.NoError(t, err)
+		require.True(t, cfg.MCPServer["api"].BaseURLSet)
+		require.Equal(t, "https://api.example.com", cfg.MCPServer["api"].BaseURL)
+	})
+}
+
+func TestServer_ValidateWithContext_SpecWithEmptyBaseURLSet_IsInvalid(t *testing.T) {
+	s := Server{Description: "d", Spec: "https://example.com/openapi.json", BaseURLSet: true}
+	require.Error(t, s.ValidateWithContext(t.Context()))
+}

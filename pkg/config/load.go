@@ -171,6 +171,18 @@ func stringToJSONHookFunc() mapstructure.DecodeHookFunc {
 	}
 }
 
+// markBaseURLSet sets Server.BaseURLSet for each server whose baseURL key is
+// present in the loaded settings (after include merging and env expansion),
+// so an empty value can be told apart from an absent key. viper lower-cases
+// keys, hence the case-insensitive match.
+func markBaseURLSet(v *viper.Viper, servers Servers) {
+	raw, _ := v.Get("mcpServers").(map[string]any)
+	for name, srv := range servers {
+		fields, _ := raw[strings.ToLower(name)].(map[string]any)
+		_, srv.BaseURLSet = fields["baseurl"]
+	}
+}
+
 func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	if configName == "" {
 		configName = "config"
@@ -258,6 +270,8 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	if err := v.Unmarshal(&conf, viper.DecodeHook(configDecodeHook())); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
+
+	markBaseURLSet(v, conf.MCPServer)
 
 	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
