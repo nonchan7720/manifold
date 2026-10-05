@@ -26,6 +26,9 @@ var toolNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 // Overrides is keyed by the original tool name and renames the tool and/or
 // replaces its description. A renamed tool is only reachable under its new
 // name.
+//
+// Tools the gateway registers itself (a reverse server's create_pairing_code)
+// are not the backend's and are left alone by all three.
 type ToolsConfig struct {
 	File string `mapstructure:"file"`
 

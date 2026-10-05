@@ -171,15 +171,34 @@ func stringToJSONHookFunc() mapstructure.DecodeHookFunc {
 	}
 }
 
-// markBaseURLSet sets Server.BaseURLSet for each server whose baseURL key is
-// present in the loaded settings (after include merging and env expansion),
-// so an empty value can be told apart from an absent key. viper lower-cases
-// keys, hence the case-insensitive match.
-func markBaseURLSet(v *viper.Viper, servers Servers) {
+// baseURLKeys returns the (lower-cased) names of the mcpServers entries whose
+// baseURL key is present in the loaded config, after include merging, so an
+// empty value can be told apart from an absent key (see markBaseURLSet).
+//
+// It must run before expandEnvVars. That writes every value it expands into
+// viper's override layer, and once any key under mcpServers sits there,
+// v.Get("mcpServers") returns the override layer's subtree alone — the keys
+// no ${VAR} touched (a baseURL: "" next to a headers.Authorization: ${TOKEN},
+// for instance) are not merged in — so the presence check would miss them.
+// Before expansion the whole subtree still comes from the config layer.
+func baseURLKeys(v *viper.Viper) map[string]bool {
 	raw, _ := v.Get("mcpServers").(map[string]any)
+	present := make(map[string]bool, len(raw))
+	for name, fields := range raw {
+		fields, _ := fields.(map[string]any)
+		if _, ok := fields["baseurl"]; ok {
+			present[strings.ToLower(name)] = true
+		}
+	}
+	return present
+}
+
+// markBaseURLSet sets Server.BaseURLSet for each server named in present
+// (the result of baseURLKeys). viper lower-cases keys, hence the
+// case-insensitive match.
+func markBaseURLSet(servers Servers, present map[string]bool) {
 	for name, srv := range servers {
-		fields, _ := raw[strings.ToLower(name)].(map[string]any)
-		_, srv.BaseURLSet = fields["baseurl"]
+		srv.BaseURLSet = present[strings.ToLower(name)]
 	}
 }
 
@@ -261,6 +280,10 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		return nil, fmt.Errorf("error merging included config files: %w", err)
 	}
 
+	// Which servers spell out a baseURL key: read before env expansion, see
+	// baseURLKeys.
+	baseURLPresent := baseURLKeys(v)
+
 	// Expand shell variables for string values loaded from yaml, supporting ${VAR:-default}
 	if err := expandEnvVars(v); err != nil {
 		return nil, err
@@ -271,7 +294,7 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
 
-	markBaseURLSet(v, conf.MCPServer)
+	markBaseURLSet(conf.MCPServer, baseURLPresent)
 
 	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
