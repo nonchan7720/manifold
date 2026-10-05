@@ -600,11 +600,12 @@ audit:
 Every `tools/call` writes one JSON line, separate from the application log:
 
 ```json
-{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"authz":"allow","user":"alice","groups":"dev","identity_source":"header","token":"9f86d081884c"}
 ```
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
-- `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+- `authz` records how the call was authorized: `allow` or `deny` (authz decided; `deny` also covers a missing identity and a Decider failure), `bypass` (the [authz bypass header](#disabling-authorization-per-tenant) skipped the check) or `disabled` (authz is not configured for the server). Without it, a bypassed call looks like a successful call by an anonymous user.
+- `user` / `groups` are the raw `authz.headers.userID` / `userGroups` request header values when present (even with authz disabled), and `identity_source: "header"` marks them as such. They are **unauthenticated** unless `authz` is `allow` and a trusted proxy in front of Manifold sets and strips those headers: with `authz: disabled` or `bypass`, any client can claim any user. `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
 - With a file `output`, send `SIGHUP` after rotating it (logrotate `postrotate`: `kill -HUP <pid>`) and Manifold reopens the file; otherwise lines keep going to the renamed file. Alternatively use logrotate's `copytruncate`. `SIGHUP` is only handled when `output` is a file path.
 - `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 

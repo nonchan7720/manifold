@@ -74,6 +74,49 @@ func (r *reopenableFile) Close() error {
 	return r.f.Close()
 }
 
+// Audit authz decisions recorded in the "authz" field. user / groups are
+// request header values, not verified identities, so this says whether the
+// gateway actually checked them.
+const (
+	AuditAuthzAllow    = "allow"    // authz permitted the call
+	AuditAuthzDeny     = "deny"     // authz refused it (policy, missing identity or Decider error)
+	AuditAuthzBypass   = "bypass"   // the authz bypass header skipped the check
+	AuditAuthzDisabled = "disabled" // no authz middleware on this server
+)
+
+// auditIdentitySourceHeader is the "identity_source" value: user / groups
+// are taken verbatim from request headers.
+const auditIdentitySourceHeader = "header"
+
+// auditDecision is set by the authz middleware, which runs inward of the
+// audit middleware, so the audit record can say how the call was authorized.
+type auditDecision struct {
+	mu    sync.Mutex
+	value string
+}
+
+func (d *auditDecision) set(v string) {
+	d.mu.Lock()
+	d.value = v
+	d.mu.Unlock()
+}
+
+func (d *auditDecision) get() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.value
+}
+
+type auditDecisionKey struct{}
+
+// setAuditDecision records the authz decision for the audit record of the
+// tools/call in ctx. It is a no-op when ctx carries no audit holder.
+func setAuditDecision(ctx context.Context, v string) {
+	if d, ok := ctx.Value(auditDecisionKey{}).(*auditDecision); ok {
+		d.set(v)
+	}
+}
+
 // AuditLogger writes one JSON line per tools/call to its output (see
 // config.AuditConfig). It is independent of the application log, so audit
 // records can be shipped and retained separately.
@@ -190,6 +233,7 @@ func (l *AuditLogger) record(
 	req mcp.Request,
 	params *mcp.CallToolParamsRaw,
 	start time.Time,
+	authzDecision string,
 	res mcp.Result,
 	err error,
 ) {
@@ -200,13 +244,19 @@ func (l *AuditLogger) record(
 		slog.String("tool", params.Name),
 		slog.String("outcome", auditOutcome(res, err)),
 		slog.Int64("duration_ms", l.now().Sub(start).Milliseconds()),
+		slog.String("authz", authzDecision),
 	}
 	if extra := req.GetExtra(); extra != nil && extra.Header != nil {
-		if user := extra.Header.Get(l.headers.UserID); user != "" {
+		user := extra.Header.Get(l.headers.UserID)
+		groups := extra.Header.Get(l.headers.UserGroups)
+		if user != "" {
 			attrs = append(attrs, slog.String("user", user))
 		}
-		if groups := extra.Header.Get(l.headers.UserGroups); groups != "" {
+		if groups != "" {
 			attrs = append(attrs, slog.String("groups", groups))
+		}
+		if user != "" || groups != "" {
+			attrs = append(attrs, slog.String("identity_source", auditIdentitySourceHeader))
 		}
 	}
 	if fp := tokenFingerprint(contexts.FromRequestAuthHeader(ctx)); fp != "" {
@@ -244,8 +294,13 @@ func newAuditMiddleware(server, service string, l *AuditLogger) mcp.Middleware {
 				return next(ctx, method, req)
 			}
 			start := l.now()
-			res, err := next(ctx, method, req)
-			l.record(ctx, server, service, req, params, start, res, err)
+			decision := &auditDecision{}
+			res, err := next(context.WithValue(ctx, auditDecisionKey{}, decision), method, req)
+			authzDecision := decision.get()
+			if authzDecision == "" {
+				authzDecision = AuditAuthzDisabled
+			}
+			l.record(ctx, server, service, req, params, start, authzDecision, res, err)
 			return res, err
 		}
 	}

@@ -600,11 +600,12 @@ audit:
 `tools/call` ごとに、アプリケーションログとは別に JSON を 1 行書きます。
 
 ```json
-{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"authz":"allow","user":"alice","groups":"dev","identity_source":"header","token":"9f86d081884c"}
 ```
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
-- `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+- `authz` は呼び出しがどう認可されたかを示します。`allow` / `deny`（authz が判定。`deny` にはアイデンティティ欠落と Decider の障害も含む）・`bypass`（[authz バイパスヘッダー](#テナントごとに認可を無効化する)で認可をスキップした）・`disabled`（そのサーバーで authz が未設定）。この項目が無いと、バイパスした呼び出しが匿名ユーザーの成功に見えてしまいます。
+- `user` / `groups` は `authz.headers.userID` / `userGroups` のリクエストヘッダーの生の値があればその値です（authz が無効でも記録する）。`identity_source: "header"` がその印です。`authz` が `allow` で、かつ Manifold の前段の信頼できるプロキシがそのヘッダーを設定・除去している場合を除き**認証されていない値**です。`authz` が `disabled` / `bypass` のときは、どのクライアントでも任意のユーザーを名乗れます。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
 - `output` がファイルの場合、ローテーション後に `SIGHUP` を送る（logrotate の `postrotate` で `kill -HUP <pid>`）と Manifold がファイルを開き直します。送らないとリネーム後のファイルへ書き続けます。logrotate の `copytruncate` でも構いません。`SIGHUP` を扱うのは `output` がファイルパスのときだけです。
 - `identity` は reverse（WebMCP）サーバーが呼び出しの振り分けに使った identityKey です（static ペアリングなら `static`、remote ペアリングなら解決したユーザー）。これらのエンドポイントは JWT を検証しないため `user` / `groups` / `token` は空になり、呼び出し元を示すのはこの項目だけです。
 
