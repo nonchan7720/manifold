@@ -2044,10 +2044,11 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 		}
 		contentType := response.Header.Get("Content-Type")
-		if isBinaryResponse {
+		// バイナリ応答でも、エラーやテキスト系の応答は生のまま返す
+		if shouldBase64EncodeResponse(isBinaryResponse, response.StatusCode, contentType) {
 			return []byte(base64.URLEncoding.EncodeToString(respBody)), contentType, nil
 		}
-		return respBody, response.Header.Get("Content-Type"), nil
+		return respBody, contentType, nil
 	}
 
 	return tool_function
