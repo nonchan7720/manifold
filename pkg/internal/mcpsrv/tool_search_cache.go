@@ -30,6 +30,11 @@ const (
 // server (its middleware), so entries are keyed by caller alone.
 type toolSearchIndexes struct {
 	serverName string
+	// authzKey, when set, identifies what the authz layer (which sits inside
+	// tool_search) decides on beyond the bearer token: the principal from the
+	// request headers and the bypass flag. It is part of the cache key, and a
+	// request it can't derive a key for (authz would deny it) is never cached.
+	authzKey AuthzCacheKeyer
 	// toolCache supplies the invalidation generations (nil: TTL only). An
 	// entry read before the server's tools were replaced
 	// (ToolCache.InvalidateServer / InvalidateCaller) is dropped on its next
@@ -49,9 +54,12 @@ type toolSearchIndexEntry struct {
 	expires time.Time
 }
 
-func newToolSearchIndexes(serverName string, toolCache *ToolCache) *toolSearchIndexes {
+func newToolSearchIndexes(
+	serverName string, toolCache *ToolCache, authzKey AuthzCacheKeyer,
+) *toolSearchIndexes {
 	return &toolSearchIndexes{
 		serverName: serverName,
+		authzKey:   authzKey,
 		toolCache:  toolCache,
 		ttl:        toolSearchIndexTTL,
 		maxEntries: toolSearchIndexMaxEntries,
@@ -79,8 +87,18 @@ func (c *toolSearchIndexes) indexFor(
 	if !ok || toolCacheBypassed(ctx) {
 		return read()
 	}
+	authzPart := ""
+	if c.authzKey != nil {
+		// authz が拒否する（主体を導出できない）リクエストはキャッシュ越しに
+		// 返さず、authz まで通してポリシーエラーにする。
+		part, ok := c.authzKey(req)
+		if !ok {
+			return read()
+		}
+		authzPart = part
+	}
 	scope := cacheScope{server: c.serverName, identity: identity}
-	key := c.key(ctx)
+	key := c.key(ctx, authzPart)
 	gen := c.generation(scope)
 	if index, hit := c.get(key, gen); hit {
 		return index, nil
@@ -104,9 +122,13 @@ func (c *toolSearchIndexes) generation(scope cacheScope) uint64 {
 	return c.toolCache.generation(scope)
 }
 
-// key hashes the caller (cacheCaller) with the server name, like toolCacheKey.
-func (c *toolSearchIndexes) key(ctx context.Context) string {
-	sum := sha256.Sum256([]byte(toolCacheKey(ctx, c.serverName, "tool_search")))
+// key hashes the caller (cacheCaller) with the server name, like toolCacheKey,
+// and the authz principal key, so callers sharing a token but not a principal
+// never share an index.
+func (c *toolSearchIndexes) key(ctx context.Context, authzPart string) string {
+	sum := sha256.Sum256(
+		[]byte(toolCacheKey(ctx, c.serverName, "tool_search") + "\x00" + authzPart),
+	)
 	return hex.EncodeToString(sum[:])
 }
 

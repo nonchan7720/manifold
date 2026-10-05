@@ -41,7 +41,8 @@ func newToolSearchTestServer(
 	if tools != nil {
 		server = &config.Server{Name: "petstore", Tools: tools}
 	}
-	srv.AddReceivingMiddleware(ServerToolMiddlewares("petstore", server, inner, nil, audit, cfg)...)
+	srv.AddReceivingMiddleware(
+		ServerToolMiddlewares("petstore", server, inner, nil, nil, audit, cfg)...)
 	return srv
 }
 
@@ -149,10 +150,10 @@ func TestToolSearch_DisabledByDefault_PassesThrough(t *testing.T) {
 		Name: ToolSearchName, Arguments: map[string]any{"query": "pet"},
 	})
 	require.ErrorContains(t, err, "unknown tool")
-	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}, nil))
+	require.Nil(t, newToolSearchMiddleware("petstore", config.ToolSearchConfig{}, nil, nil))
 	require.NotNil(
 		t,
-		newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}, nil),
+		newToolSearchMiddleware("petstore", config.ToolSearchConfig{Enabled: true}, nil, nil),
 	)
 }
 
@@ -472,7 +473,7 @@ func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
 	names := []string{"a", "b", "c", "d", "e"}
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil,
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil, nil,
 	)(pagedListHandler(names, 2, &calls))
 
 	page1 := listToolsViaMiddleware(t, h, "")
@@ -495,7 +496,7 @@ func TestToolSearch_BelowThreshold_PreservesPagination(t *testing.T) {
 func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3}, nil,
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 3}, nil, nil,
 	)(pagedListHandler([]string{"a", "b", "c", "d", "e"}, 2, &calls))
 
 	res := listToolsViaMiddleware(t, h, "")
@@ -507,7 +508,7 @@ func TestToolSearch_AboveThreshold_SingleToolSearchPage(t *testing.T) {
 func TestToolSearch_BelowThreshold_PagedUpstreamToolSearchIsHidden(t *testing.T) {
 	calls := 0
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil,
+		"petstore", config.ToolSearchConfig{Enabled: true, Threshold: 10}, nil, nil,
 	)(pagedListHandler([]string{ToolSearchName, "b", "c"}, 2, &calls))
 
 	page1 := listToolsViaMiddleware(t, h, "")

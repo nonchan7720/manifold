@@ -355,15 +355,16 @@ func handleToolSearchCall(
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the
 // same authz and audit as before. toolCache (may be nil) is only consulted for
-// its invalidation generations, see toolSearchIndexes.
+// its invalidation generations, see toolSearchIndexes. authzKey (may be nil
+// when no authz sits inside) keys the index cache by the authz principal.
 func newToolSearchMiddleware(
-	serverName string, cfg config.ToolSearchConfig, toolCache *ToolCache,
+	serverName string, cfg config.ToolSearchConfig, toolCache *ToolCache, authzKey AuthzCacheKeyer,
 ) mcp.Middleware {
 	cfg = cfg.WithDefaults()
 	if !cfg.IsEnabled() {
 		return nil
 	}
-	indexes := newToolSearchIndexes(serverName, toolCache)
+	indexes := newToolSearchIndexes(serverName, toolCache, authzKey)
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {

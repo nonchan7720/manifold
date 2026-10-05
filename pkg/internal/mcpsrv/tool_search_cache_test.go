@@ -2,6 +2,8 @@ package mcpsrv
 
 import (
 	"context"
+	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/config"
 	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
+	"github.com/nonchan7720/manifold/pkg/services/authz"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,7 +56,7 @@ func searchCalledNames(
 func TestToolSearch_Call_ReusesVisibleToolsForTheSameCaller(t *testing.T) {
 	inner := &callerTools{byToken: map[string][]string{"tok": {"list_pets", "get_pet"}}}
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true}, nil,
+		"petstore", config.ToolSearchConfig{Enabled: true}, nil, nil,
 	)(inner.handler)
 	ctx := withToken(t.Context(), "tok")
 
@@ -66,7 +69,7 @@ func TestToolSearch_Call_ReusesVisibleToolsForTheSameCaller(t *testing.T) {
 func TestToolSearch_Call_NoCallerIdentityIsNotCached(t *testing.T) {
 	inner := &callerTools{byToken: map[string][]string{"": {"list_pets"}}}
 	h := newToolSearchMiddleware(
-		"petstore", config.ToolSearchConfig{Enabled: true}, nil,
+		"petstore", config.ToolSearchConfig{Enabled: true}, nil, nil,
 	)(inner.handler)
 
 	searchCalledNames(t, t.Context(), h, "tool")
@@ -76,7 +79,7 @@ func TestToolSearch_Call_NoCallerIdentityIsNotCached(t *testing.T) {
 
 func TestToolSearchIndexes_TTLExpiry(t *testing.T) {
 	inner := &callerTools{byToken: map[string][]string{"tok": {"list_pets"}}}
-	c := newToolSearchIndexes("petstore", nil)
+	c := newToolSearchIndexes("petstore", nil, nil)
 	now := time.Now()
 	c.now = func() time.Time { return now }
 	ctx := withToken(t.Context(), "tok")
@@ -104,7 +107,7 @@ func TestToolSearchIndexes_CallersAreIsolated(t *testing.T) {
 		"bob":   {"bob_tool"},
 		"":      {"identity_tool"},
 	}}
-	c := newToolSearchIndexes("petstore", nil)
+	c := newToolSearchIndexes("petstore", nil, nil)
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 	docName := func(ctx context.Context) string {
 		index, err := c.indexFor(ctx, inner.handler, req)
@@ -129,7 +132,7 @@ func TestToolSearchIndexes_CallersAreIsolated(t *testing.T) {
 func TestToolSearchIndexes_InvalidatedWithToolCache(t *testing.T) {
 	inner := &callerTools{byToken: map[string][]string{"tok": {"list_pets"}}}
 	toolCache := NewToolCache(0)
-	c := newToolSearchIndexes("petstore", toolCache)
+	c := newToolSearchIndexes("petstore", toolCache, nil)
 	ctx := withToken(t.Context(), "tok")
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 
@@ -156,7 +159,7 @@ func TestToolSearchIndexes_InvalidatedWithToolCache(t *testing.T) {
 
 func TestToolSearchIndexes_BoundedSize(t *testing.T) {
 	inner := &callerTools{byToken: map[string][]string{}}
-	c := newToolSearchIndexes("petstore", nil)
+	c := newToolSearchIndexes("petstore", nil, nil)
 	c.maxEntries = 3
 	req := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}
 	for _, tok := range []string{"a", "b", "c", "d", "e"} {
@@ -165,4 +168,151 @@ func TestToolSearchIndexes_BoundedSize(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.LessOrEqual(t, len(c.entries), 3)
+}
+
+// groupDecider allows every tool to the "operators" group and only listpets to
+// anyone else.
+type groupDecider struct{ fakeDecider }
+
+func (d *groupDecider) AllowedTools(
+	_ context.Context, p authz.Principal, tools []authz.ToolRef,
+) ([]authz.ToolRef, error) {
+	if slices.Contains(p.Groups, "operators") {
+		return tools, nil
+	}
+	var out []authz.ToolRef
+	for _, t := range tools {
+		if t.Name == "listpets" {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (d *groupDecider) Allow(
+	_ context.Context, p authz.Principal, t authz.ToolRef,
+) (bool, error) {
+	return slices.Contains(p.Groups, "operators") || t.Name == "listpets", nil
+}
+
+// authzSearchHandler is tool_search (with the authz keyer) in front of the
+// real authz middleware, like ServerToolMiddlewares orders them.
+func authzSearchHandler(t *testing.T, inner *callerTools) mcp.MethodHandler {
+	t.Helper()
+	headers := testAuthzHeaders()
+	chain := []mcp.Middleware{
+		newToolSearchMiddleware(
+			"petstore", config.ToolSearchConfig{Enabled: true}, nil,
+			NewAuthzCacheKeyer(headers, nil),
+		),
+		NewAuthzMiddleware("petstore", "petstore", &groupDecider{}, headers, nil),
+	}
+	h := inner.handler
+	for i := len(chain) - 1; i >= 0; i-- {
+		h = chain[i](h)
+	}
+	return h
+}
+
+func searchRequest(header http.Header) *mcp.ServerRequest[*mcp.CallToolParamsRaw] {
+	return &mcp.ServerRequest[*mcp.CallToolParamsRaw]{
+		Params: &mcp.CallToolParamsRaw{
+			Name: ToolSearchName, Arguments: []byte(`{"query":"tool"}`),
+		},
+		Extra: &mcp.RequestExtra{Header: header},
+	}
+}
+
+func principalHeader(user, groups string) http.Header {
+	h := http.Header{}
+	if user != "" {
+		h.Set("x-user-id", user)
+	}
+	if groups != "" {
+		h.Set("x-user-groups", groups)
+	}
+	return h
+}
+
+func TestToolSearch_Call_SameTokenDifferentGroupsDoNotShareIndex(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"tok": {"listpets", "deletepet"}}}
+	h := authzSearchHandler(t, inner)
+	ctx := withToken(t.Context(), "tok")
+
+	res, err := h(ctx, authzMethodToolsCall, searchRequest(principalHeader("u1", "operators")))
+	require.NoError(t, err)
+	call, ok := res.(*mcp.CallToolResult)
+	require.True(t, ok)
+	require.ElementsMatch(t, []string{"deletepet", "listpets"}, searchResultNames(t, call))
+
+	res, err = h(ctx, authzMethodToolsCall, searchRequest(principalHeader("u2", "readers")))
+	require.NoError(t, err)
+	call, ok = res.(*mcp.CallToolResult)
+	require.True(t, ok)
+	require.Equal(t, []string{"listpets"}, searchResultNames(t, call))
+
+	// Same principal again is still served from cache.
+	before := inner.calls
+	_, err = h(ctx, authzMethodToolsCall, searchRequest(principalHeader("u2", "readers")))
+	require.NoError(t, err)
+	require.Equal(t, before, inner.calls)
+}
+
+func TestToolSearch_Call_MissingIdentityAfterCachedHitIsDeniedByPolicy(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"tok": {"listpets"}}}
+	h := authzSearchHandler(t, inner)
+	ctx := withToken(t.Context(), "tok")
+
+	_, err := h(ctx, authzMethodToolsCall, searchRequest(principalHeader("u1", "operators")))
+	require.NoError(t, err)
+
+	_, err = h(ctx, authzMethodToolsCall, searchRequest(http.Header{}))
+	require.ErrorIs(t, err, errToolNotAllowedByPolicy)
+}
+
+func TestToolSearch_AuthzMiddlewaresWithoutKeyerAreNotCached(t *testing.T) {
+	inner := &callerTools{byToken: map[string][]string{"tok": {"listpets"}}}
+	allow := func(next mcp.MethodHandler) mcp.MethodHandler { return next }
+	h := mcp.MethodHandler(inner.handler)
+	chain := ServerToolMiddlewares(
+		"petstore", nil, []mcp.Middleware{allow}, nil, nil, nil,
+		config.ToolSearchConfig{Enabled: true},
+	)
+	for i := len(chain) - 1; i >= 0; i-- {
+		h = chain[i](h)
+	}
+	ctx := withToken(t.Context(), "tok")
+	searchCalledNames(t, ctx, h, "pet")
+	searchCalledNames(t, ctx, h, "pet")
+	require.Equal(t, 2, inner.calls)
+}
+
+func TestNewAuthzCacheKeyer(t *testing.T) {
+	fh := map[string]config.AuthzInputHeaderField{"tenant": {Header: "x-tenant"}}
+	k := NewAuthzCacheKeyer(testAuthzHeaders(), fh)
+	key := func(h http.Header) (string, bool) { return k(searchRequest(h)) }
+
+	h := principalHeader("u1", "a,b")
+	h.Set("x-tenant", "t1")
+	k1, ok := key(h)
+	require.True(t, ok)
+	k1b, _ := key(h)
+	require.Equal(t, k1, k1b)
+
+	h2 := principalHeader("u1", "a,b")
+	h2.Set("x-tenant", "t2")
+	k2, ok := key(h2)
+	require.True(t, ok)
+	require.NotEqual(t, k1, k2, "extra fields are part of the key")
+
+	_, ok = key(principalHeader("", "a"))
+	require.False(t, ok, "missing identity")
+	_, ok = k(&mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}})
+	require.False(t, ok, "no HTTP extra")
+
+	bh := http.Header{}
+	bh.Set("x-authz-bypass", "true")
+	kb, ok := key(bh)
+	require.True(t, ok)
+	require.NotEqual(t, k1, kb)
 }
