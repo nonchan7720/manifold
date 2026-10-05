@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -456,6 +457,24 @@ func TestToolSearchDef_Digest(t *testing.T) {
 		require.Contains(t, desc, "- toolE", n)
 		require.NotContains(t, desc, "showing first", n)
 	}
+}
+
+// 既定の digestMaxTools は有限で、ツールが多いエンドポイントでも説明文が肥大化しない。
+func TestToolSearchDef_Digest_DefaultCapsLargeCatalogs(t *testing.T) {
+	cfg := config.ToolSearchConfig{Enabled: true}.WithDefaults()
+	docs := make([]toolsearch.ToolDef, 500)
+	for i := range docs {
+		docs[i] = toolsearch.ToolDef{Name: fmt.Sprintf("tool_%03d", i), Description: "d"}
+	}
+	desc := digestDescription(cfg, docs...)
+	require.Contains(t, desc, "500 searchable tools (showing first 50):")
+	require.Equal(t, 50, strings.Count(desc, "\n- "))
+
+	// -1 を明示すれば従来どおり全件。
+	cfg.DigestMaxTools = -1
+	desc = digestDescription(cfg, docs...)
+	require.NotContains(t, desc, "showing first")
+	require.Equal(t, 500, strings.Count(desc, "\n- "))
 }
 
 func TestToolSearchDef_Digest_TruncatesDescriptionsByRune(t *testing.T) {
