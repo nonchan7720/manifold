@@ -166,6 +166,9 @@ func swagger(
 				ToolFunc(toolFunc),
 				WithRegisterToolOperation(method, path),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
+				WithRegisterToolBinaryFields(
+					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
+				),
 			)
 		}
 	}
@@ -225,6 +228,11 @@ func openapi(
 				WithRegisterToolOperation(method, path),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
 			)
+			if !isBinaryResponse {
+				opts = append(opts, WithRegisterToolBinaryFields(
+					oastomcptool.ResponseBinaryFields(operation),
+				))
+			}
 			if isBinaryResponse {
 				opts = append(opts, WithRegisterToolMeta(map[string]any{
 					"manifold": map[string]any{
