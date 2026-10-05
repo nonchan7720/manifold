@@ -31,8 +31,9 @@ func IsTextContentType(contentType string) bool {
 }
 
 // shouldBase64EncodeResponse はバイナリ応答を base64 化すべきかを返す。
-// 成功（4xx 未満）かつ実際の Content-Type がテキスト系でない場合のみ true。
-// エラー応答や JSON/テキストの応答（202 のステータス等）は生のまま返す。
+// 成功（2xx）かつ実際の Content-Type がテキスト系でない場合のみ true。
+// ResponseIsBinary が 2xx の応答だけを binary と判定するのに合わせ、3xx（304 等）や
+// エラー応答、JSON/テキストの応答（202 のステータス等）は生のまま返す。
 func shouldBase64EncodeResponse(isBinaryResponse bool, statusCode int, contentType string) bool {
-	return isBinaryResponse && statusCode < 400 && !IsTextContentType(contentType)
+	return isBinaryResponse && statusCode < 300 && !IsTextContentType(contentType)
 }
