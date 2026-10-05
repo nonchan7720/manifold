@@ -2,8 +2,12 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -11,6 +15,7 @@ import (
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
 	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
+	"go.yaml.in/yaml/v3"
 )
 
 type MCPTransport string
@@ -137,6 +142,51 @@ func (s Server) EffectiveSpecRefreshRejectOn(global string) oasbreaking.Level {
 	return level
 }
 
+// errSpecBaseURLUnresolved is reported when baseURL is omitted and the local
+// spec has no absolute server URL to derive it from. The gateway would
+// otherwise refuse to start with the same guidance (see mcpsrv).
+var errSpecBaseURLUnresolved = errors.New(
+	"baseURL is not set and could not be derived from the spec " +
+		"(it has no absolute servers/host entry and was not fetched over http(s)); " +
+		"set mcpServers.<name>.baseURL",
+)
+
+// validateLocalSpecBaseURL checks that a local spec file names an absolute
+// http(s) base URL (OpenAPI 3 servers[0].url, or Swagger 2 host), which is
+// what the gateway derives baseURL from when it is omitted. Remote specs
+// (http(s), configmap://) are not fetched during validation and an
+// unreadable or unparsable file is left to surface at startup, so both pass.
+func validateLocalSpecBaseURL(spec string) error {
+	if spec == "" || strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") ||
+		strings.HasPrefix(spec, "configmap://") {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Clean(spec))
+	if err != nil {
+		return nil //nolint:nilerr // reported when the gateway loads the spec
+	}
+	var doc struct {
+		Host    string `yaml:"host"`
+		Servers []struct {
+			URL string `yaml:"url"`
+		} `yaml:"servers"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil //nolint:nilerr // reported when the gateway loads the spec
+	}
+	if len(doc.Servers) == 0 {
+		if doc.Host != "" {
+			return nil
+		}
+		return errSpecBaseURLUnresolved
+	}
+	if u, err := url.Parse(doc.Servers[0].URL); err == nil &&
+		(u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return nil
+	}
+	return fmt.Errorf("%w (servers[0].url is %q)", errSpecBaseURLUnresolved, doc.Servers[0].URL)
+}
+
 func (s Server) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
@@ -150,6 +200,10 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(
 			&s.BaseURL,
 			validation.When(s.IsOpenAPI() && (s.Spec == "" || s.BaseURLSet), validation.Required),
+			validation.When(
+				s.BaseURL == "" && !s.BaseURLSet && s.GeneratedToolsFile() == "",
+				validation.By(func(any) error { return validateLocalSpecBaseURL(s.Spec) }),
+			),
 		),
 		validation.Field(
 			&s.Transport,
