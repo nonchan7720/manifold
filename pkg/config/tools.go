@@ -40,9 +40,9 @@ type ToolsConfig struct {
 // ToolOverride replaces the name and/or description a tool is exposed with.
 // Empty fields keep the original value.
 type ToolOverride struct {
-	// Tool は上書き対象の元のツール名。設定ローダーは map のキーを小文字化
-	// するため、大文字を含むツール名はキーではなくこのフィールドで指定する。
-	// 未設定ならキーを元のツール名として使う。
+	// Tool は上書き対象の元のツール名。未設定ならキーを元のツール名として使う。
+	// 設定ローダーは viper が小文字化したキーを設定ファイルの表記へ戻すので、
+	// 大文字を含むツール名もキーのまま書ける。
 	Tool        string `mapstructure:"tool"`
 	Name        string `mapstructure:"name"`
 	Description string `mapstructure:"description"`
