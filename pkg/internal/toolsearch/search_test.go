@@ -35,6 +35,27 @@ func TestSearch_EmptyDocsReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestIndex_SearchMatchesSearch(t *testing.T) {
+	docs := []ToolDef{
+		{Name: "list_orders", Description: "list orders"},
+		{Name: "get_pet", Description: "get a pet by id"},
+	}
+	ix := NewIndex(docs)
+	require.Equal(t, docs, ix.Docs())
+	// 同じ Index への繰り返し検索（前処理の再利用）が Search と同じ結果を返す。
+	for range 2 {
+		for _, method := range []Method{"", MethodBM25, MethodRegexp, MethodFuzzy} {
+			want, err := Search(docs, "pet", method, 10)
+			require.NoError(t, err)
+			got, err := ix.Search("pet", method, 10)
+			require.NoError(t, err)
+			require.Equal(t, want, got, method)
+		}
+	}
+	_, err := ix.Search("pet", Method("unknown"), 10)
+	require.Error(t, err)
+}
+
 func TestDigest_ReturnsAllEntriesSortedByName(t *testing.T) {
 	got := Digest([]ToolDef{
 		{Name: "zebra", Description: "zebra desc"},

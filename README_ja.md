@@ -545,7 +545,7 @@ gateway:
     threshold: 100        # 見えるツール数がこれを超えると tool_search に切り替わる（デフォルト 100）
     defaultLimit: 10      # limit 未指定時の検索結果件数（デフォルト 10）
     resultFormat: default # または claude
-    digestMaxTools: -1    # tool_search の説明に列挙するツール数。-1 / 0 で全件、N で名前順の先頭 N 件
+    digestMaxTools: 50    # tool_search の説明に列挙するツール数。既定 50、-1 で全件、N で名前順の先頭 N 件
 ```
 
 `tool_search` の引数は `query`（必須）・`method`・`limit` です。どの方式でも、検索対象はツール名・説明・引数名・引数の説明（入れ子のオブジェクトや配列の要素も再帰的に対象）で、Claude API の Tool Search Tool と同じ範囲です。
@@ -564,7 +564,7 @@ gateway:
 ヒット 0 件のときは `null` ではなく `[]` を返します。
 
 - 判定はすべて呼び出し元ごとに行います。閾値の判定・検索・説明文の一覧は、`tools.include` / `exclude` / `overrides` と[ツール認可](#ツール認可opa-サイドカー)を通った後の「呼び出し元に実際に見えるツール」に対して行います。ポリシーで拒否されたツールは `tool_search` の結果にも説明文にも現れず、隠れているツールの呼び出しも直接呼んだ場合と同じ認可と監査ログを通ります。`tool_search` の呼び出し自体も監査ログに残り、ポリシーで全面的に拒否された呼び出し元には `tool_search` も同じ `tool not allowed by policy` エラーを返します。
-- `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
+- `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます（既定 50 件。省いた分は説明文に明記されます）。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
 - 閾値は全サーバー合計ではなく、エンドポイントごとに呼び出し元に見えるツール数と比較します。
 - バックエンドに `tool_search` という名前のツールがあっても、合成ツールがその名前を使うため隠れます（警告ログを出す）。
 - `enabled: true` にしない限り、`tools/list` はバックエンドの返したとおり（ページネーションも含めて）返し、`tool_search` は登録されず、バックエンドの `tool_search` という名前のツールも隠れません。`toolSearch` の他の設定は使われません。
@@ -622,7 +622,7 @@ audit:
 | `toolSearch.threshold` | int | エンドポイントで見えるツール数がこれを超えると `tools/list` が `tool_search` だけを返す（デフォルト: 100）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
 | `toolSearch.defaultLimit` | int | `limit` 未指定時に `tool_search` が返す件数（デフォルト: 10） |
 | `toolSearch.resultFormat` | string | `default`（ツール定義）または `claude`（`tool_reference` ブロック） |
-| `toolSearch.digestMaxTools` | int | `tool_search` の説明に列挙するツール数。`-1` / `0` で全件（デフォルト）、`N` で名前順の先頭 `N` 件 |
+| `toolSearch.digestMaxTools` | int | `tool_search` の説明に列挙するツール数。既定は `50`（`0` も同じ）、`-1` で全件、`N` で名前順の先頭 `N` 件 |
 
 #### `gateway.specRefresh`
 

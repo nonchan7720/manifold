@@ -40,7 +40,7 @@ func ServerToolMiddlewares(
 	if m := newAuditMiddleware(name, service, audit); m != nil {
 		out = append(out, m)
 	}
-	if m := newToolSearchMiddleware(name, search); m != nil {
+	if m := newToolSearchMiddleware(name, search, cache); m != nil {
 		out = append(out, m)
 	}
 	out = append(out, authzMiddlewares...)

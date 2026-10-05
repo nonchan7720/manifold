@@ -26,9 +26,11 @@ const ToolSearchResultFormatDefault = "default"
 const ToolSearchResultFormatClaude = "claude"
 
 // DefaultToolSearchDigestMaxTools is used when ToolSearchConfig.DigestMaxTools is
-// unset (0). -1 means "list every visible tool in the tool_search description
-// digest" (no truncation).
-const DefaultToolSearchDigestMaxTools = -1
+// unset (0). The digest only runs above the threshold, so listing every tool
+// would make tool_search's own description grow with the catalog (~200 bytes a
+// tool); the default caps it and the description notes the omission. -1 lists
+// every visible tool in the digest (no truncation).
+const DefaultToolSearchDigestMaxTools = 50
 
 // ToolSearchConfig controls the tool_search fallback (off unless Enabled):
 // once the caller can see more than Threshold tools on an endpoint, that
@@ -60,8 +62,9 @@ type ToolSearchConfig struct {
 	ResultFormat string `mapstructure:"resultFormat"`
 
 	// DigestMaxTools caps how many of the visible tools (sorted by name) are
-	// listed in tool_search's description digest. -1 or 0 (unset) lists every
-	// tool; a positive N lists the first N by name and notes the omission.
+	// listed in tool_search's description digest. 0 (unset) falls back to
+	// DefaultToolSearchDigestMaxTools; -1 lists every tool; a positive N lists the
+	// first N by name and notes the omission.
 	DigestMaxTools int `mapstructure:"digestMaxTools"`
 }
 
@@ -90,8 +93,8 @@ func (c ToolSearchConfig) WithDefaults() ToolSearchConfig {
 
 // ValidateWithContext validates ToolSearchConfig. Negative Threshold / DefaultLimit
 // values are rejected (0 means "use the default"). ResultFormat, if non-empty, must
-// be one of the known values. DigestMaxTools must be -1, 0 (both "all tools") or
-// positive.
+// be one of the known values. DigestMaxTools must be -1 (all tools), 0 (the
+// default) or positive.
 func (c ToolSearchConfig) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
@@ -114,7 +117,7 @@ func validateDigestMaxTools(value any) error {
 		return fmt.Errorf("must be an int")
 	}
 	if v < -1 {
-		return fmt.Errorf("must be -1 (all), 0 (all) or a positive number")
+		return fmt.Errorf("must be -1 (all), 0 (default) or a positive number")
 	}
 	return nil
 }

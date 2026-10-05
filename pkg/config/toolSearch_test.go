@@ -33,6 +33,16 @@ func TestToolSearchConfig_WithDefaults(t *testing.T) {
 			},
 		},
 		{
+			name: "digestMaxTools -1 (all) is kept, not replaced by the default",
+			in:   ToolSearchConfig{DigestMaxTools: -1},
+			want: ToolSearchConfig{
+				Threshold:      DefaultToolSearchThreshold,
+				DefaultLimit:   DefaultToolSearchLimit,
+				ResultFormat:   ToolSearchResultFormatDefault,
+				DigestMaxTools: -1,
+			},
+		},
+		{
 			name: "explicit values kept",
 			in: ToolSearchConfig{
 				Enabled: true, Threshold: 5, DefaultLimit: 3,
@@ -180,4 +190,9 @@ func TestLoadInternal_ToolSearch_InvalidResultFormat(t *testing.T) {
 	t.Setenv("GATEWAY_TOOLSEARCH_RESULTFORMAT", "bogus")
 	_, err := loadFromYAML(t, toolSearchTestYAML)
 	require.Error(t, err)
+}
+
+func TestDefaultToolSearchDigestMaxTools_IsFinite(t *testing.T) {
+	require.Equal(t, 50, DefaultToolSearchDigestMaxTools)
+	require.Equal(t, 50, ToolSearchConfig{}.WithDefaults().DigestMaxTools)
 }
