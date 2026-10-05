@@ -857,9 +857,48 @@ func TestA2ABackendClient_CallTool_MultipleDataPartsAreAList(t *testing.T) {
 		"sessionId": "sess-1", "data": map[string]any{"x": 1},
 	}))
 	require.NoError(t, err)
-	list, ok := res.StructuredContent.([]any)
-	require.True(t, ok)
-	require.Len(t, list, 2)
+	structured, ok := res.StructuredContent.(map[string]any)
+	require.True(t, ok, "structuredContent must be an object")
+	require.Len(t, structured["items"], 2)
+}
+
+// structuredContent は常に JSON オブジェクト: 配列の data パートは
+// {"items": [...]} に包み、スカラーは text content のみにする。
+func TestA2ABackendClient_PartsToContent_StructuredContentIsAnObject(t *testing.T) {
+	stub := newStubA2AAgent(t, false)
+	c := NewA2ABackendClient("translator", stubAgentServer(stub), nil)
+	t.Cleanup(c.Close)
+	tests := []struct {
+		name  string
+		parts []*a2a.Part
+		want  any
+	}{
+		{
+			"object",
+			[]*a2a.Part{a2a.NewDataPart(map[string]any{"a": 1.0})},
+			map[string]any{"a": 1.0},
+		},
+		{
+			"array",
+			[]*a2a.Part{a2a.NewDataPart([]any{1.0, 2.0})},
+			map[string]any{"items": []any{1.0, 2.0}},
+		},
+		{"scalar", []*a2a.Part{a2a.NewDataPart(3.0)}, nil},
+		{"string", []*a2a.Part{a2a.NewDataPart("x")}, nil},
+		{"text only", []*a2a.Part{a2a.NewTextPart("hi")}, nil},
+		{
+			"scalars and objects",
+			[]*a2a.Part{a2a.NewDataPart(1.0), a2a.NewDataPart(map[string]any{"b": 2.0})},
+			map[string]any{"items": []any{1.0, map[string]any{"b": 2.0}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, structured, err := c.partsToContent(t.Context(), tt.parts)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, structured)
+		})
+	}
 }
 
 func TestA2ABackendClient_Close_RefusesFurtherUse(t *testing.T) {

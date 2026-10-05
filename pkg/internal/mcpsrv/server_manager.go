@@ -437,8 +437,12 @@ func attachTools(
 					result.SetError(err)
 				} else {
 					result.Content = content
-					if json.Valid(resp) {
-						result.StructuredContent = json.RawMessage(resp)
+					// structuredContent must be a JSON object; wrapToolFunc
+					// already wrapped application/json arrays, anything else
+					// (a JSON array or scalar under another content type)
+					// stays in the text content only.
+					if obj, ok := objectBody(resp); ok {
+						result.StructuredContent = obj
 					}
 				}
 				return &result, nil
