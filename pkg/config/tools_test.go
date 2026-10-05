@@ -163,9 +163,10 @@ audit:
 	require.True(t, cfg.Audit.Enabled)
 	require.Equal(t, AuditOutputStdout, cfg.Audit.OutputOrDefault())
 	require.True(t, cfg.Audit.IncludeArguments)
-	// encryptKey も store も無い最小構成はインメモリ + 生成した鍵で通る
+	// encryptKey も store も無い最小構成はインメモリなのでロード時は通り、
+	// 鍵はロード時には生成されない（gateway 起動時に ApplyEphemeralDefaults が生成する）
 	require.True(t, cfg.UsesEphemeralStore())
-	require.NotEmpty(t, cfg.Gateway.EncryptKey)
+	require.Empty(t, cfg.Gateway.EncryptKey)
 }
 
 func TestServer_ValidateWithContext_SpecWithoutBaseURL_IsValid(t *testing.T) {

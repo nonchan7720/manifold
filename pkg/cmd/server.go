@@ -286,6 +286,13 @@ func runGatewayServer(ctx context.Context) error {
 		MaxSize:      globalConfig.FileFetch.MaxSize,
 	})
 
+	if generated, err := globalConfig.ApplyEphemeralDefaults(); err != nil {
+		return err
+	} else if generated {
+		slog.WarnContext(ctx, "gateway.encryptKey is not set; using a random key "+
+			"(fine for the in-memory store, set it for redis or sqlite)")
+	}
+
 	storeClient, err := newStoreClient(ctx)
 	if err != nil {
 		return err

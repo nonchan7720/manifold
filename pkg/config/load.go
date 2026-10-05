@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -278,13 +277,6 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 		agent.Name = name
 	}
 	normalizeReverseOrigins(conf.MCPServer)
-
-	if generated, err := conf.ApplyEphemeralDefaults(); err != nil {
-		return nil, err
-	} else if generated {
-		slog.WarnContext(ctx, "gateway.encryptKey is not set; using a random key "+
-			"(fine for the in-memory store, set it for redis or sqlite)")
-	}
 
 	if err := validation.ValidateWithContext(ctx, &conf); err != nil {
 		return nil, err
