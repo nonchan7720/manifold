@@ -13,6 +13,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
 type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, contentType string, _ error)
@@ -30,6 +31,10 @@ type Tool struct {
 	// or to "METHOD /path".
 	summary     string
 	description string
+	// binaryFields は 2xx の JSON レスポンス内の format: binary フィールドの位置。
+	// メディアストレージ有効時に URL へ置き換えるために使う（spec から導出するので
+	// generated catalog 経由でも同じ値になる）。
+	binaryFields []oastomcptool.BinaryField
 }
 
 // ToolInfo is the catalog entry of a registered tool for /mcp/list?tools=true.
@@ -85,6 +90,13 @@ func WithRegisterToolDocs(summary, description string) RegisterToolOptions {
 	return func(tool *Tool) {
 		tool.summary = summary
 		tool.description = description
+	}
+}
+
+// WithRegisterToolBinaryFields は JSON レスポンス内のバイナリフィールドの位置を記録する。
+func WithRegisterToolBinaryFields(fields []oastomcptool.BinaryField) RegisterToolOptions {
+	return func(tool *Tool) {
+		tool.binaryFields = fields
 	}
 }
 
