@@ -124,9 +124,13 @@ func searchResultNames(t *testing.T, res *mcp.CallToolResult) []string {
 	// StructuredContent にも同じ内容がラウンドトリップしていること
 	structured, err := json.Marshal(res.StructuredContent)
 	require.NoError(t, err)
-	var structuredDefs []toolsearch.ToolDef
-	require.NoError(t, json.Unmarshal(structured, &structuredDefs))
-	require.Len(t, structuredDefs, len(defs))
+	// structuredContent は常に JSON オブジェクト（配列は {"items": [...]} で包む）
+	var structuredObj struct {
+		Items []toolsearch.ToolDef `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(structured, &structuredObj))
+	require.Len(t, structuredObj.Items, len(defs))
+	require.Equal(t, byte('{'), structured[0])
 	return names
 }
 
@@ -266,7 +270,7 @@ func TestToolSearch_NoMatch_ReturnsEmptyArrayJSON(t *testing.T) {
 				require.JSONEq(t, "[]", res.Content[0].(*mcp.TextContent).Text)
 				structured, err := json.Marshal(res.StructuredContent)
 				require.NoError(t, err)
-				require.JSONEq(t, "[]", string(structured))
+				require.JSONEq(t, `{"items":[]}`, string(structured))
 			})
 		}
 	}

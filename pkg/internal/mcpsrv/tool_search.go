@@ -338,9 +338,16 @@ func handleToolSearchCall(
 		traceErr = err
 		return toolErrorResult(err), nil
 	}
+	// structuredContent must be an object: wrap the array like the OpenAPI
+	// tools do ({"items": [...]}); the text content keeps the bare array.
+	structured, err := wrapIfArray(data)
+	if err != nil {
+		traceErr = err
+		return toolErrorResult(err), nil
+	}
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(data)}},
-		StructuredContent: json.RawMessage(data),
+		StructuredContent: json.RawMessage(structured),
 	}, nil
 }
 

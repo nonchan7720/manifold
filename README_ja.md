@@ -391,7 +391,7 @@ agents:
 - Manifold は `url`（と `agentCardPath`。既定 `/.well-known/agent-card.json`）から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
 - 公開対象の **スキル**（`skills` を設定しない限り Card の全スキル）が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
 - `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
-- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
+- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入ります。常に JSON オブジェクトで、オブジェクト 1 つならそのまま、配列または複数なら `{"items": [...]}`、スカラー 1 つならテキストのみ）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
 - 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`service=<service.code、既定は name>`、`tool=<スキル ID>` です。
 - ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
 
@@ -562,7 +562,7 @@ gateway:
 | `default`      | （デフォルト）一致したツールの完全な定義（`name` / `description` / `inputSchema`）の配列 |
 | `claude`       | [Claude API の Tool Search Tool のカスタム検索実装規約](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation)に沿った `tool_reference` ブロック（`{"type": "tool_reference", "tool_name": "..."}`）の配列。Claude API 側が完全なツール定義に展開する |
 
-ヒット 0 件のときは `null` ではなく `[]` を返します。
+ヒット 0 件のときは `null` ではなく `[]` を返します。text content はこの配列そのもので、`structuredContent` は常に JSON オブジェクトでなければならないため、配列は `{"items": [...]}` に包まれます（OpenAPI ツールの配列レスポンスと同じ）。
 
 - 判定はすべて呼び出し元ごとに行います。閾値の判定・検索・説明文の一覧は、`tools.include` / `exclude` / `overrides` と[ツール認可](#ツール認可opa-サイドカー)を通った後の「呼び出し元に実際に見えるツール」に対して行います。ポリシーで拒否されたツールは `tool_search` の結果にも説明文にも現れず、隠れているツールの呼び出しも直接呼んだ場合と同じ認可と監査ログを通ります。`tool_search` の呼び出し自体も監査ログに残り、ポリシーで全面的に拒否された呼び出し元には `tool_search` も同じ `tool not allowed by policy` エラーを返します。
 - `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます（既定 50 件。省いた分は説明文に明記されます）。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
