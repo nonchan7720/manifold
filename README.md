@@ -24,18 +24,12 @@ An intake manifold is the component that distributes air and fuel evenly and eff
 
 ## Architecture
 
-```text
-MCP Client
-    │
-    ▼
-┌─────────────┐
-│   Manifold  │   ← this server
-└─────────────┘
-    │       │
-    ▼       ▼
-External  OpenAPI / Swagger
-MCP       REST API Server
-Server
+```mermaid
+flowchart TD
+    client["MCP Client"] --> manifold["Manifold<br/>(this server)"]
+    manifold --> mcp["External MCP Servers"]
+    manifold --> rest["OpenAPI / Swagger<br/>REST API Servers"]
+    manifold --> a2a["A2A Agents"]
 ```
 
 ## Features
@@ -50,7 +44,7 @@ Server
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
-- **Resource links**: Stores binary content from tool responses in S3 and returns download URLs (resource links)
+- **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management in memory (default), Redis or SQLite
 - **OpenTelemetry support**: OTLP export of traces, metrics, and logs (metrics also support Prometheus-style pull)
@@ -161,7 +155,7 @@ spec: { ... }   # openapi3 document, external $refs internalized
 
 #### Binary fields and responses
 
-A `multipart/form-data` or `application/x-www-form-urlencoded` property with `format: binary` is not exposed as a plain string. It becomes a `oneOf` that accepts either a string (base64 content or a URL to fetch the file from) or an object naming the source explicitly (`url` / `base64` / `text` / `content`, plus optional `filename` and `contentType`), and carries `_meta.manifold.file: true` so clients can recognize it as a file input. An operation whose success response is binary (e.g. `image/png`, `application/octet-stream`) is marked `binaryResponse: true`; at runtime such responses are handled as binary content and, when `storage` is configured, returned as resource links (see [`storage`](#storage)). From a spec with one upload and one download operation:
+A `format: binary` property in a `multipart/form-data`, `application/x-www-form-urlencoded` or `application/json` request body (for Swagger 2, `type: file` form parameters and `format: binary` fields inside an `in: body` schema, including nested objects, arrays, `$ref` and `allOf`) is not exposed as a plain string. It becomes a `oneOf` that accepts either a string (base64 content or a URL to fetch the file from) or an object naming the source explicitly (`url` / `base64` / `text` / `content`, plus optional `filename` and `contentType`), and carries `_meta.manifold.file: true` so clients can recognize it as a file input. An operation whose success response is binary (e.g. `image/png`, `application/octet-stream`) is marked `binaryResponse: true`; at runtime such responses are handled as binary content and, when `storage` is configured, returned as resource links (see [`storage`](#storage)). Only a successful (2xx) response whose actual `Content-Type` is not textual is treated as binary: error responses, 3xx responses and text/JSON/XML/YAML bodies (including `+json` / `+xml` types) are returned as-is even for a `binaryResponse: true` tool. From a spec with one upload and one download operation:
 
 ```yaml
 tools:
@@ -209,6 +203,8 @@ tools:
         - fileId
       type: object
 ```
+
+In a JSON request body, a binary field's value is resolved the same way (base64, URL or explicit object) and sent to the upstream API as base64. Conversely, a `format: binary` field inside a 2xx JSON response (Swagger 2: `format: binary` or `type: file`; nested objects and arrays included, OpenAPI 3.1 `contentMediaType` used as the content type) is uploaded to [`storage`](#storage) when it is configured: the base64 value in the JSON is replaced with its download URL, and a resource link is added to the result for each uploaded field. Without `storage`, or for `null` / non-base64 values, the JSON is returned unchanged.
 
 Recommended workflow:
 
@@ -859,7 +855,7 @@ The store is chosen in this order: `sqlite.path` → `memory.enabled` → `redis
 
 #### `storage`
 
-Stores content included in OpenAPI/Swagger tool responses (images, binaries, etc.) in external storage and returns resource links (download URLs). When unset, no storage is used.
+Stores content included in OpenAPI/Swagger tool responses (images, binaries, etc.) in external storage and returns resource links (download URLs). `format: binary` fields inside JSON responses are uploaded as well and replaced with their download URL (see [Binary fields and responses](#binary-fields-and-responses)). When unset, no storage is used.
 
 | Field          | Type   | Description                                                                                |
 | -------------- | ------ | ------------------------------------------------------------------------------------------ |
