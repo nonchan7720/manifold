@@ -24,18 +24,12 @@ Manifold は MCP サーバーとして振る舞いながら、バックエンド
 
 ## アーキテクチャ
 
-```text
-MCP Client
-    │
-    ▼
-┌─────────────┐
-│   Manifold  │   ← このサーバー
-└─────────────┘
-    │       │
-    ▼       ▼
-External  OpenAPI / Swagger
-MCP       REST API Server
-Server
+```mermaid
+flowchart TD
+    client["MCP Client"] --> manifold["Manifold<br/>（このサーバー）"]
+    manifold --> mcp["外部 MCP サーバー"]
+    manifold --> rest["OpenAPI / Swagger<br/>REST API サーバー"]
+    manifold --> a2a["A2A エージェント"]
 ```
 
 ## 主な機能
@@ -50,7 +44,7 @@ Server
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
-- **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
+- **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
 - **ストレージ選択可能**: インメモリ（デフォルト）・Redis・SQLite によるセッション・トークン管理
 - **OpenTelemetry 対応**: トレース・メトリクス・ログの OTLP エクスポート（メトリクスは Prometheus 形式の pull にも対応）
@@ -161,7 +155,7 @@ spec: { ... }   # openapi3 ドキュメント（外部 $ref を内部化済み�
 
 #### バイナリのフィールドとレスポンス
 
-`multipart/form-data` または `application/x-www-form-urlencoded` のプロパティで `format: binary` のものは、単なる文字列としては公開されない。文字列（base64 の内容、またはファイルを取得する URL）か、入力元を明示するオブジェクト（`url` / `base64` / `text` / `content` のいずれか 1 つと、任意の `filename` / `contentType`）を受け付ける `oneOf` になり、クライアントがファイル入力と判別できるよう `_meta.manifold.file: true` が付く。成功レスポンスがバイナリ（`image/png` や `application/octet-stream` など）の operation は `binaryResponse: true` になり、実行時のレスポンスはバイナリとして扱われ、`storage` を設定していれば resource link として返される（[`storage`](#storage) 参照）。アップロード 1 つとダウンロード 1 つを持つ spec から生成した例:
+`multipart/form-data`・`application/x-www-form-urlencoded`・`application/json` のリクエストボディ内で `format: binary` のプロパティ（Swagger 2 では `type: file` の form パラメータと、`in: body` スキーマ内の `format: binary` のフィールド。ネストした object・配列・`$ref`・`allOf` を含む）は、単なる文字列としては公開されない。文字列（base64 の内容、またはファイルを取得する URL）か、入力元を明示するオブジェクト（`url` / `base64` / `text` / `content` のいずれか 1 つと、任意の `filename` / `contentType`）を受け付ける `oneOf` になり、クライアントがファイル入力と判別できるよう `_meta.manifold.file: true` が付く。成功レスポンスがバイナリ（`image/png` や `application/octet-stream` など）の operation は `binaryResponse: true` になり、実行時のレスポンスはバイナリとして扱われ、`storage` を設定していれば resource link として返される（[`storage`](#storage) 参照）。バイナリとして扱うのは、成功（2xx）かつ実際の `Content-Type` がテキスト系でないレスポンスだけで、`binaryResponse: true` のツールでもエラーレスポンス・3xx・テキスト/JSON/XML/YAML（`+json` / `+xml` を含む）のボディはそのまま返す。アップロード 1 つとダウンロード 1 つを持つ spec から生成した例:
 
 ```yaml
 tools:
@@ -209,6 +203,8 @@ tools:
         - fileId
       type: object
 ```
+
+JSON のリクエストボディでも、バイナリのフィールドの値は同じ方法（base64・URL・明示オブジェクト）で解決し、base64 にして上流 API へ送る。逆に、2xx の JSON レスポンス内の `format: binary` のフィールド（Swagger 2 では `format: binary` または `type: file`。ネストした object・配列も対象で、OpenAPI 3.1 の `contentMediaType` があればそれを Content-Type に使う）は、[`storage`](#storage) を設定していればアップロードされ、JSON 内の base64 の値がダウンロード URL に置き換わり、アップロードしたフィールドごとに resource link が結果に追加される。`storage` 未設定時や、値が `null`・base64 としてデコードできない場合は JSON をそのまま返す。
 
 推奨するワークフロー:
 
@@ -861,7 +857,7 @@ DCR で登録する代わりに、Client ID Metadata Document を指す HTTPS �
 
 #### `storage`
 
-OpenAPI/Swagger ツールのレスポンスに含まれるコンテンツ（画像・バイナリ等）を外部ストレージへ保存し、リソースリンク（ダウンロード URL）として返します。未設定の場合はストレージ保存を行いません。
+OpenAPI/Swagger ツールのレスポンスに含まれるコンテンツ（画像・バイナリ等）を外部ストレージへ保存し、リソースリンク（ダウンロード URL）として返します。JSON レスポンス内の `format: binary` のフィールドもアップロードし、ダウンロード URL に置き換えます（[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）。未設定の場合はストレージ保存を行いません。
 
 | フィールド     | 型     | 説明                                                                         |
 | -------------- | ------ | ---------------------------------------------------------------------------- |

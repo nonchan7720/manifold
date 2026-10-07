@@ -15,6 +15,7 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -444,7 +445,19 @@ func attachTools(
 					result.SetError(err)
 					return &result, nil
 				}
+				// JSON 内のバイナリフィールドを URL に置き換える（メディアストレージ有効時のみ）
+				var extraLinks []mcp.Content
+				if len(tool.binaryFields) > 0 && isJSONContentType(contentType) {
+					resp, extraLinks, err = rewriteBinaryFields(
+						ctx, resp, tool.binaryFields, mediaUploader,
+					)
+					if err != nil {
+						result.SetError(err)
+						return &result, nil
+					}
+				}
 				content, err := generateContent(ctx, contentType, resp, mediaUploader)
+				content = append(content, extraLinks...)
 				if err != nil {
 					result.SetError(err)
 				} else {
@@ -506,18 +519,9 @@ func generateContent(
 	contentType = storage.ResolveContentType(contentType, data)
 	baseType := strings.SplitN(contentType, ";", 2)[0]
 	baseType = strings.TrimSpace(baseType)
-	textContent := []string{
-		"application/json",
-		"application/xml",
-		"application/yaml",
-		// 非標準パターン
-		"application/x-yaml",
-		"application/yml",
-	}
 	isEnabled := mediaService.Enabled()
 	switch {
-	case strings.HasPrefix(baseType, "text/"),
-		slices.Contains(textContent, baseType):
+	case oastomcptool.IsTextContentType(baseType):
 
 		return []mcp.Content{
 			&mcp.TextContent{
