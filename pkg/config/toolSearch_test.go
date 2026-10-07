@@ -196,3 +196,21 @@ func TestDefaultToolSearchDigestMaxTools_IsFinite(t *testing.T) {
 	require.Equal(t, 50, DefaultToolSearchDigestMaxTools)
 	require.Equal(t, 50, ToolSearchConfig{}.WithDefaults().DigestMaxTools)
 }
+
+// An explicit 0 (or empty) in the file is not "unset" to viper, so the
+// single WithDefaults call after decoding is what turns it into the default;
+// the middleware relies on that and applies no defaults of its own.
+func TestLoadInternal_ToolSearch_ExplicitZeroValuesTakeDefaults(t *testing.T) {
+	cfg, err := loadFromYAML(t, `
+gateway:
+  toolSearch:
+    enabled: true
+    threshold: 0
+    defaultLimit: 0
+    resultFormat: ""
+    digestMaxTools: 0
+`+toolSearchTestYAML)
+	require.NoError(t, err)
+	require.Equal(t, ToolSearchConfig{Enabled: true}.WithDefaults(), cfg.Gateway.ToolSearch)
+	require.Equal(t, DefaultToolSearchThreshold, cfg.Gateway.ToolSearch.Threshold)
+}

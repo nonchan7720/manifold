@@ -387,7 +387,7 @@ agents:
 - Manifold resolves the **Agent Card** (v0.3 and v1.0 formats) from `url` (plus `agentCardPath`, default `/.well-known/agent-card.json`) and sends messages to the endpoint the card declares — `url` is never used as the message endpoint. The card is fetched at startup (a failure only logs a warning) and again on the first request if needed, then cached for the lifetime of the process.
 - Every exposed **skill** (all skills in the card unless `skills` is set) becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
 - `tools/call` arguments: `sessionId` (**required** — the calling agent's session id, forwarded as the A2A `contextId`), `taskId` (optional; continue a task, e.g. after `input-required`), and at least one of `message` (text), `data` (JSON object, sent as a data part) or `files` (each written like an OpenAPI file input — a base64 string / URL, or `{url|base64|text, filename, contentType}` — see [Binary fields and responses](#binary-fields-and-responses)). The message text is sent as-is; the chosen skill id is passed in the message `metadata.skillId` since A2A has no per-request skill selector.
-- Results: text and data parts become text content (data parts are also returned as `structuredContent`), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
+- Results: text and data parts become text content (data parts are also returned as `structuredContent`, which is always a JSON object: a single object part as is, an array or several parts as `{"items": [...]}`, a lone scalar only as text), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
 - Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `service=<service.code, default name>`, `tool=<skill id>`.
 - Streaming (`message/stream`), task polling and push notifications are not used; every call is a blocking `message/send`.
 
@@ -529,7 +529,7 @@ mcpServers:
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
 - Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it.
+- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed.
 
 ### Tool search (`gateway.toolSearch`)
 
@@ -558,7 +558,7 @@ gateway:
 | `default`      | (default) An array of the matching tools' full definitions (`name` / `description` / `inputSchema`) |
 | `claude`       | An array of `tool_reference` blocks (`{"type": "tool_reference", "tool_name": "..."}`) per the [Claude API's Tool Search Tool custom search contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation); the Claude API expands them into full tool definitions |
 
-No match returns `[]`, never `null`.
+No match returns `[]`, never `null`. The text content is that bare array; `structuredContent` is always a JSON object, so the array comes wrapped as `{"items": [...]}` (like array responses of OpenAPI tools).
 
 - Everything is decided per caller: the threshold, the search and the description digest all work on the tools the caller can actually see, after `tools.include` / `exclude` / `overrides` and [tool authorization](#tool-authorization-opa-sidecar). A tool the policy denies never appears in `tool_search` results or in its description, and calling a hidden tool goes through the same authorization and audit log as a direct call. `tool_search` calls are audited too, and a caller the policy denies entirely gets the same `tool not allowed by policy` error from `tool_search`.
 - `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools` (50 tools by default; the description says how many are left out), so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
@@ -596,11 +596,13 @@ audit:
 Every `tools/call` writes one JSON line, separate from the application log:
 
 ```json
-{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"authz":"allow","user":"alice","groups":"dev","identity_source":"header","token":"9f86d081884c"}
 ```
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
-- `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+- `authz` records how the call was authorized: `allow` or `deny` (authz decided; `deny` also covers a missing identity and a Decider failure), `bypass` (the [authz bypass header](#disabling-authorization-per-tenant) skipped the check) or `disabled` (authz is not configured for the server). Without it, a bypassed call looks like a successful call by an anonymous user.
+- `user` / `groups` are the raw `authz.headers.userID` / `userGroups` request header values when present (even with authz disabled), and `identity_source: "header"` marks them as such. They are **unauthenticated** unless `authz` is `allow` and a trusted proxy in front of Manifold sets and strips those headers: with `authz: disabled` or `bypass`, any client can claim any user. `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+- With a file `output`, send `SIGHUP` after rotating it (logrotate `postrotate`: `kill -HUP <pid>`) and Manifold reopens the file; otherwise lines keep going to the renamed file. Alternatively use logrotate's `copytruncate`. `SIGHUP` is only handled when `output` is a file path.
 - `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
 ### Configuration reference
@@ -665,7 +667,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); the gateway refuses to start when that yields no absolute http(s) URL (e.g. a local spec file without `servers`). Required with `tools.file` alone |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); config validation (and gateway startup) fails when that yields no absolute http(s) URL, so set `baseURL` explicitly when a local spec file has no `servers` or only relative ones such as `/api/v1` (behavior change in 1.19). Required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
@@ -674,7 +676,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 | `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
-| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
+| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 

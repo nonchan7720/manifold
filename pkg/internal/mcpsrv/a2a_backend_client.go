@@ -595,7 +595,10 @@ func (c *A2ABackendClient) toCallToolResult(
 // テキスト（data は JSON 文字列）、ファイル URL はそのままリソースリンク、ファイル
 // のバイト列は OpenAPI のバイナリレスポンスと同じく generateContent を通す
 // （storage 有効ならリソースリンク、無効ならインライン）。data パートの値は
-// structuredContent としても返す（1 つならその値、複数ならリスト）。
+// structuredContent としても返す。structuredContent は JSON オブジェクトでなければ
+// ならないため、1 つでオブジェクトならその値、複数または配列なら
+// {"items": [...]}（OpenAPI の配列レスポンスと同じ）にし、スカラーは
+// テキスト content のみとする。
 func (c *A2ABackendClient) partsToContent(
 	ctx context.Context, parts []*a2a.Part,
 ) ([]mcp.Content, any, error) {
@@ -637,8 +640,15 @@ func (c *A2ABackendClient) partsToContent(
 	case 0:
 		return content, nil, nil
 	case 1:
-		return content, data[0], nil
+		switch data[0].(type) {
+		case map[string]any:
+			return content, data[0], nil
+		case []any:
+			return content, map[string]any{"items": data[0]}, nil
+		default:
+			return content, nil, nil
+		}
 	default:
-		return content, data, nil
+		return content, map[string]any{"items": data}, nil
 	}
 }

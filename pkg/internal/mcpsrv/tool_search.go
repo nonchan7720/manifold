@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -194,21 +193,17 @@ func listVisibleTools(
 	return first, tools, nil
 }
 
-// reservedToolWarned remembers the servers already warned about a backend tool
-// named tool_search, so the WARN is logged once per server rather than on every
-// tools/list and tool_search call.
-var reservedToolWarned sync.Map
-
 // dropReservedTool hides a backend tool named tool_search: the synthetic tool
-// takes that name, and a tools/call for it never reaches the backend.
-func dropReservedTool(ctx context.Context, serverName string, tools []*mcp.Tool) []*mcp.Tool {
+// takes that name, and a tools/call for it never reaches the backend. It logs
+// a WARN once per collision (see toolSearchIndexes.reservedWarned).
+func (c *toolSearchIndexes) dropReservedTool(ctx context.Context, tools []*mcp.Tool) []*mcp.Tool {
 	out := tools[:0:0]
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName {
-			if _, warned := reservedToolWarned.LoadOrStore(serverName, struct{}{}); !warned {
+			if c.reservedWarned.CompareAndSwap(false, true) {
 				slog.WarnContext(ctx,
 					"upstream tool name collides with the synthetic tool_search; hiding it",
-					slog.String("server", serverName))
+					slog.String("server", c.serverName))
 			}
 			continue
 		}
@@ -239,13 +234,15 @@ func toolErrorResult(err error) *mcp.CallToolResult {
 // can see more than cfg.Threshold tools, otherwise what the inner handler
 // returns, unchanged but for a backend tool named tool_search. Pagination is
 // preserved below the threshold: a request carrying a cursor is forwarded
-// as is, and one without gets the inner first page with its NextCursor (every
-// page is still read once to count the tools against the threshold).
+// as is, and one without gets the inner first page with its NextCursor. The
+// tools are counted (and digested) from indexes, so within its TTL a caller's
+// repeated tools/list doesn't read every inner page again.
 func handleToolSearchList(
 	ctx context.Context,
 	serverName string,
 	cfg config.ToolSearchConfig,
 	next mcp.MethodHandler,
+	indexes *toolSearchIndexes,
 	req mcp.Request,
 ) (mcp.Result, error) {
 	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil &&
@@ -258,7 +255,7 @@ func handleToolSearchList(
 		}
 		if page, ok := res.(*mcp.ListToolsResult); ok {
 			out := *page
-			out.Tools = dropReservedTool(ctx, serverName, page.Tools)
+			out.Tools = indexes.dropReservedTool(ctx, page.Tools)
 			if out.Tools == nil {
 				out.Tools = []*mcp.Tool{} // avoid JSON null
 			}
@@ -267,20 +264,19 @@ func handleToolSearchList(
 		}
 		return res, nil
 	}
-	first, tools, err := listVisibleTools(ctx, next, req)
+	snap, err := indexes.snapshotFor(ctx, next, req)
 	if err != nil {
 		return nil, err
 	}
-	visible := dropReservedTool(ctx, serverName, tools)
-	if len(visible) > cfg.Threshold {
+	if docs := snap.index.Docs(); len(docs) > cfg.Threshold {
 		res := &mcp.ListToolsResult{
-			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(visible))},
+			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, docs)},
 		}
 		normalizeCacheable(&res.Cacheable)
 		return res, nil
 	}
-	out := *first
-	out.Tools = dropReservedTool(ctx, serverName, first.Tools)
+	out := *snap.first
+	out.Tools = indexes.dropReservedTool(ctx, snap.first.Tools)
 	if out.Tools == nil {
 		out.Tools = []*mcp.Tool{} // avoid JSON null
 	}
@@ -321,13 +317,13 @@ func handleToolSearchCall(
 		limit = cfg.DefaultLimit
 	}
 
-	index, err := indexes.indexFor(ctx, next, req)
+	snap, err := indexes.snapshotFor(ctx, next, req)
 	if err != nil {
 		traceErr = err
 		return nil, err
 	}
 
-	defs, err := index.Search(args.Query, toolsearch.Method(args.Method), limit)
+	defs, err := snap.index.Search(args.Query, toolsearch.Method(args.Method), limit)
 	if err != nil {
 		traceErr = err
 		return toolErrorResult(err), nil
@@ -342,9 +338,16 @@ func handleToolSearchCall(
 		traceErr = err
 		return toolErrorResult(err), nil
 	}
+	// structuredContent must be an object: wrap the array like the OpenAPI
+	// tools do ({"items": [...]}); the text content keeps the bare array.
+	structured, err := wrapIfArray(data)
+	if err != nil {
+		traceErr = err
+		return toolErrorResult(err), nil
+	}
 	return &mcp.CallToolResult{
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(data)}},
-		StructuredContent: json.RawMessage(data),
+		StructuredContent: json.RawMessage(structured),
 	}, nil
 }
 
@@ -355,12 +358,12 @@ func handleToolSearchCall(
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the
 // same authz and audit as before. toolCache (may be nil) is only consulted for
-// its invalidation generations, see toolSearchIndexes. authzKey (may be nil
+// its invalidation generations, see toolSearchIndexes. cfg is used as is: it
+// comes from config.Load, which applies the defaults (ToolSearchConfig.WithDefaults). authzKey (may be nil
 // when no authz sits inside) keys the index cache by the authz principal.
 func newToolSearchMiddleware(
 	serverName string, cfg config.ToolSearchConfig, toolCache *ToolCache, authzKey AuthzCacheKeyer,
 ) mcp.Middleware {
-	cfg = cfg.WithDefaults()
 	if !cfg.IsEnabled() {
 		return nil
 	}
@@ -369,7 +372,7 @@ func newToolSearchMiddleware(
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {
 			case authzMethodToolsList:
-				return handleToolSearchList(ctx, serverName, cfg, next, req)
+				return handleToolSearchList(ctx, serverName, cfg, next, indexes, req)
 			case authzMethodToolsCall:
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 				if !ok || params.Name != ToolSearchName {

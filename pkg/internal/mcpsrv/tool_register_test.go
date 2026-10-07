@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -416,5 +420,62 @@ func assertJSONEqual(t *testing.T, got, want []byte) {
 
 	if string(got) != string(want) {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// structuredContent は JSON オブジェクトのときだけ返す（MCP 2025-06-18。配列や
+// スカラーは TypeScript SDK が拒否する）。application/json の配列は
+// {"items": [...]} に包まれる。
+func TestAttachTools_StructuredContentIsAlwaysAnObject(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		want        string // "" = no structuredContent
+	}{
+		{"json object", `{"a":1}`, "application/json", `{"a":1}`},
+		{"json array", `[1,2]`, "application/json", `{"items":[1,2]}`},
+		{
+			"json array with profile",
+			`[1]`,
+			"application/json; profile=\"application/json\"",
+			`{"items":[1]}`,
+		},
+		{"json scalar", `3`, "application/json", ""},
+		{"json string", `"x"`, "application/json", ""},
+		{"array under text/plain", `[1,2]`, "text/plain", ""},
+		{"scalar under text/plain", `42`, "text/plain", ""},
+		{"not json", `hello`, "text/plain", ""},
+	}
+	register := NewMCPToolRegistry()
+	for i, tt := range tests {
+		register.RegisterTool(
+			fmt.Sprintf("tool%d", i), "d", map[string]any{"type": "object"},
+			func(context.Context, map[string]any) ([]byte, string, error) {
+				return []byte(tt.body), tt.contentType, nil
+			},
+		)
+	}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0.0.1"}, nil)
+	u, _ := url.Parse("https://example.com")
+	attachTools(srv, register, storage.NewContentManagementService(u, storage.NewNoopUploader()))
+	cs := connectTestClient(t, t.Context(), srv)
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{
+				Name: fmt.Sprintf("tool%d", i), Arguments: map[string]any{},
+			})
+			require.NoError(t, err)
+			require.False(t, res.IsError)
+			if tt.want == "" {
+				require.Nil(t, res.StructuredContent)
+				return
+			}
+			raw, err := json.Marshal(res.StructuredContent)
+			require.NoError(t, err)
+			require.JSONEq(t, tt.want, string(raw))
+			require.Equal(t, byte('{'), raw[0])
+		})
 	}
 }

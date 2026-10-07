@@ -64,6 +64,7 @@ func authzHandleToolCall(
 ) (mcp.Result, error) {
 	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 	if !ok {
+		setAuditDecision(ctx, AuditAuthzDeny)
 		slog.ErrorContext(ctx, "authz: unexpected params type on tools/call",
 			slog.String("server", serverName), slog.String("reason", "unexpected_params"))
 		return nil, errToolNotAllowedByPolicy
@@ -72,16 +73,18 @@ func authzHandleToolCall(
 
 	allowed, err := d.Allow(ctx, p, tool)
 	if err != nil {
+		setAuditDecision(ctx, AuditAuthzDeny)
 		slog.ErrorContext(ctx, "authz: decider error on tools/call",
 			slog.String("server", serverName), slog.String("tool", tool.Name),
 			slog.Any("error", err))
 		return nil, errToolNotAllowedByPolicy
 	}
 
-	decision := "deny"
+	decision := AuditAuthzDeny
 	if allowed {
-		decision = "allow"
+		decision = AuditAuthzAllow
 	}
+	setAuditDecision(ctx, decision)
 	slog.InfoContext(ctx, "authz decision",
 		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
 		slog.String("server", serverName), slog.String("service", serviceCode),
@@ -163,6 +166,7 @@ func NewAuthzMiddleware(
 			}
 
 			if authzBypassRequested(req, headers) {
+				setAuditDecision(ctx, AuditAuthzBypass)
 				slog.InfoContext(ctx, "authz decision",
 					slog.String("server", serverName), slog.String("method", method),
 					slog.String("decision", "bypass"))
@@ -171,6 +175,7 @@ func NewAuthzMiddleware(
 
 			p, err := authzPrincipal(req, headers, fromHeaders)
 			if err != nil {
+				setAuditDecision(ctx, AuditAuthzDeny)
 				slog.InfoContext(ctx, "authz decision",
 					slog.String("server", serverName), slog.String("method", method),
 					slog.String("decision", "deny"),

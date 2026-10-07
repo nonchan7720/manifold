@@ -103,3 +103,47 @@ func TestToolCache_ManyEntries_StaysWithinBounds(t *testing.T) {
 		require.LessOrEqual(t, c.Bytes(), 1000)
 	}
 }
+
+// 無効化は対象のエントリだけに効き、セカンダリインデックスが
+// 追い出し・期限切れ・上書きと食い違わないこと。
+func TestToolCache_Invalidate_UsesScopeIndexes(t *testing.T) {
+	c := newToolCache(3, 1000)
+	u1 := cacheScope{server: "s", identity: "u1"}
+	u2 := cacheScope{server: "s", identity: "u2"}
+	other := cacheScope{server: "t", identity: "u1"}
+	require.True(t, c.set(u1, "a", 0, []byte("1"), time.Minute))
+	require.True(t, c.set(u2, "b", 0, []byte("1"), time.Minute))
+	require.True(t, c.set(other, "c", 0, []byte("1"), time.Minute))
+
+	c.InvalidateCaller("s", "u1")
+	_, ok := c.get("a")
+	require.False(t, ok)
+	_, ok = c.get("b")
+	require.True(t, ok)
+	_, ok = c.get("c")
+	require.True(t, ok)
+	require.NotContains(t, c.byScope, u1)
+	require.Len(t, c.byServer["s"], 1)
+
+	// LRU 追い出しでもインデックスから消える。
+	require.True(t, c.set(u1, "d", 1, []byte("1"), time.Minute))
+	require.True(t, c.set(u1, "e", 1, []byte("1"), time.Minute)) // evicts the oldest
+	require.Equal(t, 3, c.Len())
+	total := 0
+	for _, set := range c.byServer {
+		total += len(set)
+	}
+	require.Equal(t, 3, total)
+
+	// 同じキーの上書きで古い要素が残らない。
+	require.True(t, c.set(u2, "e", 0, []byte("1"), time.Minute))
+	c.InvalidateServer("s")
+	require.Equal(t, 1, c.Len(), "only server t's entry may remain")
+	require.NotContains(t, c.byServer, "s")
+	require.Len(t, c.byScope, 1)
+	_, ok = c.get("c")
+	require.True(t, ok)
+
+	// 世代は進み、古い世代の set は拒否される。
+	require.False(t, c.set(u1, "x", 0, []byte("1"), time.Minute))
+}

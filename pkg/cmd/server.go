@@ -361,6 +361,7 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = auditLogger.Close() }()
+	auditLogger.ReopenOnSIGHUP(ctx)
 
 	authHandler := newAuthHandler(globalConfig, storeClient)
 	healthHandler := httphandler.NewHealthHandler()

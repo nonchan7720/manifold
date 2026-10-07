@@ -294,7 +294,7 @@
                   "  pm.expect(names).to.not.include('addpet');",
                   "  pm.expect(names).to.not.include('tool_search');",
                   "});",
-                  "pm.test('structuredContent mirrors the text', () => pm.expect(result.structuredContent).to.have.lengthOf(searchNames().length));"
+                  "pm.test('structuredContent mirrors the text', () => pm.expect(result.structuredContent.items).to.have.lengthOf(searchNames().length));"
                 ]
               }
             }

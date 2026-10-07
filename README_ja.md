@@ -387,7 +387,7 @@ agents:
 - Manifold は `url`（と `agentCardPath`。既定 `/.well-known/agent-card.json`）から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
 - 公開対象の **スキル**（`skills` を設定しない限り Card の全スキル）が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
 - `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
-- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
+- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入ります。常に JSON オブジェクトで、オブジェクト 1 つならそのまま、配列または複数なら `{"items": [...]}`、スカラー 1 つならテキストのみ）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
 - 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`service=<service.code、既定は name>`、`tool=<スキル ID>` です。
 - ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
 
@@ -529,7 +529,7 @@ mcpServers:
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
 - 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。
+- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。
 
 ### ツール検索（`gateway.toolSearch`）
 
@@ -558,7 +558,7 @@ gateway:
 | `default`      | （デフォルト）一致したツールの完全な定義（`name` / `description` / `inputSchema`）の配列 |
 | `claude`       | [Claude API の Tool Search Tool のカスタム検索実装規約](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation)に沿った `tool_reference` ブロック（`{"type": "tool_reference", "tool_name": "..."}`）の配列。Claude API 側が完全なツール定義に展開する |
 
-ヒット 0 件のときは `null` ではなく `[]` を返します。
+ヒット 0 件のときは `null` ではなく `[]` を返します。text content はこの配列そのもので、`structuredContent` は常に JSON オブジェクトでなければならないため、配列は `{"items": [...]}` に包まれます（OpenAPI ツールの配列レスポンスと同じ）。
 
 - 判定はすべて呼び出し元ごとに行います。閾値の判定・検索・説明文の一覧は、`tools.include` / `exclude` / `overrides` と[ツール認可](#ツール認可opa-サイドカー)を通った後の「呼び出し元に実際に見えるツール」に対して行います。ポリシーで拒否されたツールは `tool_search` の結果にも説明文にも現れず、隠れているツールの呼び出しも直接呼んだ場合と同じ認可と監査ログを通ります。`tool_search` の呼び出し自体も監査ログに残り、ポリシーで全面的に拒否された呼び出し元には `tool_search` も同じ `tool not allowed by policy` エラーを返します。
 - `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます（既定 50 件。省いた分は説明文に明記されます）。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
@@ -596,11 +596,13 @@ audit:
 `tools/call` ごとに、アプリケーションログとは別に JSON を 1 行書きます。
 
 ```json
-{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"user":"alice","groups":"dev","token":"9f86d081884c"}
+{"time":"2026-10-03T05:00:00Z","level":"INFO","msg":"audit","event":"tool_call","server":"petstore","service":"petstore","tool":"get_pet","outcome":"success","duration_ms":42,"authz":"allow","user":"alice","groups":"dev","identity_source":"header","token":"9f86d081884c"}
 ```
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
-- `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+- `authz` は呼び出しがどう認可されたかを示します。`allow` / `deny`（authz が判定。`deny` にはアイデンティティ欠落と Decider の障害も含む）・`bypass`（[authz バイパスヘッダー](#テナントごとに認可を無効化する)で認可をスキップした）・`disabled`（そのサーバーで authz が未設定）。この項目が無いと、バイパスした呼び出しが匿名ユーザーの成功に見えてしまいます。
+- `user` / `groups` は `authz.headers.userID` / `userGroups` のリクエストヘッダーの生の値があればその値です（authz が無効でも記録する）。`identity_source: "header"` がその印です。`authz` が `allow` で、かつ Manifold の前段の信頼できるプロキシがそのヘッダーを設定・除去している場合を除き**認証されていない値**です。`authz` が `disabled` / `bypass` のときは、どのクライアントでも任意のユーザーを名乗れます。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+- `output` がファイルの場合、ローテーション後に `SIGHUP` を送る（logrotate の `postrotate` で `kill -HUP <pid>`）と Manifold がファイルを開き直します。送らないとリネーム後のファイルへ書き続けます。logrotate の `copytruncate` でも構いません。`SIGHUP` を扱うのは `output` がファイルパスのときだけです。
 - `identity` は reverse（WebMCP）サーバーが呼び出しの振り分けに使った identityKey です（static ペアリングなら `static`、remote ペアリングなら解決したユーザー）。これらのエンドポイントは JWT を検証しないため `user` / `groups` / `token` は空になり、呼び出し元を示すのはこの項目だけです。
 
 ### 設定リファレンス
@@ -665,7 +667,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合（例: `servers` の無いローカルの spec ファイル）は起動時にエラーになる。`tools.file` だけの場合は必須 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合は、設定の検証（および起動）がエラーになる。ローカルの spec ファイルに `servers` が無い、または `/api/v1` のような相対 URL しか無い場合は `baseURL` を明示すること（1.19 での挙動変更）。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
@@ -674,7 +676,7 @@ gateway:
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 | `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
-| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
+| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 
