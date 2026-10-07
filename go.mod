@@ -12,7 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.4.11
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.4
 	github.com/coder/websocket v1.8.15
-	github.com/compose-spec/compose-go/v2 v2.15.0
+	github.com/compose-spec/compose-go/v2 v2.16.1
 	github.com/gabriel-vasile/mimetype v1.4.15
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.4.1
@@ -56,7 +56,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
-	modernc.org/sqlite v1.59.0
+	modernc.org/sqlite v1.60.1
 	sigs.k8s.io/controller-runtime v0.25.1
 )
 
@@ -163,7 +163,7 @@ require (
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd // indirect
-	modernc.org/libc v1.75.7 // indirect
+	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
