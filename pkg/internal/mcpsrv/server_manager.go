@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -142,38 +141,10 @@ func (s *MCPServer) registerOpenAPIServer(
 	}
 	state := &openAPIServerState{srv: srv, cfg: server}
 	if register != nil {
-		// A fetch failure above is transient (the refresh loop retries), but
-		// a catalog without a usable base URL is a configuration error: every
-		// tools/call would fail, so refuse to start rather than serve it.
-		if err := checkCatalogBaseURL(register); err != nil {
-			return fmt.Errorf("server %q: %w", name, err)
-		}
 		state.adopt(register, toolInfos)
 	}
 	s.openAPIStates[name] = state
 	return nil
-}
-
-// errBaseURLUnresolved reports a catalog whose tools have no absolute base
-// URL to call: mcpServers.<name>.baseURL is unset and the spec gave nothing
-// to derive one from (no servers / host entry, or only a relative one in a
-// spec that was not fetched over http(s)).
-var errBaseURLUnresolved = errors.New(
-	"baseURL is not set and could not be derived from the spec " +
-		"(it has no absolute servers/host entry and was not fetched over http(s)); " +
-		"set mcpServers.<name>.baseURL",
-)
-
-// checkCatalogBaseURL returns errBaseURLUnresolved unless register's base
-// URL is an absolute http(s) URL with a host (so "https:///api" or a bare
-// "http://" are rejected too).
-func checkCatalogBaseURL(register *MCPToolRegistry) error {
-	baseURL := register.BaseURL()
-	u, err := url.Parse(baseURL)
-	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
-		return nil
-	}
-	return fmt.Errorf("%w (derived %q)", errBaseURLUnresolved, baseURL)
 }
 
 func (s *MCPServer) Init(ctx context.Context) (rErr error) {

@@ -24,30 +24,13 @@ const DefaultToolCacheMaxEntries = 10000
 // every server. Entries are kept as JSON so a hit always hands out a fresh
 // copy: outer middlewares (authz) modify the results they receive.
 type ToolCache struct {
-	mu      sync.Mutex
-	entries map[string]toolCacheEntry
-	// generations counts invalidations per scope: InvalidateServer bumps the
-	// server's whole-server scope (identity ""), InvalidateCaller one
-	// caller's scope. cachedResult reads a scope's generation (the sum of
-	// both) before fetching and set refuses a result fetched under an older
-	// one, so a fetch that was in flight when the tools were replaced can't
-	// re-register the stale result.
-	generations map[cacheScope]uint64
-	maxEntries  int
-	now         func() time.Time
-}
-
-// cacheScope is what an entry can be invalidated by: the mcpServers entry
-// it belongs to and, for a reverse (WebMCP) caller, the identityKey the
-// request was routed by (empty for bearer-token callers, whose results only
-// ever go away with the whole server).
-type cacheScope struct {
-	server   string
-	identity string
+	mu         sync.Mutex
+	entries    map[string]toolCacheEntry
+	maxEntries int
+	now        func() time.Time
 }
 
 type toolCacheEntry struct {
-	scope   cacheScope
 	value   []byte
 	expires time.Time
 }
@@ -59,28 +42,10 @@ func NewToolCache(maxEntries int) *ToolCache {
 		maxEntries = DefaultToolCacheMaxEntries
 	}
 	return &ToolCache{
-		entries:     map[string]toolCacheEntry{},
-		generations: map[cacheScope]uint64{},
-		maxEntries:  maxEntries,
-		now:         time.Now,
+		entries:    map[string]toolCacheEntry{},
+		maxEntries: maxEntries,
+		now:        time.Now,
 	}
-}
-
-// generation returns scope's current invalidation generation, to pass to
-// set with a result fetched from now on. It changes whenever the whole
-// server or this caller's share of it is invalidated.
-func (c *ToolCache) generation(scope cacheScope) uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.generationLocked(scope)
-}
-
-func (c *ToolCache) generationLocked(scope cacheScope) uint64 {
-	gen := c.generations[cacheScope{server: scope.server}]
-	if scope.identity != "" {
-		gen += c.generations[scope]
-	}
-	return gen
 }
 
 func (c *ToolCache) get(key string) ([]byte, bool) {
@@ -97,22 +62,9 @@ func (c *ToolCache) get(key string) ([]byte, bool) {
 	return entry.value, true
 }
 
-// set stores value for key under scope, unless gen (scope's generation when
-// the value was fetched, see generation) is no longer current: the tools
-// were replaced while the fetch was in flight, so the value is stale and is
-// dropped. It reports whether the value was stored.
-func (c *ToolCache) set(
-	scope cacheScope,
-	key string,
-	gen uint64,
-	value []byte,
-	ttl time.Duration,
-) bool {
+func (c *ToolCache) set(key string, value []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.generationLocked(scope) != gen {
-		return false
-	}
 	now := c.now()
 	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.maxEntries {
 		for k, entry := range c.entries {
@@ -128,59 +80,7 @@ func (c *ToolCache) set(
 			delete(c.entries, k)
 		}
 	}
-	c.entries[key] = toolCacheEntry{scope: scope, value: value, expires: now.Add(ttl)}
-	return true
-}
-
-// InvalidateServer drops every entry cached for server (its tools/list pages
-// and tools/call results, for every caller) and starts a new generation for
-// it, so a result fetched before the call is neither served nor stored
-// afterwards. Call it whenever the server's tools are replaced underneath
-// the cache for everyone, as when a spec refresh adopts a new spec.
-func (c *ToolCache) InvalidateServer(server string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.invalidateLocked(cacheScope{server: server}, func(scope cacheScope) bool {
-		return scope.server == server
-	})
-}
-
-// InvalidateCaller is InvalidateServer for one identityKey's entries of
-// server only: a reverse (WebMCP) per-user server being rebuilt changes the
-// tools of that identity alone, so other users' entries stay.
-func (c *ToolCache) InvalidateCaller(server, identity string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	scope := cacheScope{server: server, identity: identity}
-	c.invalidateLocked(scope, func(s cacheScope) bool { return s == scope })
-}
-
-// invalidateLocked drops the entries match selects and bumps gen's
-// generation in one critical section (c.mu held by the caller): done as two
-// separate ones, a set with the old generation could slip in between the
-// deletion and the bump and leave a stale entry behind.
-func (c *ToolCache) invalidateLocked(gen cacheScope, match func(cacheScope) bool) {
-	for k, entry := range c.entries {
-		if match(entry.scope) {
-			delete(c.entries, k)
-		}
-	}
-	c.generations[gen]++
-}
-
-type toolCacheBypassKey struct{}
-
-// withToolCacheBypass marks ctx so newToolCacheMiddleware neither serves nor
-// stores results for the request: used for a request still being handled by
-// a reverse per-user server that has since been replaced (see
-// retiredServerMiddleware), whose results describe the previous tab.
-func withToolCacheBypass(ctx context.Context) context.Context {
-	return context.WithValue(ctx, toolCacheBypassKey{}, true)
-}
-
-func toolCacheBypassed(ctx context.Context) bool {
-	v, _ := ctx.Value(toolCacheBypassKey{}).(bool)
-	return v
+	c.entries[key] = toolCacheEntry{value: value, expires: now.Add(ttl)}
 }
 
 // Len returns the number of entries currently held (expired ones included
@@ -221,17 +121,12 @@ func toolCacheKey(ctx context.Context, parts ...string) string {
 
 // canonicalArguments re-encodes tool arguments so that semantically equal
 // JSON objects (different key order or whitespace) share a cache entry.
-// Numbers are kept verbatim (json.Number) rather than going through float64,
-// so integers beyond 2^53 — ids, for instance — that differ in their last
-// digits never collapse into the same key.
 func canonicalArguments(raw json.RawMessage) string {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return ""
 	}
 	var v any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&v); err != nil {
+	if err := json.Unmarshal(raw, &v); err != nil {
 		return string(raw)
 	}
 	out, err := json.Marshal(v) // map のキーはソートされて出力される
@@ -259,11 +154,9 @@ func newToolCacheMiddleware(
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			_, identity, ok := cacheCaller(ctx)
-			if !ok || toolCacheBypassed(ctx) {
+			if _, _, ok := cacheCaller(ctx); !ok {
 				return next(ctx, method, req)
 			}
-			scope := cacheScope{server: server, identity: identity}
 			switch method {
 			case authzMethodToolsList:
 				if !cfg.CachesToolsList() {
@@ -274,17 +167,9 @@ func newToolCacheMiddleware(
 					cursor = params.Cursor
 				}
 				key := toolCacheKey(ctx, server, method, cursor)
-				return cachedResult(
-					ctx,
-					cache,
-					scope,
-					key,
-					cfg.ToolsList,
-					func() (mcp.Result, error) {
-						return next(ctx, method, req)
-					},
-					func() *mcp.ListToolsResult { return &mcp.ListToolsResult{} },
-				)
+				return cachedResult(ctx, cache, key, cfg.ToolsList, func() (mcp.Result, error) {
+					return next(ctx, method, req)
+				}, func() *mcp.ListToolsResult { return &mcp.ListToolsResult{} })
 			case authzMethodToolsCall:
 				params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
 				if !ok || !cfg.CachesToolCall(params.Name) {
@@ -292,17 +177,9 @@ func newToolCacheMiddleware(
 				}
 				key := toolCacheKey(ctx, server, method, params.Name,
 					canonicalArguments(params.Arguments))
-				return cachedResult(
-					ctx,
-					cache,
-					scope,
-					key,
-					cfg.ToolCall,
-					func() (mcp.Result, error) {
-						return next(ctx, method, req)
-					},
-					func() *mcp.CallToolResult { return &mcp.CallToolResult{} },
-				)
+				return cachedResult(ctx, cache, key, cfg.ToolCall, func() (mcp.Result, error) {
+					return next(ctx, method, req)
+				}, func() *mcp.CallToolResult { return &mcp.CallToolResult{} })
 			default:
 				return next(ctx, method, req)
 			}
@@ -311,19 +188,15 @@ func newToolCacheMiddleware(
 }
 
 // cachedResult serves key from cache, or calls fetch and stores its result
-// under scope when it succeeded (no error, and not a tool error for
-// tools/call) and scope's tools weren't replaced meanwhile (see
-// ToolCache.set).
+// when it succeeded (no error, and not a tool error for tools/call).
 func cachedResult[R mcp.Result](
 	ctx context.Context,
 	cache *ToolCache,
-	scope cacheScope,
 	key string,
 	ttl time.Duration,
 	fetch func() (mcp.Result, error),
 	newResult func() R,
 ) (mcp.Result, error) {
-	gen := cache.generation(scope)
 	if raw, ok := cache.get(key); ok {
 		res := newResult()
 		if err := json.Unmarshal(raw, res); err == nil {
@@ -339,7 +212,7 @@ func cachedResult[R mcp.Result](
 		return res, nil
 	}
 	if raw, err := json.Marshal(res); err == nil {
-		cache.set(scope, key, gen, raw, ttl)
+		cache.set(key, raw, ttl)
 	}
 	return res, nil
 }

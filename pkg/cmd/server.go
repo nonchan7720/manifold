@@ -382,7 +382,6 @@ func runGatewayServer(ctx context.Context) error {
 			globalConfig.MCPServer, authzMiddleware, toolCache, auditLogger,
 			globalConfig.Gateway.ToolSearch,
 		)),
-		mcpsrv.WithReverseToolCache(toolCache),
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)

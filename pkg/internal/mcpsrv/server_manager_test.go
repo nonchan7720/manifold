@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -324,10 +322,7 @@ func TestMCPServer_BackendClient_NotFound(t *testing.T) {
 
 func TestMCPServer_Close_NoBackends(t *testing.T) {
 	servers := config.Servers{
-		"openapi": &config.Server{
-			Spec:    "fixtures/petstore_oas.json",
-			BaseURL: "https://petstore.example.com",
-		},
+		"openapi": &config.Server{Spec: "fixtures/petstore_oas.json"},
 	}
 	u, _ := url.Parse("https://example.com")
 	s := NewMCPServer(servers, storage.NewContentManagementService(u, storage.NewNoopUploader()))
@@ -861,77 +856,4 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_ConnectError(t *testing.T) {
 
 	_, err := s.ToolCatalog(context.Background(), "backend")
 	require.Error(t, err)
-}
-
-// spec が設定されていれば baseURL は省略できるが、ローカルファイルの spec に
-// 絶対 URL の servers が無い（相対 URL だけ、または servers 自体が無い）場合は
-// 導出できず、全 tools/call が失敗する。黙ってツールを登録せず起動を止めること。
-func TestMCPServer_Init_LocalSpecWithoutAbsoluteBaseURL_Error(t *testing.T) {
-	noServers := filepath.Join(t.TempDir(), "api.yaml")
-	require.NoError(t, os.WriteFile(noServers, []byte(`openapi: 3.0.0
-info: {title: api, version: 1.0.0}
-paths:
-  /ping:
-    get:
-      operationId: ping
-      responses:
-        "200": {description: ok}
-`), 0o600))
-
-	tests := []struct {
-		name string
-		spec string
-	}{
-		{name: "no servers entry", spec: noServers},
-		{name: "relative servers entry", spec: "fixtures/petstore_oas.json"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			servers := config.Servers{"api": &config.Server{Name: "api", Spec: tt.spec}}
-			u, _ := url.Parse("https://example.com")
-			s := NewMCPServer(
-				servers, storage.NewContentManagementService(u, storage.NewNoopUploader()),
-			)
-			err := s.Init(t.Context())
-			require.ErrorIs(t, err, errBaseURLUnresolved)
-			require.ErrorContains(t, err, `server "api"`)
-		})
-	}
-
-	t.Run("configured baseURL wins", func(t *testing.T) {
-		servers := config.Servers{"api": &config.Server{
-			Name: "api", Spec: noServers, BaseURL: "https://api.example.com",
-		}}
-		u, _ := url.Parse("https://example.com")
-		s := NewMCPServer(
-			servers,
-			storage.NewContentManagementService(u, storage.NewNoopUploader()),
-		)
-		require.NoError(t, s.Init(t.Context()))
-		srv, err := s.Server("api")
-		require.NoError(t, err)
-		require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
-	})
-}
-
-func TestCheckCatalogBaseURL(t *testing.T) {
-	for baseURL, wantErr := range map[string]bool{
-		"https://api.example.com":  false,
-		"http://127.0.0.1:8080/v1": false,
-		"":                         true,
-		"/api/v3":                  true,
-		"api.example.com":          true,
-		"https:///api":             true, // スキームはあってもホストが無い
-		"http://":                  true,
-		"ftp://api.example.com":    true,
-	} {
-		r := NewMCPToolRegistry()
-		r.setBaseURL(baseURL)
-		err := checkCatalogBaseURL(r)
-		if wantErr {
-			require.ErrorIs(t, err, errBaseURLUnresolved, baseURL)
-		} else {
-			require.NoError(t, err, baseURL)
-		}
-	}
 }

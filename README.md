@@ -581,7 +581,7 @@ mcpServers:
 
 - Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
 - `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
-- The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
+- The cache sits inside authz: every call is still authorized before a cached result is returned. A cached `tools/list` can be up to `toolsList` stale after the backend or the spec changes.
 
 ### Audit log (`audit`)
 
@@ -663,7 +663,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); the gateway refuses to start when that yields no absolute http(s) URL (e.g. a local spec file without `servers`). Required with `tools.file` alone |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
