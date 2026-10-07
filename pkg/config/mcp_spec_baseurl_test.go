@@ -18,6 +18,8 @@ func TestServer_ValidateWithContext_LocalSpecBaseURL(t *testing.T) {
 		{"relative server only", "servers:\n  - url: /api/v1\n", true},
 		{"no servers", "openapi: 3.0.0\n", true},
 		{"swagger host", "swagger: '2.0'\nhost: api.example.com\n", false},
+		{"swagger host unquoted version", "swagger: 2.0\nhost: api.example.com\n", false},
+		{"openapi 3 host is not a base URL", "openapi: 3.0.0\nhost: api.example.com\n", true},
 		{"json spec", `{"servers":[{"url":"https://api.example.com"}]}`, false},
 		{"unparsable is left to startup", "{{{ not yaml", false},
 	}

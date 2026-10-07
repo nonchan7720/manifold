@@ -166,6 +166,7 @@ func validateLocalSpecBaseURL(spec string) error {
 		return nil //nolint:nilerr // reported when the gateway loads the spec
 	}
 	var doc struct {
+		Swagger string `yaml:"swagger"`
 		Host    string `yaml:"host"`
 		Servers []struct {
 			URL string `yaml:"url"`
@@ -175,7 +176,9 @@ func validateLocalSpecBaseURL(spec string) error {
 		return nil //nolint:nilerr // reported when the gateway loads the spec
 	}
 	if len(doc.Servers) == 0 {
-		if doc.Host != "" {
+		// host is Swagger 2's base URL; an OpenAPI 3 spec's is servers only
+		// (oastomcptool.GetBaseUrlFromOpenAPI3 ignores host).
+		if doc.Swagger != "" && doc.Host != "" {
 			return nil
 		}
 		return errSpecBaseURLUnresolved
