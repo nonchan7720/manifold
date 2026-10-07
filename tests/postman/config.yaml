@@ -1,0 +1,36 @@
+# Gateway configuration for the Postman CLI end-to-end run (see run.sh).
+#
+# Two servers share the stub Petstore API. `petstore` exposes five tools (one
+# of them renamed) to the operators group; readers only see two of them, and
+# `petstore_small` exposes a single tool.
+gateway:
+  port: 19999
+
+mcpServers:
+  petstore:
+    description: Petstore with filtered and renamed tools
+    spec: http://127.0.0.1:18080/openapi.json
+    tools:
+      include: ["getpetbyid", "find*", "getinventory", "deletepet"]
+      overrides:
+        getpetbyid:
+          name: get_pet
+  petstore_small:
+    description: Petstore with a single visible tool
+    spec: http://127.0.0.1:18080/openapi.json
+    tools:
+      include: ["getinventory"]
+
+# OPA sidecar started by run.sh with examples/opa/policy.rego and
+# tests/postman/opa/data.json.
+authz:
+  enabled: true
+  opaURL: http://127.0.0.1:8181
+
+audit:
+  enabled: true
+  output: ${AUDIT_OUTPUT:-./tmp/audit.jsonl}
+
+# In-memory store: nothing to clean up, and gateway.encryptKey is generated.
+memory:
+  enabled: true

@@ -1291,6 +1291,10 @@ ConfigMap からの spec 読み込みテストは [envtest](https://book.kubebui
 make test
 ```
 
+### 結合テスト（Postman CLI）
+
+`make postman` はゲートウェイをビルドし、OPA とスタブの Petstore API を起動して、[`tests/postman/`](tests/postman/) の Postman コレクションを実行します。ツールの絞り込み・ツール認可・監査ログをまとめて検証するもので、Postman CLI は `mise install` で入ります（[`mise.toml`](mise.toml) の `postman-cli`）。CI では PR ごとに実行します。
+
 ### Lint
 
 ```bash

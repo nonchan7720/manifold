@@ -1,0 +1,838 @@
+{
+  "info": {
+    "name": "Manifold tool filter / authz",
+    "description": "End-to-end checks for tools.include/overrides and OPA tool authorization. Run with tests/postman/run.sh.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Parse the MCP response once for every request: Streamable HTTP answers with",
+          "// SSE (data: lines) or plain JSON; the JSON-RPC message lands in `rpc`.",
+          "let parsed = null;",
+          "try {",
+          "  const ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+          "  const text = pm.response.text();",
+          "  if (ct.includes('text/event-stream')) {",
+          "    for (const line of text.split(/\\r?\\n/)) {",
+          "      if (!line.startsWith('data:')) continue;",
+          "      const msg = JSON.parse(line.slice(5).trim());",
+          "      if (msg && Object.prototype.hasOwnProperty.call(msg, 'id')) parsed = msg;",
+          "    }",
+          "  } else if (ct.includes('application/json')) {",
+          "    parsed = pm.response.json();",
+          "  }",
+          "} catch (e) {",
+          "  parsed = null;",
+          "}",
+          "pm.variables.set('rpc', parsed ? JSON.stringify(parsed) : '');"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:19999"
+    },
+    {
+      "key": "token",
+      "value": "postman-token"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "initialize",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('serverInfo names the server', () => pm.expect(result.serverInfo.name).to.equal('petstore'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2025-06-18\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"postman\", \"version\": \"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "tools/list without a bearer token is 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "operators on petstore (5 exposed tools)",
+      "item": [
+        {
+          "name": "tools/list returns the included tools under their exposed names",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('only the included tools, renamed', () => {",
+                  "  pm.expect(toolNames().sort()).to.eql(['deletepet', 'findpetsbystatus', 'findpetsbytags', 'get_pet', 'getinventory']);",
+                  "});",
+                  "pm.test('the override keeps the original description', () => {",
+                  "  const t = result.tools.find(t => t.name === 'get_pet');",
+                  "  pm.expect(t.description).to.include('Find pet by ID');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "the renamed get_pet is callable and the token reaches the backend",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('backend answered for pet 7', () => {",
+                  "  pm.expect(result.isError).to.not.equal(true);",
+                  "  const body = JSON.parse(callText());",
+                  "  pm.expect(body.id).to.equal(7);",
+                  "  pm.expect(body.auth).to.equal('Bearer ' + pm.variables.get('token'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 4, \"method\": \"tools/call\", \"params\": {\"name\": \"get_pet\", \"arguments\": {\"petId\": 7}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "the original name getpetbyid is unknown after the rename",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('unknown tool', () => {",
+                  "  pm.expect(rpc.error, 'error').to.not.equal(undefined);",
+                  "  pm.expect(rpc.error.message).to.include('unknown tool');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 5, \"method\": \"tools/call\", \"params\": {\"name\": \"getpetbyid\", \"arguments\": {\"petId\": 7}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "readers on petstore (2 allowed tools)",
+      "item": [
+        {
+          "name": "tools/list omits the tools the policy denies",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('only the allowed tools are listed', () => pm.expect(toolNames().sort()).to.eql(['findpetsbystatus', 'get_pet']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "readers"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 6, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "the allowed tool get_pet is callable",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('backend answered', () => pm.expect(JSON.parse(callText()).id).to.equal(3));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "readers"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 7, \"method\": \"tools/call\", \"params\": {\"name\": \"get_pet\", \"arguments\": {\"petId\": 3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        },
+        {
+          "name": "the denied tool deletepet is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('denied by policy', () => {",
+                  "  pm.expect(rpc, 'parsed response').to.not.equal(null);",
+                  "  pm.expect(rpc.error, 'error').to.not.equal(undefined);",
+                  "  pm.expect(rpc.error.message).to.equal('tool not allowed by policy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "readers"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 8, \"method\": \"tools/call\", \"params\": {\"name\": \"deletepet\", \"arguments\": {\"petId\": 3}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "no identity headers",
+      "item": [
+        {
+          "name": "tools/list is denied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('denied by policy', () => {",
+                  "  pm.expect(rpc, 'parsed response').to.not.equal(null);",
+                  "  pm.expect(rpc.error, 'error').to.not.equal(undefined);",
+                  "  pm.expect(rpc.error.message).to.equal('tool not allowed by policy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 9, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "petstore_small (a single included tool)",
+      "item": [
+        {
+          "name": "tools/list lists only getinventory",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('only the included tool is listed', () => pm.expect(toolNames()).to.eql(['getinventory']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 10, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore_small",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore_small"
+              ]
+            }
+          }
+        },
+        {
+          "name": "getinventory is callable",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const raw = pm.variables.get('rpc');",
+                  "const rpc = raw ? JSON.parse(raw) : null;",
+                  "const result = rpc && rpc.result;",
+                  "const toolNames = () => (result.tools || []).map(t => t.name);",
+                  "const callText = () => result.content[0].text;",
+                  "",
+                  "pm.test('200 and a JSON-RPC result', () => { pm.response.to.have.status(200); pm.expect(rpc, 'parsed response').to.not.equal(null); pm.expect(rpc.error, JSON.stringify(rpc && rpc.error)).to.equal(undefined); });",
+                  "pm.test('backend answered', () => pm.expect(JSON.parse(callText())).to.have.property('available'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "x-user-id",
+                "value": "user-001"
+              },
+              {
+                "key": "x-user-groups",
+                "value": "operators"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 11, \"method\": \"tools/call\", \"params\": {\"name\": \"getinventory\", \"arguments\": {}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp/petstore_small",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "petstore_small"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

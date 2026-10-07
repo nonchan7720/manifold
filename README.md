@@ -1292,6 +1292,10 @@ The ConfigMap spec-loading tests use [envtest](https://book.kubebuilder.io/refer
 make test
 ```
 
+### End-to-end (Postman CLI)
+
+`make postman` builds the gateway, starts OPA and a stub Petstore API, and runs the Postman collection in [`tests/postman/`](tests/postman/) that checks tool filtering, tool authorization and the audit log together. The Postman CLI comes from `mise install` (`postman-cli` in [`mise.toml`](mise.toml)). CI runs it on every pull request.
+
 ### Lint
 
 ```bash
