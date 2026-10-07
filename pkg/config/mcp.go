@@ -81,6 +81,14 @@ type Server struct {
 	AgentCardPath string   `mapstructure:"agentCardPath"` // URL からの Agent Card のパス
 	Skills        []string `mapstructure:"skills"`        // 公開するスキル ID（空なら全スキル）
 
+	// Apps は MCP Apps（io.modelcontextprotocol/ui 拡張）の UI をこのエンドポイントの
+	// ホストへ常に通すかどうか。ゲートウェイは HTTP を Stateless で配信するため、
+	// 2026-07-28 より前のプロトコルのホストが initialize で申告した UI 対応は
+	// 以降のリクエストでは分からない。true にすると、リクエストに申告が無い
+	// ホストも UI 対応とみなす（申告があればそれに従う）。MCP バックエンド
+	// （http / stdio）でのみ有効。
+	Apps bool `mapstructure:"apps"`
+
 	// Agents はこのサービスにぶら下げる A2A エージェント。各エージェントの
 	// スキルは <agent>__<skill> というツール名で、サービス自身のツールと並んで
 	// このサービスの tools/list に現れる。reverse トランスポートでは使えない。
@@ -317,7 +325,17 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 			return nil
 		})),
 		validation.Field(&s.Agents, validation.WithContext(s.validateAgents)),
+		validation.Field(&s.Apps, validation.By(s.validateApps)),
 	)
+}
+
+// validateApps は mcpServers.<name>.apps を検証する。MCP Apps のリソースを
+// 転送するのは MCP バックエンド（http / stdio）のみ。
+func (s Server) validateApps(any) error {
+	if s.Apps && !s.IsMCPBackend() {
+		return fmt.Errorf("apps is only supported for the http and stdio transports")
+	}
+	return nil
 }
 
 // validateAgents は mcpServers.<name>.agents を検証する。

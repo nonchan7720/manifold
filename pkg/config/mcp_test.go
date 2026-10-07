@@ -817,3 +817,24 @@ func TestServer_ValidateWithContext_ToolsUnset_NoError(t *testing.T) {
 	err := s.ValidateWithContext(t.Context())
 	require.NoError(t, err)
 }
+
+func TestServer_Validate_AppsAllowedForMCPBackends(t *testing.T) {
+	for _, s := range []Server{
+		{Description: "x", Transport: MCPTransportHTTP, URL: "https://x", Apps: true},
+		{Description: "x", Transport: MCPTransportStdio, Command: "x", Apps: true},
+	} {
+		require.NoError(t, s.ValidateWithContext(t.Context()), s.Transport)
+	}
+}
+
+func TestServer_Validate_AppsRejectedOutsideMCPBackends(t *testing.T) {
+	s := Server{
+		Description: "x",
+		Spec:        "openapi.yaml",
+		BaseURL:     "https://api.example.com",
+		Apps:        true,
+	}
+	err := s.ValidateWithContext(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "apps is only supported for the http and stdio transports")
+}
