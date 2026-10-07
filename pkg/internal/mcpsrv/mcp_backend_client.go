@@ -331,6 +331,99 @@ func (c *MCPBackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error
 	return infos, nil
 }
 
+// withSession は fn をバックエンドのセッションで実行する。http バックエンドは
+// 呼び出しごとに新しいセッション（withStatelessSession）、stdio バックエンドは
+// 共有セッションを使い、失効時のみ invalidateSession で破棄する。
+func (c *MCPBackendClient) withSession(
+	ctx context.Context,
+	fn func(*mcp.ClientSession) error,
+) error {
+	if c.cfg.Transport == config.MCPTransportHTTP {
+		return c.withStatelessSession(ctx, fn)
+	}
+	session, err := c.ensureSession(ctx)
+	if err != nil {
+		return err
+	}
+	err = fn(session)
+	if isDeadSessionError(err) {
+		c.invalidateSession(session)
+	}
+	return err
+}
+
+// backendSupportsResources は session のバックエンドが resources capability を
+// 広告したかを返す。
+func backendSupportsResources(session *mcp.ClientSession) bool {
+	res := session.InitializeResult()
+	return res != nil && res.Capabilities != nil && res.Capabilities.Resources != nil
+}
+
+// ListResources はバックエンドへ resources/list を転送する。バックエンドが
+// resources capability を持たない場合は空の一覧を返す（ゲートウェイは MCP Apps の
+// ため常に resources を広告するので、method not found を返さないようにする）。
+func (c *MCPBackendClient) ListResources(
+	ctx context.Context,
+	params *mcp.ListResourcesParams,
+) (_ *mcp.ListResourcesResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResources")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var res *mcp.ListResourcesResult
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !backendSupportsResources(session) {
+			res = &mcp.ListResourcesResult{Resources: []*mcp.Resource{}}
+			return nil
+		}
+		res, err = session.ListResources(ctx, params)
+		return err
+	})
+	return res, err
+}
+
+// ListResourceTemplates はバックエンドへ resources/templates/list を転送する。
+// バックエンドが resources capability を持たない場合は空の一覧を返す。
+func (c *MCPBackendClient) ListResourceTemplates(
+	ctx context.Context,
+	params *mcp.ListResourceTemplatesParams,
+) (_ *mcp.ListResourceTemplatesResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResourceTemplates")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var res *mcp.ListResourceTemplatesResult
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !backendSupportsResources(session) {
+			res = &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}}
+			return nil
+		}
+		res, err = session.ListResourceTemplates(ctx, params)
+		return err
+	})
+	return res, err
+}
+
+// ReadResource はバックエンドへ resources/read を転送する。MCP Apps の
+// ui:// リソース（_meta.ui.resourceUri）の取得に使われる。バックエンドが
+// resources capability を持たない場合は resource not found を返す。
+func (c *MCPBackendClient) ReadResource(
+	ctx context.Context,
+	params *mcp.ReadResourceParams,
+) (_ *mcp.ReadResourceResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ReadResource",
+		attribute.String("resource-uri", params.URI))
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var res *mcp.ReadResourceResult
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !backendSupportsResources(session) {
+			return mcp.ResourceNotFoundError(params.URI)
+		}
+		res, err = session.ReadResource(ctx, params)
+		return err
+	})
+	return res, err
+}
+
 // Close はバックエンドとの接続を閉じ、以降の接続を禁止する。
 // 進行中の接続試行を待たずに即座に返る。試行中だったセッションは
 // リーダー側が closed フラグを見て破棄する。
@@ -352,7 +445,7 @@ func (c *MCPBackendClient) connect(ctx context.Context) (_ *mcp.ClientSession, r
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "manifold",
 		Version: version.Version,
-	}, nil)
+	}, c.clientOptions(ctx))
 
 	transport, err := c.buildTransport(ctx)
 	if err != nil {
@@ -387,6 +480,37 @@ func (c sdkValueShieldedContext) Value(key any) any {
 // 拒否する。バックエンドとのバージョンはゲートウェイ自身が交渉する。
 func withoutSDKContextValues(ctx context.Context) context.Context {
 	return sdkValueShieldedContext{Context: ctx}
+}
+
+// clientOptions はバックエンドへの initialize で広告する capability を組み立てる。
+// MCP Apps の UI 拡張（io.modelcontextprotocol/ui）は、http バックエンドでは
+// 呼び出し元を UI 対応とみなした場合（newMCPAppsMiddleware が ctx に載せる）のみ
+// 広告し、stdio バックエンドではセッションを全呼び出し元で共有するため常に広告する
+// （UI 非対応の呼び出し元へはゲートウェイが UI を取り除く）。UI 拡張を広告しない
+// 場合は SDK の既定の capability のまま（nil）にする。
+func (c *MCPBackendClient) clientOptions(ctx context.Context) *mcp.ClientOptions {
+	var settings map[string]any
+	switch c.cfg.Transport {
+	case config.MCPTransportHTTP:
+		s, ok := callerUIExtensionFromContext(ctx)
+		if !ok {
+			return nil
+		}
+		settings = s
+	case config.MCPTransportStdio:
+		settings = defaultMCPAppsExtensionSettings()
+	case config.MCPTransportReverse, config.MCPTransportA2A:
+		return nil
+	default:
+		return nil
+	}
+	// SDK の既定（roots.listChanged）は Capabilities を指定すると消えるため明示する。
+	caps := &mcp.ClientCapabilities{
+		//nolint:staticcheck // SDK の既定の広告と揃えるため（roots は非推奨だが有効）
+		RootsV2: &mcp.RootCapabilities{ListChanged: true},
+	}
+	caps.AddExtension(mcpAppsExtension, settings)
+	return &mcp.ClientOptions{Capabilities: caps}
 }
 
 func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport, rErr error) {

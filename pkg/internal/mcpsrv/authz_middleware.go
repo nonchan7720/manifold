@@ -13,6 +13,13 @@ import (
 const (
 	authzMethodToolsCall = "tools/call"
 	authzMethodToolsList = "tools/list"
+
+	// resources/* は今のところ authz の対象外（MCP バックエンドの
+	// newBackendResourcesMiddleware がそのまま転送する）。対象にする場合は
+	// NewAuthzMiddleware でこれらを判定する。
+	authzMethodResourcesList          = "resources/list"
+	authzMethodResourcesTemplatesList = "resources/templates/list"
+	authzMethodResourcesRead          = "resources/read"
 )
 
 // errToolNotAllowedByPolicy is the only detail returned to clients for any
