@@ -39,7 +39,7 @@ mcpServers:
 	got, err := loadWithIncludes(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
-		"gateway": map[string]any{"port": 9000},
+		"gateway": map[string]any{"port": uint64(9000)},
 		"mcpServers": map[string]any{
 			"xxx": map[string]any{"url": "https://xxx"},
 			"yyy": map[string]any{"url": "https://yyy"},

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/template"
-	"go.yaml.in/yaml/v3"
+	"github.com/goccy/go-yaml"
 )
 
 // includeKey is the top-level key listing extra config files to merge into

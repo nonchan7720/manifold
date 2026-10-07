@@ -8,8 +8,8 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/goccy/go-yaml"
 	"github.com/n-creativesystem/go-packages/lib/trace"
-	yaml "go.yaml.in/yaml/v3"
 )
 
 // SpecFormat is the detected format of a fetched spec.

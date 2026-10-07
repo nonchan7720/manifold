@@ -14,8 +14,8 @@ import (
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/goccy/go-yaml"
 	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
-	"go.yaml.in/yaml/v3"
 )
 
 type MCPTransport string

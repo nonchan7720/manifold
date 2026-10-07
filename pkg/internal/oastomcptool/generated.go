@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/goccy/go-yaml"
 	"github.com/n-creativesystem/go-packages/lib/trace"
-	yaml "go.yaml.in/yaml/v3"
 )
 
 // GeneratedVersion is the format version of the generated tools file this package writes and reads.
@@ -92,8 +92,7 @@ func NewGeneratedCatalog(
 
 // WriteGeneratedCatalog encodes g as YAML (2-space indent) to w.
 func WriteGeneratedCatalog(w io.Writer, g *GeneratedCatalog) (rErr error) {
-	enc := yaml.NewEncoder(w)
-	enc.SetIndent(2)
+	enc := yaml.NewEncoder(w, yaml.Indent(2), yaml.IndentSequence(true))
 	defer func() {
 		if err := enc.Close(); rErr == nil {
 			rErr = err
