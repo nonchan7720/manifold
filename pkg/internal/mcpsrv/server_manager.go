@@ -45,7 +45,6 @@ type MCPServer struct {
 	mediaUploader *storage.ContentManagementService
 
 	middlewareFn func(name string) []mcp.Middleware
-	toolCache    *ToolCache
 	auditLogger  *AuditLogger
 
 	meterProvider metric.MeterProvider
@@ -59,12 +58,6 @@ type Option func(*MCPServer)
 // per-backend *mcp.Server it creates, right after construction.
 func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
 	return func(s *MCPServer) { s.middlewareFn = fn }
-}
-
-// WithToolCache makes servers with mcpServers.<name>.cache store their
-// results in cache. Without it, cache settings are ignored.
-func WithToolCache(cache *ToolCache) Option {
-	return func(s *MCPServer) { s.toolCache = cache }
 }
 
 // WithAuditLogger records every tools/call on every server to l.
@@ -245,7 +238,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		}
 		srv.AddReceivingMiddleware(
 			ServerToolMiddlewares(
-				name, server, authzMiddlewares, s.toolCache, s.auditLogger, inner...,
+				name, server, authzMiddlewares, s.auditLogger, inner...,
 			)...,
 		)
 

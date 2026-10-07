@@ -39,7 +39,7 @@ flowchart TD
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
+- **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
@@ -526,27 +526,9 @@ mcpServers:
 ```
 
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
-- 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
+- 絞り込みは authz より前に行われるため、authz と `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
 - reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。絞り込みはサービス自身のツールだけに適用され、名前がたまたま `<agent>__` で始まるサービスのツールも対象になります。
-
-### 結果のキャッシュ（`cache`）
-
-```yaml
-mcpServers:
-  github:
-    description: GitHub MCP server
-    transport: http
-    url: https://api.githubcopilot.com/mcp/
-    cache:
-      toolsList: 5m                 # tools/list をキャッシュ
-      toolCall: 30s                 # tools/call の結果をキャッシュ...
-      tools: ["get_*", "list_*"]    # ...ただしこの（読み取り専用の）ツールだけ
-```
-
-- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件・64 MiB）、呼び出し元ごとに分かれます。呼び出し元は bearer トークンと、reverse（WebMCP）サーバーではリクエストの振り分けに使った識別子（identityKey）で区別するため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。どちらも無いリクエストはキャッシュしません。`edge.pairing.type: static` の reverse サーバーでは、すべての HTTP クライアントが固定の identityKey（`static`）を共有し、トークンも持たないため、呼び出し元を区別できません。この場合はキャッシュを一切使いません（そのようなサーバーに `cache` を設定していると、起動時に警告ログを出します）。呼び出し元ごとにキャッシュしたい場合は remote ペアリングを使ってください。保持するのは件数に加えて合計 64 MiB までで、超えたら最も長く使われていないものから捨てます。1 件だけで上限を超える結果はキャッシュしません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
-- `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
-- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。ゲートウェイ自身がツールを入れ替えたときはキャッシュを即座に捨てます。`specRefresh` が新しい spec を採用したときはそのサーバーの全呼び出し元分を、reverse（WebMCP）の per-user サーバーがタブの接続・切断・ツール変更で作り直されたときはその identityKey の分だけを捨てます。MCP バックエンドがゲートウェイの裏でツールを変えた場合だけ、キャッシュした `tools/list` は最大 `toolsList` の間古いままになりえます。
 
 ### 監査ログ（`audit`）
 
@@ -634,7 +616,6 @@ gateway:
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 | `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
-| `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。

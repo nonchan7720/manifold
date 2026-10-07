@@ -2,7 +2,6 @@ package config
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -108,23 +107,6 @@ func TestToolsConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestCacheConfig(t *testing.T) {
-	cfg := &CacheConfig{ToolsList: time.Minute, ToolCall: time.Minute, Tools: []string{"get*"}}
-	require.NoError(t, cfg.ValidateWithContext(t.Context()))
-	require.True(t, cfg.CachesToolsList())
-	require.True(t, cfg.CachesToolCall("getpet"))
-	require.False(t, cfg.CachesToolCall("addpet"))
-
-	var nilCfg *CacheConfig
-	require.False(t, nilCfg.CachesToolsList())
-	require.False(t, nilCfg.CachesToolCall("getpet"))
-
-	err := CacheConfig{ToolCall: time.Minute}.ValidateWithContext(t.Context())
-	require.ErrorContains(t, err, "cache.tools is required")
-	err = CacheConfig{ToolsList: -time.Second}.ValidateWithContext(t.Context())
-	require.ErrorContains(t, err, "zero or positive")
-}
-
 func TestLoadInternal_ToolSettings(t *testing.T) {
 	cfg, err := loadFromYAML(t, `
 mcpServers:
@@ -141,10 +123,6 @@ mcpServers:
         mixed:
           tool: ListDocs
           name: list_docs
-    cache:
-      toolsList: 1m
-      toolCall: 30s
-      tools: ["get*"]
 audit:
   enabled: true
   output: stdout
@@ -158,8 +136,6 @@ audit:
 	require.Equal(t, "get_pet", overrides["getpetbyid"].Name)
 	require.Equal(t, "Look up a pet", overrides["getpetbyid"].Description)
 	require.Equal(t, "list_docs", overrides["ListDocs"].Name)
-	require.Equal(t, time.Minute, srv.Cache.ToolsList)
-	require.Equal(t, 30*time.Second, srv.Cache.ToolCall)
 	require.True(t, cfg.Audit.Enabled)
 	require.Equal(t, AuditOutputStdout, cfg.Audit.OutputOrDefault())
 	require.True(t, cfg.Audit.IncludeArguments)

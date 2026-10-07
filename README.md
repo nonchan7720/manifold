@@ -39,7 +39,7 @@ flowchart TD
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
-- **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
+- **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
@@ -526,27 +526,9 @@ mcpServers:
 ```
 
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
-- Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
+- Filtering happens before authz, so authz — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
 - On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
-
-### Caching results (`cache`)
-
-```yaml
-mcpServers:
-  github:
-    description: GitHub MCP server
-    transport: http
-    url: https://api.githubcopilot.com/mcp/
-    cache:
-      toolsList: 5m                 # cache tools/list
-      toolCall: 30s                 # cache tools/call results...
-      tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
-```
-
-- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries and 64 MiB) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. On a reverse server under `edge.pairing.type: static` every HTTP client shares the single fixed identityKey (`static`) and carries no token, so the callers can't be told apart and the cache is bypassed for them entirely (a warning is logged at startup if such a server has `cache` configured); use remote pairing for per-caller caching. Results are bounded by a 64 MiB total size as well as the entry count; the least recently used entries are evicted first, and a single result larger than the budget is not cached. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
-- `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
-- The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
 
 ### Audit log (`audit`)
 
@@ -634,7 +616,6 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 | `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
-| `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.

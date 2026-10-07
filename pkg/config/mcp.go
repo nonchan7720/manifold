@@ -60,9 +60,6 @@ type Server struct {
 	// 名前変更の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
 
-	// Cache は tools/list・tools/call の結果のキャッシュ設定。
-	Cache *CacheConfig `mapstructure:"cache"`
-
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
@@ -307,7 +304,6 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
-		validation.Field(&s.Cache),
 		validation.Field(&s.AgentCardPath, validation.By(func(any) error {
 			if s.AgentCardPath != "" {
 				return fmt.Errorf("agentCardPath is only supported under agents")
