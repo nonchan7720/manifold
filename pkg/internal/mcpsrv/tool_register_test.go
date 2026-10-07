@@ -446,6 +446,10 @@ func TestAttachTools_StructuredContentIsAlwaysAnObject(t *testing.T) {
 		{"array under text/plain", `[1,2]`, "text/plain", ""},
 		{"scalar under text/plain", `42`, "text/plain", ""},
 		{"not json", `hello`, "text/plain", ""},
+		{"object under text/plain", `{"a":1}`, "text/plain", ""},
+		{"object under text/html", `{"a":1}`, "text/html; charset=utf-8", ""},
+		{"object under +json", `{"a":1}`, "application/problem+json", `{"a":1}`},
+		{"object without a content type", `{"a":1}`, "", `{"a":1}`},
 	}
 	register := NewMCPToolRegistry()
 	for i, tt := range tests {

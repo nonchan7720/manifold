@@ -438,7 +438,7 @@ func attachTools(
 					// already wrapped application/json arrays, anything else
 					// (a JSON array or scalar under another content type)
 					// stays in the text content only.
-					if obj, ok := objectBody(resp); ok {
+					if obj, ok := objectBody(contentType, resp); ok {
 						result.StructuredContent = obj
 					}
 				}
