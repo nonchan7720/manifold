@@ -421,8 +421,7 @@ func (g *ReverseGateway) rebuildUserServer(
 		if err != nil {
 			return fmt.Errorf("list tools for app %s: %w", binding.Origin, err)
 		}
-		tools := dropReservedSessionTools(ctx, binding.Origin, result.Tools)
-		RegisterSessionTools(srv, tools, g.sessionResolver(binding))
+		RegisterSessionTools(srv, result.Tools, g.sessionResolver(binding))
 	}
 
 	key := userServerKey(binding.IdentityKey, binding.Origin)
@@ -490,24 +489,6 @@ func (g *ReverseGateway) registerPairingTool(srv *mcp.Server, identityKey domain
 			return result, nil
 		},
 	)
-}
-
-// dropReservedSessionTools returns tools without any named like a tool the
-// gateway registers itself (create_pairing_code). mcp.Server.AddTool replaces
-// a same-named tool, so a tab offering one would otherwise take over the
-// gateway's: the tool filter trusts that name (see toolFilter.builtin) and the
-// call would be forwarded to the tab instead of issuing a pairing code.
-func dropReservedSessionTools(ctx context.Context, origin string, tools []*mcp.Tool) []*mcp.Tool {
-	out := make([]*mcp.Tool, 0, len(tools))
-	for _, tool := range tools {
-		if tool.Name == createPairingCodeToolName {
-			slog.WarnContext(ctx, "ignoring tab tool that shadows a gateway tool",
-				slog.String("origin", origin), slog.String("tool", tool.Name))
-			continue
-		}
-		out = append(out, tool)
-	}
-	return out
 }
 
 func closeSessionHandle(handle any) {
