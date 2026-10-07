@@ -49,8 +49,6 @@ type MCPServer struct {
 	auditLogger  *AuditLogger
 	// toolSearchCfg は gateway.toolSearch（WithToolSearchConfig で設定、未設定なら無効）。
 	toolSearchCfg config.ToolSearchConfig
-	// authzKey は authz の判定入力（主体・bypass）のキャッシュキー（WithAuthzCacheKeyer）。
-	authzKey AuthzCacheKeyer
 
 	meterProvider metric.MeterProvider
 	metrics       *specRefreshMetrics
@@ -75,13 +73,6 @@ func WithToolCache(cache *ToolCache) Option {
 // or with cfg.Enabled false, tool_search is off.
 func WithToolSearchConfig(cfg config.ToolSearchConfig) Option {
 	return func(s *MCPServer) { s.toolSearchCfg = cfg }
-}
-
-// WithAuthzCacheKeyer sets the keyer of the authz middlewares WithServerMiddleware
-// installs (NewAuthzCacheKeyer), so tool_search can key its index cache by the
-// authz principal. Without it, tool_search doesn't cache when authz is on.
-func WithAuthzCacheKeyer(k AuthzCacheKeyer) Option {
-	return func(s *MCPServer) { s.authzKey = k }
 }
 
 // WithAuditLogger records every tools/call on every server to l.
@@ -261,13 +252,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		}
 		srv.AddReceivingMiddleware(
 			ServerToolMiddlewares(
-				name,
-				server,
-				authzMiddlewares,
-				s.authzKey,
-				s.toolCache,
-				s.auditLogger,
-				s.toolSearchCfg,
+				name, server, authzMiddlewares, s.toolCache, s.auditLogger, s.toolSearchCfg,
 			)...,
 		)
 

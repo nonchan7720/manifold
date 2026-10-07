@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -194,22 +193,15 @@ func listVisibleTools(
 	return first, tools, nil
 }
 
-// reservedToolWarned remembers the servers already warned about a backend tool
-// named tool_search, so the WARN is logged once per server rather than on every
-// tools/list and tool_search call.
-var reservedToolWarned sync.Map
-
 // dropReservedTool hides a backend tool named tool_search: the synthetic tool
 // takes that name, and a tools/call for it never reaches the backend.
 func dropReservedTool(ctx context.Context, serverName string, tools []*mcp.Tool) []*mcp.Tool {
 	out := tools[:0:0]
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName {
-			if _, warned := reservedToolWarned.LoadOrStore(serverName, struct{}{}); !warned {
-				slog.WarnContext(ctx,
-					"upstream tool name collides with the synthetic tool_search; hiding it",
-					slog.String("server", serverName))
-			}
+			slog.WarnContext(ctx,
+				"upstream tool name collides with the synthetic tool_search; hiding it",
+				slog.String("server", serverName))
 			continue
 		}
 		out = append(out, tool)
@@ -236,11 +228,8 @@ func toolErrorResult(err error) *mcp.CallToolResult {
 }
 
 // handleToolSearchList answers tools/list: only tool_search when the caller
-// can see more than cfg.Threshold tools, otherwise what the inner handler
-// returns, unchanged but for a backend tool named tool_search. Pagination is
-// preserved below the threshold: a request carrying a cursor is forwarded
-// as is, and one without gets the inner first page with its NextCursor (every
-// page is still read once to count the tools against the threshold).
+// can see more than cfg.Threshold tools, otherwise the visible tools merged
+// into a single page.
 func handleToolSearchList(
 	ctx context.Context,
 	serverName string,
@@ -248,49 +237,30 @@ func handleToolSearchList(
 	next mcp.MethodHandler,
 	req mcp.Request,
 ) (mcp.Result, error) {
-	if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil &&
-		params.Cursor != "" {
-		// Only a page of a list we passed through hands out cursors, so the
-		// client is already paging through the real tools.
-		res, err := next(ctx, authzMethodToolsList, req)
-		if err != nil {
-			return nil, err
-		}
-		if page, ok := res.(*mcp.ListToolsResult); ok {
-			out := *page
-			out.Tools = dropReservedTool(ctx, serverName, page.Tools)
-			if out.Tools == nil {
-				out.Tools = []*mcp.Tool{} // avoid JSON null
-			}
-			normalizeCacheable(&out.Cacheable)
-			return &out, nil
-		}
-		return res, nil
-	}
 	first, tools, err := listVisibleTools(ctx, next, req)
 	if err != nil {
 		return nil, err
 	}
-	visible := dropReservedTool(ctx, serverName, tools)
-	if len(visible) > cfg.Threshold {
+	tools = dropReservedTool(ctx, serverName, tools)
+	if len(tools) > cfg.Threshold {
 		res := &mcp.ListToolsResult{
-			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(visible))},
+			Tools: []*mcp.Tool{toolSearchDef(serverName, cfg, toolDefs(tools))},
 		}
 		normalizeCacheable(&res.Cacheable)
 		return res, nil
 	}
 	out := *first
-	out.Tools = dropReservedTool(ctx, serverName, first.Tools)
+	out.Tools = tools
 	if out.Tools == nil {
 		out.Tools = []*mcp.Tool{} // avoid JSON null
 	}
+	out.NextCursor = ""
 	normalizeCacheable(&out.Cacheable)
 	return &out, nil
 }
 
 // handleToolSearchCall answers a tools/call of tool_search by searching the
-// tools the caller can see (read through indexes, which reuses them for a
-// short while per caller). Search errors (unknown method, bad regexp) are
+// tools the caller can see. Search errors (unknown method, bad regexp) are
 // tool errors; an error from the inner tools/list (e.g. authz denying the
 // caller) is returned as is.
 func handleToolSearchCall(
@@ -298,7 +268,6 @@ func handleToolSearchCall(
 	serverName string,
 	cfg config.ToolSearchConfig,
 	next mcp.MethodHandler,
-	indexes *toolSearchIndexes,
 	req mcp.Request,
 	params *mcp.CallToolParamsRaw,
 ) (_ mcp.Result, rErr error) {
@@ -321,13 +290,14 @@ func handleToolSearchCall(
 		limit = cfg.DefaultLimit
 	}
 
-	index, err := indexes.indexFor(ctx, next, req)
+	_, tools, err := listVisibleTools(ctx, next, req)
 	if err != nil {
 		traceErr = err
 		return nil, err
 	}
+	docs := toolDefs(dropReservedTool(ctx, serverName, tools))
 
-	defs, err := index.Search(args.Query, toolsearch.Method(args.Method), limit)
+	defs, err := toolsearch.Search(docs, args.Query, toolsearch.Method(args.Method), limit)
 	if err != nil {
 		traceErr = err
 		return toolErrorResult(err), nil
@@ -354,17 +324,12 @@ func handleToolSearchCall(
 // reaches the backend like any other name. It sits outside authz and the tool
 // filter, so everything it lists, counts and searches is what the caller may
 // see; a tools/call for any other tool, hidden or not, passes through to the
-// same authz and audit as before. toolCache (may be nil) is only consulted for
-// its invalidation generations, see toolSearchIndexes. authzKey (may be nil
-// when no authz sits inside) keys the index cache by the authz principal.
-func newToolSearchMiddleware(
-	serverName string, cfg config.ToolSearchConfig, toolCache *ToolCache, authzKey AuthzCacheKeyer,
-) mcp.Middleware {
+// same authz and audit as before.
+func newToolSearchMiddleware(serverName string, cfg config.ToolSearchConfig) mcp.Middleware {
 	cfg = cfg.WithDefaults()
 	if !cfg.IsEnabled() {
 		return nil
 	}
-	indexes := newToolSearchIndexes(serverName, toolCache, authzKey)
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			switch method {
@@ -375,7 +340,7 @@ func newToolSearchMiddleware(
 				if !ok || params.Name != ToolSearchName {
 					return next(ctx, method, req)
 				}
-				return handleToolSearchCall(ctx, serverName, cfg, next, indexes, req, params)
+				return handleToolSearchCall(ctx, serverName, cfg, next, req, params)
 			default:
 				return next(ctx, method, req)
 			}

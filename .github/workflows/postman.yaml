@@ -18,9 +18,6 @@ jobs:
           persist-credentials: false
       - name: Set up tools # go and the Postman CLI (postman-cli in mise.toml)
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-        with:
-          # Skip golangci-lint (built from source), setup-envtest, etc.
-          install_args: "go postman-cli"
       - name: Run the Postman collection
         run: tests/postman/run.sh
       - name: Show logs

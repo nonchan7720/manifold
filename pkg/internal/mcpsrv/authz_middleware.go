@@ -2,7 +2,6 @@ package mcpsrv
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -183,40 +182,5 @@ func NewAuthzMiddleware(
 			}
 			return authzHandleToolsList(ctx, serverName, serviceCode, d, p, next, method, req)
 		}
-	}
-}
-
-// AuthzCacheKeyer derives, from req's HTTP headers, a canonical key of
-// everything NewAuthzMiddleware decides on (the bypass flag, or the Principal:
-// user, groups and the FromHeaders fields). ok is false when authz would deny
-// the request (missing identity, unparsable field), so callers that cache
-// per-caller results must not serve it from cache: it has to reach authz.
-type AuthzCacheKeyer func(req mcp.Request) (key string, ok bool)
-
-// NewAuthzCacheKeyer builds the AuthzCacheKeyer matching a NewAuthzMiddleware
-// configured with the same headers and fromHeaders.
-func NewAuthzCacheKeyer(
-	headers config.AuthzHeaders,
-	fromHeaders map[string]config.AuthzInputHeaderField,
-) AuthzCacheKeyer {
-	return func(req mcp.Request) (string, bool) {
-		if authzBypassRequested(req, headers) {
-			return "bypass", true
-		}
-		p, err := authzPrincipal(req, headers, fromHeaders)
-		if err != nil {
-			return "", false
-		}
-		// json.Marshal sorts Extra's keys, so the encoding is deterministic.
-		// Groups keep their order: the Decider receives them as given.
-		b, err := json.Marshal(struct {
-			User   string         `json:"u"`
-			Groups []string       `json:"g"`
-			Extra  map[string]any `json:"e"`
-		}{p.UserID, p.Groups, p.Extra})
-		if err != nil {
-			return "", false
-		}
-		return "principal:" + string(b), true
 	}
 }

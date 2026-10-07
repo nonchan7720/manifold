@@ -256,16 +256,6 @@ func authzMiddlewareFn(
 	}
 }
 
-// newAuthzCacheKeyer builds the keyer matching authzMiddlewareFn's headers and
-// input fields, or nil when authz is disabled.
-func newAuthzCacheKeyer(cfg config.AuthzConfig) mcpsrv.AuthzCacheKeyer {
-	if !cfg.Enabled {
-		return nil
-	}
-	cfg = cfg.WithDefaults()
-	return mcpsrv.NewAuthzCacheKeyer(cfg.Headers, cfg.Input.FromHeaders)
-}
-
 func newMCPServer(
 	ctx context.Context,
 	servers config.Servers,
@@ -295,13 +285,6 @@ func runGatewayServer(ctx context.Context) error {
 		AllowedHosts: globalConfig.FileFetch.AllowedHosts,
 		MaxSize:      globalConfig.FileFetch.MaxSize,
 	})
-
-	if generated, err := globalConfig.ApplyEphemeralDefaults(); err != nil {
-		return err
-	} else if generated {
-		slog.WarnContext(ctx, "gateway.encryptKey is not set; using a random key "+
-			"(fine for the in-memory store, set it for redis or sqlite)")
-	}
 
 	storeClient, err := newStoreClient(ctx)
 	if err != nil {
@@ -369,7 +352,6 @@ func runGatewayServer(ctx context.Context) error {
 	authzMiddleware := authzMiddlewareFn(
 		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
 	)
-	authzCacheKeyer := newAuthzCacheKeyer(globalConfig.Authz)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
@@ -377,7 +359,6 @@ func runGatewayServer(ctx context.Context) error {
 		globalConfig.Gateway,
 		authzMiddleware,
 		mcpsrv.WithToolCache(toolCache),
-		mcpsrv.WithAuthzCacheKeyer(authzCacheKeyer),
 		mcpsrv.WithAuditLogger(auditLogger),
 		mcpsrv.WithToolSearchConfig(globalConfig.Gateway.ToolSearch),
 	)
@@ -398,7 +379,7 @@ func runGatewayServer(ctx context.Context) error {
 		edgeCfg,
 		globalConfig.MCPServer,
 		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
-			globalConfig.MCPServer, authzMiddleware, authzCacheKeyer, toolCache, auditLogger,
+			globalConfig.MCPServer, authzMiddleware, toolCache, auditLogger,
 			globalConfig.Gateway.ToolSearch,
 		)),
 		mcpsrv.WithReverseToolCache(toolCache),
@@ -499,7 +480,6 @@ func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
 func reverseServerMiddlewareFn(
 	servers config.Servers,
 	authzFn func(name string) []mcp.Middleware,
-	authzKey mcpsrv.AuthzCacheKeyer,
 	cache *mcpsrv.ToolCache,
 	audit *mcpsrv.AuditLogger,
 	search config.ToolSearchConfig,
@@ -510,7 +490,7 @@ func reverseServerMiddlewareFn(
 			authzMiddlewares = authzFn(name)
 		}
 		return mcpsrv.ServerToolMiddlewares(
-			name, servers[name], authzMiddlewares, authzKey, cache, audit, search,
+			name, servers[name], authzMiddlewares, cache, audit, search,
 		)
 	}
 }

@@ -13,7 +13,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
-	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
@@ -132,11 +131,6 @@ func (l *AuditLogger) record(
 	}
 	if fp := tokenFingerprint(contexts.FromRequestAuthHeader(ctx)); fp != "" {
 		attrs = append(attrs, slog.String("token", fp))
-	}
-	// 逆方向（WebMCP）のエンドポイントは JWT を検証しないので user / groups /
-	// token が空になる。呼び出し元は identityKey でしか分からない。
-	if key, ok := domainedge.IdentityKeyFromContext(ctx); ok && key != "" {
-		attrs = append(attrs, slog.String("identity", string(key)))
 	}
 	if err != nil {
 		attrs = append(attrs, slog.String("error", err.Error()))

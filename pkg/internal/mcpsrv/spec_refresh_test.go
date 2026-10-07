@@ -154,28 +154,6 @@ func counterValues(t *testing.T, reader *sdkmetric.ManualReader, name string) ma
 	return values
 }
 
-// counterReasons is counterValues keyed by the "reason" attribute.
-func counterReasons(t *testing.T, reader *sdkmetric.ManualReader, name string) map[string]int64 {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(t.Context(), &rm))
-	values := map[string]int64{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			require.True(t, ok, "metric %s is not an int64 sum", name)
-			for _, dp := range sum.DataPoints {
-				reason, _ := dp.Attributes.Value("reason")
-				values[reason.AsString()] += dp.Value
-			}
-		}
-	}
-	return values
-}
-
 // tryListToolNames は require を使わないため、require.Eventually の条件関数
 // （テスト本体とは別の goroutine で実行される）からも呼べる。
 func tryListToolNames(ctx context.Context, srv *mcp.Server) ([]string, error) {
@@ -267,10 +245,9 @@ func TestMCPServer_RefreshServer_InvalidatesToolCache(t *testing.T) {
 func TestMCPServer_RefreshServer_UnresolvableBaseURL_RejectedOnce(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	spec := newSpecTestServer(t, specWithOperations("ping"))
-	mp, reader := newTestMeterProvider(t)
 	s := newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
 		srv.BaseURL = "" // spec の URL（http）から導出させる
-	}, WithMeterProvider(mp))
+	})
 	srv, err := s.Server("api")
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
@@ -284,17 +261,10 @@ func TestMCPServer_RefreshServer_UnresolvableBaseURL_RejectedOnce(t *testing.T) 
 	require.ErrorIs(t, err, errBaseURLUnresolved)
 	require.False(t, changed)
 	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv), "current tools are kept")
-	require.Equal(t, map[string]int64{"": 1},
-		counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"),
-		"counted as a rejection (no breaking-change level)")
-	require.Equal(t, map[string]int64{rejectReasonBaseURL: 1},
-		counterReasons(t, reader, "manifold.openapi.spec_refresh.rejected"))
 
 	changed, err = s.refreshServer(t.Context(), "api")
 	require.NoError(t, err, "the same rejected revision is not reported again")
 	require.False(t, changed)
-	require.Equal(t, map[string]int64{rejectReasonBaseURL: 1},
-		counterReasons(t, reader, "manifold.openapi.spec_refresh.rejected"), "not counted again")
 
 	spec.setBody(specWithOperations("ping", "pong"))
 	changed, err = s.refreshServer(t.Context(), "api")

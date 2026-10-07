@@ -541,7 +541,7 @@ gateway:
     threshold: 100        # switch to tool_search above this many visible tools (default 100)
     defaultLimit: 10      # results returned when the caller omits limit (default 10)
     resultFormat: default # or claude
-    digestMaxTools: 50    # tools listed in tool_search's description: default 50, -1 = all, N = first N by name
+    digestMaxTools: -1    # tools listed in tool_search's description: -1 / 0 = all, N = first N by name
 ```
 
 `tool_search` takes `query` (required), `method` and `limit`. Every method searches tool names, descriptions, argument names and argument descriptions (recursively through nested objects and arrays) — the same fields as the Claude API's Tool Search Tool.
@@ -560,7 +560,7 @@ gateway:
 No match returns `[]`, never `null`.
 
 - Everything is decided per caller: the threshold, the search and the description digest all work on the tools the caller can actually see, after `tools.include` / `exclude` / `overrides` and [tool authorization](#tool-authorization-opa-sidecar). A tool the policy denies never appears in `tool_search` results or in its description, and calling a hidden tool goes through the same authorization and audit log as a direct call. `tool_search` calls are audited too, and a caller the policy denies entirely gets the same `tool not allowed by policy` error from `tool_search`.
-- `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools` (50 tools by default; the description says how many are left out), so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
+- `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools`, so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
 - The threshold is compared per endpoint against the caller's visible tools, not against the total across all servers.
 - A backend tool named `tool_search` is hidden (with a warning), since the synthetic tool takes that name.
 - Without `enabled: true`, `tools/list` is returned exactly as the backend produces it (pagination included), `tool_search` is not registered, and a backend tool named `tool_search` is not hidden. The other `toolSearch` settings are then unused.
@@ -579,7 +579,7 @@ mcpServers:
       tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
 ```
 
-- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries and 64 MiB) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. On a reverse server under `edge.pairing.type: static` every HTTP client shares the single fixed identityKey (`static`) and carries no token, so the callers can't be told apart and the cache is bypassed for them entirely (a warning is logged at startup if such a server has `cache` configured); use remote pairing for per-caller caching. Results are bounded by a 64 MiB total size as well as the entry count; the least recently used entries are evicted first, and a single result larger than the budget is not cached. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
+- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
 - `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
 - The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
 
@@ -600,7 +600,6 @@ Every `tools/call` writes one JSON line, separate from the application log:
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
-- `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
 ### Configuration reference
 
@@ -618,7 +617,7 @@ Every `tools/call` writes one JSON line, separate from the application log:
 | `toolSearch.threshold` | int | Number of visible tools on an endpoint above which `tools/list` returns only `tool_search` (default: 100). See [Tool search](#tool-search-gatewaytoolsearch) |
 | `toolSearch.defaultLimit` | int | Results returned by `tool_search` when the caller omits `limit` (default: 10) |
 | `toolSearch.resultFormat` | string | `default` (tool definitions) or `claude` (`tool_reference` blocks) |
-| `toolSearch.digestMaxTools` | int | Tools listed in `tool_search`'s description: `50` by default (`0` too), `-1` for all, `N` for the first `N` by name |
+| `toolSearch.digestMaxTools` | int | Tools listed in `tool_search`'s description: `-1` or `0` for all (default), `N` for the first `N` by name |
 
 #### `gateway.specRefresh`
 

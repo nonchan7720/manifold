@@ -31,14 +31,9 @@ const DefaultCallTimeout = 60 * time.Second
 type Servers map[string]*Server
 
 type Server struct {
-	Name        string
-	Description string `mapstructure:"description"`
-	BaseURL     string `mapstructure:"baseURL"`
-	// BaseURLSet records that the baseURL key was present in the config, even
-	// if it expanded to empty (e.g. ${API_BASE_URL} with the variable unset).
-	// An explicit but empty baseURL is an error rather than a request to
-	// derive it from the spec. Set by Load; zero for programmatic configs.
-	BaseURLSet   bool              `mapstructure:"-"`
+	Name         string
+	Description  string            `mapstructure:"description"`
+	BaseURL      string            `mapstructure:"baseURL"`
 	Spec         string            `mapstructure:"spec"` // ファイル or http(s) or configmap://<namespace>/<name>/<key>（OpenAPI モード）
 	ExtraHeaders map[string]string `mapstructure:"headers"`
 
@@ -145,11 +140,9 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&s.Service),
 		// spec があれば baseURL は spec の servers（無ければ spec の URL）から
 		// 導出できるため、必須なのは spec 無しで tools.file だけを使う場合に限る。
-		// ただしキーを明示した空値（未設定の環境変数の展開結果など）は、意図しない
-		// ホストへ向かわないよう導出せずエラーにする。
 		validation.Field(
 			&s.BaseURL,
-			validation.When(s.IsOpenAPI() && (s.Spec == "" || s.BaseURLSet), validation.Required),
+			validation.When(s.IsOpenAPI() && s.Spec == "", validation.Required),
 		),
 		validation.Field(
 			&s.Transport,

@@ -146,14 +146,6 @@ func TestConfig_ApplyEphemeralDefaults(t *testing.T) {
 		require.False(t, generated)
 		require.Error(t, cfg.ValidateWithContext(t.Context()))
 	})
-	t.Run(
-		"empty key is valid for the in-memory store without defaults applied",
-		func(t *testing.T) {
-			cfg := &Config{}
-			require.NoError(t, cfg.ValidateWithContext(t.Context()))
-			require.Empty(t, cfg.Gateway.EncryptKey)
-		},
-	)
 }
 
 func TestConfig_ValidateWithContext_SQLiteOnly_StillValid(t *testing.T) {
