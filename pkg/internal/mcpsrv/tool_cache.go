@@ -318,7 +318,7 @@ func newToolCacheMiddleware(
 				if params, ok := req.GetParams().(*mcp.ListToolsParams); ok && params != nil {
 					cursor = params.Cursor
 				}
-				key := toolCacheKey(ctx, server, method, cursor)
+				key := toolCacheKey(ctx, server, method, cursor, uiCacheKeyPart(req))
 				return cachedResult(
 					ctx,
 					cache,
@@ -336,7 +336,7 @@ func newToolCacheMiddleware(
 					return next(ctx, method, req)
 				}
 				key := toolCacheKey(ctx, server, method, params.Name,
-					canonicalArguments(params.Arguments))
+					canonicalArguments(params.Arguments), uiCacheKeyPart(req))
 				return cachedResult(
 					ctx,
 					cache,

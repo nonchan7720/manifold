@@ -205,6 +205,11 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			// tools capability の広告を明示する（listChanged はゲートウェイが
 			// バックエンドの通知を転送しないため広告しない）。
 			srvOpts.Capabilities = &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
+			if server.IsMCPBackend() {
+				// MCP Apps の ui:// リソースを取得できるよう resources も広告し、
+				// resources/* をバックエンドへ転送する（newBackendResourcesMiddleware）。
+				srvOpts.Capabilities.Resources = &mcp.ResourceCapabilities{}
+			}
 		case server.HasAgents():
 			// エージェントをぶら下げた OpenAPI モードのサーバー。Capabilities を
 			// 指定すると SDK は既定の広告（logging と、ツール登録時の
@@ -229,7 +234,14 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			// （サービスエージェントのミドルウェアはその次、authz の前）。
 			bc := &MCPBackendClient{name: name, cfg: server}
 			s.backendClients[name] = bc
-			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(bc))
+			// MCP Apps: resources/* も転送し、その外側で呼び出し元の UI 対応を
+			// 判定する（バックエンドへの広告と、UI 非対応の呼び出し元向けの調整）。
+			// 1回の AddReceivingMiddleware では先頭が外側になる。
+			srv.AddReceivingMiddleware(
+				newMCPAppsMiddleware(server),
+				newBackendPassthroughMiddleware(bc),
+				newBackendResourcesMiddleware(bc),
+			)
 		}
 		if server.IsA2ABackend() {
 			// A2A エージェント（agents ディレクティブ由来）:

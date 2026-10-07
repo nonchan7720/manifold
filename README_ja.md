@@ -44,6 +44,7 @@ flowchart TD
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
+- **MCP Apps 対応**: MCP バックエンドの [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)（`io.modelcontextprotocol/ui`）の UI（ツールの `_meta.ui` と、`resources/list`・`resources/read` で取得する `ui://` リソース）を対応ホストへそのまま通し、非対応ホストには取り除いて返す（`mcpServers.<name>.apps`）
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
 - **ストレージ選択可能**: インメモリ（デフォルト）・Redis・SQLite によるセッション・トークン管理
@@ -363,6 +364,30 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
+### MCP Apps（`apps`）
+
+MCP バックエンド（`http` / `stdio`）は [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) を提供できます。ツールの `_meta.ui.resourceUri` に `ui://` リソース（`text/html;profile=mcp-app`）を指定し、ホストがそれを描画する仕組みです。Manifold は `resources/list`・`resources/templates/list`・`resources/read` をバックエンドへ転送し、これらのエンドポイントで `resources` capability を広告します。
+
+呼び出し元が MCP Apps に対応しているかで返す内容が変わります。
+
+- **対応ホスト**: バックエンドの `tools/list` を `_meta.ui` を含めてそのまま返します。
+- **それ以外のホスト**: `tools/list` から `_meta.ui` を取り除き、UI からしか呼ばないツール（`_meta.ui.visibility` に `"model"` を含まないもの）を外します。
+
+ホストは `capabilities.extensions["io.modelcontextprotocol/ui"]` で対応を申告します。Manifold は MCP を Stateless な HTTP で配信するため、申告が分かるのはホストがリクエストごとに送ってくる場合（プロトコル `2026-07-28` 以降）だけです。それより前のホストが `initialize` で申告した内容は、次のリクエストでは分かりません。`apps: true` にすると、リクエストに申告が無いホストも MCP Apps 対応とみなします。
+
+```yaml
+mcpServers:
+  browser:
+    description: 画面表示付きの Chrome DevTools
+    transport: stdio
+    command: browser-mcp
+    apps: true
+```
+
+バックエンドに対しては、`http` バックエンドには呼び出し元を対応とみなしたときだけ（`initialize` で）MCP Apps 対応を伝えます。`stdio` バックエンドは全呼び出し元で1セッションを共有するため常に伝え、非対応の呼び出し元には Manifold が UI を取り除きます。そうした呼び出し元のために、UI 付きのツールもテキストの内容を返すようにしてください。
+
+リソースはツールの認可・キャッシュ・`tools.include` / `exclude` の対象外で、エンドポイントの認証のみが掛かります。
+
 ### A2A エージェントへの接続
 
 [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントを Manifold 経由で公開します。`agents` の各エントリは `mcpServers` と同じく `/mcp/<name>` で提供されます（[`agents.<name>`](#agentsname) 参照）。
@@ -677,6 +702,7 @@ gateway:
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
 | `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
+| `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 

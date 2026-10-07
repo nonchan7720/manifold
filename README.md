@@ -44,6 +44,7 @@ flowchart TD
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
+- **MCP Apps**: Passes [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) UIs of MCP backends through to hosts that support them — `_meta.ui` on tools, and the `ui://` resources via `resources/list` / `resources/read` — and strips them for hosts that don't (`mcpServers.<name>.apps`)
 - **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management in memory (default), Redis or SQLite
@@ -363,6 +364,30 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
+### MCP Apps (`apps`)
+
+An MCP backend (`http` / `stdio`) can serve [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps): tools carrying `_meta.ui.resourceUri`, whose `ui://` resource (`text/html;profile=mcp-app`) the host renders. Manifold forwards `resources/list`, `resources/templates/list` and `resources/read` to the backend, and advertises the `resources` capability on these endpoints.
+
+Whether a caller supports MCP Apps decides what it gets:
+
+- **Supporting hosts** get the backend's `tools/list` as is, `_meta.ui` included.
+- **Other hosts** get `tools/list` without `_meta.ui`, and without the tools only the UI calls (`_meta.ui.visibility` without `"model"`).
+
+A host declares support in `capabilities.extensions["io.modelcontextprotocol/ui"]`. Manifold serves MCP over stateless HTTP, so it only sees that declaration when the host sends it with every request (protocol `2026-07-28` and later); what an older host declared in `initialize` is gone by its next request. Set `apps: true` to treat every host on the endpoint as supporting MCP Apps when its request declares nothing:
+
+```yaml
+mcpServers:
+  browser:
+    description: Chrome DevTools with a live view
+    transport: stdio
+    command: browser-mcp
+    apps: true
+```
+
+Toward the backend, an `http` backend is told the caller supports MCP Apps (in its `initialize`) only when Manifold treats the caller as supporting them. A `stdio` backend shares one session between every caller, so it is always told so; Manifold strips the UI for callers that don't support it. Tools with a UI should still return text content, for those callers.
+
+Resources are not subject to tool authorization, caching, or `tools.include` / `exclude`; only the endpoint's authentication applies.
+
 ### Connecting to an A2A agent
 
 Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent through Manifold. Each entry under `agents` is served at `/mcp/<name>` like an `mcpServers` entry (see [`agents.<name>`](#agentsname)).
@@ -677,6 +702,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
 | `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
+| `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 
