@@ -15,7 +15,7 @@ import (
 
 // 2026-07-28 以降のプロトコルのホストが付けるリクエストごとの _meta を
 // バックエンドへ転送せず、Stateful な（go-sdk 既定の）http バックエンドにも
-// tools/list・tools/call が届くことを検証する。
+// tools/list・tools/call と resources/* が届くことを検証する。
 func TestBackendPassthrough_NewProtocolHost_StatefulBackend(t *testing.T) {
 	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	backend := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
@@ -23,6 +23,14 @@ func TestBackendPassthrough_NewProtocolHost_StatefulBackend(t *testing.T) {
 		&mcp.Tool{Name: "ping", InputSchema: map[string]any{"type": "object"}},
 		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil
+		},
+	)
+	backend.AddResource(
+		&mcp.Resource{URI: "ui://test/app.html", Name: "app", MIMEType: mcpAppsMIMEType},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+				URI: "ui://test/app.html", MIMEType: mcpAppsMIMEType, Text: "<html></html>",
+			}}}, nil
 		},
 	)
 	backendSrv := httptest.NewServer(mcp.NewStreamableHTTPHandler(
@@ -65,10 +73,22 @@ func TestBackendPassthrough_NewProtocolHost_StatefulBackend(t *testing.T) {
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "ping", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, res.IsError)
+
+	resources, err := cs.ListResources(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, resources.Resources, 1)
+
+	_, err = cs.ListResourceTemplates(ctx, nil)
+	require.NoError(t, err)
+
+	read, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: "ui://test/app.html"})
+	require.NoError(t, err)
+	require.Len(t, read.Contents, 1)
 }
 
 func TestWithoutProtocolMeta(t *testing.T) {
-	require.Nil(t, withoutProtocolMeta(nil))
+	meta := func(p *mcp.ListToolsParams) *mcp.Meta { return &p.Meta }
+	require.Nil(t, withoutProtocolMeta(nil, meta))
 
 	params := &mcp.ListToolsParams{
 		Cursor: "next",
@@ -78,12 +98,12 @@ func TestWithoutProtocolMeta(t *testing.T) {
 			"progressToken":               "p1",
 		},
 	}
-	got := withoutProtocolMeta(params)
+	got := withoutProtocolMeta(params, meta)
 	require.Equal(t, "next", got.Cursor)
 	require.Equal(t, mcp.Meta{"progressToken": "p1"}, got.Meta)
 	// 元の params は書き換えない。
 	require.Len(t, params.Meta, 3)
 
 	onlyProtocol := &mcp.ListToolsParams{Meta: mcp.Meta{mcp.MetaKeyProtocolVersion: "2026-07-28"}}
-	require.Nil(t, withoutProtocolMeta(onlyProtocol).Meta)
+	require.Nil(t, withoutProtocolMeta(onlyProtocol, meta).Meta)
 }

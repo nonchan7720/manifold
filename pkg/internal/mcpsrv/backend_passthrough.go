@@ -29,23 +29,24 @@ const protocolMetaPrefix = "io.modelcontextprotocol/"
 // 取り除いた複製を返す。これらはバックエンドとの間ではゲートウェイ自身のクライアント
 // セッションが付け直すもので、そのまま転送すると、バックエンドとは別のバージョンで
 // 交渉したセッションに下流のバージョンが混ざり、Stateful なバックエンドが
-// リクエストを拒否する。params 自体は書き換えない。
-func withoutProtocolMeta(params *mcp.ListToolsParams) *mcp.ListToolsParams {
-	if params == nil || len(params.Meta) == 0 {
+// リクエストを拒否する。meta は params の Meta フィールドを返す。params 自体は
+// 書き換えない。
+func withoutProtocolMeta[P any](params *P, meta func(*P) *mcp.Meta) *P {
+	if params == nil || len(*meta(params)) == 0 {
 		return params
 	}
-	var meta mcp.Meta
-	for k, v := range params.Meta {
+	var filtered mcp.Meta
+	for k, v := range *meta(params) {
 		if strings.HasPrefix(k, protocolMetaPrefix) {
 			continue
 		}
-		if meta == nil {
-			meta = mcp.Meta{}
+		if filtered == nil {
+			filtered = mcp.Meta{}
 		}
-		meta[k] = v
+		filtered[k] = v
 	}
 	copied := *params
-	copied.Meta = meta
+	*meta(&copied) = filtered
 	return &copied
 }
 
@@ -73,7 +74,8 @@ func newBackendPassthroughMiddleware(bc backendPassthrough) mcp.Middleware {
 			case authzMethodToolsList:
 				// params は missingParamsOK のため nil がありうる。
 				params, _ := req.GetParams().(*mcp.ListToolsParams)
-				res, err := bc.ListTools(ctx, withoutProtocolMeta(params))
+				res, err := bc.ListTools(ctx, withoutProtocolMeta(params,
+					func(p *mcp.ListToolsParams) *mcp.Meta { return &p.Meta }))
 				if err != nil {
 					return nil, err
 				}

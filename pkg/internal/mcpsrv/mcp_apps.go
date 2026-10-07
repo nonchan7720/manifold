@@ -223,7 +223,8 @@ func newBackendResourcesMiddleware(bc backendResources) mcp.Middleware {
 			switch method {
 			case authzMethodResourcesList:
 				params, _ := req.GetParams().(*mcp.ListResourcesParams)
-				res, err := bc.ListResources(ctx, params)
+				res, err := bc.ListResources(ctx, withoutProtocolMeta(params,
+					func(p *mcp.ListResourcesParams) *mcp.Meta { return &p.Meta }))
 				if err != nil {
 					return nil, err
 				}
@@ -231,7 +232,8 @@ func newBackendResourcesMiddleware(bc backendResources) mcp.Middleware {
 				return res, nil
 			case authzMethodResourcesTemplatesList:
 				params, _ := req.GetParams().(*mcp.ListResourceTemplatesParams)
-				res, err := bc.ListResourceTemplates(ctx, params)
+				res, err := bc.ListResourceTemplates(ctx, withoutProtocolMeta(params,
+					func(p *mcp.ListResourceTemplatesParams) *mcp.Meta { return &p.Meta }))
 				if err != nil {
 					return nil, err
 				}
@@ -242,7 +244,8 @@ func newBackendResourcesMiddleware(bc backendResources) mcp.Middleware {
 				if params == nil {
 					return nil, mcp.ResourceNotFoundError("")
 				}
-				res, err := bc.ReadResource(ctx, params)
+				res, err := bc.ReadResource(ctx, withoutProtocolMeta(params,
+					func(p *mcp.ReadResourceParams) *mcp.Meta { return &p.Meta }))
 				if err != nil {
 					return nil, err
 				}
