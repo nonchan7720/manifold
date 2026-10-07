@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,6 +18,35 @@ func normalizeCacheable(c *mcp.Cacheable) {
 	if c.CacheScope == "" {
 		c.CacheScope = "public"
 	}
+}
+
+// protocolMetaPrefix は MCP が予約する _meta キーの接頭辞。
+const protocolMetaPrefix = "io.modelcontextprotocol/"
+
+// withoutProtocolMeta は params の _meta から、下流の呼び出し元とゲートウェイの
+// 間のプロトコル情報（io.modelcontextprotocol/protocolVersion・clientInfo・
+// clientCapabilities 等。2026-07-28 以降のプロトコルでリクエストごとに付く）を
+// 取り除いた複製を返す。これらはバックエンドとの間ではゲートウェイ自身のクライアント
+// セッションが付け直すもので、そのまま転送すると、バックエンドとは別のバージョンで
+// 交渉したセッションに下流のバージョンが混ざり、Stateful なバックエンドが
+// リクエストを拒否する。params 自体は書き換えない。
+func withoutProtocolMeta(params *mcp.ListToolsParams) *mcp.ListToolsParams {
+	if params == nil || len(params.Meta) == 0 {
+		return params
+	}
+	var meta mcp.Meta
+	for k, v := range params.Meta {
+		if strings.HasPrefix(k, protocolMetaPrefix) {
+			continue
+		}
+		if meta == nil {
+			meta = mcp.Meta{}
+		}
+		meta[k] = v
+	}
+	copied := *params
+	copied.Meta = meta
+	return &copied
 }
 
 // backendPassthrough は newBackendPassthroughMiddleware の転送先。
@@ -43,7 +73,7 @@ func newBackendPassthroughMiddleware(bc backendPassthrough) mcp.Middleware {
 			case authzMethodToolsList:
 				// params は missingParamsOK のため nil がありうる。
 				params, _ := req.GetParams().(*mcp.ListToolsParams)
-				res, err := bc.ListTools(ctx, params)
+				res, err := bc.ListTools(ctx, withoutProtocolMeta(params))
 				if err != nil {
 					return nil, err
 				}
