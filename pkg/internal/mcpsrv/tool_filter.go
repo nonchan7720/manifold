@@ -3,7 +3,6 @@ package mcpsrv
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -27,10 +26,6 @@ type toolFilter struct {
 	// alias would let a policy that denies the builtin name through) nor
 	// rename a backend tool onto a builtin name (that tool is hidden instead).
 	builtin map[string]bool
-	// builtinPrefixes are the builtin entries ending in config.AgentToolSeparator:
-	// a service's <agent>__<skill> tools, whose skill names come from the
-	// agent card, so they're matched by the <agent>__ prefix instead.
-	builtinPrefixes []string
 }
 
 // newToolFilter returns the filter for cfg, or nil when cfg sets no include,
@@ -47,50 +42,32 @@ func newToolFilter(cfg *config.ToolsConfig, builtin ...string) *toolFilter {
 		builtin:     make(map[string]bool, len(builtin)),
 	}
 	for _, name := range builtin {
-		if strings.HasSuffix(name, config.AgentToolSeparator) {
-			f.builtinPrefixes = append(f.builtinPrefixes, name)
-			continue
-		}
 		f.builtin[name] = true
 	}
 	for original, override := range f.overrides {
-		if f.isBuiltin(original) {
+		if f.builtin[original] {
 			// 組み込みツールへの override は無視する（別名を作らせない）。
 			delete(f.overrides, original)
 			continue
 		}
-		if override.Name != "" && !f.isBuiltin(override.Name) {
+		if override.Name != "" && !f.builtin[override.Name] {
 			f.renamedFrom[override.Name] = original
 		}
 	}
 	return f
 }
 
-// isBuiltin reports whether name is a gateway-registered tool that bypasses
-// the filter.
-func (f *toolFilter) isBuiltin(name string) bool {
-	if f.builtin[name] {
-		return true
-	}
-	for _, prefix := range f.builtinPrefixes {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // exposedName returns the name the original tool is exposed under, and
 // whether it is exposed at all.
 func (f *toolFilter) exposedName(original string) (string, bool) {
-	if f.isBuiltin(original) {
+	if f.builtin[original] {
 		return original, true
 	}
 	if !f.cfg.Allowed(original) {
 		return "", false
 	}
 	if override, ok := f.overrides[original]; ok && override.Name != "" {
-		if f.isBuiltin(override.Name) {
+		if f.builtin[override.Name] {
 			// 組み込みツールの名前へはリネームできない。組み込み側がその名前を
 			// 持ち続け、こちらは隠す。
 			return "", false
@@ -107,7 +84,7 @@ func (f *toolFilter) exposedName(original string) (string, bool) {
 // originalName resolves a tools/call name to the backend's tool name, and
 // reports whether that name is exposed.
 func (f *toolFilter) originalName(exposed string) (string, bool) {
-	if f.isBuiltin(exposed) {
+	if f.builtin[exposed] {
 		return exposed, true
 	}
 	original := exposed

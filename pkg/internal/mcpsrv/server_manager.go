@@ -208,8 +208,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続クライアントを登録し、
 			// tools/list・tools/call はバックエンドへ毎回転送する。
-			// パススルーは authz ミドルウェアより先に追加して内側に置く
-			// （サービスエージェントのミドルウェアはその次、authz の前）。
+			// パススルーは ServerToolMiddlewares より先に追加して内側に置く。
 			bc := &MCPBackendClient{name: name, cfg: server}
 			s.backendClients[name] = bc
 			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(bc))
@@ -227,15 +226,17 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 					slog.String("agent", name), slog.Any("error", err))
 			}
 		}
+		var inner []mcp.Middleware
 		if server.HasAgents() {
 			// mcpServers.<name>.agents: サービス自身のツールの後ろに
 			// <agent>__<skill> のツールを足し、その tools/call を message/send へ
-			// 転送する。バックエンドのパススルーより後（= 外側。OpenAPI モードでは
-			// SDK 自身の tools/list ハンドラの外側）、authz より先（= 内側）に追加する。
+			// 転送する。ServerToolMiddlewares の tool filter の外側、cache・authz の
+			// 内側に入る（バックエンドのパススルーよりは外側。OpenAPI モードでは
+			// SDK 自身の tools/list ハンドラの外側）。
 			// Card は起動時に取得を試み、失敗しても最初のリクエストで取り直す。
 			sa := newServiceAgents(name, server.Agents, s.mediaService())
 			s.serviceAgents[name] = sa
-			srv.AddReceivingMiddleware(newServiceAgentsMiddleware(sa))
+			inner = append(inner, newServiceAgentsMiddleware(sa))
 			sa.ensureCards(ctx)
 		}
 		var authzMiddlewares []mcp.Middleware
@@ -243,7 +244,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			authzMiddlewares = s.middlewareFn(name)
 		}
 		srv.AddReceivingMiddleware(
-			ServerToolMiddlewares(name, server, authzMiddlewares, s.toolCache, s.auditLogger)...,
+			ServerToolMiddlewares(
+				name, server, authzMiddlewares, s.toolCache, s.auditLogger, inner...,
+			)...,
 		)
 
 		if !passthrough {
@@ -312,15 +315,16 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 		}
 	}
 
+	// tools.include / exclude / overrides を tools/list と同じく、サービス自身の
+	// ツールにだけ反映する。
+	if server, ok := s.servers[name]; ok && server != nil {
+		infos = newToolFilter(server.Tools).applyInfos(infos)
+	}
 	// mcpServers.<name>.agents にぶら下げたエージェントのツールをサービス自身の
 	// ツールの後ろに足す（tools/list と同じ並び）。サービスのツールと同名の
 	// エージェントのツールは、tools/list と同じくサービスを優先して外す。
 	if sa, ok := s.serviceAgents[name]; ok {
 		infos = append(infos, sa.dropCollidingInfos(ctx, infos, sa.listToolInfos(ctx))...)
-	}
-	// tools.include / exclude / overrides を tools/list と同じく反映する。
-	if server, ok := s.servers[name]; ok && server != nil {
-		infos = newToolFilter(server.Tools).applyInfos(infos)
 	}
 	return infos, nil
 }

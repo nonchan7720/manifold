@@ -126,11 +126,12 @@ func (sa *serviceAgents) close() {
 //     一覧から外す（サービスのツールは絞らない）。ページングされている場合は
 //     最後（または唯一）のページにだけ足す。
 //
-// バックエンドのパススルー（newBackendPassthroughMiddleware）より後、authz より
-// 先に AddReceivingMiddleware すること。パススルーの外側に置くことで、OpenAPI
-// モードでは SDK 自身の tools/list ハンドラの結果にも足せる。authz が更に外側に
-// あるため、エージェントのツールも server=<サービス名>, tool=<agent>__<skill> で
-// 許可判定とフィルタの対象になる。
+// ServerToolMiddlewares の inner として、tool filter の外側・cache と authz の
+// 内側に置く。バックエンドのパススルーより外側なので、OpenAPI モードでは SDK
+// 自身の tools/list ハンドラの結果にも足せる。tool filter はサービス自身の
+// ツールだけを絞り（エージェントのツールは絞らない）、authz は更に外側にある
+// ため、エージェントのツールも server=<サービス名>, tool=<agent>__<skill> で
+// 許可判定の対象になる。
 func newServiceAgentsMiddleware(sa *serviceAgents) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
