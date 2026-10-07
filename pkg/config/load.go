@@ -227,14 +227,6 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
 	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
 
-	// Same reasoning as fileFetch above — also makes GATEWAY_TOOLSEARCH_THRESHOLD,
-	// GATEWAY_TOOLSEARCH_DEFAULTLIMIT, GATEWAY_TOOLSEARCH_RESULTFORMAT and
-	// GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS effective overrides.
-	v.SetDefault("gateway.toolSearch.threshold", DefaultToolSearchThreshold)
-	v.SetDefault("gateway.toolSearch.defaultLimit", DefaultToolSearchLimit)
-	v.SetDefault("gateway.toolSearch.resultFormat", ToolSearchResultFormatDefault)
-	v.SetDefault("gateway.toolSearch.digestMaxTools", DefaultToolSearchDigestMaxTools)
-
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
@@ -262,7 +254,6 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
 	conf.FileFetch = conf.FileFetch.WithDefaults()
 	conf.OAuth.CIMD = conf.OAuth.CIMD.WithDefaults()
-	conf.Gateway.ToolSearch = conf.Gateway.ToolSearch.WithDefaults()
 
 	for name, srv := range conf.MCPServer {
 		srv.Name = name

@@ -360,7 +360,6 @@ func runGatewayServer(ctx context.Context) error {
 		authzMiddleware,
 		mcpsrv.WithToolCache(toolCache),
 		mcpsrv.WithAuditLogger(auditLogger),
-		mcpsrv.WithToolSearchConfig(globalConfig.Gateway.ToolSearch),
 	)
 	if err != nil {
 		return err
@@ -380,7 +379,6 @@ func runGatewayServer(ctx context.Context) error {
 		globalConfig.MCPServer,
 		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
 			globalConfig.MCPServer, authzMiddleware, toolCache, auditLogger,
-			globalConfig.Gateway.ToolSearch,
 		)),
 	)
 	reverseGateway.Init(ctx)
@@ -474,23 +472,20 @@ func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
 }
 
 // reverseServerMiddlewareFn builds the per-server middleware factory for
-// reverse (WebMCP) servers: the same tool filter, cache, authz, tool search
-// and audit layers as every other server (see mcpsrv.ServerToolMiddlewares).
+// reverse (WebMCP) servers: the same tool filter, cache, authz and audit
+// layers as every other server (see mcpsrv.ServerToolMiddlewares).
 func reverseServerMiddlewareFn(
 	servers config.Servers,
 	authzFn func(name string) []mcp.Middleware,
 	cache *mcpsrv.ToolCache,
 	audit *mcpsrv.AuditLogger,
-	search config.ToolSearchConfig,
 ) func(name string) []mcp.Middleware {
 	return func(name string) []mcp.Middleware {
 		var authzMiddlewares []mcp.Middleware
 		if authzFn != nil {
 			authzMiddlewares = authzFn(name)
 		}
-		return mcpsrv.ServerToolMiddlewares(
-			name, servers[name], authzMiddlewares, cache, audit, search,
-		)
+		return mcpsrv.ServerToolMiddlewares(name, servers[name], authzMiddlewares, cache, audit)
 	}
 }
 
