@@ -53,7 +53,14 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
 		c,
-		validation.Field(&c.Gateway),
+		// An empty encryptKey is only acceptable with the in-memory store,
+		// where ApplyEphemeralDefaults generates one at gateway startup.
+		validation.Field(&c.Gateway, validation.By(func(any) error {
+			if c.Gateway.EncryptKey == "" && !c.UsesEphemeralStore() {
+				return validation.Errors{"encryptKey": validation.ErrRequired}
+			}
+			return nil
+		})),
 		validation.Field(&c.Identities),
 		validation.Field(&c.MCPServer, validation.By(func(value any) error {
 			mp, ok := value.(Servers)
@@ -145,7 +152,6 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		ctx,
 		&c,
 		validation.Field(&c.EncryptKey,
-			validation.Required,
 			validation.When(c.EncryptKey != "",
 				validation.By(func(value any) error {
 					v, ok := value.(string)
@@ -183,7 +189,8 @@ func (c *Config) UsesEphemeralStore() bool {
 // is unset and the store is in memory: the key only protects tokens held by
 // this process, which are lost on restart anyway. A persistent store (redis,
 // sqlite) still requires a configured key, so tokens stay readable across
-// restarts and replicas.
+// restarts and replicas. Only the gateway server needs the key, so it calls
+// this at startup rather than the config loader.
 func (c *Config) ApplyEphemeralDefaults() (generated bool, err error) {
 	if c.Gateway.EncryptKey != "" || !c.UsesEphemeralStore() {
 		return false, nil

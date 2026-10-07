@@ -18,9 +18,20 @@ type toolFilter struct {
 	overrides map[string]config.ToolOverride
 	// renamedFrom maps an exposed (renamed) name back to the original name.
 	renamedFrom map[string]string
+	// builtin names the tools the gateway itself registers on the server
+	// (a reverse server's create_pairing_code). They aren't the backend's
+	// tools, so include / exclude / overrides never apply to them: they are
+	// always exposed, under their own name, and only under it — an override
+	// can neither alias a builtin tool (authz checks exposed names, so an
+	// alias would let a policy that denies the builtin name through) nor
+	// rename a backend tool onto a builtin name (that tool is hidden instead).
+	builtin map[string]bool
 }
 
-func newToolFilter(cfg *config.ToolsConfig) *toolFilter {
+// newToolFilter returns the filter for cfg, or nil when cfg sets no include,
+// exclude or overrides. builtin names tools that bypass the filter (see
+// toolFilter.builtin).
+func newToolFilter(cfg *config.ToolsConfig, builtin ...string) *toolFilter {
 	if !cfg.HasFilter() {
 		return nil
 	}
@@ -28,9 +39,18 @@ func newToolFilter(cfg *config.ToolsConfig) *toolFilter {
 		cfg:         cfg,
 		overrides:   cfg.ResolvedOverrides(),
 		renamedFrom: map[string]string{},
+		builtin:     make(map[string]bool, len(builtin)),
+	}
+	for _, name := range builtin {
+		f.builtin[name] = true
 	}
 	for original, override := range f.overrides {
-		if override.Name != "" {
+		if f.builtin[original] {
+			// 組み込みツールへの override は無視する（別名を作らせない）。
+			delete(f.overrides, original)
+			continue
+		}
+		if override.Name != "" && !f.builtin[override.Name] {
 			f.renamedFrom[override.Name] = original
 		}
 	}
@@ -40,10 +60,18 @@ func newToolFilter(cfg *config.ToolsConfig) *toolFilter {
 // exposedName returns the name the original tool is exposed under, and
 // whether it is exposed at all.
 func (f *toolFilter) exposedName(original string) (string, bool) {
+	if f.builtin[original] {
+		return original, true
+	}
 	if !f.cfg.Allowed(original) {
 		return "", false
 	}
 	if override, ok := f.overrides[original]; ok && override.Name != "" {
+		if f.builtin[override.Name] {
+			// 組み込みツールの名前へはリネームできない。組み込み側がその名前を
+			// 持ち続け、こちらは隠す。
+			return "", false
+		}
 		return override.Name, true
 	}
 	if _, shadowed := f.renamedFrom[original]; shadowed {
@@ -56,6 +84,9 @@ func (f *toolFilter) exposedName(original string) (string, bool) {
 // originalName resolves a tools/call name to the backend's tool name, and
 // reports whether that name is exposed.
 func (f *toolFilter) originalName(exposed string) (string, bool) {
+	if f.builtin[exposed] {
+		return exposed, true
+	}
 	original := exposed
 	if from, ok := f.renamedFrom[exposed]; ok {
 		original = from
@@ -128,9 +159,10 @@ func unknownToolError(name string) error {
 // exclude / overrides, or nil when cfg sets none of them. It sits right
 // outside the backend (passthrough, service agents, or the SDK's own tool
 // handlers), so every outer layer — cache, authz and audit — only ever sees
-// the exposed names.
-func newToolFilterMiddleware(cfg *config.ToolsConfig) mcp.Middleware {
-	f := newToolFilter(cfg)
+// the exposed names. builtin names the gateway's own tools on the server,
+// which the filter leaves alone (see toolFilter.builtin).
+func newToolFilterMiddleware(cfg *config.ToolsConfig, builtin ...string) mcp.Middleware {
+	f := newToolFilter(cfg, builtin...)
 	if f == nil {
 		return nil
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -153,6 +154,28 @@ func counterValues(t *testing.T, reader *sdkmetric.ManualReader, name string) ma
 	return values
 }
 
+// counterReasons is counterValues keyed by the "reason" attribute.
+func counterReasons(t *testing.T, reader *sdkmetric.ManualReader, name string) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	values := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok, "metric %s is not an int64 sum", name)
+			for _, dp := range sum.DataPoints {
+				reason, _ := dp.Attributes.Value("reason")
+				values[reason.AsString()] += dp.Value
+			}
+		}
+	}
+	return values
+}
+
 // tryListToolNames は require を使わないため、require.Eventually の条件関数
 // （テスト本体とは別の goroutine で実行される）からも呼べる。
 func tryListToolNames(ctx context.Context, srv *mcp.Server) ([]string, error) {
@@ -211,6 +234,72 @@ func TestMCPServer_RefreshServer_AddedOperation(t *testing.T) {
 
 	srv, err := s.Server("api")
 	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
+}
+
+// cache.toolsList と specRefresh を併用したとき、spec の採用後にキャッシュ済みの
+// tools/list（および tools/call の結果）が TTL いっぱい返り続けないこと。
+func TestMCPServer_RefreshServer_InvalidatesToolCache(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	cache := NewToolCache(0)
+	s := newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
+		srv.Cache = &config.CacheConfig{ToolsList: time.Hour}
+	}, WithToolCache(cache))
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	cs := connectTestClient(t, contexts.ToRequestAuthHeader(t.Context(), "alice"), srv)
+
+	require.ElementsMatch(t, []string{"ping"}, sessionToolNames(t, cs))
+	require.Equal(t, 1, cache.Len(), "tools/list is cached")
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.Equal(t, 0, cache.Len(), "adopting a new spec drops the server's cache entries")
+	require.ElementsMatch(t, []string{"ping", "pong"}, sessionToolNames(t, cs))
+}
+
+// baseURL 未設定で spec の URL から導出している場合、refresh で servers にホストの無い
+// URL が入っても採用せず、同じリビジョンの間は再び WARN（エラー）を返さないこと。
+func TestMCPServer_RefreshServer_UnresolvableBaseURL_RejectedOnce(t *testing.T) {
+	t.Setenv("TEST", "true") // client.HTTPClient() が httptest (127.0.0.1) を許可するために必要
+	spec := newSpecTestServer(t, specWithOperations("ping"))
+	mp, reader := newTestMeterProvider(t)
+	s := newRefreshTestMCPServerWith(t, spec, func(srv *config.Server) {
+		srv.BaseURL = "" // spec の URL（http）から導出させる
+	}, WithMeterProvider(mp))
+	srv, err := s.Server("api")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv))
+
+	broken := strings.Replace(
+		specWithOperations("ping", "pong"),
+		`"paths"`, `"servers":[{"url":"api.example.com"}],"paths"`, 1,
+	)
+	spec.setBody(broken)
+	changed, err := s.refreshServer(t.Context(), "api")
+	require.ErrorIs(t, err, errBaseURLUnresolved)
+	require.False(t, changed)
+	require.ElementsMatch(t, []string{"ping"}, listToolNames(t, srv), "current tools are kept")
+	require.Equal(t, map[string]int64{"": 1},
+		counterValues(t, reader, "manifold.openapi.spec_refresh.rejected"),
+		"counted as a rejection (no breaking-change level)")
+	require.Equal(t, map[string]int64{rejectReasonBaseURL: 1},
+		counterReasons(t, reader, "manifold.openapi.spec_refresh.rejected"))
+
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err, "the same rejected revision is not reported again")
+	require.False(t, changed)
+	require.Equal(t, map[string]int64{rejectReasonBaseURL: 1},
+		counterReasons(t, reader, "manifold.openapi.spec_refresh.rejected"), "not counted again")
+
+	spec.setBody(specWithOperations("ping", "pong"))
+	changed, err = s.refreshServer(t.Context(), "api")
+	require.NoError(t, err)
+	require.True(t, changed, "a fixed spec is adopted")
 	require.ElementsMatch(t, []string{"ping", "pong"}, listToolNames(t, srv))
 }
 

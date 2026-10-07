@@ -10,8 +10,12 @@ import (
 //
 //	audit → authz (from authzMiddlewares) → cache → tool filter
 //
+// Each of audit, cache and tool filter is left out when its configuration
+// doesn't turn it on (no audit logger, no cache settings, no include /
+// exclude / overrides).
 // The tool filter sits right outside the backend so every outer layer sees
-// the exposed names; the cache sits inside authz so a cached result is only
+// the exposed names (on a reverse server it leaves the gateway's own
+// create_pairing_code alone); the cache sits inside authz so a cached result is only
 // returned to a caller allowed to call the tool; audit sits outside authz so
 // denied calls are recorded too.
 func ServerToolMiddlewares(
@@ -37,7 +41,14 @@ func ServerToolMiddlewares(
 	if m := newToolCacheMiddleware(name, cacheCf, cache); m != nil {
 		out = append(out, m)
 	}
-	if m := newToolFilterMiddleware(tools); m != nil {
+	var builtin []string
+	if server != nil && server.IsReverseBackend() {
+		// create_pairing_code is registered by the gateway itself
+		// (registerPairingTool), not by the tab: it has to stay listed and
+		// callable whatever tools.include / exclude say, or nobody can pair.
+		builtin = append(builtin, createPairingCodeToolName)
+	}
+	if m := newToolFilterMiddleware(tools, builtin...); m != nil {
 		out = append(out, m)
 	}
 	return out

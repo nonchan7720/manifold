@@ -121,6 +121,7 @@ func swagger(
 	if baseUrl == "" {
 		baseUrl = oastomcptool.GetBaseUrlFromSwagger(ctx, spec, specPath)
 	}
+	register.setBaseURL(baseUrl)
 	for path, pathItem := range spec.Paths {
 		for method, operation := range pathItem.Operations() {
 			var operationId string
@@ -189,6 +190,7 @@ func openapi(
 	if baseUrl == "" {
 		baseUrl = oastomcptool.GetBaseUrlFromOpenAPI3(ctx, spec, specPath)
 	}
+	register.setBaseURL(baseUrl)
 	for path, pathItem := range spec.Paths.Map() {
 		for method, operation := range pathItem.Operations() {
 			var operationId string

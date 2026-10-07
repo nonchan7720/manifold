@@ -163,9 +163,10 @@ audit:
 	require.True(t, cfg.Audit.Enabled)
 	require.Equal(t, AuditOutputStdout, cfg.Audit.OutputOrDefault())
 	require.True(t, cfg.Audit.IncludeArguments)
-	// encryptKey も store も無い最小構成はインメモリ + 生成した鍵で通る
+	// encryptKey も store も無い最小構成はインメモリなのでロード時は通り、
+	// 鍵はロード時には生成されない（gateway 起動時に ApplyEphemeralDefaults が生成する）
 	require.True(t, cfg.UsesEphemeralStore())
-	require.NotEmpty(t, cfg.Gateway.EncryptKey)
+	require.Empty(t, cfg.Gateway.EncryptKey)
 }
 
 func TestServer_ValidateWithContext_SpecWithoutBaseURL_IsValid(t *testing.T) {
@@ -181,4 +182,93 @@ func TestAuditConfig_OutputOrDefault(t *testing.T) {
 		AuditConfig{Output: "/var/log/audit.jsonl"}.OutputOrDefault(),
 	)
 	require.Error(t, AuditConfig{Output: "  "}.ValidateWithContext(t.Context()))
+}
+
+// baseURL は spec があれば省略できるが、キーを明示した空値（未設定の環境変数の
+// 展開結果など）は導出に回さずエラーにする。
+func TestLoadInternal_BaseURL_AbsentVsEmpty(t *testing.T) {
+	load := func(t *testing.T, baseURL string) (*Config, error) {
+		t.Helper()
+		return loadFromYAML(t, `
+mcpServers:
+  api:
+    description: api
+    spec: https://example.com/openapi.json
+`+baseURL)
+	}
+
+	t.Run("absent with spec is derived from the spec", func(t *testing.T) {
+		cfg, err := load(t, "")
+		require.NoError(t, err)
+		require.False(t, cfg.MCPServer["api"].BaseURLSet)
+	})
+	t.Run("present but empty is an error", func(t *testing.T) {
+		_, err := load(t, `    baseURL: ""`)
+		require.ErrorContains(t, err, "BaseURL: cannot be blank")
+	})
+	t.Run("unset env var expanding to empty is an error", func(t *testing.T) {
+		t.Setenv("TEST_BASEURL_UNSET", "")
+		_, err := load(t, `    baseURL: ${TEST_BASEURL_UNSET}`)
+		require.ErrorContains(t, err, "BaseURL: cannot be blank")
+	})
+	t.Run("present non-empty is valid", func(t *testing.T) {
+		cfg, err := load(t, `    baseURL: https://api.example.com`)
+		require.NoError(t, err)
+		require.True(t, cfg.MCPServer["api"].BaseURLSet)
+		require.Equal(t, "https://api.example.com", cfg.MCPServer["api"].BaseURL)
+	})
+}
+
+// expandEnvVars は展開した値を viper の override 層に書くため、mcpServers 配下の
+// どこかで ${VAR} が展開されると v.Get("mcpServers") は override 層の部分木だけを
+// 返す。baseURL キーの有無はその影響を受けずに判定できなければならない。
+func TestLoadInternal_BaseURL_EmptyIsRejectedWhenAnotherKeyExpandsEnvVar(t *testing.T) {
+	t.Setenv("TEST_BASEURL_TOKEN", "secret")
+	t.Setenv("TEST_BASEURL_DESC", "expanded")
+
+	t.Run("env var in another server", func(t *testing.T) {
+		_, err := loadFromYAML(t, `
+mcpServers:
+  api:
+    description: api
+    spec: https://example.com/openapi.json
+    baseURL: ""
+  other:
+    description: other
+    spec: https://example.com/other.json
+    baseURL: https://other.example.com
+    headers:
+      Authorization: ${TEST_BASEURL_TOKEN}
+`)
+		require.ErrorContains(t, err, "api: (BaseURL: cannot be blank")
+	})
+	t.Run("env var in the same server", func(t *testing.T) {
+		_, err := loadFromYAML(t, `
+mcpServers:
+  api:
+    description: ${TEST_BASEURL_DESC}
+    spec: https://example.com/openapi.json
+    baseURL: ""
+`)
+		require.ErrorContains(t, err, "api: (BaseURL: cannot be blank")
+	})
+	t.Run("absent baseURL next to an expanded key is still derived", func(t *testing.T) {
+		cfg, err := loadFromYAML(t, `
+mcpServers:
+  api:
+    description: api
+    spec: https://example.com/openapi.json
+    headers:
+      Authorization: ${TEST_BASEURL_TOKEN}
+`)
+		require.NoError(t, err)
+		require.False(t, cfg.MCPServer["api"].BaseURLSet)
+		// viper は map のキーを小文字化する
+		require.Equal(t, "secret", cfg.MCPServer["api"].ExtraHeaders["authorization"])
+	})
+}
+
+func TestServer_ValidateWithContext_SpecWithEmptyBaseURLSet_IsInvalid(t *testing.T) {
+	s := Server{Description: "d", Spec: "https://example.com/openapi.json", BaseURLSet: true}
+	require.Error(t, s.ValidateWithContext(t.Context()))
 }

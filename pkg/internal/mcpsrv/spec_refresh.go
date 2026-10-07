@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -99,6 +100,20 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 		)
 		return false, nil
 	}
+	// Same rule as at startup (registerOpenAPIServer): a spec that lost its
+	// servers entry would leave every tools/call without a base URL, so keep
+	// the current tools instead of adopting it. Remember the revision like a
+	// rejected breaking change, so the WARN is logged once per revision
+	// rather than on every tick until the spec is fixed.
+	if err := checkCatalogBaseURL(register); err != nil {
+		s.mu.Lock()
+		state.rejectedHash = newHash
+		s.mu.Unlock()
+		s.metrics.rejected.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("server", name), attribute.String("reason", rejectReasonBaseURL),
+		))
+		return false, err
+	}
 	if s.rejectSpecChanges(ctx, name, baseSpec, baseOps, register, rejectOn) {
 		s.mu.Lock()
 		state.rejectedHash = newHash
@@ -119,6 +134,13 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 		state.srv.RemoveTools(removed...)
 	}
 	state.adopt(register, toolInfos)
+	// The tools just changed underneath mcpServers.<name>.cache: drop the
+	// cached tools/list pages and tools/call results so a client re-reading
+	// the list after notifications/tools/list_changed sees the new tools
+	// rather than the old ones for up to cache.toolsList.
+	if s.toolCache != nil {
+		s.toolCache.InvalidateServer(name)
+	}
 	return true, nil
 }
 
@@ -175,6 +197,7 @@ func (s *MCPServer) rejectSpecChanges(
 	if rejectOn != oasbreaking.LevelNone && maxLevel >= rejectOn {
 		s.metrics.rejected.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("server", name), attribute.String("level", maxLevel.String()),
+			attribute.String("reason", rejectReasonBreaking),
 		))
 		slog.ErrorContext(ctx, "spec refresh rejected; keeping the previous spec and tools",
 			append(summary,
@@ -220,6 +243,12 @@ func changesAtOrAbove(
 	})
 }
 
+// Values of the "reason" attribute on the rejected metric.
+const (
+	rejectReasonBreaking = "breaking_change" // specRefreshRejectOn
+	rejectReasonBaseURL  = "base_url_unresolved"
+)
+
 // specRefreshMetrics は spec リフレッシュ時の破壊的変更検出のメトリクス。
 type specRefreshMetrics struct {
 	changes  metric.Int64Counter
@@ -247,8 +276,9 @@ func newSpecRefreshMetrics(mp metric.MeterProvider) *specRefreshMetrics {
 			"Changes detected between the active and the refreshed OpenAPI spec, by level",
 		),
 		rejected: counter(
-			"manifold.openapi.spec_refresh.rejected", "{spec}",
-			"Refreshed OpenAPI specs rejected by specRefreshRejectOn, by the highest change level",
+			"manifold.openapi.spec_refresh.rejected",
+			"{spec}",
+			"Refreshed OpenAPI specs rejected (breaking changes per specRefreshRejectOn, or an unresolvable baseURL), by reason and, for breaking changes, the highest change level",
 		),
 	}
 }
@@ -300,6 +330,10 @@ func (s *MCPServer) refreshLoop(ctx context.Context, name string, interval time.
 			// 取得・パースに失敗しても既存のツール定義は残したまま次回に持ち越す。
 			changed, err := s.refreshServer(ctx, name)
 			switch {
+			case errors.Is(err, errBaseURLUnresolved):
+				slog.ErrorContext(ctx, "spec refresh rejected; keeping the previous spec and tools",
+					slog.String("server", name), slog.String("reason", rejectReasonBaseURL),
+					slog.Any("error", err))
 			case err != nil:
 				slog.WarnContext(ctx, "spec refresh failed",
 					slog.String("server", name), slog.Any("error", err))

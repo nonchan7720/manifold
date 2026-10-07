@@ -528,6 +528,7 @@ mcpServers:
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
 - 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
+- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。
 
 ### 結果のキャッシュ（`cache`）
 
@@ -543,9 +544,9 @@ mcpServers:
       tools: ["get_*", "list_*"]    # ...ただしこの（読み取り専用の）ツールだけ
 ```
 
-- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件）、呼び出し元の bearer トークンごとに分かれるため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
+- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件・64 MiB）、呼び出し元ごとに分かれます。呼び出し元は bearer トークンと、reverse（WebMCP）サーバーではリクエストの振り分けに使った識別子（identityKey）で区別するため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。どちらも無いリクエストはキャッシュしません。`edge.pairing.type: static` の reverse サーバーでは、すべての HTTP クライアントが固定の identityKey（`static`）を共有し、トークンも持たないため、呼び出し元を区別できません。この場合はキャッシュを一切使いません（そのようなサーバーに `cache` を設定していると、起動時に警告ログを出します）。呼び出し元ごとにキャッシュしたい場合は remote ペアリングを使ってください。保持するのは件数に加えて合計 64 MiB までで、超えたら最も長く使われていないものから捨てます。1 件だけで上限を超える結果はキャッシュしません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
 - `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
-- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。キャッシュした `tools/list` は、バックエンドや spec が変わってから最大 `toolsList` の間だけ古いままになりえます。
+- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。ゲートウェイ自身がツールを入れ替えたときはキャッシュを即座に捨てます。`specRefresh` が新しい spec を採用したときはそのサーバーの全呼び出し元分を、reverse（WebMCP）の per-user サーバーがタブの接続・切断・ツール変更で作り直されたときはその identityKey の分だけを捨てます。MCP バックエンドがゲートウェイの裏でツールを変えた場合だけ、キャッシュした `tools/list` は最大 `toolsList` の間古いままになりえます。
 
 ### 監査ログ（`audit`）
 
@@ -564,6 +565,7 @@ audit:
 
 - `outcome` は `success`・`tool_error`（ツールがエラーの結果を返した）・`denied`（authz が拒否した）・`error`（存在しないツール、バックエンドの障害など）のいずれか。後ろの 2 つでは `error` にメッセージが入ります。
 - `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
+- `identity` は reverse（WebMCP）サーバーが呼び出しの振り分けに使った identityKey です（static ペアリングなら `static`、remote ペアリングなら解決したユーザー）。これらのエンドポイントは JWT を検証しないため `user` / `groups` / `token` は空になり、呼び出し元を示すのはこの項目だけです。
 
 ### 設定リファレンス
 
@@ -622,7 +624,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。`tools.file` だけの場合は必須 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合（例: `servers` の無いローカルの spec ファイル）は起動時にエラーになる。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |

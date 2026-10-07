@@ -56,6 +56,10 @@ type MCPToolRegistry struct {
 	// kept as the base for breaking-change detection on spec refresh. nil
 	// for Swagger 2.x.
 	openAPI *openapi3.T
+	// baseURL is the API base URL the tools send their requests to: the
+	// configured mcpServers.<name>.baseURL, or the one derived from the spec
+	// when that is unset (see BaseURL).
+	baseURL string
 }
 
 func NewMCPToolRegistry() *MCPToolRegistry {
@@ -145,6 +149,23 @@ func (r *MCPToolRegistry) setOpenAPISpec(spec *openapi3.T) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.openAPI = spec
+}
+
+// BaseURL returns the API base URL the registered tools call. It is empty,
+// or relative, when baseURL was not configured and the spec gave nothing to
+// derive one from (no servers / host entry, and a spec path that is not an
+// http(s) URL) — every tools/call would then fail, which is why the gateway
+// refuses to serve such a catalog (see errBaseURLUnresolved).
+func (r *MCPToolRegistry) BaseURL() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.baseURL
+}
+
+func (r *MCPToolRegistry) setBaseURL(baseURL string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.baseURL = baseURL
 }
 
 // ListTools returns all registered tools sorted by name.

@@ -528,6 +528,7 @@ mcpServers:
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
 - Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
+- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it.
 
 ### Caching results (`cache`)
 
@@ -543,9 +544,9 @@ mcpServers:
       tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
 ```
 
-- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries) and keyed by the caller's bearer token, so one caller's result is never served to another. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
+- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries and 64 MiB) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. On a reverse server under `edge.pairing.type: static` every HTTP client shares the single fixed identityKey (`static`) and carries no token, so the callers can't be told apart and the cache is bypassed for them entirely (a warning is logged at startup if such a server has `cache` configured); use remote pairing for per-caller caching. Results are bounded by a 64 MiB total size as well as the entry count; the least recently used entries are evicted first, and a single result larger than the budget is not cached. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
 - `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
-- The cache sits inside authz: every call is still authorized before a cached result is returned. A cached `tools/list` can be up to `toolsList` stale after the backend or the spec changes.
+- The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
 
 ### Audit log (`audit`)
 
@@ -564,6 +565,7 @@ Every `tools/call` writes one JSON line, separate from the application log:
 
 - `outcome` is `success`, `tool_error` (the tool returned an error result), `denied` (refused by authz) or `error` (unknown tool, backend failure, ...). `error` holds the message for the last two.
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
+- `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
 ### Configuration reference
 
@@ -622,7 +624,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); required with `tools.file` alone |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); the gateway refuses to start when that yields no absolute http(s) URL (e.g. a local spec file without `servers`). Required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
