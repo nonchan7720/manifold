@@ -12,7 +12,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
-	domainedge "github.com/nonchan7720/manifold/pkg/domain/edge"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
@@ -91,28 +90,12 @@ func (c *ToolCache) Len() int {
 	return len(c.entries)
 }
 
-// cacheCaller identifies the caller a cached result belongs to: the bearer
-// token middleware.JWT stored (every non-reverse endpoint) and the identityKey
-// mcpAuthMiddleware resolved for a reverse (WebMCP) endpoint, which skips the
-// JWT middleware and so has no token. Both are kept in their own slot so an
-// empty one can't collide with the other. ok is false when neither is set:
-// such a caller can't be told apart from any other, so nothing is cached for
-// it (see newToolCacheMiddleware).
-func cacheCaller(ctx context.Context) (token, identity string, ok bool) {
-	token = contexts.FromRequestAuthHeader(ctx)
-	if key, found := domainedge.IdentityKeyFromContext(ctx); found {
-		identity = string(key)
-	}
-	return token, identity, token != "" || identity != ""
-}
-
-// toolCacheKey hashes the parts identifying a cached result. The caller
-// (cacheCaller) is part of every key, so a result fetched with one caller's
-// credentials, or in one user's browser tab, is never served to another.
+// toolCacheKey hashes the parts identifying a cached result. The caller's
+// bearer token is part of every key, so a result fetched with one caller's
+// credentials is never served to another.
 func toolCacheKey(ctx context.Context, parts ...string) string {
-	token, identity, _ := cacheCaller(ctx)
 	h := sha256.New()
-	for _, part := range append([]string{"token:" + token, "identity:" + identity}, parts...) {
+	for _, part := range append([]string{contexts.FromRequestAuthHeader(ctx)}, parts...) {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
@@ -140,10 +123,7 @@ func canonicalArguments(raw json.RawMessage) string {
 // and (for the tools cfg.Tools names) tools/call results, or nil when cfg
 // caches nothing. It sits inside authz, so every call is still authorized
 // before a cached result is returned, and outside the tool filter, so it
-// caches the exposed names. Only successful results are cached, and only for
-// a caller the gateway can identify (cacheCaller): a request carrying neither
-// a bearer token nor an identityKey bypasses the cache rather than sharing
-// entries with every other such request.
+// caches the exposed names. Only successful results are cached.
 func newToolCacheMiddleware(
 	server string,
 	cfg *config.CacheConfig,
@@ -154,9 +134,6 @@ func newToolCacheMiddleware(
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if _, _, ok := cacheCaller(ctx); !ok {
-				return next(ctx, method, req)
-			}
 			switch method {
 			case authzMethodToolsList:
 				if !cfg.CachesToolsList() {

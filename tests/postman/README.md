@@ -20,7 +20,7 @@ OPA (docker)  <--  manifold gateway  -->  stub Petstore API (Go)
 
 ## Run locally
 
-Needs `go`, `docker`, `curl` and the Postman CLI. `mise install` provides `go` and the Postman CLI (`postman-cli` in [`mise.toml`](../../mise.toml)); no Postman account is needed, since a local collection file runs without `postman login`.
+Needs `go`, `docker`, `curl` and the Postman CLI (no Postman account: a local collection file runs without `postman login`).
 
 ```bash
 make postman          # or tests/postman/run.sh

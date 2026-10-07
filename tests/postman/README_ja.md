@@ -20,7 +20,7 @@ OPA (docker)  <--  manifold gateway  -->  スタブの Petstore API (Go)
 
 ## ローカルで実行する
 
-`go`・`docker`・`curl`・Postman CLI が必要です。`go` と Postman CLI は `mise install` で入ります（[`mise.toml`](../../mise.toml) の `postman-cli`）。Postman のアカウントは不要です（ローカルのコレクションファイルは `postman login` なしで実行できます）。
+`go`・`docker`・`curl`・Postman CLI が必要です。Postman のアカウントは不要です（ローカルのコレクションファイルは `postman login` なしで実行できます）。
 
 ```bash
 make postman          # または tests/postman/run.sh

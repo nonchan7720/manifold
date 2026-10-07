@@ -7,7 +7,6 @@
 gateway:
   port: 19999
   toolSearch:
-    enabled: true
     threshold: 1
     defaultLimit: 10
 
