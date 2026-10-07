@@ -110,7 +110,7 @@ tools:
     inputSchema:
       properties:
         body:
-          description: 'Request body. JSON object with fields: {name (string, required)}'
+          description: "Request body. JSON object with fields: {name (string, required)}"
           properties:
             name:
               _meta: {}

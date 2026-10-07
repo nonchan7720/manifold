@@ -1,6 +1,6 @@
 name: Postman E2E
 
-# End-to-end run of tool search, tool filtering and tool authorization with the
+# End-to-end run of tool filtering, tool authorization and the audit log with the
 # Postman CLI against a locally built gateway (tests/postman/run.sh).
 on:
   pull_request:

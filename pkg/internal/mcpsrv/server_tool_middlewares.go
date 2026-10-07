@@ -8,54 +8,36 @@ import (
 // ServerToolMiddlewares returns the tool middlewares every server gets, in
 // the order AddReceivingMiddleware expects within one call (outermost first):
 //
-//	audit → tool search → authz (from authzMiddlewares) → cache → tool filter
+//	audit → authz (from authzMiddlewares) → inner → tool filter
 //
-// Each of audit, tool search, cache and tool filter is left out when its
-// configuration doesn't turn it on (no audit logger, no
-// gateway.toolSearch.enabled, no cache settings, no include / exclude /
-// overrides).
+// Each of audit and tool filter is left out when its configuration doesn't
+// turn it on (no audit logger, no include / exclude / overrides).
 // The tool filter sits right outside the backend so every outer layer sees
 // the exposed names (on a reverse server it leaves the gateway's own
-// create_pairing_code alone); the cache sits inside authz so a cached result is only
-// returned to a caller allowed to call the tool; tool search sits outside
-// authz so it only ever searches (and counts against its threshold) the tools
-// authz lets the caller see; audit sits outside everything so denied calls
-// and tool_search calls are recorded too. authzKey (see NewAuthzCacheKeyer)
-// lets tool search key its per-caller index cache by what authz decides on;
-// with authz middlewares but no authzKey, tool search doesn't cache at all.
+// create_pairing_code alone); inner (the service agents middleware) sits
+// outside the filter, so the <agent>__<skill> tools it adds are never
+// filtered or renamed while a backend tool that merely shares their prefix
+// still is; audit sits outside authz so denied calls are recorded too.
 func ServerToolMiddlewares(
 	name string,
 	server *config.Server,
 	authzMiddlewares []mcp.Middleware,
-	authzKey AuthzCacheKeyer,
-	cache *ToolCache,
 	audit *AuditLogger,
-	search config.ToolSearchConfig,
+	inner ...mcp.Middleware,
 ) []mcp.Middleware {
 	var (
 		tools   *config.ToolsConfig
-		cacheCf *config.CacheConfig
 		service = name
 	)
 	if server != nil {
-		tools, cacheCf, service = server.Tools, server.Cache, server.ServiceCode()
-	}
-	if len(authzMiddlewares) > 0 && authzKey == nil {
-		// authz decides per principal but we can't tell principals apart:
-		// tool_search must not reuse an index across requests.
-		authzKey = func(mcp.Request) (string, bool) { return "", false }
+		tools, service = server.Tools, server.ServiceCode()
 	}
 	var out []mcp.Middleware
 	if m := newAuditMiddleware(name, service, audit); m != nil {
 		out = append(out, m)
 	}
-	if m := newToolSearchMiddleware(name, search, cache, authzKey); m != nil {
-		out = append(out, m)
-	}
 	out = append(out, authzMiddlewares...)
-	if m := newToolCacheMiddleware(name, cacheCf, cache); m != nil {
-		out = append(out, m)
-	}
+	out = append(out, inner...)
 	var builtin []string
 	if server != nil && server.IsReverseBackend() {
 		// create_pairing_code is registered by the gateway itself

@@ -45,12 +45,7 @@ type MCPServer struct {
 	mediaUploader *storage.ContentManagementService
 
 	middlewareFn func(name string) []mcp.Middleware
-	toolCache    *ToolCache
 	auditLogger  *AuditLogger
-	// toolSearchCfg は gateway.toolSearch（WithToolSearchConfig で設定、未設定なら無効）。
-	toolSearchCfg config.ToolSearchConfig
-	// authzKey は authz の判定入力（主体・bypass）のキャッシュキー（WithAuthzCacheKeyer）。
-	authzKey AuthzCacheKeyer
 
 	meterProvider metric.MeterProvider
 	metrics       *specRefreshMetrics
@@ -63,25 +58,6 @@ type Option func(*MCPServer)
 // per-backend *mcp.Server it creates, right after construction.
 func WithServerMiddleware(fn func(name string) []mcp.Middleware) Option {
 	return func(s *MCPServer) { s.middlewareFn = fn }
-}
-
-// WithToolCache makes servers with mcpServers.<name>.cache store their
-// results in cache. Without it, cache settings are ignored.
-func WithToolCache(cache *ToolCache) Option {
-	return func(s *MCPServer) { s.toolCache = cache }
-}
-
-// WithToolSearchConfig sets gateway.toolSearch for every server. Without it,
-// or with cfg.Enabled false, tool_search is off.
-func WithToolSearchConfig(cfg config.ToolSearchConfig) Option {
-	return func(s *MCPServer) { s.toolSearchCfg = cfg }
-}
-
-// WithAuthzCacheKeyer sets the keyer of the authz middlewares WithServerMiddleware
-// installs (NewAuthzCacheKeyer), so tool_search can key its index cache by the
-// authz principal. Without it, tool_search doesn't cache when authz is on.
-func WithAuthzCacheKeyer(k AuthzCacheKeyer) Option {
-	return func(s *MCPServer) { s.authzKey = k }
 }
 
 // WithAuditLogger records every tools/call on every server to l.
@@ -225,8 +201,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		if server.IsMCPBackend() {
 			// MCP バックエンドモード: 遅延接続クライアントを登録し、
 			// tools/list・tools/call はバックエンドへ毎回転送する。
-			// パススルーは authz ミドルウェアより先に追加して内側に置く
-			// （サービスエージェントのミドルウェアはその次、authz の前）。
+			// パススルーは ServerToolMiddlewares より先に追加して内側に置く。
 			bc := &MCPBackendClient{name: name, cfg: server}
 			s.backendClients[name] = bc
 			srv.AddReceivingMiddleware(newBackendPassthroughMiddleware(bc))
@@ -244,15 +219,17 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 					slog.String("agent", name), slog.Any("error", err))
 			}
 		}
+		var inner []mcp.Middleware
 		if server.HasAgents() {
 			// mcpServers.<name>.agents: サービス自身のツールの後ろに
 			// <agent>__<skill> のツールを足し、その tools/call を message/send へ
-			// 転送する。バックエンドのパススルーより後（= 外側。OpenAPI モードでは
-			// SDK 自身の tools/list ハンドラの外側）、authz より先（= 内側）に追加する。
+			// 転送する。ServerToolMiddlewares の tool filter の外側、cache・authz の
+			// 内側に入る（バックエンドのパススルーよりは外側。OpenAPI モードでは
+			// SDK 自身の tools/list ハンドラの外側）。
 			// Card は起動時に取得を試み、失敗しても最初のリクエストで取り直す。
 			sa := newServiceAgents(name, server.Agents, s.mediaService())
 			s.serviceAgents[name] = sa
-			srv.AddReceivingMiddleware(newServiceAgentsMiddleware(sa))
+			inner = append(inner, newServiceAgentsMiddleware(sa))
 			sa.ensureCards(ctx)
 		}
 		var authzMiddlewares []mcp.Middleware
@@ -261,13 +238,7 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		}
 		srv.AddReceivingMiddleware(
 			ServerToolMiddlewares(
-				name,
-				server,
-				authzMiddlewares,
-				s.authzKey,
-				s.toolCache,
-				s.auditLogger,
-				s.toolSearchCfg,
+				name, server, authzMiddlewares, s.auditLogger, inner...,
 			)...,
 		)
 
@@ -337,15 +308,16 @@ func (s *MCPServer) ToolCatalog(ctx context.Context, name string) ([]ToolInfo, e
 		}
 	}
 
+	// tools.include / exclude / overrides を tools/list と同じく、サービス自身の
+	// ツールにだけ反映する。
+	if server, ok := s.servers[name]; ok && server != nil {
+		infos = newToolFilter(server.Tools).applyInfos(infos)
+	}
 	// mcpServers.<name>.agents にぶら下げたエージェントのツールをサービス自身の
 	// ツールの後ろに足す（tools/list と同じ並び）。サービスのツールと同名の
 	// エージェントのツールは、tools/list と同じくサービスを優先して外す。
 	if sa, ok := s.serviceAgents[name]; ok {
 		infos = append(infos, sa.dropCollidingInfos(ctx, infos, sa.listToolInfos(ctx))...)
-	}
-	// tools.include / exclude / overrides を tools/list と同じく反映する。
-	if server, ok := s.servers[name]; ok && server != nil {
-		infos = newToolFilter(server.Tools).applyInfos(infos)
 	}
 	return infos, nil
 }
@@ -462,8 +434,12 @@ func attachTools(
 					result.SetError(err)
 				} else {
 					result.Content = content
-					if json.Valid(resp) {
-						result.StructuredContent = json.RawMessage(resp)
+					// structuredContent must be a JSON object; wrapToolFunc
+					// already wrapped application/json arrays, anything else
+					// (a JSON array or scalar under another content type)
+					// stays in the text content only.
+					if obj, ok := objectBody(contentType, resp); ok {
+						result.StructuredContent = obj
 					}
 				}
 				return &result, nil

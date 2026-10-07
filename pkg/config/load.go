@@ -202,6 +202,67 @@ func markBaseURLSet(servers Servers, present map[string]bool) {
 	}
 }
 
+// foldMapKey returns the value stored under key in m, matching key
+// case-insensitively, as a map (nil when absent or not a map).
+func foldMapKey(m map[string]any, key string) map[string]any {
+	for k, val := range m {
+		if strings.EqualFold(k, key) {
+			sub, _ := val.(map[string]any)
+			return sub
+		}
+	}
+	return nil
+}
+
+// collectOverrideKeys records, per server, the tools.overrides keys exactly as
+// written in the raw (include-merged) config, indexed by their lower-cased
+// form. viper lower-cases map keys, which would otherwise make an override
+// for a tool such as getPetById unmatchable; see restoreOverrideKeys. It must
+// run before the map is handed to viper, which lower-cases it in place.
+func collectOverrideKeys(raw map[string]any) (map[string]map[string]string, error) {
+	out := map[string]map[string]string{}
+	for name, srv := range foldMapKey(raw, "mcpServers") {
+		srvMap, _ := srv.(map[string]any)
+		overrides := foldMapKey(foldMapKey(srvMap, "tools"), "overrides")
+		if len(overrides) == 0 {
+			continue
+		}
+		keys := make(map[string]string, len(overrides))
+		for key := range overrides {
+			lower := strings.ToLower(key)
+			if prev, dup := keys[lower]; dup {
+				return nil, fmt.Errorf(
+					"mcpServers.%s.tools.overrides: keys %q and %q differ only by case",
+					name, prev, key,
+				)
+			}
+			keys[lower] = key
+		}
+		out[strings.ToLower(name)] = keys
+	}
+	return out, nil
+}
+
+// restoreOverrideKeys rewrites each server's tools.overrides keys back to the
+// casing used in the config file, so they match the backend's tool names
+// exactly (tool names are case-sensitive).
+func restoreOverrideKeys(servers Servers, keys map[string]map[string]string) {
+	for name, srv := range servers {
+		if srv.Tools == nil || len(srv.Tools.Overrides) == 0 {
+			continue
+		}
+		orig := keys[strings.ToLower(name)]
+		restored := make(map[string]ToolOverride, len(srv.Tools.Overrides))
+		for key, override := range srv.Tools.Overrides {
+			if o, ok := orig[key]; ok {
+				key = o
+			}
+			restored[key] = override
+		}
+		srv.Tools.Overrides = restored
+	}
+}
+
 func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	if configName == "" {
 		configName = "config"
@@ -257,22 +318,16 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	v.SetDefault("oauth.cimd.cacheTTL", DefaultCIMDCacheTTL)
 	v.SetDefault("oauth.cimd.maxDocumentSize", DefaultCIMDMaxDocumentSize)
 
-	// Same reasoning as fileFetch above — also makes GATEWAY_TOOLSEARCH_ENABLED,
-	// GATEWAY_TOOLSEARCH_THRESHOLD, GATEWAY_TOOLSEARCH_DEFAULTLIMIT,
-	// GATEWAY_TOOLSEARCH_RESULTFORMAT and GATEWAY_TOOLSEARCH_DIGESTMAXTOOLS
-	// effective overrides.
-	v.SetDefault("gateway.toolSearch.enabled", false)
-	v.SetDefault("gateway.toolSearch.threshold", DefaultToolSearchThreshold)
-	v.SetDefault("gateway.toolSearch.defaultLimit", DefaultToolSearchLimit)
-	v.SetDefault("gateway.toolSearch.resultFormat", ToolSearchResultFormatDefault)
-	v.SetDefault("gateway.toolSearch.digestMaxTools", DefaultToolSearchDigestMaxTools)
-
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
 	// Merge files listed under the top-level include key into the config.
 	merged, err := loadWithIncludes(v.ConfigFileUsed())
+	if err != nil {
+		return nil, err
+	}
+	overrideKeys, err := collectOverrideKeys(merged)
 	if err != nil {
 		return nil, err
 	}
@@ -295,12 +350,12 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	}
 
 	markBaseURLSet(conf.MCPServer, baseURLPresent)
+	restoreOverrideKeys(conf.MCPServer, overrideKeys)
 
 	// Defensive fallback: guarantees a sane MaxSize even if a caller constructs
 	// Config directly (bypassing viper), or explicitly sets fileFetch.maxSize: 0.
 	conf.FileFetch = conf.FileFetch.WithDefaults()
 	conf.OAuth.CIMD = conf.OAuth.CIMD.WithDefaults()
-	conf.Gateway.ToolSearch = conf.Gateway.ToolSearch.WithDefaults()
 
 	for name, srv := range conf.MCPServer {
 		srv.Name = name

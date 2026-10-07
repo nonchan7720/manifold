@@ -39,8 +39,7 @@ flowchart TD
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
-- **Tool search** (opt-in): Above a configurable number of visible tools, an endpoint's `tools/list` becomes a single `tool_search` tool (BM25 / regexp / fuzzy, Claude Tool Search Tool compatible), so large APIs don't flood the model's context — and it only ever searches the tools the caller is allowed to see (`gateway.toolSearch`)
-- **Result caching and audit log**: Cache `tools/list` and read-only `tools/call` results per caller (`cache`), and write one JSON line per tool call (`audit`)
+- **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
@@ -387,7 +386,7 @@ agents:
 - Manifold resolves the **Agent Card** (v0.3 and v1.0 formats) from `url` (plus `agentCardPath`, default `/.well-known/agent-card.json`) and sends messages to the endpoint the card declares — `url` is never used as the message endpoint. The card is fetched at startup (a failure only logs a warning) and again on the first request if needed, then cached for the lifetime of the process.
 - Every exposed **skill** (all skills in the card unless `skills` is set) becomes one MCP tool named after the skill id. The tool description is `description` (the operator's instruction to the calling agent) followed by the skill's name, description, tags and examples from the card. `/mcp/list?tools=true` lists the skills.
 - `tools/call` arguments: `sessionId` (**required** — the calling agent's session id, forwarded as the A2A `contextId`), `taskId` (optional; continue a task, e.g. after `input-required`), and at least one of `message` (text), `data` (JSON object, sent as a data part) or `files` (each written like an OpenAPI file input — a base64 string / URL, or `{url|base64|text, filename, contentType}` — see [Binary fields and responses](#binary-fields-and-responses)). The message text is sent as-is; the chosen skill id is passed in the message `metadata.skillId` since A2A has no per-request skill selector.
-- Results: text and data parts become text content (data parts are also returned as `structuredContent`), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
+- Results: text and data parts become text content (data parts are also returned as `structuredContent`, which is always a JSON object: a single object part as is, an array or several parts as `{"items": [...]}`, a lone scalar only as text), file URLs become resource links, and file bytes are handled like OpenAPI binary responses (uploaded to [`storage`](#storage) and returned as a resource link when configured, inline otherwise). `_meta.a2a` carries `protocolVersion`, `contextId`, `taskId`, `state` (e.g. `completed`, `input-required`), `messageId` and the `artifacts` list. A task in `failed` / `rejected` state is an `isError` result.
 - Authentication (`authValue` / `oauth2` / `tokenExchange`), `headers` and [tool authorization](#tool-authorization-opa-sidecar) work as for `mcpServers`; the policy input is `server=<name>`, `service=<service.code, default name>`, `tool=<skill id>`.
 - Streaming (`message/stream`), task polling and push notifications are not used; every call is a blocking `message/send`.
 
@@ -507,7 +506,7 @@ redis:
 
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
-APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents attached to a service, WebMCP).
+APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
 
 ```yaml
 mcpServers:
@@ -521,68 +520,15 @@ mcpServers:
         getpetbyid:
           name: get_pet
           description: Look up a single pet by its numeric ID.
-        mixedcase:          # config keys are lower-cased; name the tool in `tool` when it has upper-case letters
+        documents:          # any key works when `tool` names the original tool explicitly
           tool: listDocuments
           name: list_documents
 ```
 
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
-- Filtering happens before authz and caching, so all of them — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
+- Filtering happens before authz, so authz — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it.
-
-### Tool search (`gateway.toolSearch`)
-
-An endpoint backed by a large OpenAPI spec or MCP server can expose hundreds of tools, and every one of them lands in the model's context through `tools/list`. When the caller can see more than `gateway.toolSearch.threshold` tools on an endpoint (default: 100), that endpoint's `tools/list` returns a single synthetic `tool_search` tool instead. The client calls `tool_search` with a query, receives the matching tools' full definitions (`name` / `description` / `inputSchema`), and then calls the real tool directly through `tools/call` — hidden tools stay callable. It is off by default; `enabled: true` turns it on for every endpoint.
-
-```yaml
-gateway:
-  toolSearch:
-    enabled: true         # off by default: tools/list is passed through untouched, however many tools
-    threshold: 100        # switch to tool_search above this many visible tools (default 100)
-    defaultLimit: 10      # results returned when the caller omits limit (default 10)
-    resultFormat: default # or claude
-    digestMaxTools: 50    # tools listed in tool_search's description: default 50, -1 = all, N = first N by name
-```
-
-`tool_search` takes `query` (required), `method` and `limit`. Every method searches tool names, descriptions, argument names and argument descriptions (recursively through nested objects and arrays) — the same fields as the Claude API's Tool Search Tool.
-
-| `method` | Description |
-| -------- | ----------- |
-| `bm25`   | (default) Ranked full-text search with BM25 scoring. CJK text (kanji, kana, hangul) is tokenized into bigrams, so Japanese descriptions are searchable |
-| `regexp` | Case-insensitive regular expression match |
-| `fuzzy`  | Subsequence (fuzzy) match |
-
-| `resultFormat` | Description |
-| -------------- | ----------- |
-| `default`      | (default) An array of the matching tools' full definitions (`name` / `description` / `inputSchema`) |
-| `claude`       | An array of `tool_reference` blocks (`{"type": "tool_reference", "tool_name": "..."}`) per the [Claude API's Tool Search Tool custom search contract](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation); the Claude API expands them into full tool definitions |
-
-No match returns `[]`, never `null`.
-
-- Everything is decided per caller: the threshold, the search and the description digest all work on the tools the caller can actually see, after `tools.include` / `exclude` / `overrides` and [tool authorization](#tool-authorization-opa-sidecar). A tool the policy denies never appears in `tool_search` results or in its description, and calling a hidden tool goes through the same authorization and audit log as a direct call. `tool_search` calls are audited too, and a caller the policy denies entirely gets the same `tool not allowed by policy` error from `tool_search`.
-- `tool_search`'s description ends with a digest of the visible tools (`- name: description`, sorted by name, descriptions cut at 200 characters), capped by `digestMaxTools` (50 tools by default; the description says how many are left out), so the model knows what kinds of tools exist before searching. It is rebuilt on every `tools/list`, so tools added by a spec refresh or a lazily connected backend show up without a restart. With many tools, this makes `tool_search` itself large — `digestMaxTools` keeps it in check.
-- The threshold is compared per endpoint against the caller's visible tools, not against the total across all servers.
-- A backend tool named `tool_search` is hidden (with a warning), since the synthetic tool takes that name.
-- Without `enabled: true`, `tools/list` is returned exactly as the backend produces it (pagination included), `tool_search` is not registered, and a backend tool named `tool_search` is not hidden. The other `toolSearch` settings are then unused.
-
-### Caching results (`cache`)
-
-```yaml
-mcpServers:
-  github:
-    description: GitHub MCP server
-    transport: http
-    url: https://api.githubcopilot.com/mcp/
-    cache:
-      toolsList: 5m                 # cache tools/list
-      toolCall: 30s                 # cache tools/call results...
-      tools: ["get_*", "list_*"]    # ...of these (read-only) tools only
-```
-
-- Results are kept in the gateway's memory (shared by every server, at most 10,000 entries and 64 MiB) and keyed by the caller: the bearer token, and on a reverse (WebMCP) server the identity the request was routed by (its identityKey), so one caller's result is never served to another. A request carrying neither is not cached at all. On a reverse server under `edge.pairing.type: static` every HTTP client shares the single fixed identityKey (`static`) and carries no token, so the callers can't be told apart and the cache is bypassed for them entirely (a warning is logged at startup if such a server has `cache` configured); use remote pairing for per-caller caching. Results are bounded by a 64 MiB total size as well as the entry count; the least recently used entries are evicted first, and a single result larger than the budget is not cached. `tools/call` results are keyed by the tool name and its arguments (argument order and whitespace don't matter).
-- `tools/call` can have side effects, so a `toolCall` cache requires `tools` (glob patterns matched against the exposed tool name). Error results are never cached.
-- The cache sits inside authz: every call is still authorized before a cached result is returned. Entries are dropped as soon as the gateway itself replaces the tools they describe: a `specRefresh` adopting a new spec drops the server's entries for every caller, and a reverse (WebMCP) per-user server being rebuilt (a tab connected, disconnected or changed its tools) drops that identity's entries only. Only when an MCP backend changes its tools behind the gateway can a cached `tools/list` be up to `toolsList` stale.
+- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
 
 ### Audit log (`audit`)
 
@@ -615,11 +561,6 @@ Every `tools/call` writes one JSON line, separate from the application log:
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
-| `toolSearch.enabled` | bool | Turn the `tool_search` fallback on for every endpoint (default: `false`). See [Tool search](#tool-search-gatewaytoolsearch) |
-| `toolSearch.threshold` | int | Number of visible tools on an endpoint above which `tools/list` returns only `tool_search` (default: 100). See [Tool search](#tool-search-gatewaytoolsearch) |
-| `toolSearch.defaultLimit` | int | Results returned by `tool_search` when the caller omits `limit` (default: 10) |
-| `toolSearch.resultFormat` | string | `default` (tool definitions) or `claude` (`tool_reference` blocks) |
-| `toolSearch.digestMaxTools` | int | Tools listed in `tool_search`'s description: `50` by default (`0` too), `-1` for all, `N` for the first `N` by name |
 
 #### `gateway.specRefresh`
 
@@ -665,7 +606,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `args`          | []string          | Arguments for the stdio command                                      |
 | `env`           | map[string]string | Environment variables for the stdio process                          |
 | `spec`          | string            | Path, URL, or `configmap://<namespace>/<name>/<key>` reference to an OpenAPI/Swagger specification. Required for OpenAPI mode unless `tools.file` is set — the gateway never reads it then, but `manifold openapi generate`, `--check`, and `openapi tools --from-spec` need it |
-| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); the gateway refuses to start when that yields no absolute http(s) URL (e.g. a local spec file without `servers`). Required with `tools.file` alone |
+| `baseURL`       | string            | API base URL for OpenAPI mode. With `spec`, defaults to the spec's first `servers` entry (a relative one is resolved against the spec URL); config validation (and gateway startup) fails when that yields no absolute http(s) URL, so set `baseURL` explicitly when a local spec file has no `servers` or only relative ones such as `/api/v1` (behavior change in 1.19). Required with `tools.file` alone |
 | `headers`       | map[string]string | Extra headers added to API requests                                  |
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
@@ -674,8 +615,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
 | `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
-| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` for an original name with upper-case letters |
-| `cache`         | object            | `toolsList` / `toolCall` durations and `tools` patterns (see [Caching results](#caching-results-cache)) |
+| `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
@@ -1354,7 +1294,7 @@ make test
 
 ### End-to-end (Postman CLI)
 
-`make postman` builds the gateway, starts OPA and a stub Petstore API, and runs the Postman collection in [`tests/postman/`](tests/postman/) that checks tool search, tool filtering and tool authorization together. The Postman CLI comes from `mise install` (`postman-cli` in [`mise.toml`](mise.toml)). CI runs it on every pull request.
+`make postman` builds the gateway, starts OPA and a stub Petstore API, and runs the Postman collection in [`tests/postman/`](tests/postman/) that checks tool filtering, tool authorization and the audit log together. The Postman CLI comes from `mise install` (`postman-cli` in [`mise.toml`](mise.toml)). CI runs it on every pull request.
 
 ### Lint
 

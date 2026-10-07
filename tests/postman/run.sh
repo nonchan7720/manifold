@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs the Postman CLI end-to-end suite for tool search, tool filtering and
-# tool authorization against a locally built gateway:
+# Runs the Postman CLI end-to-end suite for tool filtering, tool
+# authorization and the audit log against a locally built gateway:
 #
 #   OPA (docker)  <--  manifold gateway  -->  stub Petstore API (Go)
 #                           ^
@@ -98,7 +98,7 @@ GW_PID=$!
 wait_for "$GATEWAY_URL/healthz" "gateway"
 
 echo "==> running the Postman collection"
-postman collection run "$DIR/manifold-tool-search.postman_collection.json" \
+postman collection run "$DIR/manifold.postman_collection.json" \
   --env-var "baseUrl=$GATEWAY_URL" \
   -r cli,junit --reporter-junit-export "$TMP/junit.xml"
 
@@ -110,9 +110,9 @@ audit_has() {
     exit 1
   fi
 }
-audit_has '"tool":"tool_search".*"outcome":"success"'
 audit_has '"tool":"get_pet".*"outcome":"success"'
+audit_has '"tool":"getinventory".*"outcome":"success"'
+audit_has '"tool":"getpetbyid".*"outcome":"error"'
 audit_has '"tool":"deletepet".*"outcome":"denied"'
-audit_has '"tool":"tool_search".*"outcome":"denied"'
 
 echo "==> OK"

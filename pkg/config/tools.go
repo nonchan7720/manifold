@@ -7,7 +7,6 @@ import (
 	"path"
 	"regexp"
 	"slices"
-	"time"
 )
 
 // toolNameRegex は MCP のツール名として受け付ける文字集合と長さ
@@ -40,9 +39,9 @@ type ToolsConfig struct {
 // ToolOverride replaces the name and/or description a tool is exposed with.
 // Empty fields keep the original value.
 type ToolOverride struct {
-	// Tool は上書き対象の元のツール名。設定ローダーは map のキーを小文字化
-	// するため、大文字を含むツール名はキーではなくこのフィールドで指定する。
-	// 未設定ならキーを元のツール名として使う。
+	// Tool は上書き対象の元のツール名。未設定ならキーを元のツール名として使う。
+	// 設定ローダーは viper が小文字化したキーを設定ファイルの表記へ戻すので、
+	// 大文字を含むツール名もキーのまま書ける。
 	Tool        string `mapstructure:"tool"`
 	Name        string `mapstructure:"name"`
 	Description string `mapstructure:"description"`
@@ -132,49 +131,4 @@ func matchAny(patterns []string, name string) bool {
 		}
 	}
 	return false
-}
-
-// CacheConfig caches tools/list and tools/call results in the gateway's memory.
-//
-// Cached entries are keyed by the caller's bearer token (and, for tools/call,
-// the tool name and arguments), so a result fetched with one caller's
-// credentials is never served to another caller.
-type CacheConfig struct {
-	// ToolsList は tools/list の結果を保持する期間。0 はキャッシュしない。
-	ToolsList time.Duration `mapstructure:"toolsList"`
-	// ToolCall は tools/call の結果を保持する期間。0 はキャッシュしない。
-	ToolCall time.Duration `mapstructure:"toolCall"`
-	// Tools は結果をキャッシュするツール名の glob パターン（公開名に対して
-	// 照合する）。tools/call は副作用を持ちうるため、ToolCall が正でも
-	// Tools に一致しないツールはキャッシュしない。
-	Tools []string `mapstructure:"tools"`
-}
-
-// CachesToolCall reports whether a tools/call result for the exposed tool
-// name should be cached.
-func (c *CacheConfig) CachesToolCall(name string) bool {
-	return c != nil && c.ToolCall > 0 && matchAny(c.Tools, name)
-}
-
-// CachesToolsList reports whether tools/list results should be cached.
-func (c *CacheConfig) CachesToolsList() bool {
-	return c != nil && c.ToolsList > 0
-}
-
-func (c CacheConfig) ValidateWithContext(context.Context) error {
-	if c.ToolsList < 0 || c.ToolCall < 0 {
-		return fmt.Errorf("cache durations must be zero or positive")
-	}
-	for _, pattern := range c.Tools {
-		if _, err := path.Match(pattern, ""); err != nil {
-			return fmt.Errorf("invalid tool pattern %q: %w", pattern, err)
-		}
-	}
-	if c.ToolCall > 0 && len(c.Tools) == 0 {
-		return fmt.Errorf(
-			"cache.tools is required when cache.toolCall is set " +
-				"(list the read-only tools whose results may be cached)",
-		)
-	}
-	return nil
 }

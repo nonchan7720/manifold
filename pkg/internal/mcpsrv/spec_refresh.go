@@ -134,13 +134,6 @@ func (s *MCPServer) refreshServer(ctx context.Context, name string) (bool, error
 		state.srv.RemoveTools(removed...)
 	}
 	state.adopt(register, toolInfos)
-	// The tools just changed underneath mcpServers.<name>.cache: drop the
-	// cached tools/list pages and tools/call results so a client re-reading
-	// the list after notifications/tools/list_changed sees the new tools
-	// rather than the old ones for up to cache.toolsList.
-	if s.toolCache != nil {
-		s.toolCache.InvalidateServer(name)
-	}
 	return true, nil
 }
 
