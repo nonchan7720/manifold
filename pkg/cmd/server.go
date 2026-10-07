@@ -256,16 +256,6 @@ func authzMiddlewareFn(
 	}
 }
 
-// newAuthzCacheKeyer builds the keyer matching authzMiddlewareFn's headers and
-// input fields, or nil when authz is disabled.
-func newAuthzCacheKeyer(cfg config.AuthzConfig) mcpsrv.AuthzCacheKeyer {
-	if !cfg.Enabled {
-		return nil
-	}
-	cfg = cfg.WithDefaults()
-	return mcpsrv.NewAuthzCacheKeyer(cfg.Headers, cfg.Input.FromHeaders)
-}
-
 func newMCPServer(
 	ctx context.Context,
 	servers config.Servers,
@@ -356,7 +346,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer logsCleanup()
 
-	toolCache, auditLogger, err := newToolCacheAndAudit()
+	auditLogger, err := newAuditLogger()
 	if err != nil {
 		return err
 	}
@@ -369,17 +359,13 @@ func runGatewayServer(ctx context.Context) error {
 	authzMiddleware := authzMiddlewareFn(
 		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
 	)
-	authzCacheKeyer := newAuthzCacheKeyer(globalConfig.Authz)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
 		contentManagementService,
 		globalConfig.Gateway,
 		authzMiddleware,
-		mcpsrv.WithToolCache(toolCache),
-		mcpsrv.WithAuthzCacheKeyer(authzCacheKeyer),
 		mcpsrv.WithAuditLogger(auditLogger),
-		mcpsrv.WithToolSearchConfig(globalConfig.Gateway.ToolSearch),
 	)
 	if err != nil {
 		return err
@@ -398,10 +384,8 @@ func runGatewayServer(ctx context.Context) error {
 		edgeCfg,
 		globalConfig.MCPServer,
 		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
-			globalConfig.MCPServer, authzMiddleware, authzCacheKeyer, toolCache, auditLogger,
-			globalConfig.Gateway.ToolSearch,
+			globalConfig.MCPServer, authzMiddleware, auditLogger,
 		)),
-		mcpsrv.WithReverseToolCache(toolCache),
 	)
 	reverseGateway.Init(ctx)
 	edgeWSHandler := httphandler.NewEdgeWSHandler(edgeCfg, pairingService, reverseGateway)
@@ -477,9 +461,9 @@ func runGatewayServer(ctx context.Context) error {
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
 }
 
-// newToolCacheAndAudit builds the tool result cache shared by every server
-// and the audit logger for globalConfig.Audit (nil when disabled).
-func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
+// newAuditLogger builds the audit logger for globalConfig.Audit (nil when
+// disabled).
+func newAuditLogger() (*mcpsrv.AuditLogger, error) {
 	var auditLogger *mcpsrv.AuditLogger
 	if globalConfig.Audit.Enabled {
 		var err error
@@ -487,31 +471,26 @@ func newToolCacheAndAudit() (*mcpsrv.ToolCache, *mcpsrv.AuditLogger, error) {
 			globalConfig.Audit, globalConfig.Authz.WithDefaults().Headers,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	return mcpsrv.NewToolCache(0), auditLogger, nil
+	return auditLogger, nil
 }
 
 // reverseServerMiddlewareFn builds the per-server middleware factory for
-// reverse (WebMCP) servers: the same tool filter, cache, authz, tool search
-// and audit layers as every other server (see mcpsrv.ServerToolMiddlewares).
+// reverse (WebMCP) servers: the same tool filter, authz and audit layers as
+// every other server (see mcpsrv.ServerToolMiddlewares).
 func reverseServerMiddlewareFn(
 	servers config.Servers,
 	authzFn func(name string) []mcp.Middleware,
-	authzKey mcpsrv.AuthzCacheKeyer,
-	cache *mcpsrv.ToolCache,
 	audit *mcpsrv.AuditLogger,
-	search config.ToolSearchConfig,
 ) func(name string) []mcp.Middleware {
 	return func(name string) []mcp.Middleware {
 		var authzMiddlewares []mcp.Middleware
 		if authzFn != nil {
 			authzMiddlewares = authzFn(name)
 		}
-		return mcpsrv.ServerToolMiddlewares(
-			name, servers[name], authzMiddlewares, authzKey, cache, audit, search,
-		)
+		return mcpsrv.ServerToolMiddlewares(name, servers[name], authzMiddlewares, audit)
 	}
 }
 

@@ -122,16 +122,6 @@ func mcpAppsUISettings(req mcp.Request, assumeSupport bool) (map[string]any, boo
 	return nil, false
 }
 
-// uiCacheKeyPart keeps callers that declare the MCP Apps UI extension and
-// callers that don't in separate cache entries: the gateway returns different
-// tools/list results to them (newMCPAppsMiddleware), and a backend may too.
-func uiCacheKeyPart(req mcp.Request) string {
-	if _, ok := callerUIExtension(req); ok {
-		return "ui:1"
-	}
-	return "ui:0"
-}
-
 // newMCPAppsMiddleware は MCP バックエンドサーバー向けに、呼び出し元の UI 対応を
 // 判定して ctx に載せ（バックエンドへの広告に使う）、UI 非対応の呼び出し元への
 // tools/list から UI を取り除くミドルウェアを返す。パススルー

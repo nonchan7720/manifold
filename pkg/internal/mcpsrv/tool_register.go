@@ -263,3 +263,21 @@ func wrapIfArray(b []byte) ([]byte, error) {
 	}
 	return json.Marshal(wrapped)
 }
+
+// objectBody returns b as a result's structuredContent when it is a JSON
+// object, which is all MCP 2025-06-18 allows there (the TypeScript SDK
+// rejects an array or scalar). Arrays are wrapped as {"items": [...]} by
+// wrapIfArray before they get here; whatever is left is not structured.
+// A response declared as something other than JSON (text/plain, ...) is
+// never structured, even when its body parses as an object; one without a
+// Content-Type is judged by its body alone.
+func objectBody(contentType string, b []byte) (json.RawMessage, bool) {
+	if contentType != "" && !isJSONContentType(contentType) {
+		return nil, false
+	}
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return nil, false
+	}
+	return json.RawMessage(trimmed), true
+}

@@ -1,19 +1,14 @@
 # Gateway configuration for the Postman CLI end-to-end run (see run.sh).
 #
-# Two servers share the stub Petstore API. `petstore` exposes five tools to
-# the operators group, so its tools/list collapses to tool_search; readers only
-# see two of them (still above the threshold of 1), and `petstore_small`
-# exposes a single tool, so it stays below the threshold and lists it as is.
+# Two servers share the stub Petstore API. `petstore` exposes five tools (one
+# of them renamed) to the operators group; readers only see two of them, and
+# `petstore_small` exposes a single tool.
 gateway:
   port: 19999
-  toolSearch:
-    enabled: true
-    threshold: 1
-    defaultLimit: 10
 
 mcpServers:
   petstore:
-    description: Petstore behind tool_search
+    description: Petstore with filtered and renamed tools
     spec: http://127.0.0.1:18080/openapi.json
     tools:
       include: ["getpetbyid", "find*", "getinventory", "deletepet"]

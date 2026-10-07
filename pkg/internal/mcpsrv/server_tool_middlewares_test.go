@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -64,7 +63,6 @@ func newPetstoreTestMCPServer(
 		config.Servers{"petstore": server},
 		storage.NewContentManagementService(u, storage.NewNoopUploader()),
 		WithAuditLogger(audit),
-		WithToolCache(NewToolCache(0)),
 	)
 	require.NoError(t, s.Init(t.Context()))
 	t.Cleanup(s.Close)
@@ -81,9 +79,7 @@ func (p petstoreTestServer) connect(t *testing.T, token string) *mcp.ClientSessi
 func TestMCPServer_Init_AppliesServerToolMiddlewares(t *testing.T) {
 	var buf bytes.Buffer
 	audit := newAuditLoggerTo(&buf, config.AuthzHeaders{}, false)
-	p := newPetstoreTestMCPServer(t, audit, func(s *config.Server) {
-		s.Cache = &config.CacheConfig{ToolCall: time.Minute, Tools: []string{"get_pet"}}
-	})
+	p := newPetstoreTestMCPServer(t, audit, nil)
 	cs := p.connect(t, "caller-token")
 
 	require.ElementsMatch(t, []string{"get_pet", "findpetsbystatus"}, sessionToolNames(t, cs))
@@ -93,9 +89,9 @@ func TestMCPServer_Init_AppliesServerToolMiddlewares(t *testing.T) {
 	require.Contains(t, got, `"path":"/pet/1"`)
 	require.Equal(t, "Bearer caller-token", p.lastAuth.Load())
 
-	// 同じ引数の 2 回目はキャッシュから返る（公開名に対して cache.tools を照合）
+	// 同じ引数の 2 回目も毎回バックエンドへ届く
 	callText(t, cs, "get_pet", map[string]any{"petId": 1})
-	require.Equal(t, int32(1), p.apiCalls.Load())
+	require.Equal(t, int32(2), p.apiCalls.Load())
 
 	for _, name := range []string{"getpetbyid", "addpet"} {
 		_, err := cs.CallTool(
@@ -105,7 +101,7 @@ func TestMCPServer_Init_AppliesServerToolMiddlewares(t *testing.T) {
 		require.ErrorContains(t, err, "unknown tool", name)
 	}
 
-	// 監査ログは公開名で残り、キャッシュから返した呼び出しも記録される
+	// 監査ログは公開名で残る
 	lines := decodeAuditLines(t, &buf)
 	require.Len(t, lines, 4)
 	require.Equal(t, "petstore", lines[0]["server"])

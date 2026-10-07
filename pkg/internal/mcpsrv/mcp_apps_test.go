@@ -287,20 +287,6 @@ func TestMCPBackendClient_ClientOptions(t *testing.T) {
 	})
 }
 
-func TestUICacheKeyPart(t *testing.T) {
-	caps := &mcp.ClientCapabilities{}
-	caps.AddExtension(mcpAppsExtension, nil)
-	withUI := &mcp.ListToolsRequest{Params: &mcp.ListToolsParams{
-		Meta: mcp.Meta{
-			mcp.MetaKeyProtocolVersion:    "2026-07-28",
-			mcp.MetaKeyClientCapabilities: caps,
-		},
-	}}
-	require.Equal(t, "ui:1", uiCacheKeyPart(withUI))
-	require.Equal(t, "ui:0", uiCacheKeyPart(&mcp.ListToolsRequest{Params: &mcp.ListToolsParams{}}))
-	require.Equal(t, "ui:0", uiCacheKeyPart(nil))
-}
-
 func TestStripMCPAppsTools(t *testing.T) {
 	plain := &mcp.Tool{Name: "plain", Meta: mcp.Meta{"other": 1}}
 	withUI := &mcp.Tool{Name: "with_ui", Meta: mcp.Meta{

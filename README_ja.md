@@ -39,8 +39,7 @@ flowchart TD
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **ツール検索**（任意で有効化）: 見えるツールが設定した数を超えたエンドポイントでは、`tools/list` を 1 つの `tool_search` ツールに置き換える（BM25 / 正規表現 / ファジー、Claude の Tool Search Tool 互換）。大きな API でもモデルのコンテキストを圧迫せず、検索の対象は呼び出し元に許可されたツールだけ（`gateway.toolSearch`）
-- **結果のキャッシュと監査ログ**: `tools/list` と読み取り専用の `tools/call` の結果を呼び出し元ごとにキャッシュ（`cache`）し、ツール呼び出しごとに JSON 1 行を記録（`audit`）
+- **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
@@ -386,7 +385,7 @@ mcpServers:
 
 バックエンドに対しては、`http` バックエンドには呼び出し元を対応とみなしたときだけ（`initialize` で）MCP Apps 対応を伝えます。`stdio` バックエンドは全呼び出し元で1セッションを共有するため常に伝え、非対応の呼び出し元には Manifold が UI を取り除きます。そうした呼び出し元のために、UI 付きのツールもテキストの内容を返すようにしてください。
 
-リソースはツールの認可・キャッシュ・`tools.include` / `exclude` の対象外で、エンドポイントの認証のみが掛かります。
+リソースはツールの認可・`tools.include` / `exclude` の対象外で、エンドポイントの認証のみが掛かります。
 
 ### A2A エージェントへの接続
 
@@ -412,7 +411,7 @@ agents:
 - Manifold は `url`（と `agentCardPath`。既定 `/.well-known/agent-card.json`）から **Agent Card**（v0.3・v1.0 の両形式）を取得し、メッセージは Card に書かれたエンドポイントへ送ります。`url` 自体をメッセージの送信先には使いません。Card は起動時に取得を試み（失敗しても警告ログのみ）、必要なら最初のリクエストで取り直し、以降はプロセスが終了するまでキャッシュします。
 - 公開対象の **スキル**（`skills` を設定しない限り Card の全スキル）が 1 つずつ MCP ツールになり、ツール名はスキル ID です。ツールの description は `description`（呼び出し元エージェントへの指示文）の後に、Card のスキル名・説明・タグ・例が続きます。`/mcp/list?tools=true` はスキルの一覧を返します。
 - `tools/call` の引数: `sessionId`（**必須**。呼び出し元エージェントのセッション ID で、A2A の `contextId` として転送）、`taskId`（任意。`input-required` の続きなどタスクを継続するとき）、および `message`（テキスト）・`data`（JSON オブジェクト。data パートとして送信）・`files`（各要素は OpenAPI のファイル入力と同じ書き方 — base64 文字列 / URL、または `{url|base64|text, filename, contentType}`。[バイナリのフィールドとレスポンス](#バイナリのフィールドとレスポンス) 参照）のうち 1 つ以上。message のテキストはそのまま送られ、選ばれたスキル ID はメッセージの `metadata.skillId` に入れます（A2A にはリクエスト単位でスキルを指定するフィールドがないため）。
-- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入る）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
+- 結果: text・data パートはテキスト content になり（data パートは `structuredContent` にも入ります。常に JSON オブジェクトで、オブジェクト 1 つならそのまま、配列または複数なら `{"items": [...]}`、スカラー 1 つならテキストのみ）、ファイル URL はリソースリンク、ファイルのバイト列は OpenAPI のバイナリレスポンスと同じ扱い（[`storage`](#storage) 設定時はアップロードしてリソースリンク、未設定ならインライン）になります。`_meta.a2a` には `protocolVersion`・`contextId`・`taskId`・`state`（`completed`、`input-required` など）・`messageId`・`artifacts` の一覧が入ります。タスクが `failed` / `rejected` のときは `isError` の結果になります。
 - 認証（`authValue` / `oauth2` / `tokenExchange`）、`headers`、[ツール認可](#ツール認可opa-サイドカー)は `mcpServers` と同様に動作します。ポリシーへの入力は `server=<name>`、`service=<service.code、既定は name>`、`tool=<スキル ID>` です。
 - ストリーミング（`message/stream`）、タスクのポーリング、push 通知は使いません。すべての呼び出しはブロッキングの `message/send` です。
 
@@ -532,7 +531,7 @@ redis:
 
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
-OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・サービスにぶら下げた A2A エージェント・WebMCP）で使えます。
+OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
 
 ```yaml
 mcpServers:
@@ -546,68 +545,15 @@ mcpServers:
         getpetbyid:
           name: get_pet
           description: Look up a single pet by its numeric ID.
-        mixedcase:          # 設定のキーは小文字化されるため、大文字を含むツール名は tool に書く
+        documents:          # tool で元のツール名を明示すれば、キーは任意の名前でよい
           tool: listDocuments
           name: list_documents
 ```
 
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
-- 絞り込みは authz・キャッシュより前に行われるため、これらと `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
+- 絞り込みは authz より前に行われるため、authz と `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。
-
-### ツール検索（`gateway.toolSearch`）
-
-大きな OpenAPI spec や MCP サーバーを背後に持つエンドポイントは数百のツールを公開することがあり、そのすべてが `tools/list` を通じてモデルのコンテキストに入ります。あるエンドポイントで呼び出し元に見えるツール数が `gateway.toolSearch.threshold`（デフォルト 100）を超えると、そのエンドポイントの `tools/list` は代わりに合成ツール `tool_search` 1 件だけを返します。クライアントは `tool_search` をクエリ付きで呼び、一致したツールの完全な定義（`name` / `description` / `inputSchema`）を受け取り、実ツールを `tools/call` で直接呼び出します。隠れているツールもそのまま呼び出せます。既定では無効で、`enabled: true` で全エンドポイントまとめて有効にします。
-
-```yaml
-gateway:
-  toolSearch:
-    enabled: true         # デフォルトは false（ツール数に関わらず tools/list をそのまま返す）
-    threshold: 100        # 見えるツール数がこれを超えると tool_search に切り替わる（デフォルト 100）
-    defaultLimit: 10      # limit 未指定時の検索結果件数（デフォルト 10）
-    resultFormat: default # または claude
-    digestMaxTools: 50    # tool_search の説明に列挙するツール数。既定 50、-1 で全件、N で名前順の先頭 N 件
-```
-
-`tool_search` の引数は `query`（必須）・`method`・`limit` です。どの方式でも、検索対象はツール名・説明・引数名・引数の説明（入れ子のオブジェクトや配列の要素も再帰的に対象）で、Claude API の Tool Search Tool と同じ範囲です。
-
-| `method` | 説明 |
-| -------- | ---- |
-| `bm25`   | （デフォルト）BM25 スコアリングによるランク付き全文検索。CJK（漢字・かな・ハングル）はバイグラムでトークン化するため、日本語の説明文でも検索できる |
-| `regexp` | 大文字小文字を区別しない正規表現による一致 |
-| `fuzzy`  | 曖昧一致（サブシーケンス）検索 |
-
-| `resultFormat` | 説明 |
-| -------------- | ---- |
-| `default`      | （デフォルト）一致したツールの完全な定義（`name` / `description` / `inputSchema`）の配列 |
-| `claude`       | [Claude API の Tool Search Tool のカスタム検索実装規約](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation)に沿った `tool_reference` ブロック（`{"type": "tool_reference", "tool_name": "..."}`）の配列。Claude API 側が完全なツール定義に展開する |
-
-ヒット 0 件のときは `null` ではなく `[]` を返します。
-
-- 判定はすべて呼び出し元ごとに行います。閾値の判定・検索・説明文の一覧は、`tools.include` / `exclude` / `overrides` と[ツール認可](#ツール認可opa-サイドカー)を通った後の「呼び出し元に実際に見えるツール」に対して行います。ポリシーで拒否されたツールは `tool_search` の結果にも説明文にも現れず、隠れているツールの呼び出しも直接呼んだ場合と同じ認可と監査ログを通ります。`tool_search` の呼び出し自体も監査ログに残り、ポリシーで全面的に拒否された呼び出し元には `tool_search` も同じ `tool not allowed by policy` エラーを返します。
-- `tool_search` の説明文の末尾には、見えるツールの一覧（`- name: description`、名前順、説明は 200 文字で切り詰め）が付き、`digestMaxTools` で件数を抑えられます（既定 50 件。省いた分は説明文に明記されます）。モデルが検索前に「どんなツールがあるか」を把握するためのものです。一覧は `tools/list` のたびに作り直すので、spec のリフレッシュや遅延接続で増えたツールも再起動なしで反映されます。ツールが多いと `tool_search` 自体が大きくなるため、`digestMaxTools` で抑えてください。
-- 閾値は全サーバー合計ではなく、エンドポイントごとに呼び出し元に見えるツール数と比較します。
-- バックエンドに `tool_search` という名前のツールがあっても、合成ツールがその名前を使うため隠れます（警告ログを出す）。
-- `enabled: true` にしない限り、`tools/list` はバックエンドの返したとおり（ページネーションも含めて）返し、`tool_search` は登録されず、バックエンドの `tool_search` という名前のツールも隠れません。`toolSearch` の他の設定は使われません。
-
-### 結果のキャッシュ（`cache`）
-
-```yaml
-mcpServers:
-  github:
-    description: GitHub MCP server
-    transport: http
-    url: https://api.githubcopilot.com/mcp/
-    cache:
-      toolsList: 5m                 # tools/list をキャッシュ
-      toolCall: 30s                 # tools/call の結果をキャッシュ...
-      tools: ["get_*", "list_*"]    # ...ただしこの（読み取り専用の）ツールだけ
-```
-
-- 結果はゲートウェイのメモリに保持され（全サーバーで共有、最大 10,000 件・64 MiB）、呼び出し元ごとに分かれます。呼び出し元は bearer トークンと、reverse（WebMCP）サーバーではリクエストの振り分けに使った識別子（identityKey）で区別するため、ある呼び出し元の結果が別の呼び出し元に返ることはありません。どちらも無いリクエストはキャッシュしません。`edge.pairing.type: static` の reverse サーバーでは、すべての HTTP クライアントが固定の identityKey（`static`）を共有し、トークンも持たないため、呼び出し元を区別できません。この場合はキャッシュを一切使いません（そのようなサーバーに `cache` を設定していると、起動時に警告ログを出します）。呼び出し元ごとにキャッシュしたい場合は remote ペアリングを使ってください。保持するのは件数に加えて合計 64 MiB までで、超えたら最も長く使われていないものから捨てます。1 件だけで上限を超える結果はキャッシュしません。`tools/call` の結果はツール名と引数ごとに保持します（引数のキーの順序や空白は区別しない）。
-- `tools/call` は副作用を持ちうるため、`toolCall` を設定するときは `tools`（公開名に照合する glob パターン）が必須です。エラーの結果はキャッシュしません。
-- キャッシュは authz の内側にあるため、キャッシュから返す場合も毎回認可されます。ゲートウェイ自身がツールを入れ替えたときはキャッシュを即座に捨てます。`specRefresh` が新しい spec を採用したときはそのサーバーの全呼び出し元分を、reverse（WebMCP）の per-user サーバーがタブの接続・切断・ツール変更で作り直されたときはその identityKey の分だけを捨てます。MCP バックエンドがゲートウェイの裏でツールを変えた場合だけ、キャッシュした `tools/list` は最大 `toolsList` の間古いままになりえます。
+- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。絞り込みはサービス自身のツールだけに適用され、名前がたまたま `<agent>__` で始まるサービスのツールも対象になります。
 
 ### 監査ログ（`audit`）
 
@@ -640,11 +586,6 @@ audit:
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
-| `toolSearch.enabled` | bool | `tool_search` への置き換えを全エンドポイントで有効にする（デフォルト: `false`）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
-| `toolSearch.threshold` | int | エンドポイントで見えるツール数がこれを超えると `tools/list` が `tool_search` だけを返す（デフォルト: 100）。[ツール検索](#ツール検索gatewaytoolsearch) 参照 |
-| `toolSearch.defaultLimit` | int | `limit` 未指定時に `tool_search` が返す件数（デフォルト: 10） |
-| `toolSearch.resultFormat` | string | `default`（ツール定義）または `claude`（`tool_reference` ブロック） |
-| `toolSearch.digestMaxTools` | int | `tool_search` の説明に列挙するツール数。既定は `50`（`0` も同じ）、`-1` で全件、`N` で名前順の先頭 `N` 件 |
 
 #### `gateway.specRefresh`
 
@@ -690,7 +631,7 @@ gateway:
 | `args`          | []string          | stdio コマンドの引数                                       |
 | `env`           | map[string]string | stdio プロセスの環境変数                                   |
 | `spec`          | string            | OpenAPI/Swagger 仕様ファイルのパス、URL、または `configmap://<namespace>/<name>/<key>` 形式の参照。`tools.file` を設定しない限り OpenAPI モードでは必須。`tools.file` があればゲートウェイは spec を一切読まないが、`manifold openapi generate`（および `--check`）と `openapi tools --from-spec` には必要 |
-| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合（例: `servers` の無いローカルの spec ファイル）は起動時にエラーになる。`tools.file` だけの場合は必須 |
+| `baseURL`       | string            | OpenAPI モードでの API ベース URL。`spec` があれば spec の最初の `servers`（相対 URL は spec の URL を基準に解決）がデフォルト。それでも絶対 http(s) URL にならない場合は、設定の検証（および起動）がエラーになる。ローカルの spec ファイルに `servers` が無い、または `/api/v1` のような相対 URL しか無い場合は `baseURL` を明示すること（1.19 での挙動変更）。`tools.file` だけの場合は必須 |
 | `headers`       | map[string]string | API リクエストに追加するヘッダー                           |
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
@@ -699,8 +640,7 @@ gateway:
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
 | `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
-| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。大文字を含む元の名前は `tool` に書く |
-| `cache`         | object            | `toolsList` / `toolCall` の保持期間と `tools` パターン（[結果のキャッシュ](#結果のキャッシュcache) 参照） |
+| `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 
@@ -1379,7 +1319,7 @@ make test
 
 ### 結合テスト（Postman CLI）
 
-`make postman` はゲートウェイをビルドし、OPA とスタブの Petstore API を起動して、[`tests/postman/`](tests/postman/) の Postman コレクションを実行します。ツール検索・ツールの絞り込み・ツール認可をまとめて検証するもので、Postman CLI は `mise install` で入ります（[`mise.toml`](mise.toml) の `postman-cli`）。CI では PR ごとに実行します。
+`make postman` はゲートウェイをビルドし、OPA とスタブの Petstore API を起動して、[`tests/postman/`](tests/postman/) の Postman コレクションを実行します。ツールの絞り込み・ツール認可・監査ログをまとめて検証するもので、Postman CLI は `mise install` で入ります（[`mise.toml`](mise.toml) の `postman-cli`）。CI では PR ごとに実行します。
 
 ### Lint
 

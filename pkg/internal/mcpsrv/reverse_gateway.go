@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -46,7 +45,7 @@ type ReverseGateway struct {
 	byOrigin map[string]*config.Server
 
 	mu          sync.Mutex
-	userServers map[string]*reverseUserServer
+	userServers map[string]*mcp.Server
 
 	// lazyBuildMu serializes ResolveServer's lazy first-build path (see
 	// ResolveServer) so concurrent first accesses for a brand-new
@@ -54,9 +53,6 @@ type ReverseGateway struct {
 	lazyBuildMu sync.Mutex
 
 	middlewareFn func(name string) []mcp.Middleware
-	// toolCache, when set, has its entries for a server dropped whenever that
-	// server's per-user *mcp.Server is rebuilt (see WithReverseToolCache).
-	toolCache *ToolCache
 }
 
 // ReverseGatewayOption configures optional behavior of a ReverseGateway
@@ -68,17 +64,6 @@ type ReverseGatewayOption func(*ReverseGateway)
 // construction.
 func WithReverseServerMiddleware(fn func(name string) []mcp.Middleware) ReverseGatewayOption {
 	return func(g *ReverseGateway) { g.middlewareFn = fn }
-}
-
-// WithReverseToolCache makes rebuildUserServer drop cache's entries for the
-// identityKey whose per-user *mcp.Server it replaces (a tab connected,
-// disconnected or changed its tools): the cache middleware
-// WithReverseServerMiddleware installs (see ServerToolMiddlewares) keys its
-// results by server and caller, so without this a tools/list cached from the
-// previous tab would be served for up to cache.toolsList after the rebuild.
-// Other users' entries for the server are left alone.
-func WithReverseToolCache(cache *ToolCache) ReverseGatewayOption {
-	return func(g *ReverseGateway) { g.toolCache = cache }
 }
 
 // NewReverseGateway creates a ReverseGateway for the reverse-transport
@@ -96,7 +81,7 @@ func NewReverseGateway(
 		edgeCfg:     edgeCfg.WithDefaults(),
 		byName:      map[string]*config.Server{},
 		byOrigin:    map[string]*config.Server{},
-		userServers: map[string]*reverseUserServer{},
+		userServers: map[string]*mcp.Server{},
 	}
 	for name, srv := range servers {
 		if !srv.IsReverseBackend() {
@@ -119,11 +104,6 @@ func (g *ReverseGateway) Init(ctx context.Context) {
 		return
 	}
 	for name, srv := range g.byName {
-		if cf := srv.Cache; cf != nil && (cf.CachesToolsList() || cf.ToolCall > 0) {
-			slog.WarnContext(ctx, "cache is ignored on a static pairing reverse server: "+
-				"every caller shares one identityKey, so results can't be kept per caller",
-				slog.String("server", name))
-		}
 		binding := domainedge.Binding{IdentityKey: domainedge.StaticIdentityKey, Origin: srv.Origin}
 		if err := g.rebuildUserServer(ctx, name, binding, nil, false); err != nil {
 			slog.ErrorContext(ctx, "failed to initialize reverse tool server",
@@ -358,37 +338,8 @@ func (g *ReverseGateway) ResolveServer(ctx context.Context, name string) (*mcp.S
 func (g *ReverseGateway) lookupUserServer(key string) (*mcp.Server, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	entry, ok := g.userServers[key]
-	if !ok {
-		return nil, false
-	}
-	return entry.srv, true
-}
-
-// reverseUserServer is one per-user *mcp.Server with the flag
-// rebuildUserServer raises once it has been replaced.
-type reverseUserServer struct {
-	srv *mcp.Server
-	// retired is set when a newer server took this one's place in
-	// userServers. The HTTP handler resolves the server per request, so only
-	// requests that were already in flight still reach a retired one; their
-	// results describe the previous tab, so retiredServerMiddleware keeps
-	// them out of the tool cache.
-	retired atomic.Bool
-}
-
-// retiredServerMiddleware bypasses the tool cache (withToolCacheBypass) for
-// every request once retired is set. It is added outermost, so it covers
-// the cache middleware WithReverseServerMiddleware installed.
-func retiredServerMiddleware(retired *atomic.Bool) mcp.Middleware {
-	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if retired.Load() {
-				ctx = withToolCacheBypass(ctx)
-			}
-			return next(ctx, method, req)
-		}
-	}
+	srv, ok := g.userServers[key]
+	return srv, ok
 }
 
 // rebuildUserServer (re)builds the per-user server for binding, merging
@@ -412,8 +363,6 @@ func (g *ReverseGateway) rebuildUserServer(
 	if g.middlewareFn != nil {
 		srv.AddReceivingMiddleware(g.middlewareFn(name)...)
 	}
-	entry := &reverseUserServer{srv: srv}
-	srv.AddReceivingMiddleware(retiredServerMiddleware(&entry.retired))
 	g.registerPairingTool(srv, binding.IdentityKey)
 
 	if session != nil {
@@ -433,17 +382,7 @@ func (g *ReverseGateway) rebuildUserServer(
 			return nil
 		}
 	}
-	// Retire the server being replaced before dropping the cache, so a
-	// request it is still handling can neither be served from nor stored in
-	// the cache (a fetch already past that point is caught by the new
-	// generation InvalidateCaller starts).
-	if previous, ok := g.userServers[key]; ok {
-		previous.retired.Store(true)
-	}
-	g.userServers[key] = entry
-	if g.toolCache != nil {
-		g.toolCache.InvalidateCaller(name, string(binding.IdentityKey))
-	}
+	g.userServers[key] = srv
 	return nil
 }
 

@@ -2,14 +2,19 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/goccy/go-yaml"
 	"github.com/nonchan7720/manifold/pkg/internal/oasbreaking"
 )
 
@@ -54,9 +59,6 @@ type Server struct {
 	// Tools は静的ツールカタログ（生成物）と、公開するツールの絞り込み・
 	// 名前変更の設定。
 	Tools *ToolsConfig `mapstructure:"tools"`
-
-	// Cache は tools/list・tools/call の結果のキャッシュ設定。
-	Cache *CacheConfig `mapstructure:"cache"`
 
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
@@ -145,6 +147,64 @@ func (s Server) EffectiveSpecRefreshRejectOn(global string) oasbreaking.Level {
 	return level
 }
 
+// errSpecBaseURLUnresolved is reported when baseURL is omitted and the local
+// spec has no absolute server URL to derive it from. The gateway would
+// otherwise refuse to start with the same guidance (see mcpsrv).
+var errSpecBaseURLUnresolved = errors.New(
+	"baseURL is not set and could not be derived from the spec " +
+		"(it has no absolute servers/host entry and was not fetched over http(s)); " +
+		"set mcpServers.<name>.baseURL",
+)
+
+// validateLocalSpecBaseURL checks that a local spec file names an absolute
+// http(s) base URL (OpenAPI 3 servers[0].url, or Swagger 2 host), which is
+// what the gateway derives baseURL from when it is omitted. Remote specs
+// (http(s), configmap://) are not fetched during validation and an
+// unreadable or unparsable file is left to surface at startup, so both pass.
+func validateLocalSpecBaseURL(spec string) error {
+	if spec == "" || strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") ||
+		strings.HasPrefix(spec, "configmap://") {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Clean(spec))
+	if err != nil {
+		return nil //nolint:nilerr // reported when the gateway loads the spec
+	}
+	var doc struct {
+		Swagger string `yaml:"swagger"`
+		Host    string `yaml:"host"`
+		Servers []struct {
+			URL string `yaml:"url"`
+		} `yaml:"servers"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil //nolint:nilerr // reported when the gateway loads the spec
+	}
+	if len(doc.Servers) == 0 {
+		// host is Swagger 2's base URL; an OpenAPI 3 spec's is servers only
+		// (oastomcptool.GetBaseUrlFromOpenAPI3 ignores host).
+		if doc.Swagger != "" && doc.Host != "" {
+			return nil
+		}
+		return errSpecBaseURLUnresolved
+	}
+	if u, err := url.Parse(doc.Servers[0].URL); err == nil &&
+		(u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return nil
+	}
+	return fmt.Errorf("%w (servers[0].url is %q)", errSpecBaseURLUnresolved, doc.Servers[0].URL)
+}
+
+// validateDerivableBaseURL checks that an omitted baseURL can be derived from
+// a local spec. An explicit baseURL, or tools.file (which carries its own
+// base URL), needs no derivation.
+func (s Server) validateDerivableBaseURL() error {
+	if s.BaseURL != "" || s.BaseURLSet || s.GeneratedToolsFile() != "" {
+		return nil
+	}
+	return validateLocalSpecBaseURL(s.Spec)
+}
+
 func (s Server) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(
 		ctx,
@@ -158,6 +218,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(
 			&s.BaseURL,
 			validation.When(s.IsOpenAPI() && (s.Spec == "" || s.BaseURLSet), validation.Required),
+			validation.By(func(any) error { return s.validateDerivableBaseURL() }),
 		),
 		validation.Field(
 			&s.Transport,
@@ -251,7 +312,6 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.SpecRefreshRejectOn, validation.By(validateRejectOn)),
 		validation.Field(&s.Tools, validation.By(s.validateToolsFile)),
-		validation.Field(&s.Cache),
 		validation.Field(&s.AgentCardPath, validation.By(func(any) error {
 			if s.AgentCardPath != "" {
 				return fmt.Errorf("agentCardPath is only supported under agents")
