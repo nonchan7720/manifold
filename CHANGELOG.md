@@ -1,5 +1,60 @@
 # Changelog
 
+## [1.20.0](https://github.com/nonchan7720/manifold/compare/v1.18.0...v1.20.0) (2026-10-09)
+
+
+### Features
+
+* convert format: binary fields in JSON responses to media URLs and resolve them in Swagger 2 JSON requests ([#247](https://github.com/nonchan7720/manifold/issues/247)) ([e0c0637](https://github.com/nonchan7720/manifold/commit/e0c06371d0ea36e78ac91c7ac600cbbc7d00b17e))
+* support MCP Apps on MCP backends ([#265](https://github.com/nonchan7720/manifold/issues/265)) ([69508a5](https://github.com/nonchan7720/manifold/commit/69508a5feb1fa4d97057e0474a5a03013b08678d))
+* tool filtering/renaming, result cache and audit log ([#231](https://github.com/nonchan7720/manifold/issues/231)) ([2c710cf](https://github.com/nonchan7720/manifold/commit/2c710cf82f15851f347b10a39877297c4b8fd93c))
+* **toolsearch:** port tool_search from [#52](https://github.com/nonchan7720/manifold/issues/52) as a policy-aware middleware ([#232](https://github.com/nonchan7720/manifold/issues/232)) ([103a310](https://github.com/nonchan7720/manifold/commit/103a31016e778f734998c91d8579e9eedb6f285f))
+
+
+### Bug Fixes
+
+* address 1.19.0 release review follow-ups ([#239](https://github.com/nonchan7720/manifold/issues/239)) ([#242](https://github.com/nonchan7720/manifold/issues/242)) ([d47d55c](https://github.com/nonchan7720/manifold/commit/d47d55cd26659c5982ed003219ef3d7751817897))
+* **cache:** key tool cache by identityKey too and add gateway.toolSearch.enabled ([#236](https://github.com/nonchan7720/manifold/issues/236)) ([bf665ad](https://github.com/nonchan7720/manifold/commit/bf665add76dc698814094b5147b1bdfbfecef114))
+* **deps:** update dependency @modelcontextprotocol/sdk to v1.31.0 [security] ([#263](https://github.com/nonchan7720/manifold/issues/263)) ([9c12bf3](https://github.com/nonchan7720/manifold/commit/9c12bf3af3622400317dd2d688b1aaec852cd40f))
+* **deps:** update go minor dependencies ([#261](https://github.com/nonchan7720/manifold/issues/261)) ([980e3cb](https://github.com/nonchan7720/manifold/commit/980e3cb0758a9d1fa8e590e2ee59395891f69e89))
+* **deps:** update go minor dependencies ([#279](https://github.com/nonchan7720/manifold/issues/279)) ([81b33de](https://github.com/nonchan7720/manifold/commit/81b33de39891942fd564c2a88ce93ce5b032bd2b))
+* **deps:** update go patch dependencies ([#278](https://github.com/nonchan7720/manifold/issues/278)) ([56523e4](https://github.com/nonchan7720/manifold/commit/56523e40a182bce8fda56ca63081a2edc0e53587))
+* **deps:** update go patch dependencies to v0.37.1 ([#228](https://github.com/nonchan7720/manifold/issues/228)) ([2cee614](https://github.com/nonchan7720/manifold/commit/2cee614ebf251999f3b8df9b47862df9e5d6f972))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.4.11 ([#259](https://github.com/nonchan7720/manifold/issues/259)) ([4f4f36a](https://github.com/nonchan7720/manifold/commit/4f4f36a0e977f58c57a0003c8271588723f56fb3))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.4.12 ([#268](https://github.com/nonchan7720/manifold/issues/268)) ([7a71ef3](https://github.com/nonchan7720/manifold/commit/7a71ef3e806b7390cd8c91e574f76c2c47275f0e))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.4.13 ([#273](https://github.com/nonchan7720/manifold/issues/273)) ([42f1a42](https://github.com/nonchan7720/manifold/commit/42f1a42208c164f6c4b2a5517863df4f735c756d))
+* **deps:** update module github.com/oasdiff/oasdiff to v1.33.0 ([#272](https://github.com/nonchan7720/manifold/issues/272)) ([747f3f1](https://github.com/nonchan7720/manifold/commit/747f3f19cb42c36362d2b21b16e031155ea0d526))
+* **deps:** update module github.com/sahilm/fuzzy to v0.1.3 ([#234](https://github.com/nonchan7720/manifold/issues/234)) ([8d1fa19](https://github.com/nonchan7720/manifold/commit/8d1fa19074304a7340df34e35e08e9c75fe09c06))
+* **deps:** update module golang.org/x/net to v0.60.0 [security] ([#274](https://github.com/nonchan7720/manifold/issues/274)) ([bde4f13](https://github.com/nonchan7720/manifold/commit/bde4f13afc5d779c6d4edebc9bd375c76ae307aa))
+* **deps:** update module golang.org/x/sync to v0.24.0 ([#276](https://github.com/nonchan7720/manifold/issues/276)) ([133ae97](https://github.com/nonchan7720/manifold/commit/133ae976bbb986eb2ebcf86e1059850b890a36d1))
+* **deps:** update module sigs.k8s.io/controller-runtime to v0.25.2 ([#271](https://github.com/nonchan7720/manifold/issues/271)) ([b990205](https://github.com/nonchan7720/manifold/commit/b9902056eff05a405d2eb58b2374f7c388b7934c))
+* **deps:** update opentelemetry ([#275](https://github.com/nonchan7720/manifold/issues/275)) ([43dd5ef](https://github.com/nonchan7720/manifold/commit/43dd5ef888d044560c801e50f827872950c3b768))
+* detect an explicit empty baseURL under env expansion and keep create_pairing_code out of tools filters ([#244](https://github.com/nonchan7720/manifold/issues/244)) ([792d89b](https://github.com/nonchan7720/manifold/commit/792d89b7469721fdeb432c26cccc766bd18a270a))
+* drop stale tool cache on tool replacement and refuse an unresolvable baseURL ([#238](https://github.com/nonchan7720/manifold/issues/238)) ([04ebf63](https://github.com/nonchan7720/manifold/commit/04ebf63826d5b44e0cf8c6fbd7092c3cd2256c37))
+* keep a new-protocol host's protocol version from reaching MCP backends ([#266](https://github.com/nonchan7720/manifold/issues/266)) ([b520cc0](https://github.com/nonchan7720/manifold/commit/b520cc09fe5647a40f35d289268f21e20faf3a6c))
+* **openapi:** base64-encode binary responses only for successful non-text responses ([#251](https://github.com/nonchan7720/manifold/issues/251)) ([36cae37](https://github.com/nonchan7720/manifold/commit/36cae374a4a7efdda3d3f496ded892ca88184cf9))
+
+
+### Miscellaneous
+
+* **deps:** lock file maintenance ([#240](https://github.com/nonchan7720/manifold/issues/240)) ([445c68b](https://github.com/nonchan7720/manifold/commit/445c68b9f34548a2df3a45556be2b8c9d456331a))
+* **deps:** lock file maintenance ([#241](https://github.com/nonchan7720/manifold/issues/241)) ([d3f8be8](https://github.com/nonchan7720/manifold/commit/d3f8be8baef19dc9ff7766aefcbe27d2bfecf3c2))
+* **deps:** update dependency @types/chrome to v0.3.4 ([#258](https://github.com/nonchan7720/manifold/issues/258)) ([0882718](https://github.com/nonchan7720/manifold/commit/0882718925d69f508de5808fe4a50f9af9995385))
+* **deps:** update dependency golangci-lint to v2.14.0 ([#230](https://github.com/nonchan7720/manifold/issues/230)) ([938a1c9](https://github.com/nonchan7720/manifold/commit/938a1c974c512c1426a8f5945dbfd8dffa33b5ca))
+* **deps:** update dependency jsdom to v30.1.1 ([#224](https://github.com/nonchan7720/manifold/issues/224)) ([b96b92a](https://github.com/nonchan7720/manifold/commit/b96b92aa4d3d01aa2a7690a772afba34a823a205))
+* **deps:** update dependency setup-envtest to v0.25.2 ([#270](https://github.com/nonchan7720/manifold/issues/270)) ([b574219](https://github.com/nonchan7720/manifold/commit/b5742194663ee2f8a592f281302c522d8b2192b6))
+* **deps:** update docker/dockerfile:1 docker digest to 4edf897 ([#267](https://github.com/nonchan7720/manifold/issues/267)) ([e2f9038](https://github.com/nonchan7720/manifold/commit/e2f9038d2371ed729926b5ca0999b8a9d9cb86b8))
+* **deps:** update grafana/otel-lgtm docker tag to v0.35.0 ([#101](https://github.com/nonchan7720/manifold/issues/101)) ([e98ba53](https://github.com/nonchan7720/manifold/commit/e98ba53fb70bcee914346c28097572ff2545b029))
+* **deps:** update jdx/mise-action action to v5 ([#262](https://github.com/nonchan7720/manifold/issues/262)) ([7e603ff](https://github.com/nonchan7720/manifold/commit/7e603ffa984c3ad0e7aa5a6c733c81ca277a2f4d))
+* **deps:** update jdx/mise-action action to v5.0.1 ([#269](https://github.com/nonchan7720/manifold/issues/269)) ([dfe9298](https://github.com/nonchan7720/manifold/commit/dfe929894403be6c665bd8f0b4123c93a867eb3b))
+* release 1.20.0 ([#253](https://github.com/nonchan7720/manifold/issues/253)) ([f8a5bb6](https://github.com/nonchan7720/manifold/commit/f8a5bb627d33496f2d6264fe14e95c7856dceefd))
+* release 1.20.0 ([#256](https://github.com/nonchan7720/manifold/issues/256)) ([2689004](https://github.com/nonchan7720/manifold/commit/26890046488f18c4256a532dd249473feec9c9f8))
+
+
+### Documentation
+
+* update README for binary JSON fields and render the architecture diagram with Mermaid ([#257](https://github.com/nonchan7720/manifold/issues/257)) ([ca7edaf](https://github.com/nonchan7720/manifold/commit/ca7edaf7f5eaab97f25539c455c464dbe7b2d909))
+
 ## [1.18.0](https://github.com/nonchan7720/manifold/compare/v1.17.0...v1.18.0) (2026-09-30)
 
 
