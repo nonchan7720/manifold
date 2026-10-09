@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"reflect"
 	"sync"
 	"sync/atomic"
 
@@ -450,7 +451,35 @@ func (c *MCPBackendClient) connect(ctx context.Context) (_ *mcp.ClientSession, r
 	if err != nil {
 		return nil, err
 	}
-	return client.Connect(ctx, transport, nil)
+	return client.Connect(withoutSDKContextValues(ctx), transport, nil)
+}
+
+// mcpSDKPackagePath は go-sdk の mcp パッケージのパス。
+var mcpSDKPackagePath = reflect.TypeFor[mcp.Server]().PkgPath()
+
+// sdkValueShieldedContext は go-sdk の mcp パッケージが ctx に載せた値を隠す。
+type sdkValueShieldedContext struct {
+	context.Context //nolint:containedctx // Value 以外はそのまま委譲する
+}
+
+func (c sdkValueShieldedContext) Value(key any) any {
+	if t := reflect.TypeOf(key); t != nil && t.PkgPath() == mcpSDKPackagePath {
+		return nil
+	}
+	return c.Context.Value(key)
+}
+
+// withoutSDKContextValues は、下流のリクエストを受けた go-sdk のサーバーが ctx に
+// 載せた値（非公開のキー）を隠した ctx を返す。キャンセル・期限と、それ以外の値
+// （認証トークンやトレース）はそのまま引き継ぐ。
+//
+// サーバーは受けたリクエストのプロトコルバージョンを ctx に載せ、同じ ctx で
+// 張ったクライアントはそれを initialize の Mcp-Protocol-Version ヘッダーに使う。
+// そのため 2026-07-28 以降のプロトコルのホストからのリクエストでは、バックエンド
+// との交渉前の initialize に下流のバージョンが付き、Stateful なバックエンドが
+// 拒否する。バックエンドとのバージョンはゲートウェイ自身が交渉する。
+func withoutSDKContextValues(ctx context.Context) context.Context {
+	return sdkValueShieldedContext{Context: ctx}
 }
 
 // clientOptions はバックエンドへの initialize で広告する capability を組み立てる。
