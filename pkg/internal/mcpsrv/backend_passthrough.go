@@ -89,7 +89,13 @@ func newBackendPassthroughMiddleware(bc backendPassthrough) mcp.Middleware {
 						Message: "invalid tools/call params",
 					}
 				}
-				return bc.CallTool(ctx, params.Name, params.Arguments)
+				res, err := bc.CallTool(ctx, params.Name, params.Arguments)
+				if err != nil {
+					return nil, err
+				}
+				// バックエンドの結果はそのまま返すため、SDK の組み込みハンドラが付ける
+				// resultType（2026-07-28 以降で必須）をここで補う。
+				return completeRelayedResult(req, res)
 			default:
 				return next(ctx, method, req)
 			}
