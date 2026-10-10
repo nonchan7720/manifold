@@ -250,7 +250,9 @@ func newBackendResourcesMiddleware(bc backendResources) mcp.Middleware {
 					return nil, err
 				}
 				normalizeCacheable(&res.Cacheable)
-				return res, nil
+				// tools/call と同じく、SDK の組み込みハンドラが付ける resultType
+				// （2026-07-28 以降で必須）をここで補う。
+				return completeRelayedResult(req, res)
 			default:
 				return next(ctx, method, req)
 			}

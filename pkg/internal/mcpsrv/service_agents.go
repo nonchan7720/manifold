@@ -159,7 +159,12 @@ func newServiceAgentsMiddleware(sa *serviceAgents) mcp.Middleware {
 				if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
 					if client, ok := sa.route(params.Name); ok &&
 						!sa.serviceHasTool(ctx, next, req, params.Name) {
-						return client.CallTool(ctx, params.Name, params.Arguments)
+						res, err := client.CallTool(ctx, params.Name, params.Arguments)
+						if err != nil {
+							return nil, err
+						}
+						// バックエンドのパススルーと同じく resultType を補う。
+						return completeRelayedResult(req, res)
 					}
 				}
 				return next(ctx, method, req)
