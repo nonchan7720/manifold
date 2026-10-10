@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.20.1](https://github.com/nonchan7720/manifold/compare/v1.20.0...v1.20.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* add resultType to relayed tools/call and resources/read results ([#283](https://github.com/nonchan7720/manifold/issues/283)) ([1f15aac](https://github.com/nonchan7720/manifold/commit/1f15aac457fd8a502ae4e2994e62a66017814871))
+* **deps:** update dependency @modelcontextprotocol/sdk to v1.32.0 ([#260](https://github.com/nonchan7720/manifold/issues/260)) ([24e0132](https://github.com/nonchan7720/manifold/commit/24e01328fb97e756f8252bc3ddbd52062cfe6f1d))
+
 ## [1.20.0](https://github.com/nonchan7720/manifold/compare/v1.18.0...v1.20.0) (2026-10-09)
 
 
