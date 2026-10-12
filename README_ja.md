@@ -611,6 +611,24 @@ audit:
 - `user` / `groups` は `authz.headers.userID` / `userGroups` のヘッダーがあればその値です（authz が無効でも記録する）。`token` は呼び出し元の bearer トークンの SHA-256 の先頭 12 桁（16 進）で、トークン自体を残さずに呼び出しを突き合わせられます。
 - `identity` は reverse（WebMCP）サーバーが呼び出しの振り分けに使った identityKey です（static ペアリングなら `static`、remote ペアリングなら解決したユーザー）。これらのエンドポイントは JWT を検証しないため `user` / `groups` / `token` は空になり、呼び出し元を示すのはこの項目だけです。
 
+#### 秘密情報を伏せる（`audit.redact`）
+
+記録を書く前に、記録する `arguments` と `error` から秘密情報を `[REDACTED]` に置き換えます。外部は呼ばず、プロセス内で処理します。
+
+- **キー名**: キー名が `password`・`passwd`・`secret`・`token`・`apikey`・`authorization`・`cookie`・`privatekey`・`credential`・`credentials` のいずれかで終わる引数の値を、階層を問わず伏せます。大文字小文字と `-`・`_`・`.` は無視します（`githubToken`・`client_secret`・`X-Api-Key` は一致し、`max_tokens` は一致しません）。`redact.keys` でこの一覧に名前を足せます。
+- **パターン**: `redact.patterns` は正規表現（Go の RE2）で、文字列の引数の値とエラーメッセージの中の一致した部分を伏せます。
+
+```yaml
+audit:
+  enabled: true
+  includeArguments: true
+  redact:
+    keys: [ssn, cardNumber]
+    patterns:
+      - '[\w.+-]+@[\w-]+\.[\w.]+'  # メールアドレス
+      - 'AKIA[0-9A-Z]{16}'            # AWS のアクセスキー ID
+```
+
 ### 設定リファレンス
 
 #### `gateway`
@@ -884,6 +902,8 @@ storage:
 | `enabled`          | bool   | `tools/call` ごとに JSON を 1 行書く（[監査ログ](#監査ログaudit) 参照） |
 | `output`           | string | `stdout`・`stderr`（デフォルト）・ファイルパス（追記） |
 | `includeArguments` | bool   | 呼び出しの引数も記録する（デフォルト: `false`） |
+| `redact.keys`      | []string | 既定に加えて値を伏せる引数のキー名（[秘密情報を伏せる](#秘密情報を伏せるauditredact) 参照） |
+| `redact.patterns`  | []string | 文字列の引数の値とエラーメッセージから伏せる正規表現 |
 
 #### `fileFetch`
 

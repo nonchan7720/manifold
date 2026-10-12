@@ -32,6 +32,7 @@ type AuditLogger struct {
 	logger           *slog.Logger
 	headers          config.AuthzHeaders
 	includeArguments bool
+	redactor         *auditRedactor
 	closer           io.Closer
 	now              func() time.Time
 }
@@ -56,7 +57,15 @@ func NewAuditLogger(cfg config.AuditConfig, headers config.AuthzHeaders) (*Audit
 		}
 		w, closer = f, f
 	}
+	redactor, err := newAuditRedactor(cfg.Redact)
+	if err != nil {
+		if closer != nil {
+			_ = closer.Close()
+		}
+		return nil, err
+	}
 	l := newAuditLoggerTo(w, headers, cfg.IncludeArguments)
+	l.redactor = redactor
 	l.closer = closer
 	return l, nil
 }
@@ -66,10 +75,13 @@ func newAuditLoggerTo(
 	headers config.AuthzHeaders,
 	includeArguments bool,
 ) *AuditLogger {
+	// 既定のキー名だけで伏せる redactor は、正規表現が無いので失敗しない。
+	redactor, _ := newAuditRedactor(config.AuditRedactConfig{})
 	return &AuditLogger{
 		logger:           slog.New(slog.NewJSONHandler(w, nil)),
 		headers:          headers,
 		includeArguments: includeArguments,
+		redactor:         redactor,
 		now:              time.Now,
 	}
 }
@@ -139,10 +151,10 @@ func (l *AuditLogger) record(
 		attrs = append(attrs, slog.String("identity", string(key)))
 	}
 	if err != nil {
-		attrs = append(attrs, slog.String("error", err.Error()))
+		attrs = append(attrs, slog.String("error", l.redactor.redactString(err.Error())))
 	}
 	if l.includeArguments && len(params.Arguments) > 0 {
-		attrs = append(attrs, slog.Any("arguments", params.Arguments))
+		attrs = append(attrs, slog.Any("arguments", l.redactor.redactArguments(params.Arguments)))
 	}
 	// 呼び出し元がキャンセルしても監査記録は残す。
 	l.logger.LogAttrs(context.WithoutCancel(ctx), slog.LevelInfo, "audit", attrs...)
