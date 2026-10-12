@@ -32,6 +32,8 @@ type MCPServer struct {
 	// serviceAgents は mcpServers.<name>.agents にぶら下げたエージェントを
 	// サービス名ごとに保持する。
 	serviceAgents map[string]*serviceAgents
+	// promptFiles は prompts.file を監視している取得元。Close で監視を止める。
+	promptFiles []*filePromptSource
 
 	// mu guards openAPIStates, refreshCancel and refreshRejectOn, which the
 	// spec refresh goroutines touch concurrently with request handling.
@@ -202,6 +204,20 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				Tools:   &mcp.ToolCapabilities{ListChanged: true},
 			}
 		}
+		if server.Prompts != nil {
+			// OpenAPI モードの prompts（mcpServers.<name>.prompts）。取得に
+			// 失敗していても prompts/list を呼べるよう常に広告する。Capabilities を
+			// 指定すると SDK は既定の広告を足さなくなるので、エージェントの場合と
+			// 同じく logging と tools も明示する。
+			if srvOpts.Capabilities == nil {
+				srvOpts.Capabilities = &mcp.ServerCapabilities{
+					//nolint:staticcheck // SDK の既定の広告と揃えるため（logging は非推奨だが有効）
+					Logging: &mcp.LoggingCapabilities{},
+					Tools:   &mcp.ToolCapabilities{ListChanged: true},
+				}
+			}
+			srvOpts.Capabilities.Prompts = &mcp.PromptCapabilities{}
+		}
 		srv := mcp.NewServer(
 			&mcp.Implementation{Name: name, Version: version.MarkVersion},
 			srvOpts,
@@ -248,6 +264,13 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			s.serviceAgents[name] = sa
 			inner = append(inner, newServiceAgentsMiddleware(sa))
 			sa.ensureCards(ctx)
+		}
+		if server.Prompts != nil {
+			src, err := s.newPromptSource(ctx, name, server)
+			if err != nil {
+				return err
+			}
+			srv.AddReceivingMiddleware(newOpenAPIPromptsMiddleware(src))
 		}
 		var authzMiddlewares []mcp.Middleware
 		if s.middlewareFn != nil {
@@ -355,6 +378,9 @@ func (s *MCPServer) backendToolInfos(ctx context.Context, name string) ([]ToolIn
 // Close は spec リフレッシュの goroutine を停止し、全バックエンドクライアントの接続を閉じる。
 func (s *MCPServer) Close() {
 	s.stopSpecRefresh()
+	for _, fs := range s.promptFiles {
+		fs.close()
+	}
 	for _, bc := range s.backendClients {
 		bc.Close()
 	}
@@ -364,6 +390,22 @@ func (s *MCPServer) Close() {
 	for _, sa := range s.serviceAgents {
 		sa.close()
 	}
+}
+
+// newPromptSource は OpenAPI モードのサーバーの prompts の取得元を作る。
+// prompts.file は起動時に読み込み、読めなければエラーにする。
+func (s *MCPServer) newPromptSource(
+	ctx context.Context, name string, server *config.Server,
+) (promptSource, error) {
+	if server.Prompts.URL != "" {
+		return newURLPromptSource(server), nil
+	}
+	fs, err := newFilePromptSource(ctx, name, server.Prompts.File)
+	if err != nil {
+		return nil, err
+	}
+	s.promptFiles = append(s.promptFiles, fs)
+	return fs, nil
 }
 
 func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {

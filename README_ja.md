@@ -531,6 +531,41 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### OpenAPI バックエンドの prompts（`prompts`）
+
+OpenAPI の spec には MCP の prompts を表す仕組みが無いため、OpenAPI モードのサーバーは `spec` とは別の prompts 定義ドキュメントから prompts を返せます。`mcpServers.<name>.prompts` に取得元をどちらか1つ指定します。
+
+- **`url`**: `prompts/list`・`prompts/get` のたびに、この絶対 http(s) URL からドキュメントを取得します。バックエンドはゲートウェイのリリースと合わせずに prompts を変更できます。リクエストにはツール呼び出しと同じ認証（`authValue` / `oauth2` / `tokenExchange`）と `headers` が付きます。取得に失敗した場合は呼び出し元にエラーを返します。
+- **`file`**: 起動時にドキュメントを読み込み（読めない・不正な場合は起動に失敗します）、変更されるたびに読み直します。ディレクトリを監視するため、`..data` シンボリックリンクの張り替えで更新される Kubernetes の ConfigMap のボリュームマウントも再起動なしで反映されます。不正な内容に変わった場合はログに出し、直前の prompts を返し続けます。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    prompts:
+      file: /etc/manifold/prompts/petstore.yaml   # または url: https://petstore.example.com/mcp-prompts.yaml
+```
+
+ドキュメントは YAML または JSON（最大 1 MiB）です。
+
+```yaml
+prompts:
+  - name: summarize_pet
+    title: Summarize a pet            # 省略可
+    description: Summarize a pet's profile
+    arguments:
+      - name: petId
+        description: ID of the pet
+        required: true
+      - name: tone
+    messages:                         # role は user または assistant
+      - role: user
+        content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
+```
+
+`content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。prompts に掛かるのはエンドポイントの認証のみで、`authz` と `tools.include` / `exclude` / `overrides` は適用されません。
+
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
@@ -645,6 +680,7 @@ gateway:
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
+| `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 

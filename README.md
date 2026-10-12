@@ -531,6 +531,41 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### Prompts for an OpenAPI backend (`prompts`)
+
+An OpenAPI spec has no way to describe MCP prompts, so an OpenAPI-mode server can serve them from a separate prompts document, kept apart from `spec`. Set exactly one source under `mcpServers.<name>.prompts`:
+
+- **`url`**: the document is fetched from this absolute http(s) URL on every `prompts/list` and `prompts/get`, so the backend can change its prompts without a gateway release. The request carries the same authentication as tool calls (`authValue` / `oauth2` / `tokenExchange`) and `headers`. A failed fetch returns an error to the caller.
+- **`file`**: the document is read at startup (an unreadable or invalid file fails startup) and re-read whenever it changes. The directory is watched, so a Kubernetes ConfigMap mounted as a volume, which is updated by swapping its `..data` symlink, is picked up without a restart. A change to an invalid document is logged and the previous prompts keep being served.
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    prompts:
+      file: /etc/manifold/prompts/petstore.yaml   # or url: https://petstore.example.com/mcp-prompts.yaml
+```
+
+The document is YAML or JSON, at most 1 MiB:
+
+```yaml
+prompts:
+  - name: summarize_pet
+    title: Summarize a pet            # optional
+    description: Summarize a pet's profile
+    arguments:
+      - name: petId
+        description: ID of the pet
+        required: true
+      - name: tone
+    messages:                         # role is user or assistant
+      - role: user
+        content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
+```
+
+`content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. Prompts are protected by the endpoint's authentication only: `authz` and `tools.include` / `exclude` / `overrides` do not apply to them.
+
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
 APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
@@ -645,6 +680,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
+| `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 

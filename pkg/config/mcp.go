@@ -89,6 +89,9 @@ type Server struct {
 	// （http / stdio）でのみ有効。
 	Apps bool `mapstructure:"apps"`
 
+	// Prompts は OpenAPI モードのサーバーが公開する prompts の取得元。
+	Prompts *PromptsConfig `mapstructure:"prompts"`
+
 	// Agents はこのサービスにぶら下げる A2A エージェント。各エージェントの
 	// スキルは <agent>__<skill> というツール名で、サービス自身のツールと並んで
 	// このサービスの tools/list に現れる。reverse トランスポートでは使えない。
@@ -326,6 +329,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.Agents, validation.WithContext(s.validateAgents)),
 		validation.Field(&s.Apps, validation.By(s.validateApps)),
+		validation.Field(&s.Prompts, validation.By(s.validatePrompts)),
 	)
 }
 
