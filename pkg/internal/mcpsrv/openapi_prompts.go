@@ -250,8 +250,8 @@ func (s *urlPromptSource) prompts(ctx context.Context) (_ *promptSet, rErr error
 
 // newOpenAPIPromptsMiddleware は OpenAPI モードのサーバー向けに、prompts/list・
 // prompts/get を src の prompts 定義から答えるミドルウェアを返す。
-// prompts は MCP バックエンドの中継（newBackendPromptsMiddleware）と同じく
-// ツールの authz・キャッシュ・フィルタの対象外で、エンドポイントの認証のみが掛かる。
+// authz は MCP バックエンドの中継（newBackendPromptsMiddleware）と同じく、
+// 外側の NewAuthzMiddleware がツールと同じ判定で掛ける。
 func newOpenAPIPromptsMiddleware(src promptSource) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/services/authz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -339,4 +340,53 @@ func TestOpenAPIPrompts_File_InitFailsWhenUnreadable(t *testing.T) {
 			s.Close()
 		})
 	}
+}
+
+// OpenAPI モードの prompts にも、ゲートウェイの authz がツールと同じ判定で掛かる。
+func TestOpenAPIPrompts_Authz(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prompts.yaml")
+	writeFile(t, path, testPromptDocument+
+		"  - {name: secret_howto, messages: [{role: user, content: secret}]}\n")
+	d := &fakeDecider{
+		allowResult: false,
+		allowedToolsResult: []authz.ToolRef{
+			{Server: "petstore", Service: "petstore", Name: "summarize_pet"},
+		},
+	}
+	u, _ := url.Parse("https://example.com")
+	s := NewMCPServer(config.Servers{"petstore": &config.Server{
+		Name:    "petstore",
+		Spec:    "fixtures/petstore_oas.json",
+		BaseURL: "https://petstore.example.com",
+		Prompts: &config.PromptsConfig{File: path},
+	}}, storage.NewContentManagementService(u, storage.NewNoopUploader()),
+		WithServerMiddleware(func(name string) []mcp.Middleware {
+			return []mcp.Middleware{
+				NewAuthzMiddleware(name, name, d, testAuthzHeaders(), nil),
+			}
+		}))
+	require.NoError(t, s.Init(context.Background()))
+	t.Cleanup(s.Close)
+	srv, err := s.Server("petstore")
+	require.NoError(t, err)
+	gateway := httptest.NewServer(mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return srv },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	))
+	t.Cleanup(gateway.Close)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "host", Version: "0.0.1"}, nil).Connect(
+		context.Background(), &mcp.StreamableClientTransport{
+			Endpoint:   gateway.URL,
+			HTTPClient: &http.Client{Transport: &headerRoundTripper{headers: identityHeaders()}},
+		}, nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close() })
+
+	require.Equal(t, []string{"summarize_pet"}, promptNames(t, cs))
+
+	_, err = cs.GetPrompt(context.Background(), &mcp.GetPromptParams{Name: "secret_howto"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool not allowed by policy")
+	require.Equal(t, "secret_howto", d.allowCalls[0].t.Name)
 }

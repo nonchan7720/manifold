@@ -363,7 +363,7 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
-バックエンドのツール（`tools/list` / `tools/call`）と prompts（`prompts/list` / `prompts/get`）をそのまま中継します。prompts capability を広告しないバックエンドでは、`prompts/list` は空の一覧を、`prompts/get` は unknown prompt エラーを返します。prompts に掛かるのはエンドポイントの認証のみで、`authz` と `tools.include` / `exclude` / `overrides` は適用されません。また、バックエンドからの `notifications/prompts/list_changed` は中継しません。
+バックエンドのツール（`tools/list` / `tools/call`）と prompts（`prompts/list` / `prompts/get`）をそのまま中継します。prompts capability を広告しないバックエンドでは、`prompts/list` は空の一覧を、`prompts/get` は unknown prompt エラーを返します。prompts にはツールの使い方の指示が含まれうるため、`authz` はツールと同じ判定で prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。また、バックエンドからの `notifications/prompts/list_changed` は中継しません。
 
 ### MCP Apps（`apps`）
 
@@ -564,7 +564,7 @@ prompts:
         content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
 ```
 
-`content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。prompts に掛かるのはエンドポイントの認証のみで、`authz` と `tools.include` / `exclude` / `overrides` は適用されません。
+`content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。`authz` はツールと同じ判定でこれらの prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。
 
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
@@ -1115,7 +1115,7 @@ Manifold は `headers.userID` / `headers.userGroups`（設定していれば `he
 
 ### input / data の契約
 
-Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
+Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。prompts にはツールの使い方の指示が含まれうるため、ツールと同じ2つの判定に同じ形の入力で掛けます。`prompts/get` は prompt 名を `tool` として `decisionPath.call` へ、`prompts/list` は各 prompt を `tools` の要素として `decisionPath.list` へ問い合わせます。ポリシーはツールと同じ `<server>/<name>` のルールで prompt を許可します。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
 
 ```jsonc
 // tools/call

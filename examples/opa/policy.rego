@@ -4,6 +4,11 @@ import rego.v1
 
 # data.policies[<group id>].tools is a list of "<server>/<tool>" glob patterns
 # (see data.json). A group with no matching pattern grants nothing.
+#
+# Prompts are decided by the same two rules: prompts/get queries allow with
+# the prompt name as input.tool, and prompts/list queries allowed_tools with
+# each prompt as an element of input.tools, so "<server>/<prompt>" patterns
+# grant prompts too.
 
 # input (tools/call, decisionPath.call):
 #   {"user": "...", "groups": [...], "server": "...", "tool": "..."}

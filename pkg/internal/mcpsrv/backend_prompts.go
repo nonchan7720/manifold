@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	// prompts/* は今のところ authz の対象外（newBackendPromptsMiddleware が
-	// そのまま転送する）。対象にする場合は NewAuthzMiddleware でこれらを判定する。
+	// prompts/* はツールと同じく authz の対象（NewAuthzMiddleware が判定する）。
 	methodPromptsList = "prompts/list"
 	methodPromptsGet  = "prompts/get"
 )
@@ -35,8 +34,9 @@ type backendPrompts interface {
 // （/mcp/<name>）がバックエンドごとに分かれているので、prompt 名の書き換えは不要。
 //
 // tools/*・resources/* は扱わないので newBackendPassthroughMiddleware・
-// newBackendResourcesMiddleware と並べて追加する。prompts は今のところツールの
-// authz・キャッシュ・フィルタの対象外で、エンドポイントの認証のみが掛かる。
+// newBackendResourcesMiddleware と並べて追加する。authz はこのミドルウェアより
+// 外側の NewAuthzMiddleware がツールと同じ判定で掛ける（tools.include 等の
+// ツールのフィルタは prompts には掛からない）。
 func newBackendPromptsMiddleware(bc backendPrompts) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {

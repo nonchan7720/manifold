@@ -14,6 +14,13 @@ const (
 	authzMethodToolsCall = "tools/call"
 	authzMethodToolsList = "tools/list"
 
+	// prompts にはツールの利用に関わる指示が含まれうるため、ツールと同じ判定に
+	// 掛ける。OPA への入力もツールと同じで、prompts/get は decisionPath.call に
+	// prompt 名を tool として、prompts/list は decisionPath.list に prompt を
+	// tools の要素として渡す。
+	authzMethodPromptsList = methodPromptsList
+	authzMethodPromptsGet  = methodPromptsGet
+
 	// resources/* は今のところ authz の対象外（MCP バックエンドの
 	// newBackendResourcesMiddleware がそのまま転送する）。対象にする場合は
 	// NewAuthzMiddleware でこれらを判定する。
@@ -68,17 +75,22 @@ func authzHandleToolCall(
 	method string,
 	req mcp.Request,
 ) (mcp.Result, error) {
-	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
-	if !ok {
-		slog.ErrorContext(ctx, "authz: unexpected params type on tools/call",
+	var name string
+	switch params := req.GetParams().(type) {
+	case *mcp.CallToolParamsRaw:
+		name = params.Name
+	case *mcp.GetPromptParams:
+		name = params.Name
+	default:
+		slog.ErrorContext(ctx, "authz: unexpected params type on "+method,
 			slog.String("server", serverName), slog.String("reason", "unexpected_params"))
 		return nil, errToolNotAllowedByPolicy
 	}
-	tool := authz.ToolRef{Server: serverName, Service: serviceCode, Name: params.Name}
+	tool := authz.ToolRef{Server: serverName, Service: serviceCode, Name: name}
 
 	allowed, err := d.Allow(ctx, p, tool)
 	if err != nil {
-		slog.ErrorContext(ctx, "authz: decider error on tools/call",
+		slog.ErrorContext(ctx, "authz: decider error on "+method,
 			slog.String("server", serverName), slog.String("tool", tool.Name),
 			slog.Any("error", err))
 		return nil, errToolNotAllowedByPolicy
@@ -91,6 +103,7 @@ func authzHandleToolCall(
 	slog.InfoContext(ctx, "authz decision",
 		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
 		slog.String("server", serverName), slog.String("service", serviceCode),
+		slog.String("method", method),
 		slog.String("tool", tool.Name), slog.String("decision", decision))
 
 	if !allowed {
@@ -151,11 +164,67 @@ func authzHandleToolsList(
 	return result, nil
 }
 
+// authzHandlePromptsList は authzHandleToolsList と同じく、next の prompts/list の
+// 結果を d.AllowedTools が許可した prompt に絞る（prompt はツールと同じ形で
+// 判定に渡す）。空の一覧では Decider を呼ばない。
+func authzHandlePromptsList(
+	ctx context.Context,
+	serverName, serviceCode string,
+	d authz.Decider,
+	p authz.Principal,
+	next mcp.MethodHandler,
+	method string,
+	req mcp.Request,
+) (mcp.Result, error) {
+	res, err := next(ctx, method, req)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := res.(*mcp.ListPromptsResult)
+	if !ok || len(result.Prompts) == 0 {
+		return res, nil
+	}
+
+	refs := make([]authz.ToolRef, len(result.Prompts))
+	for i, prompt := range result.Prompts {
+		refs[i] = authz.ToolRef{Server: serverName, Service: serviceCode, Name: prompt.Name}
+	}
+	allowed, err := d.AllowedTools(ctx, p, refs)
+	if err != nil {
+		slog.ErrorContext(ctx, "authz: decider error on prompts/list",
+			slog.String("server", serverName), slog.Any("error", err))
+		return nil, errToolNotAllowedByPolicy
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, t := range allowed {
+		allowedSet[t.Name] = struct{}{}
+	}
+	filtered := make([]*mcp.Prompt, 0, len(allowed))
+	for _, prompt := range result.Prompts {
+		if _, ok := allowedSet[prompt.Name]; ok {
+			filtered = append(filtered, prompt)
+		}
+	}
+	// 結果はパススルーの取得元やバックエンドと共有している可能性があるため複製する。
+	copied := *result
+	copied.Prompts = filtered
+
+	slog.InfoContext(ctx, "authz decision",
+		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
+		slog.String("server", serverName), slog.String("service", serviceCode),
+		slog.String("method", authzMethodPromptsList),
+		slog.Int("allowed", len(filtered)), slog.Int("total", len(refs)))
+	return &copied, nil
+}
+
 // NewAuthzMiddleware builds a mcp.Middleware enforcing d as the PEP for
 // server serverName, which belongs to service serviceCode
 // (config.Server.ServiceCode). It fails closed: a missing/unresolvable
-// identity denies without querying d, and any tools/call or tools/list
-// Decider error also denies rather than falling through to next.
+// identity denies without querying d, and any tools/call, tools/list,
+// prompts/get or prompts/list Decider error also denies rather than falling
+// through to next. Prompts are decided with the same tool decisions (see
+// authzMethodPromptsList).
 func NewAuthzMiddleware(
 	serverName, serviceCode string,
 	d authz.Decider,
@@ -164,7 +233,10 @@ func NewAuthzMiddleware(
 ) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method != authzMethodToolsCall && method != authzMethodToolsList {
+			switch method {
+			case authzMethodToolsCall, authzMethodToolsList,
+				authzMethodPromptsGet, authzMethodPromptsList:
+			default:
 				return next(ctx, method, req)
 			}
 
@@ -184,10 +256,14 @@ func NewAuthzMiddleware(
 				return nil, errToolNotAllowedByPolicy
 			}
 
-			if method == authzMethodToolsCall {
+			switch method {
+			case authzMethodToolsCall, authzMethodPromptsGet:
 				return authzHandleToolCall(ctx, serverName, serviceCode, d, p, next, method, req)
+			case authzMethodPromptsList:
+				return authzHandlePromptsList(ctx, serverName, serviceCode, d, p, next, method, req)
+			default:
+				return authzHandleToolsList(ctx, serverName, serviceCode, d, p, next, method, req)
 			}
-			return authzHandleToolsList(ctx, serverName, serviceCode, d, p, next, method, req)
 		}
 	}
 }

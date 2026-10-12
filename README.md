@@ -363,7 +363,7 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
-The backend's tools (`tools/list` / `tools/call`) and prompts (`prompts/list` / `prompts/get`) are relayed as is. A backend that does not advertise the prompts capability returns an empty `prompts/list`, and `prompts/get` returns an unknown-prompt error. Prompts are protected by the endpoint's authentication only: `authz` and `tools.include` / `exclude` / `overrides` do not apply to them, and `notifications/prompts/list_changed` from the backend is not relayed.
+The backend's tools (`tools/list` / `tools/call`) and prompts (`prompts/list` / `prompts/get`) are relayed as is. A backend that does not advertise the prompts capability returns an empty `prompts/list`, and `prompts/get` returns an unknown-prompt error. Since a prompt can tell the model how to use tools, `authz` applies to prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not. `notifications/prompts/list_changed` from the backend is not relayed.
 
 ### MCP Apps (`apps`)
 
@@ -564,7 +564,7 @@ prompts:
         content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
 ```
 
-`content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. Prompts are protected by the endpoint's authentication only: `authz` and `tools.include` / `exclude` / `overrides` do not apply to them.
+`content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. `authz` applies to these prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not.
 
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
@@ -1115,7 +1115,7 @@ Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, 
 
 ### Decision contract
 
-Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool), and to `opaURL + decisionPath.catalog` for every `GET /mcp/list?tools=true`. The examples below use the default `authz.input` key names; every key is renameable (see the `input` table above):
+Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool), and to `opaURL + decisionPath.catalog` for every `GET /mcp/list?tools=true`. Prompts go through the same two tool decisions with the same input, because a prompt can carry instructions on how to use tools: `prompts/get` queries `decisionPath.call` with the prompt name as `tool`, and `prompts/list` queries `decisionPath.list` with each prompt as an element of `tools`. A policy grants a prompt with the same `<server>/<name>` rules it uses for tools. The examples below use the default `authz.input` key names; every key is renameable (see the `input` table above):
 
 ```jsonc
 // tools/call
