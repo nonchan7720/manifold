@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/nonchan7720/manifold/compare/v1.20.2...v1.21.0) (2026-10-12)
+
+
+### Features
+
+* support MCP prompts for MCP and OpenAPI backends ([#294](https://github.com/nonchan7720/manifold/issues/294)) ([6ccb28a](https://github.com/nonchan7720/manifold/commit/6ccb28a0692599e740c1efb4538d77d9149c8937))
+
 ## [1.20.2](https://github.com/nonchan7720/manifold/compare/v1.20.1...v1.20.2) (2026-10-12)
 
 
