@@ -350,7 +350,7 @@ func TestOpenAPIPrompts_Authz(t *testing.T) {
 	d := &fakeDecider{
 		allowResult: false,
 		allowedToolsResult: []authz.ToolRef{
-			{Server: "petstore", Service: "petstore", Name: "prompt_summarize_pet"},
+			{Server: "petstore", Service: "petstore", Name: "prompt:summarize_pet"},
 		},
 	}
 	u, _ := url.Parse("https://example.com")
@@ -388,5 +388,5 @@ func TestOpenAPIPrompts_Authz(t *testing.T) {
 	_, err = cs.GetPrompt(context.Background(), &mcp.GetPromptParams{Name: "secret_howto"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool not allowed by policy")
-	require.Equal(t, "prompt_secret_howto", d.allowCalls[0].t.Name)
+	require.Equal(t, "prompt:secret_howto", d.allowCalls[0].t.Name)
 }

@@ -8,7 +8,7 @@ import rego.v1
 # Prompts are decided by the same two rules: prompts/get queries allow with
 # the prompt name as input.tool, and prompts/list queries allowed_tools with
 # each prompt as an element of input.tools. Prompt names are passed with a
-# "prompt_" prefix, so "<server>/prompt_<prompt>" patterns grant prompts.
+# "prompt:" prefix, so "<server>/prompt:<prompt>" patterns grant prompts.
 
 # input (tools/call, decisionPath.call):
 #   {"user": "...", "groups": [...], "server": "...", "tool": "..."}

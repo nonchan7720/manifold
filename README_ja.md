@@ -1115,7 +1115,7 @@ Manifold は `headers.userID` / `headers.userGroups`（設定していれば `he
 
 ### input / data の契約
 
-Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。prompts にはツールの使い方の指示が含まれうるため、ツールと同じ2つの判定に同じ形の入力で掛けます。`prompts/get` は prompt 名を `tool` として `decisionPath.call` へ、`prompts/list` は各 prompt を `tools` の要素として `decisionPath.list` へ問い合わせます。同じ名前のツールと区別できるよう、prompt 名には `prompt_` を付けて渡します（prompt `summarize_pet` は `prompt_summarize_pet` として判定されます）。ポリシーでは `<server>/prompt_<name>` のルールで prompt を許可します（例: `petstore` の全 prompt なら `petstore/prompt_*`）。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
+Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。prompts にはツールの使い方の指示が含まれうるため、ツールと同じ2つの判定に同じ形の入力で掛けます。`prompts/get` は prompt 名を `tool` として `decisionPath.call` へ、`prompts/list` は各 prompt を `tools` の要素として `decisionPath.list` へ問い合わせます。同じ名前のツールと区別できるよう、prompt 名には `prompt:` を付けて渡します（prompt `summarize_pet` は `prompt:summarize_pet` として判定されます）。`:` は MCP がツール名に推奨する文字に含まれないため、ツール名と衝突しにくくなっています。ポリシーでは `<server>/prompt:<name>` のルールで prompt を許可します（例: `petstore` の全 prompt なら `petstore/prompt:*`）。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
 
 ```jsonc
 // tools/call

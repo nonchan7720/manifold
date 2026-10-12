@@ -22,8 +22,10 @@ const (
 	authzMethodPromptsGet  = methodPromptsGet
 
 	// authzPromptPrefix は authz の判定に渡す prompt 名の接頭辞。同じ名前の
-	// ツールと prompt がポリシー上で区別できるようにする。
-	authzPromptPrefix = "prompt_"
+	// ツールと prompt がポリシー上で区別できるようにする。":" は MCP が
+	// ツール名に推奨する文字（英数字・"_"・"-"・"."）に含まれないため、
+	// ツール名と衝突しにくい。
+	authzPromptPrefix = "prompt:"
 
 	// resources/* は今のところ authz の対象外（MCP バックエンドの
 	// newBackendResourcesMiddleware がそのまま転送する）。対象にする場合は
