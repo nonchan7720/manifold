@@ -424,6 +424,58 @@ func (c *MCPBackendClient) ReadResource(
 	return res, err
 }
 
+// backendSupportsPrompts は session のバックエンドが prompts capability を
+// 広告したかを返す。
+func backendSupportsPrompts(session *mcp.ClientSession) bool {
+	res := session.InitializeResult()
+	return res != nil && res.Capabilities != nil && res.Capabilities.Prompts != nil
+}
+
+// ListPrompts はバックエンドへ prompts/list を転送する。バックエンドが
+// prompts capability を持たない場合は空の一覧を返す（ゲートウェイは MCP
+// バックエンドに対して常に prompts を広告するので、method not found を返さない
+// ようにする）。
+func (c *MCPBackendClient) ListPrompts(
+	ctx context.Context,
+	params *mcp.ListPromptsParams,
+) (_ *mcp.ListPromptsResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListPrompts")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var res *mcp.ListPromptsResult
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !backendSupportsPrompts(session) {
+			res = &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}}
+			return nil
+		}
+		res, err = session.ListPrompts(ctx, params)
+		return err
+	})
+	return res, err
+}
+
+// GetPrompt はバックエンドへ prompts/get を転送する。バックエンドが
+// prompts capability を持たない場合は、SDK の組み込みハンドラと同じく
+// unknown prompt（invalid params）を返す。
+func (c *MCPBackendClient) GetPrompt(
+	ctx context.Context,
+	params *mcp.GetPromptParams,
+) (_ *mcp.GetPromptResult, rErr error) {
+	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/GetPrompt",
+		attribute.String("prompt-name", params.Name))
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var res *mcp.GetPromptResult
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !backendSupportsPrompts(session) {
+			return unknownPromptError(params.Name)
+		}
+		res, err = session.GetPrompt(ctx, params)
+		return err
+	})
+	return res, err
+}
+
 // Close はバックエンドとの接続を閉じ、以降の接続を禁止する。
 // 進行中の接続試行を待たずに即座に返る。試行中だったセッションは
 // リーダー側が closed フラグを見て破棄する。

@@ -37,7 +37,7 @@ flowchart TD
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
-- **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
+- **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ（ツールと prompts を中継）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
@@ -363,6 +363,8 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
+バックエンドのツール（`tools/list` / `tools/call`）と prompts（`prompts/list` / `prompts/get`）をそのまま中継します。prompts capability を広告しないバックエンドでは、`prompts/list` は空の一覧を、`prompts/get` は unknown prompt エラーを返します。prompts にはツールの使い方の指示が含まれうるため、`authz` はツールと同じ判定で prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。また、バックエンドからの `notifications/prompts/list_changed` は中継しません。
+
 ### MCP Apps（`apps`）
 
 MCP バックエンド（`http` / `stdio`）は [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) を提供できます。ツールの `_meta.ui.resourceUri` に `ui://` リソース（`text/html;profile=mcp-app`）を指定し、ホストがそれを描画する仕組みです。Manifold は `resources/list`・`resources/templates/list`・`resources/read` をバックエンドへ転送し、これらのエンドポイントで `resources` capability を広告します。
@@ -529,6 +531,41 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### OpenAPI バックエンドの prompts（`prompts`）
+
+OpenAPI の spec には MCP の prompts を表す仕組みが無いため、OpenAPI モードのサーバーは `spec` とは別の prompts 定義ドキュメントから prompts を返せます。`mcpServers.<name>.prompts` に取得元をどちらか1つ指定します。
+
+- **`url`**: `prompts/list`・`prompts/get` のたびに、この絶対 http(s) URL からドキュメントを取得します。バックエンドはゲートウェイのリリースと合わせずに prompts を変更できます。リクエストにはツール呼び出しと同じ認証（`authValue` / `oauth2` / `tokenExchange`）と `headers` が付きます。取得に失敗した場合は呼び出し元にエラーを返します。
+- **`file`**: 起動時にドキュメントを読み込み（読めない・不正な場合は起動に失敗します）、変更されるたびに読み直します。ディレクトリを監視するため、`..data` シンボリックリンクの張り替えで更新される Kubernetes の ConfigMap のボリュームマウントも再起動なしで反映されます。不正な内容に変わった場合はログに出し、直前の prompts を返し続けます。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    prompts:
+      file: /etc/manifold/prompts/petstore.yaml   # または url: https://petstore.example.com/mcp-prompts.yaml
+```
+
+ドキュメントは YAML または JSON（最大 1 MiB）です。
+
+```yaml
+prompts:
+  - name: summarize_pet
+    title: Summarize a pet            # 省略可
+    description: Summarize a pet's profile
+    arguments:
+      - name: petId
+        description: ID of the pet
+        required: true
+      - name: tone
+    messages:                         # role は user または assistant
+      - role: user
+        content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
+```
+
+`content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。`authz` はツールと同じ判定でこれらの prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。
+
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
@@ -643,6 +680,7 @@ gateway:
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
+| `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 
 `authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
 
@@ -1077,7 +1115,7 @@ Manifold は `headers.userID` / `headers.userGroups`（設定していれば `he
 
 ### input / data の契約
 
-Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
+Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/list` ごとに `opaURL + decisionPath.list` へ（ツールごとではなく一括で）、`GET /mcp/list?tools=true` ごとに `opaURL + decisionPath.catalog` へ `{"input": ...}` を POST します。prompts にはツールの使い方の指示が含まれうるため、ツールと同じ2つの判定に同じ形の入力で掛けます。`prompts/get` は prompt 名を `tool` として `decisionPath.call` へ、`prompts/list` は各 prompt を `tools` の要素として `decisionPath.list` へ問い合わせます。同じ名前のツールと区別できるよう、prompt 名には `prompt:` を付けて渡します（prompt `summarize_pet` は `prompt:summarize_pet` として判定されます）。`:` は MCP がツール名に推奨する文字に含まれないため、ツール名と衝突しにくくなっています。ポリシーでは `<server>/prompt:<name>` のルールで prompt を許可します（例: `petstore` の全 prompt なら `petstore/prompt:*`）。以下の例は既定の `authz.input` キー名を使っている。各キーは変更可能（前述の `input` の表を参照）。
 
 ```jsonc
 // tools/call
@@ -1094,6 +1132,13 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 ```
 
 `service` はサーバーの `service.code` です（未設定ならサーバー名なので、`service` を書かない設定では `server` と同じ値になります）。`server` の代わりに `service` で照合するポリシーは、サービスに属するサーバーとエージェントをまとめて許可できます（[サーバーをサービスでまとめる](#サーバーをサービスでまとめるservice) 参照）。`tools/list` の結果は `server` と `name` だけでリクエストと照合するため、ポリシーは input の要素をそのまま返しても、`{server, name}` だけを返しても構いません。
+
+> **注意: 既存のポリシーと prompts**
+> ツールの判定は変わりませんが、prompts も同じ2つの判定に掛かるため、既存のポリシーが prompts も判定します。
+>
+> - サーバー全体を許可するルール（`*` は `prompt:summarize_pet` にも一致するので、例えば `petstore/*`）や名前を見ないルール（「このグループは全部許可」など）は、そのサーバーの prompts も許可します。ツール名を列挙したルール（`petstore/getpetbyid`、`*/getpetbyid` など）はどの prompt も許可しないため、`<server>/prompt:<name>` のルールで許可するまで prompts は見えません。
+> - MCP バックエンドが prompts を広告するようになり、クライアントが `prompts/list` / `prompts/get` を呼ぶため、OPA への問い合わせが増えます（prompt を持たないバックエンドでは増えません）。
+> - prompt 名は `prompt:<name>` として `tool` / `tools[].name` に現れます。OPA の decision log にも同じ名前で記録されます。
 
 OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧、`data.policies[<group id>].catalog` を真偽値とする例）があります。
 

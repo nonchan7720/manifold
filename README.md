@@ -37,7 +37,7 @@ flowchart TD
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
-- **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
+- **MCP backend aggregation**: Transparent reverse proxy to external MCP servers, relaying their tools and prompts
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
@@ -363,6 +363,8 @@ sqlite:
   path: ./tmp/manifold.db
 ```
 
+The backend's tools (`tools/list` / `tools/call`) and prompts (`prompts/list` / `prompts/get`) are relayed as is. A backend that does not advertise the prompts capability returns an empty `prompts/list`, and `prompts/get` returns an unknown-prompt error. Since a prompt can tell the model how to use tools, `authz` applies to prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not. `notifications/prompts/list_changed` from the backend is not relayed.
+
 ### MCP Apps (`apps`)
 
 An MCP backend (`http` / `stdio`) can serve [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps): tools carrying `_meta.ui.resourceUri`, whose `ui://` resource (`text/html;profile=mcp-app`) the host renders. Manifold forwards `resources/list`, `resources/templates/list` and `resources/read` to the backend, and advertises the `resources` capability on these endpoints.
@@ -529,6 +531,41 @@ redis:
   db: ${REDIS_DB:-0}
 ```
 
+### Prompts for an OpenAPI backend (`prompts`)
+
+An OpenAPI spec has no way to describe MCP prompts, so an OpenAPI-mode server can serve them from a separate prompts document, kept apart from `spec`. Set exactly one source under `mcpServers.<name>.prompts`:
+
+- **`url`**: the document is fetched from this absolute http(s) URL on every `prompts/list` and `prompts/get`, so the backend can change its prompts without a gateway release. The request carries the same authentication as tool calls (`authValue` / `oauth2` / `tokenExchange`) and `headers`. A failed fetch returns an error to the caller.
+- **`file`**: the document is read at startup (an unreadable or invalid file fails startup) and re-read whenever it changes. The directory is watched, so a Kubernetes ConfigMap mounted as a volume, which is updated by swapping its `..data` symlink, is picked up without a restart. A change to an invalid document is logged and the previous prompts keep being served.
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    prompts:
+      file: /etc/manifold/prompts/petstore.yaml   # or url: https://petstore.example.com/mcp-prompts.yaml
+```
+
+The document is YAML or JSON, at most 1 MiB:
+
+```yaml
+prompts:
+  - name: summarize_pet
+    title: Summarize a pet            # optional
+    description: Summarize a pet's profile
+    arguments:
+      - name: petId
+        description: ID of the pet
+        required: true
+      - name: tone
+    messages:                         # role is user or assistant
+      - role: user
+        content: "Summarize the pet {{.petId}}.{{if .tone}} Tone: {{.tone}}.{{end}}"
+```
+
+`content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. `authz` applies to these prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not.
+
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
 APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
@@ -643,6 +680,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
+| `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 
 `authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
 
@@ -1077,7 +1115,7 @@ Manifold trusts `headers.userID` / `headers.userGroups` — and, if configured, 
 
 ### Decision contract
 
-Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool), and to `opaURL + decisionPath.catalog` for every `GET /mcp/list?tools=true`. The examples below use the default `authz.input` key names; every key is renameable (see the `input` table above):
+Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools/call`, to `opaURL + decisionPath.list` once per `tools/list` (batched across every tool, not queried per tool), and to `opaURL + decisionPath.catalog` for every `GET /mcp/list?tools=true`. Prompts go through the same two tool decisions with the same input, because a prompt can carry instructions on how to use tools: `prompts/get` queries `decisionPath.call` with the prompt name as `tool`, and `prompts/list` queries `decisionPath.list` with each prompt as an element of `tools`. The prompt name is passed with a `prompt:` prefix (the prompt `summarize_pet` is decided as `prompt:summarize_pet`) so a policy can tell a prompt from a tool of the same name; `:` is outside the characters MCP recommends for tool names. Grant prompts with `<server>/prompt:<name>` rules, e.g. `petstore/prompt:*` for every prompt of `petstore`. The examples below use the default `authz.input` key names; every key is renameable (see the `input` table above):
 
 ```jsonc
 // tools/call
@@ -1094,6 +1132,13 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 ```
 
 `service` is the server's `service.code` (the server name when unset, so it equals `server` for a config without `service`). A policy that matches on `service` instead of `server` grants every server and agent of a service at once — see [Grouping servers into a service](#grouping-servers-into-a-service-service). The `tools/list` result is matched back to the request by `server` and `name` only, so a policy may return the input entries as-is or just `{server, name}`.
+
+> **Note: prompts with an existing policy**
+> Tool decisions are unchanged, but prompts now reach the same two decisions, so an existing policy decides them too:
+>
+> - A rule that grants a whole server (e.g. `petstore/*`, since `*` matches `prompt:summarize_pet`) or ignores the name (e.g. "everything for this group") grants that server's prompts as well. A list of tool names (e.g. `petstore/getpetbyid`, `*/getpetbyid`) grants none, so prompts stay hidden until a `<server>/prompt:<name>` rule allows them.
+> - MCP backends now advertise prompts, so clients call `prompts/list` / `prompts/get` and OPA receives more queries (none when a backend has no prompts).
+> - Prompt names appear as `prompt:<name>` in `tool` / `tools[].name`, including in OPA's decision log.
 
 Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns, `data.policies[<group id>].catalog` as a boolean).
 
