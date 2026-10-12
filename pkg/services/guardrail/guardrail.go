@@ -94,7 +94,7 @@ var _ Guardrail = (*HTTPGuardrail)(nil)
 
 // NewHTTPGuardrail は cfg の URL を呼ぶ Guardrail を返す。httpClient が nil なら
 // cfg.Timeout を持つ既定のクライアントを使う。
-func NewHTTPGuardrail(cfg config.AuditGuardrailConfig, httpClient *http.Client) *HTTPGuardrail {
+func NewHTTPGuardrail(cfg config.GuardrailConfig, httpClient *http.Client) *HTTPGuardrail {
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Transport: client.CustomTransport(),

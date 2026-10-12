@@ -611,38 +611,32 @@ Every `tools/call` writes one JSON line, separate from the application log:
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
 - `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
-#### Masking arguments with a guardrail (`audit.guardrail`)
+### Guardrail (`guardrail`)
 
-With `includeArguments: true`, arguments can carry personal or secret data. `audit.guardrail` passes them through an external guardrail first and records only what it returns. There is no standardized guardrail API, so Manifold speaks [LiteLLM's Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api): any guardrail service built for LiteLLM works as is, and for AWS Bedrock Guardrails Manifold ships an adapter you run as a sidecar (below).
+A guardrail checks every `tools/call` on its way through the gateway, the way authz does: the arguments before they reach the backend (`pre_call`) and the text of the result before it reaches the caller (`post_call`). There is no standardized guardrail API, so Manifold speaks [LiteLLM's Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api): any guardrail service built for LiteLLM works as is, and AWS Bedrock Guardrails is used through the bundled sidecar (below).
 
 ```yaml
-audit:
+guardrail:
   enabled: true
-  includeArguments: true
-  guardrail:
-    url: http://localhost:8090/beta/litellm_basic_guardrail_api
-    headers:                # optional, e.g. the guardrail's API key
-      X-Api-Key: ${GUARDRAIL_API_KEY}
-    timeout: 5s             # per call (default 5s)
-    queueSize: 1024         # records waiting for the guardrail (default 1024)
-    concurrency: 8          # parallel guardrail calls (default 8)
+  url: http://localhost:8090/beta/litellm_basic_guardrail_api
+  headers:                    # optional, e.g. the guardrail's API key
+    X-Api-Key: ${GUARDRAIL_API_KEY}
+  timeout: 5s                 # per call (default 5s)
+  mode: [pre_call, post_call] # default: both
 ```
 
-Manifold POSTs `{"texts": ["<arguments JSON>"], "input_type": "request", ...}` (with `additional_provider_specific_params` carrying `server`, `service` and `tool`) and records `arguments_guardrail` next to the result:
+Manifold POSTs `{"texts": [...], "input_type": "request" | "response", ...}` with `additional_provider_specific_params` carrying `server`, `service` and `tool`:
 
-| `arguments_guardrail` | Guardrail answer | `arguments` recorded |
-| --- | --- | --- |
-| `none` | `NONE` | as called |
-| `masked` | `GUARDRAIL_INTERVENED` | the guardrail's rewrite (as JSON when it still parses, else a string) |
-| `blocked` | `BLOCKED` | none (`arguments_guardrail_reason` holds `blocked_reason`) |
-| `error` | call failed, non-200, or an invalid answer | none |
-| `skipped` | not called: the queue was full or Manifold was shutting down | none |
+- **`pre_call`** sends the arguments as one JSON text. `GUARDRAIL_INTERVENED` calls the backend with the rewritten arguments (which must still be a JSON object).
+- **`post_call`** sends every `text` content of the result, then `structuredContent` as JSON when present. `GUARDRAIL_INTERVENED` returns them rewritten; other content (images, resource links, ...) passes through unchecked.
+- **`BLOCKED`** rejects the call with `blocked by guardrail: <blocked_reason>`. On `pre_call` the backend is never called.
+- **Fail closed**: a guardrail that fails, answers non-200, or answers something invalid rejects the call with `guardrail check failed`, without passing the reason on (it is logged).
 
-The guardrail runs off the request path: the record is queued and written by background workers once the guardrail answers, so a slow guardrail never delays `tools/call`, and the record keeps the call's own timestamp. Unmasked arguments are never written: anything other than `none` or `masked` drops them. Records still queued at shutdown are written before Manifold exits.
+The guardrail is called synchronously, so its latency adds to every `tools/call`; `mode` limits it to the side you need. It runs inside authz (denied calls never reach it) and applies to every server, including reverse (WebMCP) ones. The audit log records the arguments as the caller sent them.
 
 #### AWS Bedrock Guardrails sidecar (`manifold guardrail bedrock`)
 
-`manifold guardrail bedrock` serves the Generic Guardrail API and translates each request to Bedrock's `ApplyGuardrail`. Run it next to the gateway (same image) and point `audit.guardrail.url` at it; it needs no Manifold config file. AWS credentials and the region are resolved the standard AWS SDK way (environment, shared config, IRSA, ...), and the role needs `bedrock:ApplyGuardrail` on the guardrail.
+`manifold guardrail bedrock` serves the Generic Guardrail API and translates each request to Bedrock's `ApplyGuardrail`. Run it next to the gateway (same image) and point `guardrail.url` at it; it needs no Manifold config file. AWS credentials and the region are resolved the standard AWS SDK way (environment, shared config, IRSA, ...), and the role needs `bedrock:ApplyGuardrail` on the guardrail.
 
 ```yaml
 # Kubernetes: a sidecar container in the gateway Pod
@@ -655,7 +649,7 @@ The guardrail runs off the request path: the record is queued and written by bac
     - {name: AWS_REGION, value: ap-northeast-1}        # or --region
 ```
 
-Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → source `INPUT`, `response` → `OUTPUT`), so the answer's `texts` line up with the request's. A text whose sensitive-information filters `ANONYMIZE` comes back masked (`GUARDRAIL_INTERVENED`); if any policy `BLOCKED` it — or Bedrock intervened without returning a rewrite — the whole request is `BLOCKED` with Bedrock's `actionReason`. A Bedrock error is answered with `502`, which the audit log records as `error`. `GET /healthz` answers `200` for probes.
+Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → source `INPUT`, `response` → `OUTPUT`), so the answer's `texts` line up with the request's. A text whose sensitive-information filters `ANONYMIZE` comes back masked (`GUARDRAIL_INTERVENED`); if any policy `BLOCKED` it — or Bedrock intervened without returning a rewrite — the whole request is `BLOCKED` with Bedrock's `actionReason`. A Bedrock error is answered with `502`, which the gateway turns into `guardrail check failed`. `GET /healthz` answers `200` for probes.
 
 ### Configuration reference
 
@@ -930,7 +924,16 @@ storage:
 | `enabled`          | bool   | Write one JSON line per `tools/call` (see [Audit log](#audit-log-audit)) |
 | `output`           | string | `stdout`, `stderr` (default) or a file path (appended to) |
 | `includeArguments` | bool   | Also record the call's arguments (default: `false`) |
-| `guardrail`        | object | Pass the arguments through a guardrail before recording them; requires `includeArguments` (see [Masking arguments with a guardrail](#masking-arguments-with-a-guardrail-auditguardrail)) |
+
+#### `guardrail`
+
+| Field     | Type              | Description |
+| --------- | ----------------- | ----------- |
+| `enabled` | bool              | Check every `tools/call` with the guardrail (see [Guardrail](#guardrail-guardrail)) |
+| `url`     | string            | Generic Guardrail API endpoint (**required** when enabled; absolute http(s) URL) |
+| `headers` | map[string]string | Headers added to every guardrail request |
+| `timeout` | duration          | Timeout of one guardrail call (default `5s`) |
+| `mode`    | []string          | `pre_call` and/or `post_call` (default: both) |
 
 #### `fileFetch`
 

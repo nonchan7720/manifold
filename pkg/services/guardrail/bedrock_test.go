@@ -59,7 +59,7 @@ func bedrockClient(t *testing.T, f *fakeBedrock) *HTTPGuardrail {
 	mux.Handle("POST "+APIPath, NewBedrockHandler(f, "gr-123", "1"))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return NewHTTPGuardrail(config.AuditGuardrailConfig{URL: srv.URL + APIPath}, srv.Client())
+	return NewHTTPGuardrail(config.GuardrailConfig{URL: srv.URL + APIPath}, srv.Client())
 }
 
 func TestBedrockHandler_Anonymized(t *testing.T) {

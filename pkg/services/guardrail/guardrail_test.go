@@ -27,7 +27,7 @@ func newGuardrailStub(
 		_, _ = w.Write([]byte(response))
 	}))
 	t.Cleanup(srv.Close)
-	return NewHTTPGuardrail(config.AuditGuardrailConfig{
+	return NewHTTPGuardrail(config.GuardrailConfig{
 		URL:     srv.URL + "/beta/litellm_basic_guardrail_api",
 		Headers: map[string]string{"X-Api-Key": "secret"},
 	}, srv.Client())

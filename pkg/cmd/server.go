@@ -32,6 +32,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/telemetry"
 	"github.com/nonchan7720/manifold/pkg/services/authz"
 	edgeservices "github.com/nonchan7720/manifold/pkg/services/edge"
+	"github.com/nonchan7720/manifold/pkg/services/guardrail"
 	"github.com/nonchan7720/manifold/pkg/services/identity"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -256,6 +257,52 @@ func authzMiddlewareFn(
 	}
 }
 
+// guardrailMiddlewareFn builds the per-server mcp.Middleware factory wiring
+// mcpsrv.NewGuardrailMiddleware into every backend MCPServer and
+// ReverseGateway build, or nil when the guardrail is disabled.
+func guardrailMiddlewareFn(
+	cfg config.GuardrailConfig, servers config.Servers,
+) func(name string) []mcp.Middleware {
+	if !cfg.Enabled {
+		return nil
+	}
+	g := guardrail.NewHTTPGuardrail(cfg, nil)
+	preCall, postCall := cfg.PreCall(), cfg.PostCall()
+	return func(name string) []mcp.Middleware {
+		service := name
+		if srv, ok := servers[name]; ok && srv != nil {
+			service = srv.ServiceCode()
+		}
+		return []mcp.Middleware{
+			mcpsrv.NewGuardrailMiddleware(name, service, g, preCall, postCall),
+		}
+	}
+}
+
+// combineMiddlewareFns concatenates the middlewares of fns, in order (the
+// first fn's middlewares end up outermost). nil fns are skipped; it returns
+// nil when every fn is nil.
+func combineMiddlewareFns(
+	fns ...func(name string) []mcp.Middleware,
+) func(name string) []mcp.Middleware {
+	var active []func(name string) []mcp.Middleware
+	for _, fn := range fns {
+		if fn != nil {
+			active = append(active, fn)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return func(name string) []mcp.Middleware {
+		var out []mcp.Middleware
+		for _, fn := range active {
+			out = append(out, fn(name)...)
+		}
+		return out
+	}
+}
+
 func newMCPServer(
 	ctx context.Context,
 	servers config.Servers,
@@ -356,15 +403,17 @@ func runGatewayServer(ctx context.Context) error {
 	healthHandler := httphandler.NewHealthHandler()
 	const pathServerName = "server_name"
 	authzDecider := newAuthzDecider(globalConfig.Authz)
-	authzMiddleware := authzMiddlewareFn(
-		globalConfig.Authz, authzDecider, globalConfig.MCPServer,
+	// authz の内側にガードレールを置く（拒否した呼び出しはガードレールに送らない）。
+	policyMiddleware := combineMiddlewareFns(
+		authzMiddlewareFn(globalConfig.Authz, authzDecider, globalConfig.MCPServer),
+		guardrailMiddlewareFn(globalConfig.Guardrail, globalConfig.MCPServer),
 	)
 	mcpSrv, err := newMCPServer(
 		ctx,
 		globalConfig.MCPServer,
 		contentManagementService,
 		globalConfig.Gateway,
-		authzMiddleware,
+		policyMiddleware,
 		mcpsrv.WithAuditLogger(auditLogger),
 	)
 	if err != nil {
@@ -384,7 +433,7 @@ func runGatewayServer(ctx context.Context) error {
 		edgeCfg,
 		globalConfig.MCPServer,
 		mcpsrv.WithReverseServerMiddleware(reverseServerMiddlewareFn(
-			globalConfig.MCPServer, authzMiddleware, auditLogger,
+			globalConfig.MCPServer, policyMiddleware, auditLogger,
 		)),
 	)
 	reverseGateway.Init(ctx)
