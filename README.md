@@ -1133,6 +1133,13 @@ Manifold POSTs `{"input": ...}` to `opaURL + decisionPath.call` for every `tools
 
 `service` is the server's `service.code` (the server name when unset, so it equals `server` for a config without `service`). A policy that matches on `service` instead of `server` grants every server and agent of a service at once — see [Grouping servers into a service](#grouping-servers-into-a-service-service). The `tools/list` result is matched back to the request by `server` and `name` only, so a policy may return the input entries as-is or just `{server, name}`.
 
+> **Note: prompts with an existing policy**
+> Tool decisions are unchanged, but prompts now reach the same two decisions, so an existing policy decides them too:
+>
+> - A rule that grants a whole server (e.g. `petstore/*`, since `*` matches `prompt:summarize_pet`) or ignores the name (e.g. "everything for this group") grants that server's prompts as well. A list of tool names (e.g. `petstore/getpetbyid`, `*/getpetbyid`) grants none, so prompts stay hidden until a `<server>/prompt:<name>` rule allows them.
+> - MCP backends now advertise prompts, so clients call `prompts/list` / `prompts/get` and OPA receives more queries (none when a backend has no prompts).
+> - Prompt names appear as `prompt:<name>` in `tool` / `tools[].name`, including in OPA's decision log.
+
 Manifold does not prescribe a shape for OPA's `data` document; policies are free to structure it however they like — see [`examples/opa/`](examples/opa/) for a working `policy.rego` and `data.json` (`data.policies[<group id>].tools` as a list of `<server>/<tool>` glob patterns, `data.policies[<group id>].catalog` as a boolean).
 
 ### Multi-tenant policy data

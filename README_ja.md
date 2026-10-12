@@ -1133,6 +1133,13 @@ Manifold は `tools/call` ごとに `opaURL + decisionPath.call` へ、`tools/li
 
 `service` はサーバーの `service.code` です（未設定ならサーバー名なので、`service` を書かない設定では `server` と同じ値になります）。`server` の代わりに `service` で照合するポリシーは、サービスに属するサーバーとエージェントをまとめて許可できます（[サーバーをサービスでまとめる](#サーバーをサービスでまとめるservice) 参照）。`tools/list` の結果は `server` と `name` だけでリクエストと照合するため、ポリシーは input の要素をそのまま返しても、`{server, name}` だけを返しても構いません。
 
+> **注意: 既存のポリシーと prompts**
+> ツールの判定は変わりませんが、prompts も同じ2つの判定に掛かるため、既存のポリシーが prompts も判定します。
+>
+> - サーバー全体を許可するルール（`*` は `prompt:summarize_pet` にも一致するので、例えば `petstore/*`）や名前を見ないルール（「このグループは全部許可」など）は、そのサーバーの prompts も許可します。ツール名を列挙したルール（`petstore/getpetbyid`、`*/getpetbyid` など）はどの prompt も許可しないため、`<server>/prompt:<name>` のルールで許可するまで prompts は見えません。
+> - MCP バックエンドが prompts を広告するようになり、クライアントが `prompts/list` / `prompts/get` を呼ぶため、OPA への問い合わせが増えます（prompt を持たないバックエンドでは増えません）。
+> - prompt 名は `prompt:<name>` として `tool` / `tools[].name` に現れます。OPA の decision log にも同じ名前で記録されます。
+
 OPA 側の `data` の形は Manifold が規定しません。ポリシー側で自由に構成できます。[`examples/opa/`](examples/opa/) に動作する `policy.rego` と `data.json`（`data.policies[<group id>].tools` を `<server>/<tool>` の glob パターン一覧、`data.policies[<group id>].catalog` を真偽値とする例）があります。
 
 ### マルチテナントのポリシーデータ
