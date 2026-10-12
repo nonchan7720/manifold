@@ -86,10 +86,14 @@ func runBedrockGuardrail(ctx context.Context, opts bedrockGuardrailOptions) erro
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// 1リクエストは最大 16MiB の本文を読み、texts を ApplyGuardrail してから応答する。
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", opts.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return runServer(ctx, srv, "guardrail-bedrock", opts.port, "", "")
 }
