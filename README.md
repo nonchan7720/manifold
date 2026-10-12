@@ -611,6 +611,24 @@ Every `tools/call` writes one JSON line, separate from the application log:
 - `user` / `groups` come from the `authz.headers.userID` / `userGroups` headers when present (even with authz disabled). `token` is the first 12 hex characters of the SHA-256 of the caller's bearer token — enough to correlate calls, without recording the token.
 - `identity` is the identityKey a reverse (WebMCP) server routed the call by (e.g. `static` under static pairing, or the resolved user under remote pairing). Those endpoints skip JWT validation, so `user` / `groups` / `token` are empty and this is the only caller identity recorded.
 
+#### Redacting secrets (`audit.redact`)
+
+Before a record is written, secrets are replaced with `[REDACTED]` in-process (no external call), in the recorded `arguments` and in `error`:
+
+- **Key names**: the value of any argument key — at any depth — whose name ends with one of `password`, `passwd`, `secret`, `token`, `apikey`, `authorization`, `cookie`, `privatekey`, `credential`, `credentials` is redacted, comparing case-insensitively and ignoring `-`, `_` and `.` (so `githubToken`, `client_secret` and `X-Api-Key` match, `max_tokens` does not). `redact.keys` adds names to this list.
+- **Patterns**: `redact.patterns` are regular expressions (Go RE2); every match inside a string argument value or the error message is redacted.
+
+```yaml
+audit:
+  enabled: true
+  includeArguments: true
+  redact:
+    keys: [ssn, cardNumber]
+    patterns:
+      - '[\w.+-]+@[\w-]+\.[\w.]+'  # e-mail addresses
+      - 'AKIA[0-9A-Z]{16}'            # AWS access key IDs
+```
+
 ### Configuration reference
 
 #### `gateway`
@@ -884,6 +902,8 @@ storage:
 | `enabled`          | bool   | Write one JSON line per `tools/call` (see [Audit log](#audit-log-audit)) |
 | `output`           | string | `stdout`, `stderr` (default) or a file path (appended to) |
 | `includeArguments` | bool   | Also record the call's arguments (default: `false`) |
+| `redact.keys`      | []string | Argument key names whose values are redacted, in addition to the defaults (see [Redacting secrets](#redacting-secrets-auditredact)) |
+| `redact.patterns`  | []string | Regular expressions redacted from string argument values and the error message |
 
 #### `fileFetch`
 
