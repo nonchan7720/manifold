@@ -236,6 +236,38 @@ server "petstore": drift detected (generated/petstore.yaml)
   run "manifold openapi generate" to update
 ```
 
+#### Tool annotations
+
+Each OpenAPI / Swagger tool carries MCP [tool annotations](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations) derived from its HTTP method:
+
+| Method | Kind | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
+|---|---|---|---|---|
+| `GET` / `HEAD` / `OPTIONS` / `TRACE` | `readOnly` | `true` | `false` | `true` |
+| `POST` / `PUT` / `PATCH` (and others) | `write` | `false` | `false` | `false` |
+| `DELETE` | `destructive` | `false` | `true` | `false` |
+
+An operation can override them with the `x-mcp.annotations` extension. `kind` replaces the method-derived preset, and the individual hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) and `title` override it on top:
+
+```yaml
+paths:
+  /pets/search:
+    post:
+      operationId: searchPets
+      x-mcp:
+        annotations:
+          kind: readOnly # readOnly | write | destructive
+  /pets/{petId}:
+    put:
+      operationId: replacePet
+      x-mcp:
+        annotations:
+          kind: destructive
+          idempotentHint: true
+          title: Replace a pet
+```
+
+An unknown `kind` or key, or a value of the wrong type, fails building the tools (gateway startup, `openapi tools` / `generate`) with an error naming the operation.
+
 #### Breaking-change detection (`openapi diff`)
 
 `manifold openapi diff` answers "is this upstream spec change safe for my MCP clients?". For every server with `tools.file` configured (others are skipped with a stderr note), it compares the spec embedded in the committed generated file (base) against what the live spec produces now (revision) using [oasdiff](https://github.com/oasdiff/oasdiff)'s backward-compatibility checks, and reports every change with its level — `error` and `warning` are breaking, `info` is not — and the MCP tool whose operation it affects. It never writes.

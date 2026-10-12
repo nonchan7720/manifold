@@ -106,6 +106,155 @@ func applyMethodAnnotations(t *mcp.Tool, method string) {
 	}
 }
 
+// Annotation kinds accepted by x-mcp.annotations.kind.
+const (
+	annotationKindReadOnly    = "readOnly"
+	annotationKindWrite       = "write"
+	annotationKindDestructive = "destructive"
+)
+
+// WithRegisterToolAnnotationsExtension applies the operation's
+// x-mcp.annotations extension on top of the method-derived annotations, so
+// it must come after WithRegisterToolOperation. Use
+// ParseAnnotationsExtension to validate the extension first.
+func WithRegisterToolAnnotationsExtension(ext AnnotationsExtension) RegisterToolOptions {
+	return func(tool *Tool) {
+		ext.apply(&tool.tool)
+	}
+}
+
+// AnnotationsExtension is the parsed x-mcp.annotations of an operation:
+//
+//	x-mcp:
+//	  annotations:
+//	    kind: readOnly | write | destructive # replaces the method-derived preset
+//	    readOnlyHint: true                   # individual hints override the preset
+//	    destructiveHint: false
+//	    idempotentHint: true
+//	    openWorldHint: false
+//	    title: Find pet
+type AnnotationsExtension struct {
+	kind            string
+	readOnlyHint    *bool
+	destructiveHint *bool
+	idempotentHint  *bool
+	openWorldHint   *bool
+	title           *string
+}
+
+// ParseAnnotationsExtension reads x-mcp.annotations from an operation's
+// extensions. It returns the zero value (which changes nothing) when the
+// extension is absent, and an error when it is malformed (unknown kind or
+// key, or a value of the wrong type).
+func ParseAnnotationsExtension(extensions map[string]any) (AnnotationsExtension, error) {
+	var ext AnnotationsExtension
+	xmcp, ok := extensions["x-mcp"]
+	if !ok || xmcp == nil {
+		return ext, nil
+	}
+	xm, ok := xmcp.(map[string]any)
+	if !ok {
+		return ext, fmt.Errorf("x-mcp must be an object, got %T", xmcp)
+	}
+	raw, ok := xm["annotations"]
+	if !ok || raw == nil {
+		return ext, nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ext, fmt.Errorf("x-mcp.annotations must be an object, got %T", raw)
+	}
+
+	for key, v := range m {
+		switch key {
+		case "kind":
+			kind, ok := v.(string)
+			if !ok {
+				return ext, fmt.Errorf("x-mcp.annotations.kind must be a string, got %T", v)
+			}
+			switch kind {
+			case annotationKindReadOnly, annotationKindWrite, annotationKindDestructive:
+				ext.kind = kind
+			default:
+				return ext, fmt.Errorf(
+					"x-mcp.annotations.kind: unknown kind %q (want %s, %s or %s)",
+					kind, annotationKindReadOnly, annotationKindWrite, annotationKindDestructive,
+				)
+			}
+		case "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint":
+			b, ok := v.(bool)
+			if !ok {
+				return ext, fmt.Errorf("x-mcp.annotations.%s must be a boolean, got %T", key, v)
+			}
+			switch key {
+			case "readOnlyHint":
+				ext.readOnlyHint = &b
+			case "destructiveHint":
+				ext.destructiveHint = &b
+			case "idempotentHint":
+				ext.idempotentHint = &b
+			case "openWorldHint":
+				ext.openWorldHint = &b
+			}
+		case "title":
+			title, ok := v.(string)
+			if !ok {
+				return ext, fmt.Errorf("x-mcp.annotations.title must be a string, got %T", v)
+			}
+			ext.title = &title
+		default:
+			return ext, fmt.Errorf("x-mcp.annotations: unknown key %q", key)
+		}
+	}
+	return ext, nil
+}
+
+func (e AnnotationsExtension) isZero() bool {
+	return e == AnnotationsExtension{}
+}
+
+func (e AnnotationsExtension) apply(t *mcp.Tool) {
+	if e.isZero() {
+		return
+	}
+	switch e.kind {
+	case annotationKindReadOnly:
+		resetAnnotations(t)
+		applyReadOnly(t)
+	case annotationKindWrite:
+		resetAnnotations(t)
+		applyWrite(t)
+	case annotationKindDestructive:
+		resetAnnotations(t)
+		applyDestructive(t)
+	}
+	a := toolAnnotations(t)
+	if e.readOnlyHint != nil {
+		a.ReadOnlyHint = *e.readOnlyHint
+	}
+	if e.destructiveHint != nil {
+		a.DestructiveHint = new(*e.destructiveHint)
+	}
+	if e.idempotentHint != nil {
+		a.IdempotentHint = *e.idempotentHint
+	}
+	if e.openWorldHint != nil {
+		a.OpenWorldHint = new(*e.openWorldHint)
+	}
+	if e.title != nil {
+		a.Title = *e.title
+	}
+}
+
+// resetAnnotations clears the hints a kind preset sets, so switching e.g. a
+// GET from readOnly to write does not keep its IdempotentHint.
+func resetAnnotations(t *mcp.Tool) {
+	a := toolAnnotations(t)
+	a.ReadOnlyHint = false
+	a.DestructiveHint = nil
+	a.IdempotentHint = false
+}
+
 func toolAnnotations(t *mcp.Tool) *mcp.ToolAnnotations {
 	if t.Annotations == nil {
 		t.Annotations = &mcp.ToolAnnotations{}

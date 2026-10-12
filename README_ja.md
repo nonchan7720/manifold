@@ -236,6 +236,38 @@ server "petstore": drift detected (generated/petstore.yaml)
   run "manifold openapi generate" to update
 ```
 
+#### ツールのアノテーション
+
+OpenAPI / Swagger のツールには、HTTP メソッドから決まる MCP の [tool annotations](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations) が付きます。
+
+| メソッド | 種別 | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
+|---|---|---|---|---|
+| `GET` / `HEAD` / `OPTIONS` / `TRACE` | `readOnly`（読み取り専用） | `true` | `false` | `true` |
+| `POST` / `PUT` / `PATCH`（ほか） | `write`（書き込み） | `false` | `false` | `false` |
+| `DELETE` | `destructive`（破壊的） | `false` | `true` | `false` |
+
+operation に `x-mcp.annotations` 拡張を書くと上書きできます。`kind` はメソッドから決まるプリセットを置き換え、個別のヒント（`readOnlyHint`・`destructiveHint`・`idempotentHint`・`openWorldHint`）と `title` はさらにその上から上書きします。
+
+```yaml
+paths:
+  /pets/search:
+    post:
+      operationId: searchPets
+      x-mcp:
+        annotations:
+          kind: readOnly # readOnly | write | destructive
+  /pets/{petId}:
+    put:
+      operationId: replacePet
+      x-mcp:
+        annotations:
+          kind: destructive
+          idempotentHint: true
+          title: Replace a pet
+```
+
+未知の `kind` やキー、型の合わない値があると、ツールの構築（gateway の起動、`openapi tools` / `generate`）が operation 名入りのエラーで失敗します。
+
 #### 破壊的変更の検出（`openapi diff`）
 
 `manifold openapi diff` は「この上流 spec の変更は MCP クライアントにとって安全か」を確認するためのコマンドです。`tools.file` が設定されている各サーバーについて（未設定のサーバーは stderr にメモを出してスキップ）、コミット済みの生成物ファイルに埋め込まれた spec（base）と、ライブの spec から今生成される spec（revision）を [oasdiff](https://github.com/oasdiff/oasdiff) の後方互換性チェックで比較し、変更ごとにレベル（`error` と `warning` は破壊的、`info` は非破壊的）と、その operation に対応する MCP ツール名を出力する。ファイルへの書き込みは一切行わない。

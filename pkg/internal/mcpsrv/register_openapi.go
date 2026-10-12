@@ -159,12 +159,18 @@ func swagger(
 				headers,
 			)
 
+			annotations, err := ParseAnnotationsExtension(operation.Extensions)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", strings.ToUpper(method), path, err)
+			}
+
 			register.RegisterTool(
 				baseToolName,
 				description,
 				inputSchema,
 				ToolFunc(toolFunc),
 				WithRegisterToolOperation(method, path),
+				WithRegisterToolAnnotationsExtension(annotations),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
 				WithRegisterToolBinaryFields(
 					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
@@ -223,9 +229,14 @@ func openapi(
 				headers,
 				isBinaryResponse,
 			)
+			annotations, err := ParseAnnotationsExtension(operation.Extensions)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", strings.ToUpper(method), path, err)
+			}
 			opts := make([]RegisterToolOptions, 0, 10)
 			opts = append(opts,
 				WithRegisterToolOperation(method, path),
+				WithRegisterToolAnnotationsExtension(annotations),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
 			)
 			if !isBinaryResponse {
