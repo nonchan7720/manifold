@@ -4,7 +4,7 @@ setup-envtest = "go:sigs.k8s.io/controller-runtime/tools/setup-envtest"
 postman-cli = "npm:postman-cli"
 
 [tools]
-go = "1.27.1"
+go = "1.27.2"
 golangci-lint = "2.14.0"
 setup-envtest = "0.25.2"
 postman-cli = "1.69.0"
