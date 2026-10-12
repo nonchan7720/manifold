@@ -39,12 +39,17 @@ func TestServer_ValidateWithContext_Prompts(t *testing.T) {
 		{
 			name:    "relative url",
 			server:  openAPI(&PromptsConfig{URL: "/prompts"}),
-			wantErr: "must be an absolute http(s) URL",
+			wantErr: "must use http or https",
 		},
 		{
 			name:    "non-http url",
 			server:  openAPI(&PromptsConfig{URL: "file:///etc/prompts.yaml"}),
-			wantErr: "must be an absolute http(s) URL",
+			wantErr: "must use http or https",
+		},
+		{
+			name:    "url without host",
+			server:  openAPI(&PromptsConfig{URL: "https:///prompts"}),
+			wantErr: "must include a host",
 		},
 		{
 			name:    "mcp backend",

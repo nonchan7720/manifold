@@ -2,10 +2,8 @@ package config
 
 import (
 	"context"
-	"regexp"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
-	"github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
 // PromptsConfig は OpenAPI モードのサーバーが公開する prompts の取得元
@@ -22,10 +20,6 @@ type PromptsConfig struct {
 	File string `mapstructure:"file"`
 }
 
-// httpURLRegex は prompts.url に許すスキーム。is.RequestURL は file:// 等の
-// スキームも通すため、http(s) に絞る。
-var httpURLRegex = regexp.MustCompile(`^https?://`)
-
 func (p PromptsConfig) ValidateWithContext(ctx context.Context) error {
 	return validation.ValidateStructWithContext(ctx, &p,
 		validation.Field(&p.URL,
@@ -33,8 +27,9 @@ func (p PromptsConfig) ValidateWithContext(ctx context.Context) error {
 				validation.Required.Error("one of url or file is required")),
 			validation.When(p.File != "",
 				validation.Empty.Error("url and file are mutually exclusive")),
-			is.RequestURL.Error("must be an absolute http(s) URL"),
-			validation.Match(httpURLRegex).Error("must be an absolute http(s) URL"),
+			// is.URL・is.RequestURL は http(s) 以外のスキームも通すため、
+			// authz.opaURL と同じ validateHTTPURL で http(s) とホストを要求する。
+			validation.When(p.URL != "", validation.By(validateHTTPURL)),
 		),
 	)
 }
