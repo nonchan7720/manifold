@@ -37,7 +37,7 @@ flowchart TD
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
 - **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
-- **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ
+- **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ（ツールと prompts を中継）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
@@ -362,6 +362,8 @@ mcpServers:
 sqlite:
   path: ./tmp/manifold.db
 ```
+
+バックエンドのツール（`tools/list` / `tools/call`）と prompts（`prompts/list` / `prompts/get`）をそのまま中継します。prompts capability を広告しないバックエンドでは、`prompts/list` は空の一覧を、`prompts/get` は unknown prompt エラーを返します。prompts に掛かるのはエンドポイントの認証のみで、`authz` と `tools.include` / `exclude` / `overrides` は適用されません。また、バックエンドからの `notifications/prompts/list_changed` は中継しません。
 
 ### MCP Apps（`apps`）
 

@@ -13,8 +13,8 @@ import (
 // 結果に resultType（"complete" または "input_required"）が必須になる。
 // go-sdk は組み込みハンドラ（Server.callTool 等）の中でこれを付けるが、
 // パススルー（newBackendPassthroughMiddleware・newBackendResourcesMiddleware・
-// newServiceAgentsMiddleware）はそのハンドラを通らず、バックエンドの結果を
-// そのまま返す。バックエンドとの交渉が 2026-07-28 より古い版で済んでいる場合、
+// newBackendPromptsMiddleware・newServiceAgentsMiddleware）はそのハンドラを
+// 通らず、バックエンドの結果をそのまま返す。バックエンドとの交渉が 2026-07-28 より古い版で済んでいる場合、
 // その結果に resultType は無く、下流の新しい版のクライアント
 // （Claude Agent SDK の CLI 等）は応答を不正として捨てる。
 //

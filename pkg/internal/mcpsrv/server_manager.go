@@ -185,6 +185,9 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				// MCP Apps の ui:// リソースを取得できるよう resources も広告し、
 				// resources/* をバックエンドへ転送する（newBackendResourcesMiddleware）。
 				srvOpts.Capabilities.Resources = &mcp.ResourceCapabilities{}
+				// バックエンドの prompts も転送する（newBackendPromptsMiddleware）。
+				// listChanged は tools と同じく転送しないため広告しない。
+				srvOpts.Capabilities.Prompts = &mcp.PromptCapabilities{}
 			}
 		case server.HasAgents():
 			// エージェントをぶら下げた OpenAPI モードのサーバー。Capabilities を
@@ -211,11 +214,13 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			s.backendClients[name] = bc
 			// MCP Apps: resources/* も転送し、その外側で呼び出し元の UI 対応を
 			// 判定する（バックエンドへの広告と、UI 非対応の呼び出し元向けの調整）。
+			// prompts/* も同じく転送する。
 			// 1回の AddReceivingMiddleware では先頭が外側になる。
 			srv.AddReceivingMiddleware(
 				newMCPAppsMiddleware(server),
 				newBackendPassthroughMiddleware(bc),
 				newBackendResourcesMiddleware(bc),
+				newBackendPromptsMiddleware(bc),
 			)
 		}
 		if server.IsA2ABackend() {

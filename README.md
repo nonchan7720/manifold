@@ -37,7 +37,7 @@ flowchart TD
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
 - **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
-- **MCP backend aggregation**: Transparent reverse proxy to external MCP servers
+- **MCP backend aggregation**: Transparent reverse proxy to external MCP servers, relaying their tools and prompts
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
@@ -362,6 +362,8 @@ mcpServers:
 sqlite:
   path: ./tmp/manifold.db
 ```
+
+The backend's tools (`tools/list` / `tools/call`) and prompts (`prompts/list` / `prompts/get`) are relayed as is. A backend that does not advertise the prompts capability returns an empty `prompts/list`, and `prompts/get` returns an unknown-prompt error. Prompts are protected by the endpoint's authentication only: `authz` and `tools.include` / `exclude` / `overrides` do not apply to them, and `notifications/prompts/list_changed` from the backend is not relayed.
 
 ### MCP Apps (`apps`)
 
