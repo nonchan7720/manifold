@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.20.2](https://github.com/nonchan7720/manifold/compare/v1.20.1...v1.20.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies ([#291](https://github.com/nonchan7720/manifold/issues/291)) ([978146d](https://github.com/nonchan7720/manifold/commit/978146decd5202c7278b6068882126eac75b365a))
+* **deps:** update go-redis to v9.23.0 ([#280](https://github.com/nonchan7720/manifold/issues/280)) ([ce2a95b](https://github.com/nonchan7720/manifold/commit/ce2a95bc9467939648bfefc601dd43b12aeeb0c4))
+* **deps:** update module github.com/alicebob/miniredis/v2 to v2.40.0 ([#292](https://github.com/nonchan7720/manifold/issues/292)) ([9833fb9](https://github.com/nonchan7720/manifold/commit/9833fb95b024efcd806af6a1d4869320b4ada346))
+* **deps:** update module golang.org/x/net to v0.61.0 ([#293](https://github.com/nonchan7720/manifold/issues/293)) ([9ca49f2](https://github.com/nonchan7720/manifold/commit/9ca49f285500f931fd12727bce44b75aaba7cce0))
+* **deps:** update opentelemetry ([#281](https://github.com/nonchan7720/manifold/issues/281)) ([d8e972f](https://github.com/nonchan7720/manifold/commit/d8e972fc28a2a6c6a34fd412b57123a5f3fa9177))
+
+
+### Miscellaneous
+
+* **deps:** lock file maintenance ([#289](https://github.com/nonchan7720/manifold/issues/289)) ([d230742](https://github.com/nonchan7720/manifold/commit/d230742c8c10e1a4b5a21a2e0b0c3e04a8c4b44e))
+* **deps:** update golang version to v1.27.2 ([#290](https://github.com/nonchan7720/manifold/issues/290)) ([82c9239](https://github.com/nonchan7720/manifold/commit/82c923930d33bdba7b366ed2905792defe22ca93))
+* **deps:** update jdx/mise-action action to v5.1.0 ([#285](https://github.com/nonchan7720/manifold/issues/285)) ([7e6616f](https://github.com/nonchan7720/manifold/commit/7e6616f595d2a44a02f65f332be000a3e9f4dbd4))
+* **deps:** update jdx/mise-action action to v5.1.1 ([#288](https://github.com/nonchan7720/manifold/issues/288)) ([6645a32](https://github.com/nonchan7720/manifold/commit/6645a32ace776e5acfa4fbd75df98edb71f51cf2))
+
 ## [1.20.1](https://github.com/nonchan7720/manifold/compare/v1.20.0...v1.20.1) (2026-10-10)
 
 
