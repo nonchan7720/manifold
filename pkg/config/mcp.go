@@ -329,7 +329,12 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.Agents, validation.WithContext(s.validateAgents)),
 		validation.Field(&s.Apps, validation.By(s.validateApps)),
-		validation.Field(&s.Prompts, validation.By(s.validatePrompts)),
+		// MCP バックエンドはバックエンド自身の prompts を中継するので、prompts の
+		// 取得元を設定できるのは OpenAPI モードのみ。
+		validation.Field(&s.Prompts, validation.When(!s.IsOpenAPI(),
+			validation.Nil.Error("is only supported in OpenAPI mode "+
+				"(MCP backends relay the backend's own prompts)"),
+		)),
 	)
 }
 

@@ -39,17 +39,17 @@ func TestServer_ValidateWithContext_Prompts(t *testing.T) {
 		{
 			name:    "relative url",
 			server:  openAPI(&PromptsConfig{URL: "/prompts"}),
-			wantErr: "url must be an absolute http(s) URL",
+			wantErr: "must be an absolute http(s) URL",
 		},
 		{
 			name:    "non-http url",
 			server:  openAPI(&PromptsConfig{URL: "file:///etc/prompts.yaml"}),
-			wantErr: "url must be an absolute http(s) URL",
+			wantErr: "must be an absolute http(s) URL",
 		},
 		{
 			name:    "mcp backend",
 			server:  mcpBackend,
-			wantErr: "prompts is only supported in OpenAPI mode",
+			wantErr: "is only supported in OpenAPI mode",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

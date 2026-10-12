@@ -1,8 +1,11 @@
 package config
 
 import (
-	"fmt"
-	"net/url"
+	"context"
+	"regexp"
+
+	validation "github.com/go-ozzo/ozzo-validation/v4"
+	"github.com/go-ozzo/ozzo-validation/v4/is"
 )
 
 // PromptsConfig は OpenAPI モードのサーバーが公開する prompts の取得元
@@ -19,27 +22,19 @@ type PromptsConfig struct {
 	File string `mapstructure:"file"`
 }
 
-// validatePrompts は mcpServers.<name>.prompts を検証する。
-func (s Server) validatePrompts(any) error {
-	p := s.Prompts
-	if p == nil {
-		return nil
-	}
-	if !s.IsOpenAPI() {
-		return fmt.Errorf(
-			"prompts is only supported in OpenAPI mode (MCP backends relay the backend's own prompts)",
-		)
-	}
-	switch {
-	case p.URL == "" && p.File == "":
-		return fmt.Errorf("one of url or file is required")
-	case p.URL != "" && p.File != "":
-		return fmt.Errorf("url and file are mutually exclusive")
-	case p.URL != "":
-		u, err := url.Parse(p.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("url must be an absolute http(s) URL")
-		}
-	}
-	return nil
+// httpURLRegex は prompts.url に許すスキーム。is.RequestURL は file:// 等の
+// スキームも通すため、http(s) に絞る。
+var httpURLRegex = regexp.MustCompile(`^https?://`)
+
+func (p PromptsConfig) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(ctx, &p,
+		validation.Field(&p.URL,
+			validation.When(p.File == "",
+				validation.Required.Error("one of url or file is required")),
+			validation.When(p.File != "",
+				validation.Empty.Error("url and file are mutually exclusive")),
+			is.RequestURL.Error("must be an absolute http(s) URL"),
+			validation.Match(httpURLRegex).Error("must be an absolute http(s) URL"),
+		),
+	)
 }
