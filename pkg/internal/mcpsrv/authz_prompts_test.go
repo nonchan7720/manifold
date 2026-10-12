@@ -40,7 +40,7 @@ func TestAuthzMiddleware_PromptGet_UsesToolCallDecision(t *testing.T) {
 	require.Equal(t, "user-042", d.allowCalls[0].p.UserID)
 	require.Equal(
 		t,
-		authz.ToolRef{Server: "billing-svc", Service: "billing", Name: "invoice_howto"},
+		authz.ToolRef{Server: "billing-svc", Service: "billing", Name: "prompt_invoice_howto"},
 		d.allowCalls[0].t,
 	)
 }
@@ -69,7 +69,7 @@ func TestAuthzMiddleware_PromptGet_Denied(t *testing.T) {
 // 渡し、許可されたものだけを返す。
 func TestAuthzMiddleware_PromptsList_UsesToolsListDecision(t *testing.T) {
 	d := &fakeDecider{allowedToolsResult: []authz.ToolRef{
-		{Server: "billing-svc", Service: "billing", Name: "refund_howto"},
+		{Server: "billing-svc", Service: "billing", Name: "prompt_refund_howto"},
 	}}
 	session := newAuthzTestServer(t, newBillingServerWithPrompts(t), d, identityHeaders())
 
@@ -80,8 +80,8 @@ func TestAuthzMiddleware_PromptsList_UsesToolsListDecision(t *testing.T) {
 
 	require.Equal(t, 1, d.allowedToolsCallCount())
 	require.ElementsMatch(t, []authz.ToolRef{
-		{Server: "billing-svc", Service: "billing", Name: "invoice_howto"},
-		{Server: "billing-svc", Service: "billing", Name: "refund_howto"},
+		{Server: "billing-svc", Service: "billing", Name: "prompt_invoice_howto"},
+		{Server: "billing-svc", Service: "billing", Name: "prompt_refund_howto"},
 	}, d.allowedToolsCalls[0])
 }
 

@@ -21,6 +21,10 @@ const (
 	authzMethodPromptsList = methodPromptsList
 	authzMethodPromptsGet  = methodPromptsGet
 
+	// authzPromptPrefix は authz の判定に渡す prompt 名の接頭辞。同じ名前の
+	// ツールと prompt がポリシー上で区別できるようにする。
+	authzPromptPrefix = "prompt_"
+
 	// resources/* は今のところ authz の対象外（MCP バックエンドの
 	// newBackendResourcesMiddleware がそのまま転送する）。対象にする場合は
 	// NewAuthzMiddleware でこれらを判定する。
@@ -80,7 +84,7 @@ func authzHandleToolCall(
 	case *mcp.CallToolParamsRaw:
 		name = params.Name
 	case *mcp.GetPromptParams:
-		name = params.Name
+		name = authzPromptPrefix + params.Name
 	default:
 		slog.ErrorContext(ctx, "authz: unexpected params type on "+method,
 			slog.String("server", serverName), slog.String("reason", "unexpected_params"))
@@ -165,8 +169,9 @@ func authzHandleToolsList(
 }
 
 // authzHandlePromptsList は authzHandleToolsList と同じく、next の prompts/list の
-// 結果を d.AllowedTools が許可した prompt に絞る（prompt はツールと同じ形で
-// 判定に渡す）。空の一覧では Decider を呼ばない。
+// 結果を d.AllowedTools が許可した prompt に絞る（prompt は名前に
+// authzPromptPrefix を付け、ツールと同じ形で判定に渡す）。空の一覧では
+// Decider を呼ばない。
 func authzHandlePromptsList(
 	ctx context.Context,
 	serverName, serviceCode string,
@@ -187,7 +192,9 @@ func authzHandlePromptsList(
 
 	refs := make([]authz.ToolRef, len(result.Prompts))
 	for i, prompt := range result.Prompts {
-		refs[i] = authz.ToolRef{Server: serverName, Service: serviceCode, Name: prompt.Name}
+		refs[i] = authz.ToolRef{
+			Server: serverName, Service: serviceCode, Name: authzPromptPrefix + prompt.Name,
+		}
 	}
 	allowed, err := d.AllowedTools(ctx, p, refs)
 	if err != nil {
@@ -202,7 +209,7 @@ func authzHandlePromptsList(
 	}
 	filtered := make([]*mcp.Prompt, 0, len(allowed))
 	for _, prompt := range result.Prompts {
-		if _, ok := allowedSet[prompt.Name]; ok {
+		if _, ok := allowedSet[authzPromptPrefix+prompt.Name]; ok {
 			filtered = append(filtered, prompt)
 		}
 	}
