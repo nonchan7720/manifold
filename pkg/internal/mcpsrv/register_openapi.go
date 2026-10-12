@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -159,12 +160,15 @@ func swagger(
 				headers,
 			)
 
+			annotations := parseAnnotationsExtensionOrWarn(ctx, operation.Extensions, method, path)
+
 			register.RegisterTool(
 				baseToolName,
 				description,
 				inputSchema,
 				ToolFunc(toolFunc),
 				WithRegisterToolOperation(method, path),
+				WithRegisterToolAnnotationsExtension(annotations),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
 				WithRegisterToolBinaryFields(
 					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
@@ -223,9 +227,11 @@ func openapi(
 				headers,
 				isBinaryResponse,
 			)
+			annotations := parseAnnotationsExtensionOrWarn(ctx, operation.Extensions, method, path)
 			opts := make([]RegisterToolOptions, 0, 10)
 			opts = append(opts,
 				WithRegisterToolOperation(method, path),
+				WithRegisterToolAnnotationsExtension(annotations),
 				WithRegisterToolDocs(operation.Summary, operation.Description),
 			)
 			if !isBinaryResponse {
@@ -249,4 +255,23 @@ func openapi(
 		}
 	}
 	return nil
+}
+
+// parseAnnotationsExtensionOrWarn parses the operation's x-mcp.annotations.
+// A malformed extension is ignored with a warning, so the tool keeps its
+// method-derived annotations instead of failing the whole catalog.
+func parseAnnotationsExtensionOrWarn(
+	ctx context.Context,
+	extensions map[string]any,
+	method, path string,
+) AnnotationsExtension {
+	ext, err := ParseAnnotationsExtension(extensions)
+	if err != nil {
+		slog.WarnContext(ctx, "invalid x-mcp.annotations; ignored",
+			slog.String("operation", fmt.Sprintf("%s %s", strings.ToUpper(method), path)),
+			slog.String("error", err.Error()),
+		)
+		return AnnotationsExtension{}
+	}
+	return ext
 }

@@ -483,3 +483,33 @@ func TestAttachTools_StructuredContentIsAlwaysAnObject(t *testing.T) {
 		})
 	}
 }
+
+func TestWithRegisterToolOperation_Annotations(t *testing.T) {
+	tests := []struct {
+		method      string
+		readOnly    bool
+		destructive bool
+		idempotent  bool
+	}{
+		{method: "get", readOnly: true, destructive: false, idempotent: true},
+		{method: "HEAD", readOnly: true, destructive: false, idempotent: true},
+		{method: "options", readOnly: true, destructive: false, idempotent: true},
+		{method: "post", readOnly: false, destructive: false},
+		{method: "put", readOnly: false, destructive: false},
+		{method: "patch", readOnly: false, destructive: false},
+		{method: "delete", readOnly: false, destructive: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			r := NewMCPToolRegistry()
+			r.RegisterTool("op", "desc", nil, nil, WithRegisterToolOperation(tt.method, "/items"))
+			tool := findTool(t, r, "op")
+			a := tool.tool.Annotations
+			require.NotNil(t, a)
+			require.Equal(t, tt.readOnly, a.ReadOnlyHint)
+			require.NotNil(t, a.DestructiveHint)
+			require.Equal(t, tt.destructive, *a.DestructiveHint)
+			require.Equal(t, tt.idempotent, a.IdempotentHint)
+		})
+	}
+}
