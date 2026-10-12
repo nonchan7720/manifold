@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/nonchan7720/manifold/compare/v1.22.0...v1.23.0) (2026-10-12)
+
+
+### Features
+
+* **mcpsrv:** OpenAPI ツールに tool annotations を付与し x-mcp.annotations で上書き可能にする ([#301](https://github.com/nonchan7720/manifold/issues/301)) ([91beabe](https://github.com/nonchan7720/manifold/commit/91beabe05368de82a425a6c633f4951148d63745))
+
 ## [1.22.0](https://github.com/nonchan7720/manifold/compare/v1.21.0...v1.22.0) (2026-10-12)
 
 
