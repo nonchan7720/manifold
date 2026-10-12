@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"mime"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -80,12 +81,55 @@ func WithRegisterToolMeta(meta map[string]any) RegisterToolOptions {
 }
 
 // WithRegisterToolOperation records the HTTP method and path the tool was
-// generated from (method is upper-cased), for later readback via Definitions().
+// generated from (method is upper-cased), for later readback via Definitions(),
+// and sets the tool annotations (read-only / write / destructive) derived
+// from the HTTP method.
 func WithRegisterToolOperation(method, path string) RegisterToolOptions {
 	return func(tool *Tool) {
 		tool.method = strings.ToUpper(method)
 		tool.path = path
+		applyMethodAnnotations(&tool.tool, tool.method)
 	}
+}
+
+// applyMethodAnnotations sets the MCP tool annotations from the HTTP method:
+// safe methods (GET/HEAD/OPTIONS/TRACE) are read-only, DELETE is destructive,
+// and every other method (POST/PUT/PATCH, ...) is a non-destructive write.
+func applyMethodAnnotations(t *mcp.Tool, method string) {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		applyReadOnly(t)
+	case http.MethodDelete:
+		applyDestructive(t)
+	default:
+		applyWrite(t)
+	}
+}
+
+func toolAnnotations(t *mcp.Tool) *mcp.ToolAnnotations {
+	if t.Annotations == nil {
+		t.Annotations = &mcp.ToolAnnotations{}
+	}
+	return t.Annotations
+}
+
+func applyReadOnly(t *mcp.Tool) {
+	a := toolAnnotations(t)
+	a.ReadOnlyHint = true
+	a.DestructiveHint = new(false)
+	a.IdempotentHint = true
+}
+
+func applyWrite(t *mcp.Tool) {
+	a := toolAnnotations(t)
+	a.ReadOnlyHint = false
+	a.DestructiveHint = new(false)
+}
+
+func applyDestructive(t *mcp.Tool) {
+	a := toolAnnotations(t)
+	a.ReadOnlyHint = false
+	a.DestructiveHint = new(true)
 }
 
 // WithRegisterToolDocs records the source operation's OpenAPI summary and
