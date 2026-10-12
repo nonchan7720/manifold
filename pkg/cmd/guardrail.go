@@ -47,7 +47,7 @@ func newGuardrailBedrockCmd() *cobra.Command {
 		Short: "Serve the Generic Guardrail API backed by AWS Bedrock Guardrails",
 		Long: "Serves the Generic Guardrail API (POST " + guardrail.APIPath + ") and " +
 			"translates each request to AWS Bedrock Guardrails' ApplyGuardrail. Run it as a " +
-			"sidecar and point audit.guardrail.url at it. AWS credentials and the region are " +
+			"sidecar and point guardrail.url at it. AWS credentials and the region are " +
 			"resolved the standard AWS SDK way (environment, shared config, IRSA, ...).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runBedrockGuardrail(cmd.Context(), opts)
