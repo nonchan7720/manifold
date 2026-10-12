@@ -266,7 +266,7 @@ paths:
           title: Replace a pet
 ```
 
-未知の `kind` やキー、型の合わない値があると、ツールの構築（gateway の起動、`openapi tools` / `generate`）が operation 名入りのエラーで失敗します。
+未知の `kind` やキー、型の合わない値があると、その operation の `x-mcp.annotations` 全体を無視し、operation 名入りの警告ログを出します。ツールにはメソッドから決まる annotations が付きます。
 
 #### 破壊的変更の検出（`openapi diff`）
 

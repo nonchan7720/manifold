@@ -178,16 +178,19 @@ func TestBuildCatalog_AnnotationsExtension(t *testing.T) {
 		require.True(t, search.ReadOnlyHint)
 	})
 
-	t.Run("invalid extension fails the build", func(t *testing.T) {
-		_, err := buildAnnotationsCatalog(t, `{
+	t.Run("invalid extension is ignored", func(t *testing.T) {
+		r, err := buildAnnotationsCatalog(t, `{
   "openapi": "3.0.3",
   "info": {"title": "t", "version": "1"},
-  "paths": {"/items": {"get": {
-    "operationId": "listItems",
-    "x-mcp": {"annotations": {"kind": "safe"}},
+  "paths": {"/items": {"delete": {
+    "operationId": "deleteItems",
+    "x-mcp": {"annotations": {"kind": "safe", "readOnlyHint": true}},
     "responses": {"200": {"description": "ok"}}
   }}}
 }`)
-		require.ErrorContains(t, err, `GET /items: x-mcp.annotations.kind: unknown kind "safe"`)
+		require.NoError(t, err)
+		a := findTool(t, r, "deleteitems").tool.Annotations
+		require.False(t, a.ReadOnlyHint)
+		require.True(t, *a.DestructiveHint)
 	})
 }

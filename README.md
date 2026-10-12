@@ -266,7 +266,7 @@ paths:
           title: Replace a pet
 ```
 
-An unknown `kind` or key, or a value of the wrong type, fails building the tools (gateway startup, `openapi tools` / `generate`) with an error naming the operation.
+An unknown `kind` or key, or a value of the wrong type, makes the whole `x-mcp.annotations` of that operation ignored with a warning log naming the operation; the tool keeps its method-derived annotations.
 
 #### Breaking-change detection (`openapi diff`)
 
