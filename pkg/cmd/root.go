@@ -16,14 +16,16 @@ var rootCmd = &cobra.Command{
 	Long:          `manifold - mcp gateway service A component that combines multiple inputs into a single output`,
 	SilenceErrors: true,
 	SilenceUsage:  true,
-}
-
-func initialize() {
-	cfg, err := config.Load(rootCmd.Context(), cfgFile)
-	if err != nil {
-		panic(err)
-	}
-	globalConfig = cfg
+	// サブコマンドの実行前に設定ファイルを読み込む。設定ファイルを使わない
+	// サブコマンド（guardrail のサイドカー等）は PersistentPreRunE を上書きする。
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := config.Load(cmd.Context(), cfgFile)
+		if err != nil {
+			return err
+		}
+		globalConfig = cfg
+		return nil
+	},
 }
 
 func Execute() error {
@@ -31,10 +33,10 @@ func Execute() error {
 }
 
 func init() {
-	cobra.OnInitialize(initialize)
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file")
 	rootCmd.AddCommand(
 		newGatewayCmd(),
 		newOpenAPICmd(),
+		newGuardrailCmd(),
 	)
 }

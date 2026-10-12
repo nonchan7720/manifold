@@ -629,6 +629,46 @@ audit:
       - 'AKIA[0-9A-Z]{16}'            # AWS のアクセスキー ID
 ```
 
+### ガードレール（`guardrail`）
+
+ガードレールは、authz と同じくゲートウェイを通る `tools/call` を検査します。引数はバックエンドへ送る前（`pre_call`）、結果のテキストは呼び出し元へ返す前（`post_call`）に検査します。ガードレールの API には標準化された仕様が無いため、Manifold は [LiteLLM の Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api) の形で呼び出します。LiteLLM 向けに作られたガードレールのサービスはそのまま使え、AWS Bedrock Guardrails は同梱のサイドカー（後述）を挟んで使います。
+
+```yaml
+guardrail:
+  enabled: true
+  url: http://localhost:8090/beta/litellm_basic_guardrail_api
+  headers:                    # 省略可。ガードレールの API キー等
+    X-Api-Key: ${GUARDRAIL_API_KEY}
+  timeout: 5s                 # 1回の呼び出しのタイムアウト（デフォルト 5s）
+  mode: [pre_call, post_call] # デフォルトは両方
+```
+
+Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を POST し、`additional_provider_specific_params` に `server`・`service`・`tool` を渡します。
+
+- **`pre_call`** は引数を1つの JSON テキストとして送ります。`GUARDRAIL_INTERVENED` なら、書き換えた引数（JSON のオブジェクトである必要があります）でバックエンドを呼びます。
+- **`post_call`** は結果の `text` の Content をすべて、続けて `structuredContent` があれば JSON として送ります。`GUARDRAIL_INTERVENED` なら書き換えたものを返します。それ以外の Content（画像・リソースリンク等）は検査せずに通します。
+- **`BLOCKED`** は `blocked by guardrail: <blocked_reason>` で呼び出しを拒否します。`pre_call` ではバックエンドを呼びません。
+- **fail closed**: ガードレールの呼び出しの失敗・200 以外・不正な応答は、`guardrail check failed` で呼び出しを拒否します。理由は呼び出し元に返さず、ログに出します。
+
+ガードレールは同期的に呼ぶため、その応答時間がそのまま `tools/call` の遅延に加わります。必要な側だけに `mode` で絞ってください。ガードレールは authz の内側で動き（拒否された呼び出しは送りません）、reverse（WebMCP）を含む全サーバーに掛かります。監査ログには、呼び出し元が送ったままの引数が（[`audit.redact`](#秘密情報を伏せるauditredact) で伏せた上で）記録されます。
+
+#### AWS Bedrock Guardrails のサイドカー（`manifold guardrail bedrock`）
+
+`manifold guardrail bedrock` は Generic Guardrail API を受け、Bedrock の `ApplyGuardrail` に変換します。ゲートウェイの隣で（同じイメージで）動かし、`guardrail.url` をこれに向けます。Manifold の設定ファイルは不要です。AWS の認証情報とリージョンは AWS SDK の既定の解決順（環境変数・共有設定・IRSA 等）で取得し、ロールにはそのガードレールへの `bedrock:ApplyGuardrail` が必要です。
+
+```yaml
+# Kubernetes: ゲートウェイの Pod にサイドカーとして追加する
+- name: guardrail
+  image: ghcr.io/nonchan7720/manifold:latest
+  command: ["manifold", "guardrail", "bedrock", "--port", "8090"]
+  env:
+    - {name: BEDROCK_GUARDRAIL_ID, value: abc123xyz}   # または --guardrail-id
+    - {name: BEDROCK_GUARDRAIL_VERSION, value: "1"}    # または --guardrail-version（DRAFT 等）
+    - {name: AWS_REGION, value: ap-northeast-1}        # または --region
+```
+
+テキストは1件ずつ `ApplyGuardrail` に送るので（`input_type: request` は source `INPUT`、`response` は `OUTPUT`）、応答の `texts` はリクエストと 1 対 1 で対応します。機密情報フィルタが `ANONYMIZE` したテキストはマスキングして返し（`GUARDRAIL_INTERVENED`）、いずれかのポリシーが `BLOCKED` した場合（または Bedrock が書き換え後のテキストを返さずに介入した場合）は、リクエスト全体を Bedrock の `actionReason` 付きで `BLOCKED` にします。Bedrock のエラーは `502` を返し、ゲートウェイは `guardrail check failed` として扱います。`GET /healthz` はプローブ用に `200` を返します。
+
 ### 設定リファレンス
 
 #### `gateway`
@@ -904,6 +944,16 @@ storage:
 | `includeArguments` | bool   | 呼び出しの引数も記録する（デフォルト: `false`） |
 | `redact.keys`      | []string | 既定に加えて値を伏せる引数のキー名（[秘密情報を伏せる](#秘密情報を伏せるauditredact) 参照） |
 | `redact.patterns`  | []string | 文字列の引数の値とエラーメッセージから伏せる正規表現 |
+
+#### `guardrail`
+
+| フィールド | 型                | 説明 |
+| --------- | ----------------- | ---- |
+| `enabled` | bool              | すべての `tools/call` をガードレールで検査する（[ガードレール](#ガードレールguardrail) 参照） |
+| `url`     | string            | Generic Guardrail API のエンドポイント（有効時は**必須**。絶対 http(s) URL） |
+| `headers` | map[string]string | ガードレールへのリクエストに付けるヘッダー |
+| `timeout` | duration          | ガードレールの1回の呼び出しのタイムアウト（デフォルト `5s`） |
+| `mode`    | []string          | `pre_call` と `post_call` のどちらか、または両方（デフォルト: 両方） |
 
 #### `fileFetch`
 

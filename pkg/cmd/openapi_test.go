@@ -290,8 +290,8 @@ func writeSpecFile(t *testing.T, name, content string) string {
 // execOpenAPITools dispatches args into a freshly built newOpenAPICmd() tree
 // and returns its stdout/stderr/error.
 //
-// It avoids cobra's Execute()/ExecuteC() because cobra.OnInitialize is
-// process-global and would reload config over the test's globalConfig.
+// It avoids cobra's Execute()/ExecuteC() because the root command's
+// PersistentPreRunE would reload config over the test's globalConfig.
 func execOpenAPITools(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	root := newOpenAPICmd()

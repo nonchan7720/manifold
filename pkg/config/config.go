@@ -36,6 +36,8 @@ type Config struct {
 	OAuth OAuthConfig `mapstructure:"oauth"`
 
 	Audit AuditConfig `mapstructure:"audit"`
+	// Guardrail は tools/call に掛けるガードレール。
+	Guardrail GuardrailConfig `mapstructure:"guardrail"`
 }
 
 // URL パスセグメントとして使われるサーバー名として妥当な文字集合。
@@ -129,6 +131,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.SQLite),
 		validation.Field(&c.Storage),
 		validation.Field(&c.Audit),
+		validation.Field(&c.Guardrail),
 		validation.Field(&c.Authz),
 		validation.Field(&c.OAuth),
 	)
