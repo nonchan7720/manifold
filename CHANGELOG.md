@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.22.0](https://github.com/nonchan7720/manifold/compare/v1.21.0...v1.22.0) (2026-10-12)
+
+
+### Features
+
+* add a tools/call guardrail with a Bedrock Guardrails sidecar ([#299](https://github.com/nonchan7720/manifold/issues/299)) ([9572608](https://github.com/nonchan7720/manifold/commit/9572608c5b4f8330ae5c166303f64f587708e635))
+
+
+### Bug Fixes
+
+* **audit:** redact secrets from recorded arguments and errors ([#297](https://github.com/nonchan7720/manifold/issues/297)) ([096c313](https://github.com/nonchan7720/manifold/commit/096c313a8ad9a340a1bd51e668f476debc349482))
+
 ## [1.21.0](https://github.com/nonchan7720/manifold/compare/v1.20.2...v1.21.0) (2026-10-12)
 
 
