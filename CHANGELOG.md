@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.23.1](https://github.com/nonchan7720/manifold/compare/v1.23.0...v1.23.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @modelcontextprotocol/sdk to v1.32.1 ([#300](https://github.com/nonchan7720/manifold/issues/300)) ([2936ea9](https://github.com/nonchan7720/manifold/commit/2936ea931ac18dccefb228cf2278999adf56db61))
+* image/svg+xml 応答を画像として扱う ([#304](https://github.com/nonchan7720/manifold/issues/304)) ([a9709a9](https://github.com/nonchan7720/manifold/commit/a9709a9a4d7aaf997a59f25936ff41d47079a068))
+
+
+### Miscellaneous
+
+* **deps:** update all github-actions minor update ([#307](https://github.com/nonchan7720/manifold/issues/307)) ([69a7c29](https://github.com/nonchan7720/manifold/commit/69a7c291ea5e03a56305266250e4fb42663ae1d2))
+* **deps:** update dependency jsdom to v30.1.2 ([#287](https://github.com/nonchan7720/manifold/issues/287)) ([83bf387](https://github.com/nonchan7720/manifold/commit/83bf387d24b3f47577722ac1ddb5d49d91caa7d6))
+* **deps:** update grafana/otel-lgtm docker tag to v0.36.0 ([#308](https://github.com/nonchan7720/manifold/issues/308)) ([56e0703](https://github.com/nonchan7720/manifold/commit/56e0703a58a5ed1df1fe3ade28b32ec4fa2a0ebb))
+* **deps:** update jdx/mise-action action to v5.1.2 ([#306](https://github.com/nonchan7720/manifold/issues/306)) ([d21f0ff](https://github.com/nonchan7720/manifold/commit/d21f0ffbbc55644f7241e660554af0ad4b6fa3ea))
+
 ## [1.23.0](https://github.com/nonchan7720/manifold/compare/v1.22.0...v1.23.0) (2026-10-12)
 
 
