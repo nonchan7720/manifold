@@ -165,6 +165,58 @@ func TestGenerateContent_OctetStream_NoopUploader_RoutesByDetectedType(t *testin
 	require.Equal(t, "image/png", img.MIMEType)
 }
 
+// image/svg+xml は +xml 接尾辞を持つが画像として扱う（TextContent にしない）。
+// application/atom+xml は従来どおりテキストとして扱う。
+func TestGenerateContent_XMLSuffixRouting(t *testing.T) {
+	data := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>")
+
+	t.Run("image/svg+xml storage disabled is ImageContent", func(t *testing.T) {
+		contents, err := generateContent(
+			context.Background(), "image/svg+xml", data, storage.NewNoopUploader(),
+		)
+		require.NoError(t, err)
+		require.Len(t, contents, 1)
+
+		img, ok := contents[0].(*mcp.ImageContent)
+		require.True(t, ok)
+		require.Equal(t, "image/svg+xml", img.MIMEType)
+		require.Equal(t, data, img.Data)
+	})
+
+	t.Run("image/svg+xml storage enabled is ResourceLink", func(t *testing.T) {
+		var gotContentType string
+		mediaService := &fakeMediaService{
+			enabled: true,
+			doFunc: func(ctx context.Context, data []byte, contentType string) (string, string, error) {
+				gotContentType = contentType
+				return "media-id", "https://example.com/media-id", nil
+			},
+		}
+
+		contents, err := generateContent(context.Background(), "image/svg+xml", data, mediaService)
+		require.NoError(t, err)
+		require.Len(t, contents, 1)
+
+		link, ok := contents[0].(*mcp.ResourceLink)
+		require.True(t, ok)
+		require.Equal(t, "image/svg+xml", link.MIMEType)
+		require.Equal(t, "image/svg+xml", gotContentType)
+	})
+
+	t.Run("application/atom+xml is TextContent", func(t *testing.T) {
+		atom := []byte("<feed xmlns=\"http://www.w3.org/2005/Atom\"></feed>")
+		contents, err := generateContent(
+			context.Background(), "application/atom+xml", atom, storage.NewNoopUploader(),
+		)
+		require.NoError(t, err)
+		require.Len(t, contents, 1)
+
+		text, ok := contents[0].(*mcp.TextContent)
+		require.True(t, ok)
+		require.Equal(t, string(atom), text.Text)
+	})
+}
+
 func TestNewMCPServer(t *testing.T) {
 	servers := config.Servers{
 		"test": &config.Server{Spec: "fixtures/petstore_oas.json"},

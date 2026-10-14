@@ -15,14 +15,29 @@ var textualApplicationTypes = []string{
 	"application/yml",
 }
 
+// binaryMediaPrefixes は、接尾辞規則（+xml / +json）より優先して非テキストとして扱うメディア種別のプレフィックス。
+// image/svg+xml のように XML 系の接尾辞を持つが画像として扱うべき型が、テキスト扱いされないようにする。
+var binaryMediaPrefixes = []string{
+	"image/",
+	"audio/",
+	"video/",
+}
+
 // IsTextContentType は Content-Type がテキスト系（text/*、JSON、XML、YAML 等）かを返す。
 // パラメータ（; charset=utf-8 等）は無視し、大文字小文字も区別しない。
 // 空文字は判定不能のためテキストとは見なさない。
+// image/ audio/ video/ は、接尾辞が +xml / +json であってもテキストとは見なさない
+// （例: image/svg+xml は画像として扱う）。
 func IsTextContentType(contentType string) bool {
 	baseType, _, _ := strings.Cut(contentType, ";")
 	baseType = strings.ToLower(strings.TrimSpace(baseType))
 	if baseType == "" {
 		return false
+	}
+	for _, prefix := range binaryMediaPrefixes {
+		if strings.HasPrefix(baseType, prefix) {
+			return false
+		}
 	}
 	return strings.HasPrefix(baseType, "text/") ||
 		strings.HasSuffix(baseType, "+json") ||
