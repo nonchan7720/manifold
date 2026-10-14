@@ -23,6 +23,8 @@ func TestIsTextContentType(t *testing.T) {
 		"application/yaml":                true,
 		"application/x-yaml":              true,
 		"application/yml":                 true,
+		"image/svg+xml":                   false,
+		"image/svg+xml; charset=utf-8":    false,
 		"image/png":                       false,
 		"application/octet-stream":        false,
 		"application/pdf":                 false,
@@ -41,6 +43,7 @@ func TestShouldBase64EncodeResponse(t *testing.T) {
 	require.False(t, shouldBase64EncodeResponse(true, 304, ""))
 	require.False(t, shouldBase64EncodeResponse(true, 302, "image/png"))
 	require.False(t, shouldBase64EncodeResponse(true, 202, "application/json"))
+	require.True(t, shouldBase64EncodeResponse(true, 200, "image/svg+xml"))
 }
 
 // --- CreateToolFunction（バイナリ応答の base64 化） ---
