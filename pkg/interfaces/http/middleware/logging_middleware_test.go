@@ -194,3 +194,10 @@ func TestLogging_WebSocketUpgrade_HijackSucceeds(t *testing.T) {
 	require.NoError(t, err, "Logging should still allow hijacking the connection")
 	conn.CloseNow()
 }
+
+func TestIsProbePath(t *testing.T) {
+	require.True(t, IsProbePath("/healthz"))
+	require.True(t, IsProbePath("/readyz"))
+	require.False(t, IsProbePath("/mcp/foo"))
+	require.False(t, IsProbePath("/metrics"))
+}

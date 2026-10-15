@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -697,7 +699,7 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -705,7 +707,7 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/healthz", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/ping", nil)
 	require.NoError(t, err)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -713,6 +715,29 @@ func TestNewHTTPHandler_Logs(t *testing.T) {
 
 	require.Contains(t, logBuf.String(), "http request")
 	require.Contains(t, logBuf.String(), "http response")
+}
+
+func TestNewHTTPHandler_SkipsProbeLogs(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(newHTTPHandler(mux))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/readyz", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close() //nolint: errcheck
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, logBuf.String())
 }
 
 // --- newAuthHandler ---
@@ -1100,7 +1125,7 @@ func TestRunServer_GracefulShutdown(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runServer(ctx, srv, "test-server", 0, "", "")
+		errCh <- runServer(ctx, srv, "test-server", 0, "", "", shutdownOptions{})
 	}()
 
 	// サーバーが起動するのを少し待ってからキャンセル
@@ -1133,7 +1158,7 @@ func TestRunServer_ServerError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	err := runServer(ctx, srv, "test-server", 0, "", "")
+	err := runServer(ctx, srv, "test-server", 0, "", "", shutdownOptions{})
 	// ポートが使用中のためエラーが返る
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "test-server error")
@@ -1227,4 +1252,113 @@ func TestNewMCPServer_InitError(t *testing.T) {
 		nil,
 	)
 	require.Error(t, err)
+}
+
+// SIGTERM 相当の ctx 取り消し後も、処理中のリクエストは Shutdown で完了まで待たれる。
+func TestRunServer_GracefulShutdown_WaitsForInFlightRequest(t *testing.T) {
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte("done"))
+	})
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var notReady atomic.Bool
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runServer(ctx, srv, "test-server", 0, "", "", shutdownOptions{
+			onShutdown: func() { notReady.Store(true) },
+			timeout:    5 * time.Second,
+		})
+	}()
+
+	type result struct {
+		body string
+		err  error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		var lastErr error
+		for range 100 {
+			req, _ := http.NewRequestWithContext(
+				context.Background(), http.MethodGet, "http://"+addr+"/slow", nil,
+			)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				lastErr = err
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			defer func() { _ = resp.Body.Close() }()
+			b, err := io.ReadAll(resp.Body)
+			resCh <- result{string(b), err}
+			return
+		}
+		resCh <- result{err: lastErr}
+	}()
+
+	<-started
+	cancel() // SIGTERM 相当
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServer did not return in time")
+	}
+	res := <-resCh
+	require.NoError(t, res.err)
+	require.Equal(t, "done", res.body, "in-flight request must complete")
+	require.True(t, notReady.Load(), "onShutdown must be called")
+}
+
+// drainDelay の間は onShutdown 後も Shutdown を呼ばず、新規接続を受け付け続ける。
+func TestRunServer_DrainDelay_KeepsServingAfterNotReady(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	notReady := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runServer(ctx, srv, "test-server", 0, "", "", shutdownOptions{
+			onShutdown: func() { close(notReady) },
+			drainDelay: 500 * time.Millisecond,
+			timeout:    5 * time.Second,
+		})
+	}()
+	get := func() error {
+		req, _ := http.NewRequestWithContext(
+			context.Background(), http.MethodGet, "http://"+addr+"/ping", nil,
+		)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		return resp.Body.Close()
+	}
+	require.Eventually(t, func() bool { return get() == nil }, 3*time.Second, 20*time.Millisecond)
+
+	start := time.Now()
+	cancel()
+	<-notReady
+	require.NoError(t, get(), "still serving during drain delay")
+
+	require.NoError(t, <-errCh)
+	require.GreaterOrEqual(t, time.Since(start), 500*time.Millisecond)
+	require.Error(t, get(), "closed after shutdown")
 }

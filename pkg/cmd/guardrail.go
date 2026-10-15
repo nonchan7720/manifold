@@ -95,5 +95,5 @@ func runBedrockGuardrail(ctx context.Context, opts bedrockGuardrailOptions) erro
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	return runServer(ctx, srv, "guardrail-bedrock", opts.port, "", "")
+	return runServer(ctx, srv, "guardrail-bedrock", opts.port, "", "", shutdownOptions{})
 }

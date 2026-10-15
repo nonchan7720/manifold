@@ -713,6 +713,8 @@ Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → sour
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
+| `shutdown.drainDelay` | duration | After SIGTERM, `/readyz` turns `503` and the gateway keeps serving for this long before it stops accepting connections, so Kubernetes can remove the pod from the Service endpoints first (default: `5s`; negative disables the wait) |
+| `shutdown.timeout` | duration | How long graceful shutdown waits for in-flight requests to finish (default: `30s`) |
 
 #### `gateway.specRefresh`
 
@@ -1451,6 +1453,8 @@ The HTTP endpoints exposed by Manifold.
 | Method | Path                   | Description                                                           |
 | ------ | ---------------------- | --------------------------------------------------------------------- |
 | `GET`  | `/media/download/{id}` | Download stored content (only when `storage.hostURL` is set)          |
+| `GET`  | `/healthz`             | Liveness probe. Always `200` |
+| `GET`  | `/readyz`              | Readiness probe. `200`, or `503` once graceful shutdown has started |
 | `GET`  | `/metrics`             | Prometheus metrics (only when `telemetry.metrics.exporterType: pull`) |
 
 ## Development

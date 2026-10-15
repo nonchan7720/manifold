@@ -713,6 +713,8 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
+| `shutdown.drainDelay` | duration | SIGTERM 受信後、`/readyz` が `503` を返し始めてから接続の受け付けを止めるまでの待機時間。この間に Kubernetes が Service のエンドポイントから Pod を外せる（デフォルト: `5s`。負の値で待機なし） |
+| `shutdown.timeout` | duration | グレースフルシャットダウンで処理中のリクエストの完了を待つ上限（デフォルト: `30s`） |
 
 #### `gateway.specRefresh`
 
@@ -1450,6 +1452,8 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | メソッド | パス                   | 説明                                                          |
 | -------- | ---------------------- | ------------------------------------------------------------- |
 | `GET`    | `/media/download/{id}` | ストレージ保存コンテンツのダウンロード（`storage.hostURL` 設定時のみ） |
+| `GET`    | `/healthz`             | Liveness プローブ。常に `200` |
+| `GET`    | `/readyz`              | Readiness プローブ。`200`、グレースフルシャットダウン開始後は `503` |
 | `GET`    | `/metrics`             | Prometheus メトリクス（`telemetry.metrics.exporterType: pull` 時のみ） |
 
 ## 開発

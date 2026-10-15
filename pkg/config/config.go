@@ -148,6 +148,9 @@ type Gateway struct {
 	Edge EdgeConfig `mapstructure:"edge"`
 
 	SpecRefresh SpecRefreshConfig `mapstructure:"specRefresh"`
+
+	// Shutdown は SIGTERM 後のドレイン待ち時間とシャットダウン待ち上限。
+	Shutdown ShutdownConfig `mapstructure:"shutdown"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -172,6 +175,7 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		),
 		validation.Field(&c.Edge),
 		validation.Field(&c.SpecRefresh),
+		validation.Field(&c.Shutdown),
 	)
 }
 

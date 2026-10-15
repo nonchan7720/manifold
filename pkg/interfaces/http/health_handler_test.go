@@ -23,3 +23,28 @@ func TestHealthHandler_Healthz(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
 	require.Equal(t, "ok", body["status"])
 }
+
+func TestHealthHandler_Readyz(t *testing.T) {
+	h := NewHealthHandler()
+	get := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
+		rec := httptest.NewRecorder()
+		h.Readyz(rec, req)
+		return rec
+	}
+
+	rec := get()
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	h.SetNotReady()
+	rec = get()
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	require.Equal(t, "shutting down", body["status"])
+
+	// liveness は readiness と独立して 200 のまま。
+	rec = httptest.NewRecorder()
+	h.Healthz(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+}
