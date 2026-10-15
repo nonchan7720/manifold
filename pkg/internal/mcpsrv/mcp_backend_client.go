@@ -69,7 +69,9 @@ type MCPBackendClient struct {
 // withCallTimeout は ctx に1呼び出し分のタイムアウト（CallTimeoutOrDefault）を
 // 課す。呼び出し ctx にのみ適用するもので、stdio のプロセス寿命には影響しない
 // （buildTransport でプロセスはリクエスト ctx から切り離している）。
-func (c *MCPBackendClient) withCallTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+func (c *MCPBackendClient) withCallTimeout(
+	ctx context.Context,
+) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, c.cfg.CallTimeoutOrDefault())
 }
 
@@ -659,7 +661,8 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 		// プロセスは全呼び出し元で共有する長寿命のものなので、最初のリクエストの
 		// ctx のキャンセル（リクエスト終了・タイムアウト）で kill されないよう
 		// ctx から切り離す。終了は Close（セッションのクローズ）が行う。
-		cmd := exec.CommandContext(context.WithoutCancel(ctx), c.cfg.Command, c.cfg.Args...) //nolint: gosec
+		procCtx := context.WithoutCancel(ctx)
+		cmd := exec.CommandContext(procCtx, c.cfg.Command, c.cfg.Args...) //nolint: gosec
 		cmd.Env = os.Environ()
 		for k, v := range c.cfg.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)

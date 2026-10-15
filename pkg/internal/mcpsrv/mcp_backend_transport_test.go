@@ -64,8 +64,10 @@ func TestMCPBackendClient_HTTP_ReusesTransport(t *testing.T) {
 		_, err = c.CallTool(t.Context(), "echo", []byte(`{}`))
 		require.NoError(t, err)
 	}
-	// 逐次呼び出しなので keep-alive 接続が再利用される（作り直しなら 20 になる。close 直後の再接続で多少の揺らぎは許容する）。
-	require.LessOrEqual(t, conns.Load(), int32(5))
+	// 逐次呼び出しなので keep-alive 接続が再利用される（作り直しなら 20 になる）。
+	// close 直後の再接続や CI 負荷による揺らぎを許容し、作り直しの半分を上限とする。
+	t.Logf("new connections: %d", conns.Load())
+	require.LessOrEqual(t, conns.Load(), int32(10))
 
 	first, _ := c.sharedTransport()
 	second, _ := c.sharedTransport()

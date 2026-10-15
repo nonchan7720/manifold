@@ -17,7 +17,14 @@ func httpClientRoundTripper(
 	if tokenExchange != nil {
 		registry = newTokenExchangeRegistry(tokenExchange)
 	}
-	return newHTTPClientRoundTripper(client.Transport(), registry, auth, oauth2, tokenExchange, headers)
+	return newHTTPClientRoundTripper(
+		client.Transport(),
+		registry,
+		auth,
+		oauth2,
+		tokenExchange,
+		headers,
+	)
 }
 
 // newTokenExchangeRegistry は token exchange 用のトークンキャッシュ付きレジストリを作る。
