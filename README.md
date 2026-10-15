@@ -1065,6 +1065,45 @@ telemetry:
       insecure: true
 ```
 
+##### Metrics for autoscaling
+
+On top of the Go runtime metrics and the `otelhttp` request metrics (`http_server_request_duration_seconds_*`), the gateway emits (names as seen on the Prometheus `/metrics` endpoint; OTLP uses the dotted names):
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `http_server_active_requests` | UpDownCounter | In-flight HTTP requests (`http.server.active_requests`). Long-lived SSE / WebSocket connections are counted while open; `/healthz`, `/readyz` and `/metrics` are not |
+| `manifold_tool_calls_total` | counter | `tools/call` requests, labelled `server`, `tool`, `status` (`ok` / `error`) |
+| `manifold_tool_call_duration_seconds` | histogram | `tools/call` duration, same labels |
+
+The gateway is I/O-bound: most of its time is spent waiting on backends, so CPU and memory stay low while concurrency climbs, and CPU/memory-based HPA scaling lags behind real load. Scale on request rate or in-flight requests instead. For example, with [KEDA](https://keda.sh) and its Prometheus trigger:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: manifold
+spec:
+  scaleTargetRef:
+    name: manifold
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # average in-flight requests per pod
+        query: sum(http_server_active_requests{job="manifold"})
+        threshold: "50"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # request rate across all pods
+        query: sum(rate(http_server_request_duration_seconds_count{job="manifold"}[2m]))
+        threshold: "100"
+```
+
+KEDA treats `threshold` as a per-replica target, so the desired replica count is the query value divided by it. Adjust the label selector (`job`) to your scrape config, and see "Running on Kubernetes / multiple replicas" below for what multiple replicas require.
+
 ## Downstream client registration
 
 Manifold acts as an OAuth 2.1 authorization server for the MCP clients in front of it, and as an OAuth client towards the backend it proxies. A downstream client becomes known to Manifold in one of two ways:

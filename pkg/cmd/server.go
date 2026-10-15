@@ -378,7 +378,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer cleanup()
 
-	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
+	meterProvider, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
 		ctx,
 		&globalConfig.Telemetry,
 	)
@@ -506,13 +506,15 @@ func runGatewayServer(ctx context.Context) error {
 	timeouts := gateway.Timeouts.WithDefaults()
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", servePort),
-		Handler: otelhttp.NewHandler(
+		Handler: telemetry.ActiveRequests(meterProvider, func(r *http.Request) bool {
+			return middleware.IsProbePath(r.URL.Path) || r.URL.Path == "/metrics"
+		})(otelhttp.NewHandler(
 			newHTTPHandler(mux),
 			fmt.Sprintf("%s/%s", trace.OpenTelemetryTracerName, "gateway"),
 			otelhttp.WithFilter(func(r *http.Request) bool {
 				return !middleware.IsProbePath(r.URL.Path)
 			}),
-		),
+		)),
 		ReadHeaderTimeout: timeouts.ReadHeader,
 		ReadTimeout:       timeouts.Read,
 		WriteTimeout:      timeouts.Write,

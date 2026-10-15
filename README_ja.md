@@ -1065,6 +1065,45 @@ telemetry:
       insecure: true
 ```
 
+##### オートスケール用のメトリクス
+
+Go ランタイムのメトリクスと `otelhttp` のリクエストメトリクス（`http_server_request_duration_seconds_*`）に加えて、ゲートウェイは次を出力します（名前は Prometheus の `/metrics` での表記。OTLP ではドット区切りの名前）。
+
+| メトリクス | 種類 | 説明 |
+| ---------- | ---- | ---- |
+| `http_server_active_requests` | UpDownCounter | 処理中の HTTP リクエスト数（`http.server.active_requests`）。長時間接続の SSE / WebSocket も接続中は数える。`/healthz`・`/readyz`・`/metrics` は数えない |
+| `manifold_tool_calls_total` | counter | `tools/call` の回数。ラベルは `server`・`tool`・`status`（`ok` / `error`） |
+| `manifold_tool_call_duration_seconds` | histogram | `tools/call` の所要時間。ラベルは同じ |
+
+ゲートウェイは I/O バウンドで、時間の大半をバックエンドの応答待ちに費やします。そのため同時接続数が増えても CPU・メモリはあまり上がらず、CPU / メモリ基準の HPA は実際の負荷に遅れます。リクエストレートか処理中リクエスト数でスケールさせてください。たとえば [KEDA](https://keda.sh) の Prometheus トリガーを使う場合は次のようにします。
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: manifold
+spec:
+  scaleTargetRef:
+    name: manifold
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # Pod あたりの平均処理中リクエスト数
+        query: sum(http_server_active_requests{job="manifold"})
+        threshold: "50"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # 全 Pod 合計のリクエストレート
+        query: sum(rate(http_server_request_duration_seconds_count{job="manifold"}[2m]))
+        threshold: "100"
+```
+
+KEDA は `threshold` を 1 レプリカあたりの目標値として扱うので、必要なレプリカ数は query の値を `threshold` で割った数になります。ラベルセレクタ（`job`）はスクレイプ設定に合わせてください。複数レプリカで動かす際の要件は下の「Kubernetes / 複数レプリカでの運用」を参照してください。
+
 ## 下流クライアントの登録
 
 Manifold は、前段の MCP クライアントに対しては OAuth 2.1 認可サーバーとして、プロキシ先のバックエンドに対しては OAuth クライアントとして振る舞います。下流クライアントを Manifold に認識させる方法は 2 つあります。
