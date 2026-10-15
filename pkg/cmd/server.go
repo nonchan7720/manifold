@@ -466,9 +466,11 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	mux.Handle(
 		fmt.Sprintf("/mcp/{%s}", pathServerName),
-		mcpAuthMiddleware(
-			globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
-		)(mcpHTTPSrv),
+		middleware.MaxBodyBytes(globalConfig.Gateway.MaxRequestBodySize)(
+			mcpAuthMiddleware(
+				globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
+			)(mcpHTTPSrv),
+		),
 	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
@@ -501,6 +503,7 @@ func runGatewayServer(ctx context.Context) error {
 	if servePort == 0 {
 		servePort = 8081
 	}
+	timeouts := gateway.Timeouts.WithDefaults()
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", servePort),
 		Handler: otelhttp.NewHandler(
@@ -510,6 +513,10 @@ func runGatewayServer(ctx context.Context) error {
 				return !middleware.IsProbePath(r.URL.Path)
 			}),
 		),
+		ReadHeaderTimeout: timeouts.ReadHeader,
+		ReadTimeout:       timeouts.Read,
+		WriteTimeout:      timeouts.Write,
+		IdleTimeout:       timeouts.Idle,
 	}
 	sd := gateway.Shutdown.WithDefaults()
 	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key, shutdownOptions{

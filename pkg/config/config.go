@@ -151,6 +151,11 @@ type Gateway struct {
 
 	// Shutdown は SIGTERM 後のドレイン待ち時間とシャットダウン待ち上限。
 	Shutdown ShutdownConfig `mapstructure:"shutdown"`
+	// Timeouts は http.Server のタイムアウト。
+	Timeouts TimeoutsConfig `mapstructure:"timeouts"`
+	// MaxRequestBodySize は /mcp/{server} のリクエスト本文の上限（バイト）。
+	// 0（未設定）は無制限。
+	MaxRequestBodySize int64 `mapstructure:"maxRequestBodySize"`
 }
 
 func (c Gateway) ValidateWithContext(ctx context.Context) error {
@@ -176,6 +181,8 @@ func (c Gateway) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.Edge),
 		validation.Field(&c.SpecRefresh),
 		validation.Field(&c.Shutdown),
+		validation.Field(&c.Timeouts),
+		validation.Field(&c.MaxRequestBodySize, validation.Min(int64(0))),
 	)
 }
 

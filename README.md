@@ -715,6 +715,11 @@ Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → sour
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
 | `shutdown.drainDelay` | duration | After SIGTERM, `/readyz` turns `503` and the gateway keeps serving for this long before it stops accepting connections, so Kubernetes can remove the pod from the Service endpoints first (default: `5s`; negative disables the wait) |
 | `shutdown.timeout` | duration | How long graceful shutdown waits for in-flight requests to finish (default: `30s`) |
+| `timeouts.readHeader` | duration | Max time to read request headers (default: `10s`; negative = unlimited) |
+| `timeouts.idle` | duration | Max idle time of a keep-alive connection (default: `120s`; negative = unlimited) |
+| `timeouts.read` | duration | Max time to read a whole request including the body (default: unlimited). Leave unset: MCP Streamable HTTP / SSE and the edge WebSocket are long-lived |
+| `timeouts.write` | duration | Max time to write a response (default: unlimited). Leave unset for the same reason as `timeouts.read` |
+| `maxRequestBodySize` | int | Max request body size in bytes for `/mcp/{server_name}`; larger requests get `413` (default: `0` = unlimited). Tool arguments carrying base64 file content travel in this body, so if you use them set it to at least `fileFetch.maxSize` × 4/3 (base64 overhead) plus headroom
 
 #### `gateway.specRefresh`
 

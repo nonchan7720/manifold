@@ -715,6 +715,11 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
 | `shutdown.drainDelay` | duration | SIGTERM 受信後、`/readyz` が `503` を返し始めてから接続の受け付けを止めるまでの待機時間。この間に Kubernetes が Service のエンドポイントから Pod を外せる（デフォルト: `5s`。負の値で待機なし） |
 | `shutdown.timeout` | duration | グレースフルシャットダウンで処理中のリクエストの完了を待つ上限（デフォルト: `30s`） |
+| `timeouts.readHeader` | duration | リクエストヘッダーの読み取り上限（デフォルト: `10s`。負の値で無制限） |
+| `timeouts.idle` | duration | keep-alive 接続のアイドル上限（デフォルト: `120s`。負の値で無制限） |
+| `timeouts.read` | duration | 本文を含むリクエスト全体の読み取り上限（デフォルト: 無制限）。MCP の Streamable HTTP / SSE や edge の WebSocket は長時間接続なので、通常は未設定のままにする |
+| `timeouts.write` | duration | レスポンス書き込みの上限（デフォルト: 無制限）。`timeouts.read` と同じ理由で通常は未設定 |
+| `maxRequestBodySize` | int | `/mcp/{server_name}` のリクエスト本文の上限（バイト）。超えると `413`（デフォルト: `0` = 無制限）。base64 のファイル内容をツール引数で渡す場合はこの本文に含まれるため、利用するなら `fileFetch.maxSize` × 4/3（base64 のオーバーヘッド）に余裕を足した値以上にする
 
 #### `gateway.specRefresh`
 
