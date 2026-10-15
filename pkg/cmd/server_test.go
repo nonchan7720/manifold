@@ -737,7 +737,9 @@ func TestNewHTTPHandler_SkipsProbeLogs(t *testing.T) {
 	resp.Body.Close() //nolint: errcheck
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Empty(t, logBuf.String())
+	// slog のデフォルトはグローバルなので、先行テストのハイジャック済み接続
+	// （/edge/ws など）の遅延ログが混ざりうる。プローブのログが無いことだけを見る。
+	require.NotContains(t, logBuf.String(), "path=/readyz")
 }
 
 // --- newAuthHandler ---
