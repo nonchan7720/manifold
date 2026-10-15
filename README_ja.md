@@ -1104,6 +1104,36 @@ spec:
 
 KEDA は `threshold` を 1 レプリカあたりの目標値として扱うので、必要なレプリカ数は query の値を `threshold` で割った数になります。ラベルセレクタ（`job`）はスクレイプ設定に合わせてください。複数レプリカで動かす際の要件は下の「Kubernetes / 複数レプリカでの運用」を参照してください。
 
+## Kubernetes / 複数レプリカでの運用
+
+複数レプリカで動かす場合（およびリクエストを落とさずにローリングアップデートする場合）のチェックリストです。
+
+- **Redis を使う。** `memory` と `sqlite` のストアはプロセスごとのため、セッション・OAuth の状態・トークンが Pod 間で共有されません。単一 Pod 専用です。インメモリストアで起動すると、起動時に警告ログを出します。
+- **`gateway.encryptKey` を設定し、全 Pod で共有する**（Secret から渡すなど）。未設定でインメモリストアの場合は Pod ごとにランダムな鍵を生成するため、ある Pod が発行したトークンを別の Pod が読めません。`redis` では必須です。
+- **WebMCP リバースゲートウェイ（`transport: reverse`）は単一レプリカ専用。** ブラウザ拡張の WebSocket と、それ宛ての `/mcp` 呼び出しが同じプロセスに届く必要があるため、専用の単一レプリカ Deployment として動かしてください。
+- **プローブ**: liveness に `/healthz`、readiness に `/readyz` を使います。`/readyz` はシャットダウンが始まると直ちに `503` を返します。
+- **グレースフルシャットダウン**: SIGTERM を受けると `/readyz` を失敗させ、`gateway.shutdown.drainDelay`（デフォルト `5s`）の間は受け付けを続けて Endpoints コントローラーが Pod を外すのを待ち、その後 `gateway.shutdown.timeout`（デフォルト `30s`）を上限に処理中のリクエストの完了を待ちます。`terminationGracePeriodSeconds` は `drainDelay + timeout` に余裕を足した値（例: `60`）以上にしてください。`preStop: sleep` は drain delay が同じ役割を果たすため不要です。
+- **タイムアウト**: `gateway.timeouts.readHeader`（`10s`）と `idle`（`120s`）にはデフォルトがあります。`read` / `write` は MCP の Streamable HTTP / SSE や edge の WebSocket が長時間接続のためデフォルトで無制限で、設定するとそれらの接続も切れます。`gateway.maxRequestBodySize` はデフォルトで無効です。base64 のファイル内容をツール引数で渡す呼び出し元がいる場合は、`fileFetch.maxSize` × 4/3 より大きく設定してください。
+- **メモリ**: `GOMEMLIMIT` をコンテナのメモリ上限の 80〜90% 程度に設定し、OOM Kill される前に Go の GC が働くようにします。
+- **オートスケール**: CPU ではなく処理中リクエスト数かリクエストレートでスケールさせます（[オートスケール用のメトリクス](#オートスケール用のメトリクス) 参照）。
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: manifold
+      env:
+        - name: GOMEMLIMIT
+          value: 900MiB # コンテナの上限: 1Gi
+      readinessProbe:
+        httpGet: { path: /readyz, port: 8081 }
+      livenessProbe:
+        httpGet: { path: /healthz, port: 8081 }
+      resources:
+        limits:
+          memory: 1Gi
+```
+
 ## 下流クライアントの登録
 
 Manifold は、前段の MCP クライアントに対しては OAuth 2.1 認可サーバーとして、プロキシ先のバックエンドに対しては OAuth クライアントとして振る舞います。下流クライアントを Manifold に認識させる方法は 2 つあります。

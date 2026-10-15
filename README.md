@@ -1104,6 +1104,36 @@ spec:
 
 KEDA treats `threshold` as a per-replica target, so the desired replica count is the query value divided by it. Adjust the label selector (`job`) to your scrape config, and see "Running on Kubernetes / multiple replicas" below for what multiple replicas require.
 
+## Running on Kubernetes / multiple replicas
+
+Checklist for running more than one replica (or rolling updates without dropped requests):
+
+- **Use Redis.** The `memory` and `sqlite` stores are per-process, so sessions, OAuth state and tokens are not shared between pods. They are for a single pod only. The gateway logs a warning at startup when it runs on the in-memory store.
+- **Set `gateway.encryptKey` and share it across all pods** (e.g. from a Secret). If it is unset, each pod with the in-memory store generates its own random key, and tokens issued by one pod cannot be read by another. With `redis` it is required.
+- **WebMCP reverse gateway (`transport: reverse`) is single-replica only.** The browser extension's WebSocket and the `/mcp` calls routed to it must land on the same process; run it as its own single-replica Deployment.
+- **Probes**: use `/healthz` for liveness and `/readyz` for readiness. `/readyz` returns `503` as soon as shutdown starts.
+- **Graceful shutdown**: on SIGTERM the gateway fails `/readyz`, keeps serving for `gateway.shutdown.drainDelay` (default `5s`) so the endpoints controller can drop the pod, then waits up to `gateway.shutdown.timeout` (default `30s`) for in-flight requests. Set `terminationGracePeriodSeconds` to at least `drainDelay + timeout` plus a margin (e.g. `60`). A `preStop: sleep` hook is not needed because the drain delay already does this.
+- **Timeouts**: `gateway.timeouts.readHeader` (`10s`) and `idle` (`120s`) have defaults. `read` / `write` are unlimited by default because MCP Streamable HTTP / SSE and the edge WebSocket are long-lived; setting them also cuts those connections. `gateway.maxRequestBodySize` is off by default; if you set it, keep it above `fileFetch.maxSize` × 4/3 when callers pass base64 file content in tool arguments.
+- **Memory**: set `GOMEMLIMIT` to about 80-90% of the container memory limit so the Go GC works harder before the pod is OOM-killed.
+- **Autoscaling**: scale on in-flight requests or request rate, not CPU (see [Metrics for autoscaling](#metrics-for-autoscaling)).
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: manifold
+      env:
+        - name: GOMEMLIMIT
+          value: 900MiB # container limit: 1Gi
+      readinessProbe:
+        httpGet: { path: /readyz, port: 8081 }
+      livenessProbe:
+        httpGet: { path: /healthz, port: 8081 }
+      resources:
+        limits:
+          memory: 1Gi
+```
+
 ## Downstream client registration
 
 Manifold acts as an OAuth 2.1 authorization server for the MCP clients in front of it, and as an OAuth client towards the backend it proxies. A downstream client becomes known to Manifold in one of two ways:

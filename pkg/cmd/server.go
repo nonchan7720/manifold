@@ -561,6 +561,11 @@ func reverseServerMiddlewareFn(
 	}
 }
 
+// singleInstanceStoreWarning はインメモリストアで起動したときの注意喚起。
+// プロセス間で状態を共有できないため、複数レプリカでは OAuth フローなどが壊れる。
+const singleInstanceStoreWarning = "the in-memory store is not shared between processes: " +
+	"run a single replica, or configure redis to scale out"
+
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。
 // sqlite.path が設定されている場合はSQLiteを、memory.enabled が true の場合はインメモリを、
 // それ以外の場合はRedisを使用する。
@@ -575,10 +580,12 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 		return c, nil
 	}
 	if globalConfig.Memory != nil && globalConfig.Memory.Enabled {
+		slog.WarnContext(ctx, singleInstanceStoreWarning)
 		return memory.NewClient(ctx)
 	}
 	if globalConfig.Redis == nil {
 		slog.WarnContext(ctx, "no storage backend configured, falling back to the in-memory store")
+		slog.WarnContext(ctx, singleInstanceStoreWarning)
 		return memory.NewClient(ctx)
 	}
 	return redis.NewClient(ctx, globalConfig.Redis)
