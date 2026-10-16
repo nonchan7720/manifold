@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/getkin/kin-openapi/openapi3"
@@ -1198,6 +1199,13 @@ func (l *limitedReadCloser) Close() error {
 // （client.SafeHTTPClient() の dialer が接続時に判定）。AllowedHosts が設定されている場合は
 // ホストの許可リストをリクエスト前とリダイレクト各ホップで検証する。レスポンスボディは
 // MaxSize でサイズ上限を課す。
+var (
+	// SafeHTTPClient / HTTPClient は呼び出しのたびに新しいコネクションプールを作る
+	// ため、ファイル取得用に1度だけ生成して Transport を使い回す。
+	sharedSafeFileFetchClient  = sync.OnceValue(client.SafeHTTPClient)
+	sharedLocalFileFetchClient = sync.OnceValue(client.HTTPClient)
+)
+
 func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string, string, error) {
 	cfg := getFileFetchConfig()
 
@@ -1209,14 +1217,17 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 		return nil, "", "", err
 	}
 
-	// SafeHTTPClient / HTTPClient は呼び出しごとに新しい *http.Client を生成して返すため、
-	// この CheckRedirect の設定がリクエスト間で共有・競合することはない。
+	// 下記の *http.Client は呼び出しごとに生成するため、この CheckRedirect の設定が
+	// リクエスト間で共有・競合することはない。
 	// SSRF 対策は fileFetch.allowLocal 設定でのみ緩和できるようにするため、
 	// AllowLocal が false の場合は環境変数に依存しない SafeHTTPClient を必ず使う。
-	httpClient := client.SafeHTTPClient()
+	base := sharedSafeFileFetchClient()
 	if cfg.AllowLocal {
-		httpClient = client.HTTPClient()
+		base = sharedLocalFileFetchClient()
 	}
+	// コネクションプールを持つ Transport だけを共有し、cfg に依存する
+	// CheckRedirect を持つ *http.Client は呼び出しごとに軽量に生成する。
+	httpClient := &http.Client{Transport: base.Transport, Timeout: base.Timeout}
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= fileFetchMaxRedirects {
 			return fmt.Errorf("stopped after %d redirects", fileFetchMaxRedirects)

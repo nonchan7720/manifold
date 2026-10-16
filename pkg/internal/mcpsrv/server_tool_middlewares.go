@@ -8,7 +8,7 @@ import (
 // ServerToolMiddlewares returns the tool middlewares every server gets, in
 // the order AddReceivingMiddleware expects within one call (outermost first):
 //
-//	audit → authz (from authzMiddlewares) → inner → tool filter
+//	metrics → audit → authz (from authzMiddlewares) → inner → tool filter
 //
 // Each of audit and tool filter is left out when its configuration doesn't
 // turn it on (no audit logger, no include / exclude / overrides).
@@ -32,7 +32,8 @@ func ServerToolMiddlewares(
 	if server != nil {
 		tools, service = server.Tools, server.ServiceCode()
 	}
-	var out []mcp.Middleware
+	// メトリクスは最も外側に置き、拒否された呼び出しも含めて計測する。
+	out := []mcp.Middleware{newToolMetricsMiddleware(name)}
 	if m := newAuditMiddleware(name, service, audit); m != nil {
 		out = append(out, m)
 	}

@@ -15,7 +15,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/version"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -51,6 +53,51 @@ type MCPBackendClient struct {
 	// waiting は進行中の接続試行を待っている呼び出し数。
 	// テストが待機者の合流を決定的に検知するために参照する。
 	waiting atomic.Int32
+
+	// rtMu 以下は http バックエンドの共有トランスポート状態。コネクションプール
+	// （*http.Transport）と token exchange のトークンキャッシュを接続のたびに
+	// 作り直さないよう、クライアントごとに1回だけ遅延生成する。
+	// 呼び出し元ごとの認証情報は RoundTripper が各リクエストの ctx から注入する
+	// ため、共有するのはプールとキャッシュ（トークンはユーザーのトークンをキーに
+	// 持つ）のみで、認証情報が呼び出し元をまたいで漏れることはない。
+	rtMu          sync.Mutex
+	baseTransport *http.Transport
+	baseRT        http.RoundTripper
+	tokenRegistry client.TokenSource
+}
+
+// withCallTimeout は ctx に1呼び出し分のタイムアウト（CallTimeoutOrDefault）を
+// 課す。呼び出し ctx にのみ適用するもので、stdio のプロセス寿命には影響しない
+// （buildTransport でプロセスはリクエスト ctx から切り離している）。
+func (c *MCPBackendClient) withCallTimeout(
+	ctx context.Context,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, c.cfg.CallTimeoutOrDefault())
+}
+
+// sharedTransport は http バックエンド共通のベース RoundTripper（otel 計装済み）
+// と token exchange のレジストリを返す。初回呼び出し時に1度だけ生成する。
+func (c *MCPBackendClient) sharedTransport() (http.RoundTripper, client.TokenSource) {
+	c.rtMu.Lock()
+	defer c.rtMu.Unlock()
+	if c.baseRT == nil {
+		c.baseTransport = client.CustomTransport()
+		c.baseRT = otelhttp.NewTransport(c.baseTransport)
+	}
+	if c.tokenRegistry == nil && c.cfg.TokenExchange != nil {
+		c.tokenRegistry = newTokenExchangeRegistry(c.cfg.TokenExchange)
+	}
+	return c.baseRT, c.tokenRegistry
+}
+
+// closeIdleConnections は共有トランスポートのアイドル接続を閉じる。
+func (c *MCPBackendClient) closeIdleConnections() {
+	c.rtMu.Lock()
+	t := c.baseTransport
+	c.rtMu.Unlock()
+	if t != nil {
+		t.CloseIdleConnections()
+	}
 }
 
 // IsPersistent は、このバックエンドが呼び出し元をまたいで単一セッションを
@@ -240,6 +287,8 @@ func (c *MCPBackendClient) ListTools(
 ) (_ *mcp.ListToolsResult, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListTools")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	if c.cfg.Transport == config.MCPTransportHTTP {
 		var res *mcp.ListToolsResult
@@ -272,6 +321,8 @@ func (c *MCPBackendClient) CallTool(
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/CallTool",
 		attribute.String("tool-name", name))
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	if c.cfg.Transport == config.MCPTransportHTTP {
 		var res *mcp.CallToolResult
@@ -297,6 +348,9 @@ func (c *MCPBackendClient) CallTool(
 // (name, description) の一覧を返す。http バックエンドは呼び出しごとに
 // 新しいセッションで問い合わせる。
 func (c *MCPBackendClient) ListToolInfos(ctx context.Context) ([]ToolInfo, error) {
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
+
 	if c.cfg.Transport == config.MCPTransportHTTP {
 		infos := []ToolInfo{}
 		err := c.withStatelessSession(ctx, func(session *mcp.ClientSession) error {
@@ -368,6 +422,8 @@ func (c *MCPBackendClient) ListResources(
 ) (_ *mcp.ListResourcesResult, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResources")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	var res *mcp.ListResourcesResult
 	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
@@ -389,6 +445,8 @@ func (c *MCPBackendClient) ListResourceTemplates(
 ) (_ *mcp.ListResourceTemplatesResult, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResourceTemplates")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	var res *mcp.ListResourceTemplatesResult
 	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
@@ -412,6 +470,8 @@ func (c *MCPBackendClient) ReadResource(
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ReadResource",
 		attribute.String("resource-uri", params.URI))
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	var res *mcp.ReadResourceResult
 	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
@@ -441,6 +501,8 @@ func (c *MCPBackendClient) ListPrompts(
 ) (_ *mcp.ListPromptsResult, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListPrompts")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	var res *mcp.ListPromptsResult
 	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
@@ -464,6 +526,8 @@ func (c *MCPBackendClient) GetPrompt(
 	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/GetPrompt",
 		attribute.String("prompt-name", params.Name))
 	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
 
 	var res *mcp.GetPromptResult
 	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
@@ -488,6 +552,7 @@ func (c *MCPBackendClient) Close() {
 		c.session = nil
 		c.connected = false
 	}
+	c.closeIdleConnections()
 }
 
 func (c *MCPBackendClient) connect(ctx context.Context) (_ *mcp.ClientSession, rErr error) {
@@ -571,10 +636,16 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 
 	switch c.cfg.Transport {
 	case config.MCPTransportHTTP:
+		// ベースのトランスポート（コネクションプール）とトークン交換レジストリは
+		// 共有し、認証ラッパーは cfg.OAuth2 が OAuth discovery で更新され得る
+		// ため接続ごとに現在の設定から組み立てる（軽量）。
+		base, registry := c.sharedTransport()
 		return &mcp.StreamableClientTransport{
 			Endpoint: c.cfg.URL,
 			HTTPClient: &http.Client{
-				Transport: httpClientRoundTripper(
+				Transport: newHTTPClientRoundTripper(
+					base,
+					registry,
 					c.cfg.AuthValue,
 					c.cfg.OAuth2,
 					c.cfg.TokenExchange,
@@ -587,7 +658,11 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 		if c.cfg.Command == "" {
 			return nil, fmt.Errorf("backend %s: command is required for stdio transport", c.name)
 		}
-		cmd := exec.CommandContext(ctx, c.cfg.Command, c.cfg.Args...) //nolint: gosec
+		// プロセスは全呼び出し元で共有する長寿命のものなので、最初のリクエストの
+		// ctx のキャンセル（リクエスト終了・タイムアウト）で kill されないよう
+		// ctx から切り離す。終了は Close（セッションのクローズ）が行う。
+		procCtx := context.WithoutCancel(ctx)
+		cmd := exec.CommandContext(procCtx, c.cfg.Command, c.cfg.Args...) //nolint: gosec
 		cmd.Env = os.Environ()
 		for k, v := range c.cfg.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)

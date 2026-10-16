@@ -51,9 +51,19 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 // behind proxies (Cloudflare, OCI LB, Traefik, etc.).
 var clientIP = remoteaddr.Parse()
 
+// IsProbePath は liveness / readiness プローブのパスかどうかを返す。
+func IsProbePath(path string) bool {
+	return path == "/healthz" || path == "/readyz"
+}
+
 // Logging returns a middleware that logs HTTP requests.
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// kubelet などのプローブは頻度が高くノイズになるためログ・span を省く。
+		if IsProbePath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx := r.Context()
 		ctx = trace.StartSpan(ctx, "Middleware/Logging")
 		defer func() { trace.EndSpan(ctx, nil) }()

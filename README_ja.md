@@ -713,6 +713,13 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 | `encryptKey` | string | トークン暗号化キー。base64 エンコードした 32 バイトの AES-256 キー。`openssl rand -base64 32` で生成。**`redis` / `sqlite` を使う場合は必須**。インメモリストアで未設定なら起動時にランダムなキーを生成する |
 | `specRefresh.interval` | duration | OpenAPI モードの spec を再取得する間隔（例: `5m`）。未設定または `0` でリフレッシュ無効 |
 | `specRefresh.rejectOn` | string | 再取得した spec の変更がこのレベル（`ERR`・`WARN`・`INFO`）以上なら採用せず、現在のツールを提供し続ける。未設定・`""`・`NONE` では拒否しない（デフォルト）。[リフレッシュ時の破壊的変更の検出](#リフレッシュ時の破壊的変更の検出) 参照 |
+| `shutdown.drainDelay` | duration | SIGTERM 受信後、`/readyz` が `503` を返し始めてから接続の受け付けを止めるまでの待機時間。この間に Kubernetes が Service のエンドポイントから Pod を外せる。`preStop` の sleep で待つ場合は `-1s`（無効）にする（デフォルト: `5s`。負の値で待機なし） |
+| `shutdown.timeout` | duration | グレースフルシャットダウンで処理中のリクエストの完了を待つ上限（デフォルト: `30s`） |
+| `timeouts.readHeader` | duration | リクエストヘッダーの読み取り上限（デフォルト: `10s`。負の値で無制限） |
+| `timeouts.idle` | duration | keep-alive 接続のアイドル上限（デフォルト: `120s`。負の値で無制限） |
+| `timeouts.read` | duration | 本文を含むリクエスト全体の読み取り上限（デフォルト: 無制限）。MCP の Streamable HTTP / SSE や edge の WebSocket は長時間接続なので、通常は未設定のままにする |
+| `timeouts.write` | duration | レスポンス書き込みの上限（デフォルト: 無制限）。`timeouts.read` と同じ理由で通常は未設定 |
+| `maxRequestBodySize` | int | `/mcp/{server_name}` のリクエスト本文の上限（バイト）。超えると `413`（デフォルト: `0` = 無制限）。base64 のファイル内容をツール引数で渡す場合はこの本文に含まれるため、利用するなら `fileFetch.maxSize` × 4/3（base64 のオーバーヘッド）に余裕を足した値以上にする
 
 #### `gateway.specRefresh`
 
@@ -1056,6 +1063,78 @@ telemetry:
     grpc:
       addr: localhost:4317
       insecure: true
+```
+
+##### オートスケール用のメトリクス
+
+Go ランタイムのメトリクスと `otelhttp` のリクエストメトリクス（`http_server_request_duration_seconds_*`）に加えて、ゲートウェイは次を出力します（名前は Prometheus の `/metrics` での表記。OTLP ではドット区切りの名前）。
+
+| メトリクス | 種類 | 説明 |
+| ---------- | ---- | ---- |
+| `http_server_active_requests` | UpDownCounter | 処理中の HTTP リクエスト数（`http.server.active_requests`）。長時間接続の SSE / WebSocket も接続中は数える。`/healthz`・`/readyz`・`/metrics` は数えない |
+| `manifold_tool_calls_total` | counter | `tools/call` の回数。ラベルは `server`・`tool`・`status`（`ok` / `error`） |
+| `manifold_tool_call_duration_seconds` | histogram | `tools/call` の所要時間。ラベルは同じ |
+
+ゲートウェイは I/O バウンドで、時間の大半をバックエンドの応答待ちに費やします。そのため同時接続数が増えても CPU・メモリはあまり上がらず、CPU / メモリ基準の HPA は実際の負荷に遅れます。リクエストレートか処理中リクエスト数でスケールさせてください。たとえば [KEDA](https://keda.sh) の Prometheus トリガーを使う場合は次のようにします。
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: manifold
+spec:
+  scaleTargetRef:
+    name: manifold
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # Pod あたりの平均処理中リクエスト数
+        query: sum(http_server_active_requests{job="manifold"})
+        threshold: "50"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # 全 Pod 合計のリクエストレート
+        query: sum(rate(http_server_request_duration_seconds_count{job="manifold"}[2m]))
+        threshold: "100"
+```
+
+KEDA は `threshold` を 1 レプリカあたりの目標値として扱うので、必要なレプリカ数は query の値を `threshold` で割った数になります。ラベルセレクタ（`job`）はスクレイプ設定に合わせてください。複数レプリカで動かす際の要件は下の「Kubernetes / 複数レプリカでの運用」を参照してください。
+
+## Kubernetes / 複数レプリカでの運用
+
+複数レプリカで動かす場合（およびリクエストを落とさずにローリングアップデートする場合）のチェックリストです。
+
+- **Redis を使う。** `memory` と `sqlite` のストアはプロセスごとのため、セッション・OAuth の状態・トークンが Pod 間で共有されません。単一 Pod 専用です。インメモリストアで起動すると、起動時に警告ログを出します。
+- **`gateway.encryptKey` を設定し、全 Pod で共有する**（Secret から渡すなど）。未設定でインメモリストアの場合は Pod ごとにランダムな鍵を生成するため、ある Pod が発行したトークンを別の Pod が読めません。`redis` では必須です。
+- **WebMCP リバースゲートウェイ（`transport: reverse`）は単一レプリカ専用。** ブラウザ拡張の WebSocket と、それ宛ての `/mcp` 呼び出しが同じプロセスに届く必要があるため、専用の単一レプリカ Deployment として動かしてください。
+- **プローブ**: liveness に `/healthz`、readiness に `/readyz` を使います。`/readyz` はシャットダウンが始まると直ちに `503` を返します。
+- **グレースフルシャットダウン**: Kubernetes 標準の `lifecycle.preStop.sleep` を使います（イメージは distroless のため、`exec` で `sleep` を呼ぶフックは動きません）。終了中の Pod は readiness に関係なく Service のエンドポイントから外され、SIGTERM は `preStop` の完了後に送られるので、この sleep の間にエンドポイントの更新が反映されます。そのうえで `gateway.shutdown.drainDelay: -1s` でゲートウェイ側の待機を無効にします。SIGTERM を受けると、`gateway.shutdown.timeout`（デフォルト `30s`）を上限に処理中のリクエストの完了を待ちます。`terminationGracePeriodSeconds` は `preStop` の sleep + `timeout` に余裕を足した値（例: `60`）以上にしてください。`preStop` を使わない場合は `drainDelay` をデフォルト（`5s`）のままにすると、`/readyz` を失敗させたうえでその間は受け付けを続けてから接続の受け付けを止めます。
+- **タイムアウト**: `gateway.timeouts.readHeader`（`10s`）と `idle`（`120s`）にはデフォルトがあります。`read` / `write` は MCP の Streamable HTTP / SSE や edge の WebSocket が長時間接続のためデフォルトで無制限で、設定するとそれらの接続も切れます。`gateway.maxRequestBodySize` はデフォルトで無効です。base64 のファイル内容をツール引数で渡す呼び出し元がいる場合は、`fileFetch.maxSize` × 4/3 より大きく設定してください。
+- **メモリ**: `GOMEMLIMIT` をコンテナのメモリ上限の 80〜90% 程度に設定し、OOM Kill される前に Go の GC が働くようにします。
+- **オートスケール**: CPU ではなく処理中リクエスト数かリクエストレートでスケールさせます（[オートスケール用のメトリクス](#オートスケール用のメトリクス) 参照）。
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: manifold
+      lifecycle:
+        preStop:
+          sleep: { seconds: 10 } # gateway.shutdown.drainDelay: -1s と組み合わせる
+      env:
+        - name: GOMEMLIMIT
+          value: 900MiB # コンテナの上限: 1Gi
+      readinessProbe:
+        httpGet: { path: /readyz, port: 8081 }
+      livenessProbe:
+        httpGet: { path: /healthz, port: 8081 }
+      resources:
+        limits:
+          memory: 1Gi
 ```
 
 ## 下流クライアントの登録
@@ -1450,6 +1529,8 @@ Manifold が公開する HTTP エンドポイントの一覧です。
 | メソッド | パス                   | 説明                                                          |
 | -------- | ---------------------- | ------------------------------------------------------------- |
 | `GET`    | `/media/download/{id}` | ストレージ保存コンテンツのダウンロード（`storage.hostURL` 設定時のみ） |
+| `GET`    | `/healthz`             | Liveness プローブ。常に `200` |
+| `GET`    | `/readyz`              | Readiness プローブ。`200`、グレースフルシャットダウン開始後は `503` |
 | `GET`    | `/metrics`             | Prometheus メトリクス（`telemetry.metrics.exporterType: pull` 時のみ） |
 
 ## 開発

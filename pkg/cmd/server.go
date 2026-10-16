@@ -378,7 +378,7 @@ func runGatewayServer(ctx context.Context) error {
 	}
 	defer cleanup()
 
-	_, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
+	meterProvider, metricsHandler, metricsCleanup, err := telemetry.NewMeterProvider(
 		ctx,
 		&globalConfig.Telemetry,
 	)
@@ -466,12 +466,15 @@ func runGatewayServer(ctx context.Context) error {
 	)
 	mux.Handle(
 		fmt.Sprintf("/mcp/{%s}", pathServerName),
-		mcpAuthMiddleware(
-			globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
-		)(mcpHTTPSrv),
+		middleware.MaxBodyBytes(globalConfig.Gateway.MaxRequestBodySize)(
+			mcpAuthMiddleware(
+				globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
+			)(mcpHTTPSrv),
+		),
 	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))
 	mux.Handle("/healthz", http.HandlerFunc(healthHandler.Healthz))
+	mux.Handle("/readyz", http.HandlerFunc(healthHandler.Readyz))
 	mux.Handle("GET /edge/ws", edgeWSHandler)
 	mux.HandleFunc("POST /edge/pair", edgePairHandler.Pair)
 	if metricsHandler != nil {
@@ -500,14 +503,29 @@ func runGatewayServer(ctx context.Context) error {
 	if servePort == 0 {
 		servePort = 8081
 	}
+	timeouts := gateway.Timeouts.WithDefaults()
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", servePort),
-		Handler: otelhttp.NewHandler(
+		Handler: telemetry.ActiveRequests(meterProvider, func(r *http.Request) bool {
+			return middleware.IsProbePath(r.URL.Path) || r.URL.Path == "/metrics"
+		})(otelhttp.NewHandler(
 			newHTTPHandler(mux),
 			fmt.Sprintf("%s/%s", trace.OpenTelemetryTracerName, "gateway"),
-		),
+			otelhttp.WithFilter(func(r *http.Request) bool {
+				return !middleware.IsProbePath(r.URL.Path)
+			}),
+		)),
+		ReadHeaderTimeout: timeouts.ReadHeader,
+		ReadTimeout:       timeouts.Read,
+		WriteTimeout:      timeouts.Write,
+		IdleTimeout:       timeouts.Idle,
 	}
-	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key)
+	sd := gateway.Shutdown.WithDefaults()
+	return runServer(ctx, srv, "gateway", servePort, gateway.Cert, gateway.Key, shutdownOptions{
+		onShutdown: healthHandler.SetNotReady,
+		drainDelay: sd.DrainDelay,
+		timeout:    sd.Timeout,
+	})
 }
 
 // newAuditLogger builds the audit logger for globalConfig.Audit (nil when
@@ -543,6 +561,11 @@ func reverseServerMiddlewareFn(
 	}
 }
 
+// singleInstanceStoreWarning はインメモリストアで起動したときの注意喚起。
+// プロセス間で状態を共有できないため、複数レプリカでは OAuth フローなどが壊れる。
+const singleInstanceStoreWarning = "the in-memory store is not shared between processes: " +
+	"run a single replica, or configure redis to scale out"
+
 // newStoreClient はグローバル設定に基づいてストレージクライアントを生成する。
 // sqlite.path が設定されている場合はSQLiteを、memory.enabled が true の場合はインメモリを、
 // それ以外の場合はRedisを使用する。
@@ -557,13 +580,26 @@ func newStoreClient(ctx context.Context) (store.Client, error) {
 		return c, nil
 	}
 	if globalConfig.Memory != nil && globalConfig.Memory.Enabled {
+		slog.WarnContext(ctx, singleInstanceStoreWarning)
 		return memory.NewClient(ctx)
 	}
 	if globalConfig.Redis == nil {
 		slog.WarnContext(ctx, "no storage backend configured, falling back to the in-memory store")
+		slog.WarnContext(ctx, singleInstanceStoreWarning)
 		return memory.NewClient(ctx)
 	}
 	return redis.NewClient(ctx, globalConfig.Redis)
+}
+
+// shutdownOptions は runServer のグレースフルシャットダウンの挙動。ゼロ値は
+// 「ドレイン待ちなし、タイムアウト 30 秒」。
+type shutdownOptions struct {
+	// onShutdown は SIGTERM 受信直後（ドレイン待ちの前）に呼ばれる。readiness を落とす用途。
+	onShutdown func()
+	// drainDelay は onShutdown 後、Shutdown を呼ぶまで新規リクエストを受け付け続ける時間。
+	drainDelay time.Duration
+	// timeout は Shutdown が処理中リクエストの完了を待つ上限。
+	timeout time.Duration
 }
 
 // runServer starts an HTTP server and handles graceful shutdown.
@@ -573,6 +609,7 @@ func runServer(
 	name string,
 	port int,
 	certFile, keyFile string,
+	sd shutdownOptions,
 ) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -599,7 +636,26 @@ func runServer(
 		slog.InfoContext(ctx, "shutdown signal received", slog.String("server", name))
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if sd.onShutdown != nil {
+		sd.onShutdown()
+	}
+	// ctx は SIGTERM で取り消し済みなので、そこから派生させると Shutdown が
+	// 即座に打ち切られ処理中リクエストを落としてしまう。取り消しを切り離す。
+	baseCtx := context.WithoutCancel(ctx)
+	if sd.drainDelay > 0 {
+		slog.InfoContext(baseCtx, "draining before shutdown",
+			slog.String("server", name), slog.Duration("drainDelay", sd.drainDelay))
+		select {
+		case <-time.After(sd.drainDelay):
+		case err := <-errCh:
+			return err
+		}
+	}
+	timeout := sd.timeout
+	if timeout <= 0 {
+		timeout = config.DefaultShutdownTimeout
+	}
+	shutdownCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {

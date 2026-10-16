@@ -713,6 +713,13 @@ Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → sour
 | `encryptKey` | string | Token encryption key. Base64-encoded 32-byte AES-256 key. Generate with `openssl rand -base64 32`. **Required with `redis` or `sqlite`**; with the in-memory store a random key is generated at startup when unset |
 | `specRefresh.interval` | duration | Interval for re-fetching OpenAPI mode specs (e.g. `5m`). Unset or `0` disables refreshing |
 | `specRefresh.rejectOn` | string | Reject a refreshed spec whose changes reach this level (`ERR`, `WARN` or `INFO`) and keep serving the current tools. Unset, `""` or `NONE` never rejects (default). See [Breaking changes during refresh](#breaking-changes-during-refresh) |
+| `shutdown.drainDelay` | duration | After SIGTERM, `/readyz` turns `503` and the gateway keeps serving for this long before it stops accepting connections, so Kubernetes can remove the pod from the Service endpoints first. Set `-1s` (disabled) when a `preStop` sleep hook already does this (default: `5s`; negative disables the wait) |
+| `shutdown.timeout` | duration | How long graceful shutdown waits for in-flight requests to finish (default: `30s`) |
+| `timeouts.readHeader` | duration | Max time to read request headers (default: `10s`; negative = unlimited) |
+| `timeouts.idle` | duration | Max idle time of a keep-alive connection (default: `120s`; negative = unlimited) |
+| `timeouts.read` | duration | Max time to read a whole request including the body (default: unlimited). Leave unset: MCP Streamable HTTP / SSE and the edge WebSocket are long-lived |
+| `timeouts.write` | duration | Max time to write a response (default: unlimited). Leave unset for the same reason as `timeouts.read` |
+| `maxRequestBodySize` | int | Max request body size in bytes for `/mcp/{server_name}`; larger requests get `413` (default: `0` = unlimited). Tool arguments carrying base64 file content travel in this body, so if you use them set it to at least `fileFetch.maxSize` × 4/3 (base64 overhead) plus headroom
 
 #### `gateway.specRefresh`
 
@@ -1056,6 +1063,78 @@ telemetry:
     grpc:
       addr: localhost:4317
       insecure: true
+```
+
+##### Metrics for autoscaling
+
+On top of the Go runtime metrics and the `otelhttp` request metrics (`http_server_request_duration_seconds_*`), the gateway emits (names as seen on the Prometheus `/metrics` endpoint; OTLP uses the dotted names):
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `http_server_active_requests` | UpDownCounter | In-flight HTTP requests (`http.server.active_requests`). Long-lived SSE / WebSocket connections are counted while open; `/healthz`, `/readyz` and `/metrics` are not |
+| `manifold_tool_calls_total` | counter | `tools/call` requests, labelled `server`, `tool`, `status` (`ok` / `error`) |
+| `manifold_tool_call_duration_seconds` | histogram | `tools/call` duration, same labels |
+
+The gateway is I/O-bound: most of its time is spent waiting on backends, so CPU and memory stay low while concurrency climbs, and CPU/memory-based HPA scaling lags behind real load. Scale on request rate or in-flight requests instead. For example, with [KEDA](https://keda.sh) and its Prometheus trigger:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: manifold
+spec:
+  scaleTargetRef:
+    name: manifold
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # average in-flight requests per pod
+        query: sum(http_server_active_requests{job="manifold"})
+        threshold: "50"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # request rate across all pods
+        query: sum(rate(http_server_request_duration_seconds_count{job="manifold"}[2m]))
+        threshold: "100"
+```
+
+KEDA treats `threshold` as a per-replica target, so the desired replica count is the query value divided by it. Adjust the label selector (`job`) to your scrape config, and see "Running on Kubernetes / multiple replicas" below for what multiple replicas require.
+
+## Running on Kubernetes / multiple replicas
+
+Checklist for running more than one replica (or rolling updates without dropped requests):
+
+- **Use Redis.** The `memory` and `sqlite` stores are per-process, so sessions, OAuth state and tokens are not shared between pods. They are for a single pod only. The gateway logs a warning at startup when it runs on the in-memory store.
+- **Set `gateway.encryptKey` and share it across all pods** (e.g. from a Secret). If it is unset, each pod with the in-memory store generates its own random key, and tokens issued by one pod cannot be read by another. With `redis` it is required.
+- **WebMCP reverse gateway (`transport: reverse`) is single-replica only.** The browser extension's WebSocket and the `/mcp` calls routed to it must land on the same process; run it as its own single-replica Deployment.
+- **Probes**: use `/healthz` for liveness and `/readyz` for readiness. `/readyz` returns `503` as soon as shutdown starts.
+- **Graceful shutdown**: use a native `lifecycle.preStop.sleep` hook (the image is distroless, so an `exec` hook running `sleep` does not work). Kubernetes removes a terminating pod from the Service endpoints regardless of readiness, and sends SIGTERM only after `preStop` returns, so the sleep gives the endpoints a chance to stop routing to the pod. Then disable the gateway's own wait with `gateway.shutdown.drainDelay: -1s`; on SIGTERM the gateway waits up to `gateway.shutdown.timeout` (default `30s`) for in-flight requests. Set `terminationGracePeriodSeconds` to at least the `preStop` sleep + `timeout` plus a margin (e.g. `60`). Without a `preStop` hook, leave `drainDelay` at its default (`5s`): the gateway fails `/readyz` and keeps serving for that long before it stops accepting connections.
+- **Timeouts**: `gateway.timeouts.readHeader` (`10s`) and `idle` (`120s`) have defaults. `read` / `write` are unlimited by default because MCP Streamable HTTP / SSE and the edge WebSocket are long-lived; setting them also cuts those connections. `gateway.maxRequestBodySize` is off by default; if you set it, keep it above `fileFetch.maxSize` × 4/3 when callers pass base64 file content in tool arguments.
+- **Memory**: set `GOMEMLIMIT` to about 80-90% of the container memory limit so the Go GC works harder before the pod is OOM-killed.
+- **Autoscaling**: scale on in-flight requests or request rate, not CPU (see [Metrics for autoscaling](#metrics-for-autoscaling)).
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 60
+  containers:
+    - name: manifold
+      lifecycle:
+        preStop:
+          sleep: { seconds: 10 } # with gateway.shutdown.drainDelay: -1s
+      env:
+        - name: GOMEMLIMIT
+          value: 900MiB # container limit: 1Gi
+      readinessProbe:
+        httpGet: { path: /readyz, port: 8081 }
+      livenessProbe:
+        httpGet: { path: /healthz, port: 8081 }
+      resources:
+        limits:
+          memory: 1Gi
 ```
 
 ## Downstream client registration
@@ -1451,6 +1530,8 @@ The HTTP endpoints exposed by Manifold.
 | Method | Path                   | Description                                                           |
 | ------ | ---------------------- | --------------------------------------------------------------------- |
 | `GET`  | `/media/download/{id}` | Download stored content (only when `storage.hostURL` is set)          |
+| `GET`  | `/healthz`             | Liveness probe. Always `200` |
+| `GET`  | `/readyz`              | Readiness probe. `200`, or `503` once graceful shutdown has started |
 | `GET`  | `/metrics`             | Prometheus metrics (only when `telemetry.metrics.exporterType: pull`) |
 
 ## Development
