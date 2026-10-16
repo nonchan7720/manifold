@@ -64,3 +64,49 @@ func TestToolMetricsMiddleware_RecordsCallsAndDuration(t *testing.T) {
 	require.Equal(t, map[string]int64{"petstore/getPet/ok": 2, "petstore/getPet/error": 1}, counts)
 	require.Equal(t, uint64(3), histCount)
 }
+
+func TestToolMetricsMiddleware_UnknownToolNamesAreAggregated(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+
+	mw := newToolMetricsMiddleware("petstore")
+	handler := mw(func(_ context.Context, method string, _ mcp.Request) (mcp.Result, error) {
+		if method == authzMethodToolsList {
+			return &mcp.ListToolsResult{Tools: []*mcp.Tool{{Name: "listPets"}}}, nil
+		}
+		return &mcp.CallToolResult{IsError: true}, nil
+	})
+	call := func(name string) {
+		_, err := handler(
+			t.Context(),
+			authzMethodToolsCall,
+			&mcp.ServerRequest[*mcp.CallToolParamsRaw]{
+				Params: &mcp.CallToolParamsRaw{Name: name},
+			},
+		)
+		require.NoError(t, err)
+	}
+	// tools/list で公開されたツールは失敗しても名前で数え、それ以外は unknown に集約する。
+	_, err := handler(t.Context(), authzMethodToolsList, &mcp.ServerRequest[*mcp.ListToolsParams]{})
+	require.NoError(t, err)
+	call("listPets")
+	call("random-1")
+	call("random-2")
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	counts := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if d, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == "manifold.tool_calls" {
+				for _, dp := range d.DataPoints {
+					tool, _ := dp.Attributes.Value("tool")
+					counts[tool.AsString()] = dp.Value
+				}
+			}
+		}
+	}
+	require.Equal(t, map[string]int64{"listPets": 1, unknownToolLabel: 2}, counts)
+}

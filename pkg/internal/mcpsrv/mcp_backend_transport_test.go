@@ -14,9 +14,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testConnCounter はテスト用バックエンドが受けた接続の開始・終了数。
+type testConnCounter struct {
+	opened atomic.Int32
+	closed atomic.Int32
+}
+
+// Load は新規接続数を返す。
+func (c *testConnCounter) Load() int32 { return c.opened.Load() }
+
 // newTestMCPHTTPBackend は slow ツールを持つ MCP バックエンドを起動し、
-// 新規接続数を数えるカウンタを返す。
-func newTestMCPHTTPBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
+// 接続数を数えるカウンタを返す。
+func newTestMCPHTTPBackend(t *testing.T) (*httptest.Server, *testConnCounter) {
 	t.Helper()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "backend", Version: "0.0.1"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{Name: "echo"}, func(
@@ -33,14 +42,17 @@ func newTestMCPHTTPBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
 		}
 		return &mcp.CallToolResult{}, nil, nil
 	})
-	var conns atomic.Int32
+	var conns testConnCounter
 	hs := httptest.NewUnstartedServer(mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	))
 	hs.Config.ConnState = func(_ net.Conn, s http.ConnState) {
 		if s == http.StateNew {
-			conns.Add(1)
+			conns.opened.Add(1)
+		}
+		if s == http.StateClosed || s == http.StateHijacked {
+			conns.closed.Add(1)
 		}
 	}
 	hs.Start()
@@ -94,7 +106,7 @@ func TestMCPBackendClient_HTTP_CallTimeout(t *testing.T) {
 // TestMCPBackendClient_Close_ClosesIdleConnections は Close で共有
 // トランスポートのアイドル接続が解放され、以降の接続が拒否されることを検証する。
 func TestMCPBackendClient_Close_ClosesIdleConnections(t *testing.T) {
-	hs, _ := newTestMCPHTTPBackend(t)
+	hs, conns := newTestMCPHTTPBackend(t)
 	c := &MCPBackendClient{name: "b", cfg: &config.Server{
 		Transport: config.MCPTransportHTTP,
 		URL:       hs.URL,
@@ -102,8 +114,17 @@ func TestMCPBackendClient_Close_ClosesIdleConnections(t *testing.T) {
 	_, err := c.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, c.baseTransport)
+	require.Positive(
+		t,
+		conns.opened.Load()-conns.closed.Load(),
+		"keep-alive connection should stay open",
+	)
 
 	c.Close()
+	// アイドル接続がクライアント側から閉じられ、サーバー側でも終了が観測される。
+	require.Eventually(t, func() bool {
+		return conns.opened.Load() == conns.closed.Load()
+	}, 3*time.Second, 10*time.Millisecond)
 	_, err = c.ListTools(t.Context(), nil)
 	require.Error(t, err)
 }

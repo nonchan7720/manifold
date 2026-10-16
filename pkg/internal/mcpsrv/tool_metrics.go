@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -44,13 +45,56 @@ func newToolMetrics(mp metric.MeterProvider) *toolMetrics {
 	return &toolMetrics{calls: calls, duration: duration}
 }
 
+// unknownToolLabel は公開されていないツール名をまとめる tool 属性の値。
+const unknownToolLabel = "unknown"
+
+// knownTools は tool 属性に使ってよいツール名の集合。クライアントが任意の名前で
+// tools/call できるため、生の名前をそのまま属性にするとカーディナリティが
+// 呼び出し側次第で増えてしまう。tools/list の結果に載った名前（＝公開中のツール）
+// と、成功した呼び出しの名前だけを覚え、それ以外は unknownToolLabel に集約する。
+type knownTools struct {
+	names sync.Map // map[string]struct{}
+}
+
+func (k *knownTools) learnList(res mcp.Result) {
+	list, ok := res.(*mcp.ListToolsResult)
+	if !ok || list == nil {
+		return
+	}
+	for _, t := range list.Tools {
+		if t != nil {
+			k.names.Store(t.Name, struct{}{})
+		}
+	}
+}
+
+func (k *knownTools) label(name string, succeeded bool) string {
+	if succeeded {
+		k.names.Store(name, struct{}{})
+		return name
+	}
+	if _, ok := k.names.Load(name); ok {
+		return name
+	}
+	return unknownToolLabel
+}
+
 // newToolMetricsMiddleware は server に対する全 tools/call の回数・所要時間を
 // 記録するミドルウェアを返す。status は、transport エラーまたは isError の結果なら "error"、
-// それ以外は "ok"。グローバル MeterProvider が noop なら何も記録しない。
+// それ以外は "ok"。tool 属性は公開中のツール名か unknownToolLabel（knownTools 参照）。
+// グローバル MeterProvider が noop なら何も記録しない。
 func newToolMetricsMiddleware(server string) mcp.Middleware {
 	m := newToolMetrics(otel.GetMeterProvider())
+	known := &knownTools{}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == authzMethodToolsList {
+				res, err := next(ctx, method, req)
+				if err == nil {
+					known.learnList(res)
+				}
+				return res, err
+			}
 			if method != authzMethodToolsCall {
 				return next(ctx, method, req)
 			}
@@ -67,7 +111,7 @@ func newToolMetricsMiddleware(server string) mcp.Middleware {
 			}
 			opt := metric.WithAttributes(
 				attribute.String("server", server),
-				attribute.String("tool", params.Name),
+				attribute.String("tool", known.label(params.Name, status == "ok")),
 				attribute.String("status", status),
 			)
 			ctx = context.WithoutCancel(ctx)
