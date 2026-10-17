@@ -939,6 +939,7 @@ Accepts downstream clients that present an HTTPS `client_id` resolving to a clie
 | `master_name`  | string   | Sentinel master name                                  |
 | `tls`          | bool     | Enable TLS                                            |
 | `cluster_mode` | bool     | Enable Cluster mode                                   |
+| `key_prefix`   | string   | Prefix prepended to every key stored in Redis (default: empty) |
 
 #### `sqlite`
 

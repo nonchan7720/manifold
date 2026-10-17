@@ -107,3 +107,41 @@ func TestImplementsStoreClient(t *testing.T) {
 		Close() error
 	} = c
 }
+
+func TestKeyPrefix(t *testing.T) {
+	ctx := t.Context()
+	mr := miniredis.RunT(t)
+	c, err := redis.NewClient(ctx, &config.RedisConfig{
+		Addrs:     []string{mr.Addr()},
+		KeyPrefix: "manifold:",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close() })
+
+	require.NoError(t, c.Set(ctx, "k", "v", time.Minute))
+	require.True(t, mr.Exists("manifold:k"))
+	require.False(t, mr.Exists("k"))
+
+	got, err := c.Get(ctx, "k")
+	require.NoError(t, err)
+	require.Equal(t, "v", got)
+
+	require.NoError(t, c.Expire(ctx, "k", 2*time.Minute))
+	require.Equal(t, 2*time.Minute, mr.TTL("manifold:k"))
+
+	require.NoError(t, c.Del(ctx, "k"))
+	require.False(t, mr.Exists("manifold:k"))
+	_, err = c.Get(ctx, "k")
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestKeyPrefix_DefaultEmpty(t *testing.T) {
+	ctx := t.Context()
+	mr := miniredis.RunT(t)
+	c, err := redis.NewClient(ctx, &config.RedisConfig{Addrs: []string{mr.Addr()}})
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close() })
+
+	require.NoError(t, c.Set(ctx, "k", "v", time.Minute))
+	require.True(t, mr.Exists("k"))
+}
