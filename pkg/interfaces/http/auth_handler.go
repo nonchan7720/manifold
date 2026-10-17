@@ -1028,30 +1028,8 @@ func (h *AuthHandler) discoverOAuth2(
 	if err != nil {
 		return nil, err
 	}
-	// Step 2: WWW-Authenticate を解析して resource_metadata URL を取得
-	// resource_metadata がない場合は RFC 9728 に従い well-known URL にフォールバック
-	resourceMetaURL, err := getResourceMetadata(wwwAuthenticate)
-	if err != nil {
-		u, parseErr := url.Parse(srv.URL)
-		if parseErr != nil {
-			return nil, err
-		}
-		resourceMetaURL = fmt.Sprintf(
-			"%s://%s/.well-known/oauth-protected-resource",
-			u.Scheme,
-			u.Host,
-		)
-	}
-
-	// Step 3: Protected Resource Metadata を取得して認可サーバーを特定
-	// resource フィールドの検証に使う URL は RFC 9728 の逆変換で resourceMetaURL から導出する。
-	// 例: https://host/.well-known/oauth-protected-resource/mcp → https://host/mcp
-	authorizationServers, err := getAuthorizationServers(
-		ctx,
-		resourceMetaURL,
-		resourceURLFromMetaURL(resourceMetaURL),
-		h.httpClient,
-	)
+	// Step 2/3: Protected Resource Metadata を取得して認可サーバーを特定
+	authorizationServers, err := h.discoverAuthorizationServers(ctx, srv.URL, wwwAuthenticate)
 	if err != nil {
 		return nil, err
 	}
@@ -1170,6 +1148,48 @@ func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) 
 		)
 	}
 	return probeResp.Header["Www-Authenticate"], nil
+}
+
+// discoverAuthorizationServers は Protected Resource Metadata を取得し、認可サーバー一覧を返す。
+//
+// WWW-Authenticate の resource_metadata から取得する場合、RFC 9728 §3.3 に従い
+// メタデータの resource はリクエスト先 URL (resourceURL) と一致しなければならない。
+// resource_metadata がない場合は RFC 9728 §3.1 に従い、パスを挿入した well-known URL、
+// ホスト直下の well-known URL の順に試す。この場合の resource の期待値は
+// well-known URL からの逆変換で求める。
+func (h *AuthHandler) discoverAuthorizationServers(
+	ctx context.Context,
+	resourceURL string,
+	wwwAuthenticate []string,
+) ([]string, error) {
+	resourceMetaURL, err := getResourceMetadata(wwwAuthenticate)
+	if err == nil {
+		return getAuthorizationServers(ctx, resourceMetaURL, resourceURL, h.httpClient)
+	}
+	u, parseErr := url.Parse(resourceURL)
+	if parseErr != nil {
+		return nil, err
+	}
+	const wellKnown = "/.well-known/oauth-protected-resource"
+	base := fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, wellKnown)
+	candidates := []string{base}
+	if p := strings.TrimSuffix(u.Path, "/"); p != "" {
+		candidates = []string{base + p, base}
+	}
+	var lastErr error
+	for _, metaURL := range candidates {
+		servers, gErr := getAuthorizationServers(
+			ctx,
+			metaURL,
+			resourceURLFromMetaURL(metaURL),
+			h.httpClient,
+		)
+		if gErr == nil {
+			return servers, nil
+		}
+		lastErr = gErr
+	}
+	return nil, lastErr
 }
 
 func getResourceMetadata(wwwAuthenticate []string) (string, error) {
