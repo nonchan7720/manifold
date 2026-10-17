@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.2](https://github.com/nonchan7720/manifold/compare/v1.23.1...v1.23.2) (2026-10-16)
+
+
+### Performance Improvements
+
+* harden gateway for high concurrency and multi-replica Kubernetes deployments ([#311](https://github.com/nonchan7720/manifold/issues/311)) ([2ec226a](https://github.com/nonchan7720/manifold/commit/2ec226a54e9f606546b619e92b61843e3bb02548))
+
 ## [1.23.1](https://github.com/nonchan7720/manifold/compare/v1.23.0...v1.23.1) (2026-10-14)
 
 
