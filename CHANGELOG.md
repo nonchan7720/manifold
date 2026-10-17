@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.3](https://github.com/nonchan7720/manifold/compare/v1.23.2...v1.23.3) (2026-10-17)
+
+
+### Bug Fixes
+
+* OAuth2 自動検出の resource 検証を RFC 9728 §3.3 に準拠させる ([#315](https://github.com/nonchan7720/manifold/issues/315)) ([e8f5239](https://github.com/nonchan7720/manifold/commit/e8f52397cb85602ae2219ffa9df07b19d558733b))
+
 ## [1.23.2](https://github.com/nonchan7720/manifold/compare/v1.23.1...v1.23.2) (2026-10-16)
 
 
