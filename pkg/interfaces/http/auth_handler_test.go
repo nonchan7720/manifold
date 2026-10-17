@@ -693,11 +693,12 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 	authServerURL = authSrv.URL
 
 	// Protected Resource Metadata エンドポイント
-	var metaServerURL string
+	var metaServerURL, mcpServerURL string
 	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":              metaServerURL,
+			// RFC 9728 §3.3: resource はリクエスト先 URL (MCP バックエンド) と一致する
+			"resource":              mcpServerURL,
 			"authorization_servers": []string{authServerURL},
 		})
 	}))
@@ -711,6 +712,7 @@ func TestDiscoverOAuth2_DCR_StoresClientSecret(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer mcpSrv.Close()
+	mcpServerURL = mcpSrv.URL
 
 	h := &AuthHandler{
 		servers: config.Servers{
@@ -1421,11 +1423,12 @@ func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
 	defer authSrv.Close()
 	authServerURL = authSrv.URL
 
-	var metaServerURL string
+	var metaServerURL, mcpServerURL string
 	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"resource":              metaServerURL,
+			// RFC 9728 §3.3: resource はリクエスト先 URL (MCP バックエンド) と一致する
+			"resource":              mcpServerURL,
 			"authorization_servers": []string{authServerURL},
 		})
 	}))
@@ -1438,6 +1441,7 @@ func TestDiscoverOAuth2_DCR_GrantTypesIncludeRefreshToken(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer mcpSrv.Close()
+	mcpServerURL = mcpSrv.URL
 
 	h := &AuthHandler{
 		servers: config.Servers{
@@ -2250,4 +2254,157 @@ func TestLoginEndpoint_OAuth2NotConfiguredForOpenAPIServer(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, rw.Code)
 	require.Contains(t, rw.Body.String(), "oauth2 not configured for this server")
+}
+
+// --- discoverOAuth2: resource の検証 (RFC 9728 §3.3) ---
+
+// newDiscoverTestAuthServer は DCR 可能な認可サーバーを起動してその URL を返す。
+func newDiscoverTestAuthServer(t *testing.T) string {
+	t.Helper()
+	var authURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"issuer":                           authURL,
+				"authorization_endpoint":           authURL + "/auth",
+				"token_endpoint":                   authURL + "/token",
+				"registration_endpoint":            authURL + "/register",
+				"response_types_supported":         []string{"code"},
+				"grant_types_supported":            []string{"authorization_code"},
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"client_id": "cid"}) //nolint: errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(authSrv.Close)
+	authURL = authSrv.URL
+	return authURL
+}
+
+// newDiscoverTestBackend は path 配下で MCP を提供するバックエンドを起動する。
+// wwwAuth が空でなければ 401 に WWW-Authenticate を付与する。
+// resource は PRM が返す resource (空なら srv.URL)、metaPaths は PRM を提供する well-known パス。
+func newDiscoverTestBackend(
+	t *testing.T,
+	authURL, mcpPath, resource string,
+	metaPaths []string,
+	withResourceMetadata bool,
+) *config.Server {
+	t.Helper()
+	var baseURL string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, mp := range metaPaths {
+			if r.URL.Path == mp {
+				res := resource
+				if res == "" {
+					res = baseURL + mcpPath
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+					"resource":              res,
+					"authorization_servers": []string{authURL},
+				})
+				return
+			}
+		}
+		if r.URL.Path == mcpPath {
+			if withResourceMetadata {
+				w.Header().Set("Www-Authenticate", fmt.Sprintf(
+					`Bearer resource_metadata="%s/.well-known/oauth-protected-resource"`, baseURL))
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(backend.Close)
+	baseURL = backend.URL
+	return &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       baseURL + mcpPath,
+	}
+}
+
+func newDiscoverTestHandler() *AuthHandler {
+	return &AuthHandler{
+		servers: config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+	}
+}
+
+// WWW-Authenticate がパス無しの well-known を指し、resource が srv.URL (パス付き) の場合は成功する
+func TestDiscoverOAuth2_WWWAuthenticateRootMetaWithPathResource(t *testing.T) {
+	authURL := newDiscoverTestAuthServer(t)
+	srv := newDiscoverTestBackend(t, authURL, "/mcp", "",
+		[]string{"/.well-known/oauth-protected-resource"}, true)
+
+	result, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "cid", result.ClientID)
+	require.Equal(t, authURL+"/token", result.TokenURL)
+}
+
+// WWW-Authenticate 由来で resource が srv.URL と一致しない場合は失敗する (なりすまし防止)
+func TestDiscoverOAuth2_WWWAuthenticateResourceMismatch(t *testing.T) {
+	authURL := newDiscoverTestAuthServer(t)
+	srv := newDiscoverTestBackend(t, authURL, "/mcp", "https://evil.example.com/mcp",
+		[]string{"/.well-known/oauth-protected-resource"}, true)
+
+	_, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
+}
+
+// resource_metadata 無し: パス挿入 well-known (RFC 9728 §3.1) で検出できる
+func TestDiscoverOAuth2_FallbackPathInsertedWellKnown(t *testing.T) {
+	authURL := newDiscoverTestAuthServer(t)
+	srv := newDiscoverTestBackend(t, authURL, "/mcp", "",
+		[]string{"/.well-known/oauth-protected-resource/mcp"}, false)
+
+	result, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "cid", result.ClientID)
+}
+
+// resource_metadata 無し: ホスト直下の well-known にフォールバックし、従来どおり逆変換 (ホストのみ) で検証する
+func TestDiscoverOAuth2_FallbackRootWellKnown(t *testing.T) {
+	authURL := newDiscoverTestAuthServer(t)
+	// ルート直下の well-known の resource は逆変換結果 (ホストのみ) と一致する必要がある
+	var baseURL string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"resource":              baseURL,
+				"authorization_servers": []string{authURL},
+			})
+		case "/mcp":
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+	baseURL = backend.URL
+	srv := &config.Server{Name: "testsrv", Transport: config.MCPTransportHTTP, URL: baseURL + "/mcp"}
+
+	result, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "cid", result.ClientID)
+}
+
+// resource_metadata 無し: resource が逆変換結果と異なる場合は従来どおり失敗する
+func TestDiscoverOAuth2_FallbackResourceMismatch(t *testing.T) {
+	authURL := newDiscoverTestAuthServer(t)
+	srv := newDiscoverTestBackend(t, authURL, "/mcp", "https://evil.example.com/mcp",
+		[]string{"/.well-known/oauth-protected-resource"}, false)
+
+	_, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
 }
