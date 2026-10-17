@@ -2392,7 +2392,11 @@ func TestDiscoverOAuth2_FallbackRootWellKnown(t *testing.T) {
 	}))
 	defer backend.Close()
 	baseURL = backend.URL
-	srv := &config.Server{Name: "testsrv", Transport: config.MCPTransportHTTP, URL: baseURL + "/mcp"}
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       baseURL + "/mcp",
+	}
 
 	result, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
 	require.NoError(t, err)
