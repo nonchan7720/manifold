@@ -17,7 +17,13 @@ import (
 
 // Client represents the Redis client wrapper
 type Client struct {
-	client redis.UniversalClient
+	client    redis.UniversalClient
+	keyPrefix string
+}
+
+// prefixed returns the key as stored in Redis, with the configured prefix applied.
+func (c *Client) prefixed(key string) string {
+	return c.keyPrefix + key
 }
 
 // NewClient initializes a new Redis connection based on the provided configuration.
@@ -87,7 +93,7 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 		return nil, fmt.Errorf("failed to connect to redis: %w", err)
 	}
 
-	return &Client{client: rdb}, nil
+	return &Client{client: rdb, keyPrefix: cfg.KeyPrefix}, nil
 }
 
 // Set stores a value with an expiration type
@@ -100,7 +106,7 @@ func (c *Client) Set(
 	ctx = trace.StartSpan(ctx, "redis/Client/Set")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	return c.client.Set(ctx, key, value, expiration).Err()
+	return c.client.Set(ctx, c.prefixed(key), value, expiration).Err()
 }
 
 // Get retrieves a string value by key
@@ -108,7 +114,7 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	ctx = trace.StartSpan(ctx, "redis/Client/Get")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	val, err := c.client.Get(ctx, key).Result()
+	val, err := c.client.Get(ctx, c.prefixed(key)).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
@@ -123,7 +129,7 @@ func (c *Client) Expire(ctx context.Context, key string, expiration time.Duratio
 	ctx = trace.StartSpan(ctx, "redis/Client/Expire")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	ok, err := c.client.Expire(ctx, key, expiration).Result()
+	ok, err := c.client.Expire(ctx, c.prefixed(key), expiration).Result()
 	if err != nil {
 		return err
 	}
@@ -138,7 +144,7 @@ func (c *Client) Del(ctx context.Context, key string) (rErr error) {
 	ctx = trace.StartSpan(ctx, "redis/Client/Del")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	return c.client.Del(ctx, key).Err()
+	return c.client.Del(ctx, c.prefixed(key)).Err()
 }
 
 // Close closes the Redis connection

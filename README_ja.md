@@ -939,6 +939,7 @@ DCR で登録する代わりに、Client ID Metadata Document を指す HTTPS �
 | `master_name`  | string   | Sentinel マスター名                                   |
 | `tls`          | bool     | TLS 有効化                                            |
 | `cluster_mode` | bool     | Cluster モード有効化                                  |
+| `key_prefix`   | string   | Redis に保存するすべてのキーの先頭に付ける接頭辞（既定: 空） |
 
 #### `sqlite`
 

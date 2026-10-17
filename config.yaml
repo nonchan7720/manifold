@@ -37,6 +37,7 @@ sqlite:
 #   master_name: ${REDIS_MASTER_NAME}
 #   tls: ${REDIS_TLS:-false}
 #   cluster_mode: ${REDIS_CLUSTER_MODE:-false}
+#   key_prefix: "manifold:"
 
 telemetry:
   serviceName: manifold

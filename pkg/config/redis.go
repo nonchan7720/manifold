@@ -9,4 +9,6 @@ type RedisConfig struct {
 	MasterName  string   `mapstructure:"master_name"`
 	TLS         bool     `mapstructure:"tls"`
 	ClusterMode bool     `mapstructure:"cluster_mode"`
+	// KeyPrefix is prepended to every key the Redis client handles. Empty by default.
+	KeyPrefix string `mapstructure:"key_prefix"`
 }
