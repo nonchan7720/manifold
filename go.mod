@@ -16,14 +16,14 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.16.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gabriel-vasile/mimetype v1.4.15
-	github.com/getkin/kin-openapi v0.149.0
+	github.com/getkin/kin-openapi v0.150.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.4.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/n-creativesystem/go-packages/lib/trace v1.2.0
+	github.com/n-creativesystem/go-packages/lib/trace v1.3.0
 	github.com/netinternet/remoteaddr v0.2.2
 	github.com/oasdiff/oasdiff v1.33.0
 	github.com/oasdiff/yaml v0.1.1
