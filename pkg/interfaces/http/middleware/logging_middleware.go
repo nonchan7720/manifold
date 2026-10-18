@@ -78,7 +78,7 @@ func Logging(next http.Handler) http.Handler {
 			slog.String("user_agent", util.SanitizeLog(r.UserAgent())),
 			slog.String("request_id", r.Header.Get("X-Request-Id")),
 			slog.String("host", r.Host),
-			slog.String("request-uri", util.SanitizeLog(r.RequestURI)),
+			slog.String("request-uri", util.RedactRequestURI(r.RequestURI)),
 		)
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		log.InfoContext(ctx, "http request")

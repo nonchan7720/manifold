@@ -520,8 +520,8 @@ func loginRequestFromQuery(
 	slog.InfoContext(ctx, "LoginEndpoint called",
 		slog.String("client_id", util.SanitizeLog(req.clientID)),
 		slog.String("redirect_uri", util.SanitizeLog(req.redirectURI)),
-		slog.String("state", util.SanitizeLog(req.state)),
-		slog.String("code_challenge", util.SanitizeLog(req.codeChallenge)),
+		slog.String("state_fp", util.Fingerprint(req.state)),
+		slog.Bool("has_code_challenge", req.codeChallenge != ""),
 	)
 
 	if req.codeChallenge == "" || req.codeChallengeMethod != "S256" {
@@ -729,7 +729,7 @@ func (h *AuthHandler) CallbackEndpoint(
 	code := q.Get("code")
 
 	slog.InfoContext(ctx, "CallbackEndpoint called",
-		slog.String("state", util.SanitizeLog(sessionID)),
+		slog.String("state_fp", util.Fingerprint(sessionID)),
 		slog.Bool("has_code", code != ""),
 	)
 
@@ -744,7 +744,7 @@ func (h *AuthHandler) CallbackEndpoint(
 		slog.WarnContext(
 			ctx,
 			"session not found in redis",
-			slog.String("session_id", util.SanitizeLog(sessionID)),
+			slog.String("state_fp", util.Fingerprint(sessionID)),
 		)
 		http.Error(w, "invalid or expired session", http.StatusBadRequest)
 		return
@@ -896,7 +896,7 @@ func (h *AuthHandler) TokenEndpoint(
 		slog.WarnContext(
 			ctx,
 			"auth code not found in redis",
-			slog.String("code", util.SanitizeLog(code)),
+			slog.String("code_fp", util.Fingerprint(code)),
 		)
 		http.Error(w, "invalid or expired code", http.StatusBadRequest)
 		return
