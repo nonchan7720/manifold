@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/nonchan7720/manifold/compare/v1.23.3...v1.24.0) (2026-10-17)
+
+
+### Features
+
+* **redis:** add redis.key_prefix to namespace all keys ([#318](https://github.com/nonchan7720/manifold/issues/318)) ([4e18dec](https://github.com/nonchan7720/manifold/commit/4e18dec78abfa480b1ef1eb864c323407d724ba3))
+
 ## [1.23.3](https://github.com/nonchan7720/manifold/compare/v1.23.2...v1.23.3) (2026-10-17)
 
 
