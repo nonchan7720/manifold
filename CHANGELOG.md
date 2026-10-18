@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.1](https://github.com/nonchan7720/manifold/compare/v1.24.0...v1.24.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **log:** OAuth の認可コード・state 等をアクセスログに出さない ([#320](https://github.com/nonchan7720/manifold/issues/320)) ([59de499](https://github.com/nonchan7720/manifold/commit/59de49933f153fbff3f14ce8ad715d7404160add))
+
 ## [1.24.0](https://github.com/nonchan7720/manifold/compare/v1.23.3...v1.24.0) (2026-10-17)
 
 
