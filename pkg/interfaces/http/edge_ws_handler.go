@@ -3,8 +3,10 @@ package httphandler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -225,15 +227,7 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 	// HandleAppUp が initialize/tools-list のために往復通信を行うため、読み取りループを
 	// 塞がないよう非同期に実行する。
 	go func() {
-		err := s.gateway.HandleAppUp(
-			ctx,
-			s.identityKeys,
-			frame.Origin,
-			frame.AppSession,
-			s.connID,
-			s.sender,
-			incoming,
-		)
+		err := s.runAppUp(ctx, frame, incoming)
 		if err != nil {
 			slog.ErrorContext(ctx, "edge app.up failed",
 				slog.String("origin", frame.Origin), slog.Any("error", err))
@@ -250,6 +244,34 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 			s.mu.Unlock()
 		}
 	}()
+}
+
+// runAppUp runs HandleAppUp for one app.up frame and converts a panic into an
+// error. The call runs on its own goroutine, outside middleware.Recover, so
+// without this guard a panic raised while handling one tab's tools/list (an
+// untrusted peer's input) would terminate the whole gateway process.
+func (s *edgeConnSession) runAppUp(
+	ctx context.Context,
+	frame mcpsrv.EdgeEnvelope,
+	incoming <-chan json.RawMessage,
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "edge app.up panicked",
+				slog.String("origin", frame.Origin), slog.Any("panic", r),
+				slog.String("stack", string(debug.Stack())))
+			err = errors.New("app.up failed: internal error")
+		}
+	}()
+	return s.gateway.HandleAppUp(
+		ctx,
+		s.identityKeys,
+		frame.Origin,
+		frame.AppSession,
+		s.connID,
+		s.sender,
+		incoming,
+	)
 }
 
 func (s *edgeConnSession) handleAppDown(ctx context.Context, frame mcpsrv.EdgeEnvelope) {
