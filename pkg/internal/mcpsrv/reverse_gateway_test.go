@@ -816,3 +816,89 @@ func TestReverseGateway_ConcurrentResolveServerAndHandleAppUp_SessionToolsSurviv
 				"ResolveServer lazy-build", i)
 	}
 }
+
+// rawFakeTab answers the gateway's initialize / tools/list JSON-RPC requests
+// with hand-written JSON, so a test can send tool definitions a real
+// mcp.Server could never produce (e.g. an inputSchema of type "string",
+// which the page-side AddTool would itself reject). Returns the channel the
+// gateway reads from.
+func rawFakeTab(t *testing.T, toolsListResult string) (EdgeFrameSender, <-chan json.RawMessage) {
+	t.Helper()
+	toGateway := make(chan json.RawMessage, 16)
+	toPage := make(chan json.RawMessage, 16)
+	go func() {
+		for raw := range toPage {
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if err := json.Unmarshal(raw, &req); err != nil || len(req.ID) == 0 {
+				continue // notification
+			}
+			var reply string
+			switch req.Method {
+			case "initialize":
+				reply = `"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true}},` +
+					`"serverInfo":{"name":"page","version":"0.0.1"}}`
+			case "tools/list":
+				reply = `"result":` + toolsListResult
+			default:
+				// e.g. the SDK client's pre-initialize server/discover probe:
+				// answer "method not found" like a page that does not know it.
+				reply = `"error":{"code":-32601,"message":"method not found"}`
+			}
+			toGateway <- json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,%s}`, req.ID, reply))
+		}
+	}()
+	t.Cleanup(func() { close(toPage) })
+	return &bridgedFrameSender{peerIncoming: toPage}, toGateway
+}
+
+// TestReverseGateway_HandleAppUp_InvalidTabToolDefinition_DoesNotPanic is the
+// regression test for a paired tab (an untrusted peer) returning a tools/list
+// entry that (*mcp.Server).AddTool panics on: app.up must still succeed, the
+// malformed tool must be dropped, and the well-formed tool must be callable.
+func TestReverseGateway_HandleAppUp_InvalidTabToolDefinition_DoesNotPanic(t *testing.T) {
+	gateway := newTestReverseGateway(t, staticReverseServers(), staticEdgeConfig())
+	binding := domainedge.Binding{
+		IdentityKey: domainedge.StaticIdentityKey,
+		Origin:      "https://app1.example.com",
+		AppSession:  "session-1",
+		ConnID:      "conn-1",
+	}
+	sender, incoming := rawFakeTab(t,
+		`{"tools":[`+
+			`{"name":"evil","description":"x","inputSchema":{"type":"string"}},`+
+			`{"name":"no_schema","description":"x"},`+
+			`{"name":"fine","description":"x","inputSchema":{"type":"object"}}]}`)
+
+	require.NotPanics(t, func() {
+		require.NoError(t, gateway.HandleAppUp(
+			t.Context(),
+			[]domainedge.IdentityKey{binding.IdentityKey},
+			binding.Origin,
+			binding.AppSession,
+			binding.ConnID,
+			sender,
+			incoming,
+		))
+	})
+
+	srv, err := gateway.ResolveServer(staticResolveCtx(t), "app1")
+	require.NoError(t, err)
+	callerTransport, serverTransport := mcp.NewInMemoryTransports()
+	_, err = srv.Connect(t.Context(), serverTransport, nil)
+	require.NoError(t, err)
+	client := mcp.NewClient(&mcp.Implementation{Name: "agent", Version: "0.0.1"}, nil)
+	session, err := client.Connect(t.Context(), callerTransport, nil)
+	require.NoError(t, err)
+	defer session.Close()
+
+	list, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	names := make([]string, 0, len(list.Tools))
+	for _, tool := range list.Tools {
+		names = append(names, tool.Name)
+	}
+	require.ElementsMatch(t, []string{"create_pairing_code", "fine"}, names)
+}

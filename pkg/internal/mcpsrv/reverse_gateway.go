@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -192,6 +193,16 @@ func (g *ReverseGateway) HandleAppUp(
 		&mcp.Implementation{Name: "manifold", Version: version.Version},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
+				// Runs on the SDK's read goroutine, outside middleware.Recover: a
+				// panic here (e.g. from a tab-supplied tool definition the SDK
+				// rejects) would otherwise terminate the whole gateway process.
+				defer func() {
+					if r := recover(); r != nil {
+						slog.ErrorContext(ctx, "reverse tool server rebuild panicked",
+							slog.String("origin", origin), slog.Any("panic", r),
+							slog.String("stack", string(debug.Stack())))
+					}
+				}()
 				live := currentSession()
 				if live == nil {
 					return
@@ -371,7 +382,7 @@ func (g *ReverseGateway) rebuildUserServer(
 			return fmt.Errorf("list tools for app %s: %w", binding.Origin, err)
 		}
 		tools := dropReservedSessionTools(ctx, binding.Origin, result.Tools)
-		RegisterSessionTools(srv, tools, g.sessionResolver(binding))
+		RegisterSessionTools(ctx, srv, tools, g.sessionResolver(binding))
 	}
 
 	key := userServerKey(binding.IdentityKey, binding.Origin)
