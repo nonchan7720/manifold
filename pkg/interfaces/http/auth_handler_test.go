@@ -1,9 +1,11 @@
 package httphandler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +16,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
+	"github.com/nonchan7720/manifold/pkg/util"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -2411,4 +2414,148 @@ func TestDiscoverOAuth2_FallbackResourceMismatch(t *testing.T) {
 
 	_, err := newDiscoverTestHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
 	require.Error(t, err)
+}
+
+// --- 秘匿値（リフレッシュトークン・認可コード・state）がログ・スパンに漏れないこと ---
+
+// captureLogs はテスト中の slog 出力をバッファに集め、終了時に元のロガーへ戻す。
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(
+		slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// spanErrorTexts はスパンに記録されたエラー関連の文字列（ステータス説明・イベント属性）を返す。
+func spanErrorTexts(span tracetest.SpanStub) []string {
+	texts := []string{span.Status.Description}
+	for _, ev := range span.Events {
+		texts = append(texts, ev.Name)
+		for _, kv := range ev.Attributes {
+			texts = append(texts, kv.Value.String())
+		}
+	}
+	return texts
+}
+
+func requireSpanErrorWithoutSecret(t *testing.T, span tracetest.SpanStub, secret string) {
+	t.Helper()
+	require.Equal(t, codes.Error, span.Status.Code)
+	require.NotEmpty(t, span.Status.Description)
+	for _, text := range spanErrorTexts(span) {
+		require.NotContains(t, text, secret, "span must not contain the secret value")
+	}
+}
+
+func TestTokenEndpoint_RefreshToken_SessionNotFound_DoesNotLeakToken(t *testing.T) {
+	logs := captureLogs(t)
+	exporter := setupTracerProvider(t)
+
+	const refreshToken = "dummy-upstream-refresh-token-AAAABBBBCCCC"
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=refresh_token&refresh_token="+refreshToken),
+	)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+
+	logText := logs.String()
+	require.Contains(t, logText, "refresh session not found")
+	require.Contains(t, logText, "refresh_token_fp="+util.Fingerprint(refreshToken))
+	require.NotContains(t, logText, refreshToken)
+
+	span, found := spanByNameSuffix(
+		exporter.GetSpans(),
+		"httphandler/AuthHandler/handleRefreshTokenGrant",
+	)
+	require.True(t, found, "span not found")
+	requireSpanErrorWithoutSecret(t, span, refreshToken)
+	require.Contains(t, span.Status.Description, store.ErrNotFound.Error())
+}
+
+func TestTokenEndpoint_AuthCodeNotFound_DoesNotLeakCode(t *testing.T) {
+	logs := captureLogs(t)
+	exporter := setupTracerProvider(t)
+
+	const code = "dummy-authorization-code-AAAABBBBCCCC"
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/testserver/auth/token",
+		strings.NewReader("grant_type=authorization_code&code="+code+"&code_verifier=verifier"),
+	)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+
+	logText := logs.String()
+	require.Contains(t, logText, "code_fp="+util.Fingerprint(code))
+	require.NotContains(t, logText, code)
+
+	span, found := spanByNameSuffix(exporter.GetSpans(), "httphandler/AuthHandler/TokenEndpoint")
+	require.True(t, found, "span not found")
+	requireSpanErrorWithoutSecret(t, span, code)
+}
+
+func TestCallbackEndpoint_SessionNotFound_DoesNotLeakState(t *testing.T) {
+	logs := captureLogs(t)
+	exporter := setupTracerProvider(t)
+
+	const state = "dummy-oauth-state-AAAABBBBCCCC"
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{})
+	srv := &config.Server{Name: "testserver"}
+
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/testserver/auth/callback?state="+state+"&code=somecode",
+		nil,
+	)
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+
+	logText := logs.String()
+	require.Contains(t, logText, "state_fp="+util.Fingerprint(state))
+	require.NotContains(t, logText, state)
+
+	span, found := spanByNameSuffix(exporter.GetSpans(), "httphandler/AuthHandler/CallbackEndpoint")
+	require.True(t, found, "span not found")
+	requireSpanErrorWithoutSecret(t, span, state)
+}
+
+func TestSanitizeStoreErr(t *testing.T) {
+	const secret = "refresh_session:super-secret-token"
+	notFound := fmt.Errorf("key not found: %s: %w", secret, store.ErrNotFound)
+
+	got := sanitizeStoreErr("refresh session not found", notFound)
+	require.ErrorIs(t, got, store.ErrNotFound)
+	require.NotContains(t, got.Error(), secret)
+	require.Equal(t, "refresh session not found: "+store.ErrNotFound.Error(), got.Error())
+
+	other := fmt.Errorf("sqlite Get: %w", context.DeadlineExceeded)
+	got = sanitizeStoreErr("refresh session not found", other)
+	require.ErrorIs(t, got, context.DeadlineExceeded)
+	require.NotErrorIs(t, got, store.ErrNotFound)
 }
