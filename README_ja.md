@@ -997,15 +997,26 @@ storage:
 
 #### `fileFetch`
 
-OpenAPI/Swagger ツールのファイル入力フィールドに URL が渡された場合、Manifold がその URL からファイルをダウンロードします。SSRF 対策として、既定ではプライベート/ループバック/リンクローカル IP への接続と `http://` スキームを拒否します。
+OpenAPI/Swagger ツールのファイル入力フィールド（または A2A の `files[]`）に URL が渡された場合、Manifold が呼び出し元に代わってその URL からファイルをダウンロードします。SSRF 対策として、ダウンロードは 3 つの層で検査されます。
 
-| フィールド     | 型       | 説明                                                                                                              |
-| -------------- | -------- | ------------------------------------------------------------------------------------------------------------------ |
-| `allowLocal`   | bool     | プライベート/ループバック IP への接続と `http://` を許可（ローカルスタック等でのテスト用。デフォルト: `false`）    |
-| `allowedHosts` | []string | 許可するホストの許可リスト（ホスト名、または `host:port`）。空なら全ホスト許可（プライベート IP 遮断は別途有効）   |
-| `maxSize`      | int64    | ダウンロード/base64/text コンテンツの最大バイト数。0 または未指定でデフォルト 524288000（500MiB）                  |
+- **スキーム**: `allowLocal` を設定しない限り `https://` のみ。
+- **接続先 IP**（接続ごとに DNS 解決後のアドレスで検査するため、内部アドレスに解決されるホスト名も対象）:
+  - ループバック、リンクローカル（`169.254.169.254` などクラウドのメタデータエンドポイントを含む）、未指定アドレス、`0.0.0.0/8`、マルチキャスト、ブロードキャストは**常に**拒否。
+  - プライベートレンジ（RFC 1918、`100.64.0.0/10`、`fc00::/7`）は既定で拒否。ただし環境変数 `SKIP_SECURE_CLIENT=true` が設定されていれば許可。Kubernetes 内では署名付き URL がクラスタ内サービス（ClusterIP）を指すのが普通で、レンジを列挙するのは現実的でないため、公式 Docker イメージはこれを設定しています。
+  - `deniedCIDRs` は `SKIP_SECURE_CLIENT` に関係なく常に拒否。
+- **ホスト**: `allowedHosts`（許可リスト）と `deniedHosts`（拒否リスト）。リクエスト前とリダイレクトの各ホップで検査。
 
-各フィールドは環境変数でも上書きできます（`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`）。
+`SKIP_SECURE_CLIENT` は、運用者が設定した上流 URL（OAuth の token/discovery エンドポイント）に対しては IP 検査をすべて外します。CIMD の `client_id` URL には影響せず、こちらはプライベートレンジの遮断を常に維持します。
+
+| フィールド     | 型       | 説明                                                                                                                      |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `allowLocal`   | bool     | ループバックを含む任意の IP への接続と `http://` を許可（ローカルスタック等でのテスト用。デフォルト: `false`）            |
+| `allowedHosts` | []string | 許可するホストの許可リスト（ホスト名、または `host:port`）。空なら全ホスト許可（IP の検査は別途有効）                      |
+| `deniedHosts`  | []string | 拒否するホストのリスト（ホスト名、または `host:port`）。`allowedHosts` の後、リダイレクトの各ホップでも検査                |
+| `deniedCIDRs`  | []string | `SKIP_SECURE_CLIENT=true` でも接続してはならない CIDR（内部の管理用ネットワークなど）                                     |
+| `maxSize`      | int64    | ダウンロード/base64/text コンテンツの最大バイト数。0 または未指定でデフォルト 524288000（500MiB）                         |
+
+各フィールドは環境変数でも上書きできます（`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`, `FILEFETCH_DENIEDHOSTS`, `FILEFETCH_DENIEDCIDRS`）。
 
 ```yaml
 fileFetch:
@@ -1014,6 +1025,10 @@ fileFetch:
   # allowedHosts:
   #   - example.com
   #   - files.example.com:8443
+  # deniedHosts:
+  #   - vault.internal
+  # deniedCIDRs:
+  #   - 10.100.0.0/16
 ```
 
 #### `telemetry`

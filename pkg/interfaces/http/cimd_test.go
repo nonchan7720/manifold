@@ -104,6 +104,46 @@ func cimdTestServer() *config.Server {
 	}
 }
 
+// --- CIMD ドキュメント取得クライアントの選択 ---
+
+func TestNewAuthHandler_CIMDFetchIgnoresSkipSecureClient(t *testing.T) {
+	// 公式 Docker イメージは SKIP_SECURE_CLIENT=true を既定にしているが、下流クライアントが
+	// 指定する client_id URL の取得には影響してはならない。WithHTTPClient を使わない既定の
+	// ハンドラでは、ループバックへの取得が dialer の private IP ガードで拒否される。
+	// （validateCIMDClientID は IP リテラルを弾くため、DNS に依存しないよう
+	// fetchCIMDDocument を直接呼んで dialer の挙動を検証する）
+	t.Setenv("SKIP_SECURE_CLIENT", "true")
+	t.Setenv("TEST", "true")
+
+	srv := httptest.NewServer(cimdDocumentHandler(validCIMDDocument()))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL + "/oauth/client-metadata.json")
+	require.NoError(t, err)
+	clientID := validatedCIMDClientID{raw: u.String(), url: u}
+
+	h := NewAuthHandler(
+		newMockStore(map[string]string{}), config.Servers{}, WithCIMD(cimdEnabled()),
+	)
+
+	_, _, err = fetchCIMDDocument(t.Context(), h.cimdHTTPClient, clientID, h.cimd)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errInvalidClient)
+	require.Contains(t, err.Error(), "connection to private IP")
+
+	// 一方、運用者設定の上流 URL 用クライアント（SafeHTTPClient）は SKIP_SECURE_CLIENT で
+	// 緩和されるため、同じ URL でも取得できる（両クライアントが別物であることの確認）。
+	doc, _, err := fetchCIMDDocument(t.Context(), h.httpClient, clientID, h.cimd)
+	require.NoError(t, err)
+	require.Equal(t, testCIMDClientID, doc.ClientID)
+}
+
+func TestWithHTTPClient_OverridesCIMDClient(t *testing.T) {
+	c := &http.Client{}
+	h := NewAuthHandler(newMockStore(map[string]string{}), config.Servers{}, WithHTTPClient(c))
+	require.Same(t, c, h.httpClient)
+	require.Same(t, c, h.cimdHTTPClient)
+}
+
 // --- validateCIMDClientID ---
 
 func TestValidateCIMDClientID(t *testing.T) {

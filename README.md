@@ -997,15 +997,26 @@ storage:
 
 #### `fileFetch`
 
-When a URL is passed to a file input field of an OpenAPI/Swagger tool, Manifold downloads the file from that URL. As an SSRF countermeasure, connections to private/loopback/link-local IPs and the `http://` scheme are rejected by default.
+When a URL is passed to a file input field of an OpenAPI/Swagger tool (or to an A2A `files[]` entry), Manifold downloads the file from that URL on the caller's behalf. As an SSRF countermeasure the download is checked at three layers:
 
-| Field          | Type     | Description                                                                                               |
-| -------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `allowLocal`   | bool     | Allow connections to private/loopback IPs and `http://` (for testing with local stacks; default: `false`) |
-| `allowedHosts` | []string | Allowlist of hosts (hostname, or `host:port`). Empty allows all hosts (private IP blocking still applies) |
-| `maxSize`      | int64    | Maximum bytes for downloaded/base64/text content. 0 or unset defaults to 524288000 (500 MiB)              |
+- **Scheme**: only `https://` unless `allowLocal` is set.
+- **Destination IP** (checked on the resolved address of every connection, so DNS names resolving to internal addresses are covered):
+  - loopback, link-local (including cloud metadata endpoints such as `169.254.169.254`), unspecified, `0.0.0.0/8`, multicast and broadcast addresses are **always** refused;
+  - private ranges (RFC 1918, `100.64.0.0/10`, `fc00::/7`) are refused by default, but allowed when the `SKIP_SECURE_CLIENT=true` environment variable is set. The official Docker image sets it, because inside Kubernetes signed URLs routinely point at in-cluster services (ClusterIP) and the ranges cannot practically be enumerated;
+  - `deniedCIDRs` are refused regardless of `SKIP_SECURE_CLIENT`.
+- **Host**: `allowedHosts` (allowlist) and `deniedHosts` (denylist), checked before the request and on every redirect hop.
 
-Each field can also be overridden via environment variables (`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`).
+`SKIP_SECURE_CLIENT` also lifts every IP check for operator-configured upstream URLs (OAuth token/discovery endpoints). It never affects CIMD `client_id` URLs, which keep the full private-range block.
+
+| Field          | Type     | Description                                                                                                                   |
+| -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `allowLocal`   | bool     | Allow connections to any IP (including loopback) and `http://` (for testing with local stacks; default: `false`)             |
+| `allowedHosts` | []string | Allowlist of hosts (hostname, or `host:port`). Empty allows all hosts (the IP checks still apply)                             |
+| `deniedHosts`  | []string | Denylist of hosts (hostname, or `host:port`), applied after `allowedHosts` and on every redirect                              |
+| `deniedCIDRs`  | []string | CIDR blocks the downloader must never connect to, even with `SKIP_SECURE_CLIENT=true` (e.g. an internal admin network)       |
+| `maxSize`      | int64    | Maximum bytes for downloaded/base64/text content. 0 or unset defaults to 524288000 (500 MiB)                                  |
+
+Each field can also be overridden via environment variables (`FILEFETCH_MAXSIZE`, `FILEFETCH_ALLOWLOCAL`, `FILEFETCH_ALLOWEDHOSTS`, `FILEFETCH_DENIEDHOSTS`, `FILEFETCH_DENIEDCIDRS`).
 
 ```yaml
 fileFetch:
@@ -1014,6 +1025,10 @@ fileFetch:
   # allowedHosts:
   #   - example.com
   #   - files.example.com:8443
+  # deniedHosts:
+  #   - vault.internal
+  # deniedCIDRs:
+  #   - 10.100.0.0/16
 ```
 
 #### `telemetry`

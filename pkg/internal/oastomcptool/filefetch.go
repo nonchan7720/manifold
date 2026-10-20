@@ -1,6 +1,13 @@
 package oastomcptool
 
-import "sync"
+import (
+	"fmt"
+	"net"
+	"net/http"
+	"sync"
+
+	"github.com/nonchan7720/manifold/pkg/internal/client"
+)
 
 // defaultFileFetchMaxSize is used when FileFetchConfig.MaxSize is unset (<= 0).
 // 500 MiB (524288000 bytes) — mirrors config.DefaultFileFetchMaxSize.
@@ -28,26 +35,61 @@ type FileFetchConfig struct {
 	// MaxSize caps the number of bytes accepted for a single file value
 	// (URL download or base64/text content). <= 0 falls back to defaultFileFetchMaxSize.
 	MaxSize int64
+	// DeniedHosts lists hosts (hostname, or host:port) that URL downloads must never
+	// reach, checked before the request and on every redirect hop. Applied after
+	// AllowedHosts.
+	DeniedHosts []string
+	// DeniedCIDRs lists CIDR blocks that the dialer must never connect to, checked
+	// against the resolved IP of every connection. Entries must parse with
+	// net.ParseCIDR; SetFileFetchConfig returns an error otherwise.
+	DeniedCIDRs []string
 }
 
 var (
 	fileFetchMu     sync.RWMutex
 	fileFetchConfig = FileFetchConfig{MaxSize: defaultFileFetchMaxSize}
+	// fileFetchClient is the client used by fetchFileFromURL when AllowLocal is
+	// false. It is (re)built by SetFileFetchConfig so DeniedCIDRs are compiled into
+	// its dialer once; see client.NewCallerURLClient for the dial policy.
+	fileFetchClient = client.NewCallerURLClient(nil)
 )
 
 // SetFileFetchConfig installs the file-fetch policy used by fetchFileFromURL and
-// writeMultipartFile. Call once at application startup, after loading config.
-// A MaxSize <= 0 resets to the built-in default (500 MiB). AllowedHosts is cloned
-// before storing, so the caller's slice can never be mutated later to bypass the
-// lock (symmetric with getFileFetchConfig, which also returns a copy).
-func SetFileFetchConfig(cfg FileFetchConfig) {
+// writeMultipartFile, and builds the HTTP client that enforces it. Call once at
+// application startup, after loading config. A MaxSize <= 0 resets to the
+// built-in default (500 MiB). Slices are cloned before storing, so the caller's
+// slices can never be mutated later to bypass the lock (symmetric with
+// getFileFetchConfig, which also returns copies). An unparsable DeniedCIDRs entry
+// is returned as an error and leaves the previous policy in place.
+func SetFileFetchConfig(cfg FileFetchConfig) error {
 	if cfg.MaxSize <= 0 {
 		cfg.MaxSize = defaultFileFetchMaxSize
 	}
 	cfg.AllowedHosts = append([]string(nil), cfg.AllowedHosts...)
+	cfg.DeniedHosts = append([]string(nil), cfg.DeniedHosts...)
+	cfg.DeniedCIDRs = append([]string(nil), cfg.DeniedCIDRs...)
+	denied := make([]*net.IPNet, 0, len(cfg.DeniedCIDRs))
+	for _, raw := range cfg.DeniedCIDRs {
+		_, n, err := net.ParseCIDR(raw)
+		if err != nil {
+			return fmt.Errorf("fileFetch.deniedCIDRs: %q is not a valid CIDR: %w", raw, err)
+		}
+		denied = append(denied, n)
+	}
+	c := client.NewCallerURLClient(denied)
 	fileFetchMu.Lock()
 	defer fileFetchMu.Unlock()
 	fileFetchConfig = cfg
+	fileFetchClient = c
+	return nil
+}
+
+// getFileFetchClient returns the client SetFileFetchConfig built for
+// AllowLocal=false downloads.
+func getFileFetchClient() *http.Client {
+	fileFetchMu.RLock()
+	defer fileFetchMu.RUnlock()
+	return fileFetchClient
 }
 
 // getFileFetchConfig returns the currently active file-fetch policy. AllowedHosts
@@ -59,6 +101,12 @@ func getFileFetchConfig() FileFetchConfig {
 	cfg := fileFetchConfig
 	if cfg.AllowedHosts != nil {
 		cfg.AllowedHosts = append([]string{}, cfg.AllowedHosts...)
+	}
+	if cfg.DeniedHosts != nil {
+		cfg.DeniedHosts = append([]string{}, cfg.DeniedHosts...)
+	}
+	if cfg.DeniedCIDRs != nil {
+		cfg.DeniedCIDRs = append([]string{}, cfg.DeniedCIDRs...)
 	}
 	return cfg
 }

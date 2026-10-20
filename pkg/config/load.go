@@ -284,10 +284,13 @@ func loadInternal(ctx context.Context, configName string) (*Config, error) {
 	// during Unmarshal — keys with no default, config-file entry, or bound env var
 	// are simply absent from the decoded struct's source data. Registering these
 	// defaults also makes the corresponding env vars (FILEFETCH_MAXSIZE,
-	// FILEFETCH_ALLOWLOCAL, FILEFETCH_ALLOWEDHOSTS) effective overrides.
+	// FILEFETCH_ALLOWLOCAL, FILEFETCH_ALLOWEDHOSTS, FILEFETCH_DENIEDHOSTS,
+	// FILEFETCH_DENIEDCIDRS) effective overrides.
 	v.SetDefault("fileFetch.maxSize", DefaultFileFetchMaxSize)
 	v.SetDefault("fileFetch.allowLocal", false)
 	v.SetDefault("fileFetch.allowedHosts", []string{})
+	v.SetDefault("fileFetch.deniedHosts", []string{})
+	v.SetDefault("fileFetch.deniedCIDRs", []string{})
 
 	// Same reasoning as fileFetch above — also makes AUTHZ_ENABLED, AUTHZ_OPAURL,
 	// AUTHZ_TIMEOUT, AUTHZ_DECISIONPATH_LIST, AUTHZ_DECISIONPATH_CALL,

@@ -26,6 +26,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   && chmod +x /bin/manifold
 
 FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
+# SKIP_SECURE_CLIENT=true: in-cluster destinations (ClusterIP etc.) are normal for this image,
+# so the private-range (RFC1918 etc.) block is relaxed for operator-configured upstream URLs and
+# for tool-caller file URLs. Loopback/link-local (cloud metadata)/multicast stay blocked for
+# caller-supplied URLs, CIMD client_id URLs keep the full block, and fileFetch.deniedCIDRs /
+# deniedHosts can fence off further internal targets. See README "fileFetch".
 ENV TZ=Asia/Tokyo \
   SKIP_SECURE_CLIENT=true
 
