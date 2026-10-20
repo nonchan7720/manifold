@@ -232,7 +232,9 @@ func (h *AuthHandler) resolveCIMDClient(
 
 	fetchCtx, cancel := context.WithTimeout(ctx, cimdFetchTimeout)
 	defer cancel()
-	doc, ttl, err := fetchCIMDDocument(fetchCtx, h.httpClient, validated, h.cimd)
+	// client_id URL は下流クライアントが指定するため、SKIP_SECURE_CLIENT の影響を受けない
+	// cimdHTTPClient（既定 StrictHTTPClient）で取得する。
+	doc, ttl, err := fetchCIMDDocument(fetchCtx, h.cimdHTTPClient, validated, h.cimd)
 	if err != nil {
 		return nil, err
 	}

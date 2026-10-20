@@ -12,7 +12,7 @@ manifold は MCP ゲートウェイで、下流の MCP クライアントに対�
 
 - Go、モジュール `github.com/nonchan7720/manifold`。`make test` と `make lint`（golangci-lint）を通すこと。
 - 既存コードのスタイル（日本語コメント、`slog` + `util.SanitizeLog` によるログ、`trace.StartSpan`）に合わせる。
-- 外部 URL の取得は `h.httpClient`（既定は `pkg/internal/client.SafeHTTPClient()`、SSRF 対策済み）を使う。新しい `http.Client` を作らない。テストからは `WithHTTPClient` で差し替える。
+- 外部 URL の取得は `h.httpClient`（既定は `pkg/internal/client.SafeHTTPClient()`、SSRF 対策済み）を使う。CIMD の client_id URL は下流クライアントが指定するため、`SKIP_SECURE_CLIENT` で緩和できない `h.cimdHTTPClient`（既定は `client.StrictHTTPClient()`）を使う。新しい `http.Client` を作らない。テストからは `WithHTTPClient` で両方を差し替える。
 
 ## 全体の流れ
 
@@ -86,7 +86,7 @@ oauth:
 
 ### 1-5. テスト
 
-`httptest.Server` は loopback なので `SafeHTTPClient` に弾かれる。`WithHTTPClient` で、client_id URL のホストに関係なくテストサーバーへ差し向ける `RoundTripper` を注入してテストする（本番の既定は `SafeHTTPClient()` のまま）。
+`httptest.Server` は loopback なので `StrictHTTPClient` に弾かれる。`WithHTTPClient` で、client_id URL のホストに関係なくテストサーバーへ差し向ける `RoundTripper` を注入してテストする（本番の既定は `StrictHTTPClient()` のまま）。
 
 ## フェーズ 2: 下流クライアント → 上流クライアントの静的マッピング
 

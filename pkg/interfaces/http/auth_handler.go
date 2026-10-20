@@ -94,8 +94,13 @@ type AuthHandler struct {
 	servers     config.Servers
 	mu          sync.RWMutex
 	tokenEncKey []byte
-	httpClient  *http.Client
-	cimd        config.CIMDConfig
+	// httpClient は運用者が設定した上流 URL（OAuth の token/discovery など）の取得に使う。
+	// 既定は client.SafeHTTPClient()（SKIP_SECURE_CLIENT で private IP 制限を緩和できる）。
+	httpClient *http.Client
+	// cimdHTTPClient は下流クライアントが指定した CIMD client_id URL の取得に使う。
+	// 既定は client.StrictHTTPClient()（環境変数で private IP 制限を緩和できない）。
+	cimdHTTPClient *http.Client
+	cimd           config.CIMDConfig
 }
 
 type AuthHandlerOption func(h *AuthHandler)
@@ -121,11 +126,13 @@ func WithCIMD(cfg config.CIMDConfig) AuthHandlerOption {
 	}
 }
 
-// WithHTTPClient は外部 URL 取得に使う HTTP クライアントを差し替える。
-// 既定は client.SafeHTTPClient()。
+// WithHTTPClient は外部 URL 取得に使う HTTP クライアントを差し替える（主にテスト用）。
+// 上流 URL 用（既定 client.SafeHTTPClient()）と CIMD client_id URL 用
+// （既定 client.StrictHTTPClient()）の両方を同じクライアントに置き換える。
 func WithHTTPClient(c *http.Client) AuthHandlerOption {
 	return func(h *AuthHandler) {
 		h.httpClient = c
+		h.cimdHTTPClient = c
 	}
 }
 
@@ -135,10 +142,11 @@ func NewAuthHandler(
 	opts ...AuthHandlerOption,
 ) *AuthHandler {
 	h := &AuthHandler{
-		store:      storeClient,
-		servers:    servers,
-		httpClient: client.SafeHTTPClient(),
-		cimd:       config.CIMDConfig{}.WithDefaults(),
+		store:          storeClient,
+		servers:        servers,
+		httpClient:     client.SafeHTTPClient(),
+		cimdHTTPClient: client.StrictHTTPClient(),
+		cimd:           config.CIMDConfig{}.WithDefaults(),
 	}
 	for _, opt := range opts {
 		opt(h)

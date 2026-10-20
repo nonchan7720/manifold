@@ -1137,9 +1137,9 @@ func multipartOperation(schema *openapi3.Schema) *openapi3.Operation {
 // 必ず t.Cleanup で元に戻すこと。
 func setFileFetchConfigForTest(t *testing.T, cfg FileFetchConfig) {
 	t.Helper()
-	SetFileFetchConfig(cfg)
+	require.NoError(t, SetFileFetchConfig(cfg))
 	t.Cleanup(func() {
-		SetFileFetchConfig(FileFetchConfig{})
+		_ = SetFileFetchConfig(FileFetchConfig{})
 	})
 }
 
@@ -3335,6 +3335,24 @@ func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP(t *testing.T) {
 	require.Contains(t, err.Error(), "private")
 }
 
+func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP_SkipSecureClient(t *testing.T) {
+	// 公式 Docker イメージは SKIP_SECURE_CLIENT=true を既定にしているが、ツール呼び出し側が
+	// 指定するファイル URL の取得（AllowLocal=false）には影響してはならない。
+	// StrictHTTPClient の dialer がループバックへの https 接続を拒否することを確認する。
+	t.Setenv("SKIP_SECURE_CLIENT", "true")
+	t.Setenv("TEST", "true")
+	setFileFetchConfigForTest(t, FileFetchConfig{})
+
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secret")) //nolint: errcheck
+	}))
+	defer tlsSrv.Close()
+
+	_, _, _, err := fetchFileFromURL(context.Background(), tlsSrv.URL+"/secret.txt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "connection to private IP")
+}
+
 func TestFetchFileFromURL_AllowedHosts_AllowsMatchingHost(t *testing.T) {
 	t.Setenv("TEST", "true")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4914,4 +4932,59 @@ func TestCreateToolFunction_JSONBody_MultipleSiblingBinaryFields(t *testing.T) {
 	require.Equal(t, wantURL, capturedBody["back"])
 	require.Equal(t, wantURL, capturedBody["third"])
 	require.Equal(t, "doc", capturedBody["title"])
+}
+
+func TestCheckFileFetchURL_DeniedHosts(t *testing.T) {
+	cfg := FileFetchConfig{DeniedHosts: []string{"vault.internal", "Minio.Internal:9000"}}
+	for _, raw := range []string{
+		"https://vault.internal/secret", "https://VAULT.INTERNAL:8200/x", "https://minio.internal:9000/b/o",
+	} {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		err = checkFileFetchURL(cfg, u)
+		require.Error(t, err, raw)
+		require.Contains(t, err.Error(), "denied hosts list", raw)
+	}
+	u, err := url.Parse("https://files.example.com/a.txt")
+	require.NoError(t, err)
+	require.NoError(t, checkFileFetchURL(cfg, u))
+
+	// AllowedHosts と併用した場合も DeniedHosts が優先して拒否する。
+	both := FileFetchConfig{
+		AllowedHosts: []string{"vault.internal"},
+		DeniedHosts:  []string{"vault.internal"},
+	}
+	u, err = url.Parse("https://vault.internal/secret")
+	require.NoError(t, err)
+	require.Error(t, checkFileFetchURL(both, u))
+}
+
+func TestFetchFileFromURL_DeniedHosts_RejectsBeforeRequest(t *testing.T) {
+	t.Setenv("TEST", "true")
+	called := false
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Write([]byte("secret")) //nolint: errcheck
+	}))
+	defer fileSrv.Close()
+	u, err := url.Parse(fileSrv.URL)
+	require.NoError(t, err)
+	// AllowLocal=true（http とループバックを許可）でも DeniedHosts は効く。
+	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, DeniedHosts: []string{u.Host}})
+
+	_, _, _, err = fetchFileFromURL(context.Background(), fileSrv.URL+"/secret.txt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "denied hosts list")
+	require.False(t, called)
+}
+
+func TestSetFileFetchConfig_InvalidDeniedCIDR(t *testing.T) {
+	err := SetFileFetchConfig(FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8", "not-a-cidr"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not-a-cidr")
+	// 不正な設定は前のポリシーを置き換えない。
+	require.Equal(t, defaultFileFetchMaxSize, getFileFetchConfig().MaxSize)
+	t.Cleanup(func() { _ = SetFileFetchConfig(FileFetchConfig{}) })
+	require.NoError(t, SetFileFetchConfig(FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8"}}))
+	require.Equal(t, []string{"10.0.0.0/8"}, getFileFetchConfig().DeniedCIDRs)
 }

@@ -1118,9 +1118,9 @@ func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 // fileFetchMaxRedirects は fetchFileFromURL がたどるリダイレクトの最大ホップ数。
 const fileFetchMaxRedirects = 10
 
-// checkFileFetchURL は FileFetchConfig に基づき URL のスキームと AllowedHosts を検証する。
-// プライベート/ループバック IP への接続拒否自体は client.SafeHTTPClient() の dialer が担うため
-// ここでは扱わない（isHostAllowed も参照）。
+// checkFileFetchURL は FileFetchConfig に基づき URL のスキームと AllowedHosts / DeniedHosts を
+// 検証する。接続先 IP による拒否（ループバック等の常時遮断、プライベートレンジ、DeniedCIDRs）は
+// client.NewCallerURLClient の dialer が担うためここでは扱わない（isHostAllowed も参照）。
 func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
 	switch u.Scheme {
 	case "https":
@@ -1136,6 +1136,9 @@ func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
 	}
 	if len(cfg.AllowedHosts) > 0 && !isHostAllowed(cfg.AllowedHosts, u) {
 		return fmt.Errorf("host %q is not in the allowed hosts list", u.Host)
+	}
+	if len(cfg.DeniedHosts) > 0 && isHostAllowed(cfg.DeniedHosts, u) {
+		return fmt.Errorf("host %q is in the denied hosts list", u.Host)
 	}
 	return nil
 }
@@ -1195,14 +1198,15 @@ func (l *limitedReadCloser) Close() error {
 // 戻り値: body, URLパス末尾のファイル名（無ければ空）, レスポンスの Content-Type
 //
 // パッケージレベルの FileFetchConfig（SetFileFetchConfig で設定）に従い、SSRF 対策として
-// 既定ではプライベート/ループバック/リンクローカル IP への接続と http スキームを拒否する
-// （client.SafeHTTPClient() の dialer が接続時に判定）。AllowedHosts が設定されている場合は
-// ホストの許可リストをリクエスト前とリダイレクト各ホップで検証する。レスポンスボディは
+// 既定では http スキームを拒否し、接続先 IP を client.NewCallerURLClient の dialer で検査する:
+// ループバック・リンクローカル（クラウドメタデータ）・未指定・マルチキャストは常に拒否、
+// RFC1918 等のプライベートレンジは SKIP_SECURE_CLIENT が真でない限り拒否、DeniedCIDRs は常に拒否。
+// AllowedHosts / DeniedHosts はリクエスト前とリダイレクト各ホップで検証する。レスポンスボディは
 // MaxSize でサイズ上限を課す。
 var (
-	// SafeHTTPClient / HTTPClient は呼び出しのたびに新しいコネクションプールを作る
-	// ため、ファイル取得用に1度だけ生成して Transport を使い回す。
-	sharedSafeFileFetchClient  = sync.OnceValue(client.SafeHTTPClient)
+	// HTTPClient は呼び出しのたびに新しいコネクションプールを作るため、AllowLocal 用に
+	// 1度だけ生成して Transport を使い回す。AllowLocal=false 用のクライアントは
+	// SetFileFetchConfig が DeniedCIDRs を組み込んで構築する（getFileFetchClient）。
 	sharedLocalFileFetchClient = sync.OnceValue(client.HTTPClient)
 )
 
@@ -1219,9 +1223,10 @@ func fetchFileFromURL(ctx context.Context, rawURL string) (io.ReadCloser, string
 
 	// 下記の *http.Client は呼び出しごとに生成するため、この CheckRedirect の設定が
 	// リクエスト間で共有・競合することはない。
-	// SSRF 対策は fileFetch.allowLocal 設定でのみ緩和できるようにするため、
-	// AllowLocal が false の場合は環境変数に依存しない SafeHTTPClient を必ず使う。
-	base := sharedSafeFileFetchClient()
+	// AllowLocal が false の場合は NewCallerURLClient の dialer（ループバック等は常時拒否、
+	// プライベートレンジは SKIP_SECURE_CLIENT でのみ緩和可能、DeniedCIDRs は常時拒否）を使う。
+	// AllowLocal が true の場合のみ、ローカル開発用に遮断を全て外した HTTPClient を使う。
+	base := getFileFetchClient()
 	if cfg.AllowLocal {
 		base = sharedLocalFileFetchClient()
 	}

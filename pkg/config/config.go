@@ -134,6 +134,7 @@ func (c *Config) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&c.Guardrail),
 		validation.Field(&c.Authz),
 		validation.Field(&c.OAuth),
+		validation.Field(&c.FileFetch),
 	)
 }
 
