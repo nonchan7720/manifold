@@ -749,6 +749,7 @@ func (h *AuthHandler) CallbackEndpoint(
 
 	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
 	if err != nil {
+		err = sanitizeStoreErr("auth session not found", err)
 		slog.WarnContext(
 			ctx,
 			"session not found in redis",
@@ -901,6 +902,7 @@ func (h *AuthHandler) TokenEndpoint(
 
 	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
 	if err != nil {
+		err = sanitizeStoreErr("auth code not found", err)
 		slog.WarnContext(
 			ctx,
 			"auth code not found in redis",
@@ -1288,7 +1290,13 @@ func (h *AuthHandler) handleRefreshTokenGrant(
 
 	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
 	if err != nil {
-		slog.WarnContext(ctx, "refresh session not found", slog.String("error", err.Error()))
+		err = sanitizeStoreErr("refresh session not found", err)
+		slog.WarnContext(
+			ctx,
+			"refresh session not found",
+			slog.String("refresh_token_fp", util.Fingerprint(refreshToken)),
+			slog.Any("error", err),
+		)
 		http.Error(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
@@ -1399,6 +1407,18 @@ func (h *AuthHandler) decryptToken(encoded string) ([]byte, error) {
 	}
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// sanitizeStoreErr は秘匿値（認可コード・state・リフレッシュトークン）をキーに含む
+// ストア参照のエラーから、キーが埋め込まれたメッセージを取り除く。
+// ストア実装は未検出時に "key not found: <key>: ..." を返すため、そのままログや
+// スパン（trace.EndSpan）に記録すると秘匿値が漏れる。
+// errors.Is(err, store.ErrNotFound) の判定は維持する。
+func sanitizeStoreErr(msg string, err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%s: %w", msg, store.ErrNotFound)
+	}
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 // validateRedirectURI は redirect_uri が許可されたスキームを使用しているか検証する。
