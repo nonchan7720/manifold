@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
-FROM --platform=$BUILDPLATFORM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5 AS builder
 
 ARG TARGETARCH
 ARG TARGETPLATFORM
@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   ./main.go \
   && chmod +x /bin/manifold
 
-FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
+FROM gcr.io/distroless/static:nonroot@sha256:d62067879de890a1def9da0e7766b7d20810a5e5555cef8506b752437d7a3e88
 # SKIP_SECURE_CLIENT=true: in-cluster destinations (ClusterIP etc.) are normal for this image,
 # so the private-range (RFC1918 etc.) block is relaxed for operator-configured upstream URLs and
 # for tool-caller file URLs. Loopback/link-local (cloud metadata)/multicast stay blocked for
