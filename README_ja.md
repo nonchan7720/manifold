@@ -602,7 +602,7 @@ prompts:
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
 
-OpenAPI / Swagger のサーバーでは `tools.exclude` はもう一歩踏み込んで、カタログ構築の時点で適用されます。各 operation の `operationId` と、そこから導出した（小文字の）ツール名の両方に照合するので、`"deletePet"` でも `"deletepet"` でも書けます。一致した operation はツール化されません。`tools/list` にも `manifold openapi tools` にも生成物 `tools.file` にも現れず、`openapi diff` / `specRefresh` のツール対応付けからも外れます。spec にその operation が無いのと同じ扱いです。`include` と `overrides` は従来どおりツール一覧を返す時点で適用されます。
+OpenAPI / Swagger のサーバーでは `tools.exclude` はもう一歩踏み込んで、カタログ構築の時点で適用されます。各 operation の `operationId` と、そこから導出した（小文字の）ツール名の両方に照合するので、`"deletePet"` でも `"deletepet"` でも書けます。`operationId` が無い operation は、ツール名の元になる `<method>_<path>` 形式の導出 ID（例: `get__pets_{id}`、これがそのままツール名になります）に照合します。一致した operation はツール化されません。`tools/list` にも `manifold openapi tools` にも生成物 `tools.file` にも現れず、`openapi diff` / `specRefresh` にはその変更を対応付けるツールが無くなります。spec 自体は変更しないため、除外した operation の変更も検出自体は引き続き行われます（下記参照）。`include` と `overrides` は従来どおりツール一覧を返す時点で適用されます。
 
 ```yaml
 mcpServers:
