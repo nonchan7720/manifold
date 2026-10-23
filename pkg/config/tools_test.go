@@ -47,6 +47,47 @@ func TestToolsConfig_Allowed(t *testing.T) {
 	}
 }
 
+func TestToolsConfig_ExcludesOperation(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ToolsConfig
+		op   string
+		want bool
+	}{
+		{name: "nil excludes nothing", cfg: nil, op: "deletePet", want: false},
+		{name: "no patterns", cfg: &ToolsConfig{}, op: "deletePet", want: false},
+		{
+			name: "exact match",
+			cfg:  &ToolsConfig{ExcludeOperationIDs: []string{"deletePet"}},
+			op:   "deletePet",
+			want: true,
+		},
+		{
+			name: "glob match",
+			cfg:  &ToolsConfig{ExcludeOperationIDs: []string{"delete*"}},
+			op:   "deleteOrder",
+			want: true,
+		},
+		{
+			name: "case-sensitive like operationIds",
+			cfg:  &ToolsConfig{ExcludeOperationIDs: []string{"deletepet"}},
+			op:   "deletePet",
+			want: false,
+		},
+		{
+			name: "tool-name patterns do not apply",
+			cfg:  &ToolsConfig{Exclude: []string{"delete*"}},
+			op:   "deletePet",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.cfg.ExcludesOperation(tt.op))
+		})
+	}
+}
+
 func TestToolsConfig_ResolvedOverrides_UsesToolField(t *testing.T) {
 	cfg := &ToolsConfig{Overrides: map[string]ToolOverride{
 		"getpet":   {Name: "get_pet"},
@@ -72,6 +113,11 @@ func TestToolsConfig_Validate(t *testing.T) {
 			name:    "bad pattern",
 			cfg:     ToolsConfig{Include: []string{"["}},
 			wantErr: "invalid tool pattern",
+		},
+		{
+			name:    "bad excludeOperationIds pattern",
+			cfg:     ToolsConfig{ExcludeOperationIDs: []string{"["}},
+			wantErr: "invalid excludeOperationIds pattern",
 		},
 		{
 			name:    "bad name",
@@ -116,6 +162,7 @@ mcpServers:
     tools:
       include: ["get*", "find*"]
       exclude: ["*inventory*"]
+      excludeOperationIds: ["deletePet", "upload*"]
       overrides:
         getpetbyid:
           name: get_pet
@@ -132,6 +179,8 @@ audit:
 	srv := cfg.MCPServer["petstore"]
 	require.Equal(t, []string{"get*", "find*"}, srv.Tools.Include)
 	require.Equal(t, []string{"*inventory*"}, srv.Tools.Exclude)
+	// operationId は大文字小文字を区別するので、キーと違って値はそのまま残る
+	require.Equal(t, []string{"deletePet", "upload*"}, srv.Tools.ExcludeOperationIDs)
 	overrides := srv.Tools.ResolvedOverrides()
 	require.Equal(t, "get_pet", overrides["getpetbyid"].Name)
 	require.Equal(t, "Look up a pet", overrides["getpetbyid"].Description)

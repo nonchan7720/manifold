@@ -26,14 +26,24 @@ var toolNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 // replaces its description. A renamed tool is only reachable under its new
 // name.
 //
+// ExcludeOperationIDs are path.Match glob patterns matched against the
+// operationId of an OpenAPI / Swagger operation. A matching operation is not
+// turned into a tool at all: unlike Exclude, it never appears in the
+// catalog ("manifold openapi tools", the generated tools.file, "openapi
+// diff"), so it is applied when the catalog is built rather than when the
+// tool list is served. OpenAPI mode only; other transports have no
+// operations and ignore it.
+//
 // Tools the gateway registers itself (a reverse server's create_pairing_code)
-// are not the backend's and are left alone by all three.
+// are not the backend's and are left alone by all of these.
 type ToolsConfig struct {
 	File string `mapstructure:"file"`
 
 	Include   []string                `mapstructure:"include"`
 	Exclude   []string                `mapstructure:"exclude"`
 	Overrides map[string]ToolOverride `mapstructure:"overrides"`
+
+	ExcludeOperationIDs []string `mapstructure:"excludeOperationIds"`
 }
 
 // ToolOverride replaces the name and/or description a tool is exposed with.
@@ -86,10 +96,27 @@ func (c *ToolsConfig) ResolvedOverrides() map[string]ToolOverride {
 	return out
 }
 
+// ExcludesOperation reports whether an operation with the given operationId
+// is kept out of the catalog by ExcludeOperationIDs. Matching is
+// case-sensitive, like operationIds themselves. Patterns are validated at
+// load time, so a malformed pattern (never reached in practice) simply
+// doesn't match.
+func (c *ToolsConfig) ExcludesOperation(operationID string) bool {
+	if c == nil {
+		return false
+	}
+	return matchAny(c.ExcludeOperationIDs, operationID)
+}
+
 func (c ToolsConfig) ValidateWithContext(context.Context) error {
 	for _, pattern := range slices.Concat(c.Include, c.Exclude) {
 		if _, err := path.Match(pattern, ""); err != nil {
 			return fmt.Errorf("invalid tool pattern %q: %w", pattern, err)
+		}
+	}
+	for _, pattern := range c.ExcludeOperationIDs {
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("invalid excludeOperationIds pattern %q: %w", pattern, err)
 		}
 	}
 	renamed := map[string]string{}
