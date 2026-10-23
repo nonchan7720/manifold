@@ -146,7 +146,8 @@ func buildCatalogs(
 
 		if file := srv.GeneratedToolsFile(); file != "" && !fromSpec {
 			registry, err := mcpsrv.RegisterOpenAPI(
-				ctx, srv.Spec, srv.BaseURL, srv.ExtraHeaders, mcpsrv.WithGeneratedToolsFile(file),
+				ctx, srv.Spec, srv.BaseURL, srv.ExtraHeaders,
+				mcpsrv.WithGeneratedToolsFile(file), mcpsrv.WithToolsConfig(srv.Tools),
 			)
 			if err != nil {
 				fmt.Fprintf(stderr, "server %q: %v\n", name, err)
@@ -181,6 +182,7 @@ func buildCatalogs(
 
 		registry, err := mcpsrv.BuildCatalog(
 			ctx, &http.Client{}, source, srv.BaseURL, srv.ExtraHeaders,
+			mcpsrv.WithToolsConfig(srv.Tools),
 		)
 		if err != nil {
 			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
@@ -426,7 +428,10 @@ func buildGeneratedCatalog(
 		return nil, err
 	}
 
-	registry, err := mcpsrv.BuildCatalog(ctx, &http.Client{}, source, srv.BaseURL, srv.ExtraHeaders)
+	registry, err := mcpsrv.BuildCatalog(
+		ctx, &http.Client{}, source, srv.BaseURL, srv.ExtraHeaders,
+		mcpsrv.WithToolsConfig(srv.Tools),
+	)
 	if err != nil {
 		return nil, err
 	}

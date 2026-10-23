@@ -47,6 +47,47 @@ func TestToolsConfig_Allowed(t *testing.T) {
 	}
 }
 
+func TestToolsConfig_Excluded(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ToolsConfig
+		tool string
+		want bool
+	}{
+		{name: "nil excludes nothing", cfg: nil, tool: "deletePet", want: false},
+		{name: "no patterns", cfg: &ToolsConfig{}, tool: "deletePet", want: false},
+		{
+			name: "exact match",
+			cfg:  &ToolsConfig{Exclude: []string{"deletePet"}},
+			tool: "deletePet",
+			want: true,
+		},
+		{
+			name: "glob match",
+			cfg:  &ToolsConfig{Exclude: []string{"delete*"}},
+			tool: "deleteOrder",
+			want: true,
+		},
+		{
+			name: "case-sensitive",
+			cfg:  &ToolsConfig{Exclude: []string{"deletepet"}},
+			tool: "deletePet",
+			want: false,
+		},
+		{
+			name: "include is not consulted",
+			cfg:  &ToolsConfig{Include: []string{"get*"}},
+			tool: "deletePet",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.cfg.Excluded(tt.tool))
+		})
+	}
+}
+
 func TestToolsConfig_ResolvedOverrides_UsesToolField(t *testing.T) {
 	cfg := &ToolsConfig{Overrides: map[string]ToolOverride{
 		"getpet":   {Name: "get_pet"},
@@ -115,7 +156,7 @@ mcpServers:
     spec: https://petstore3.swagger.io/api/v3/openapi.json
     tools:
       include: ["get*", "find*"]
-      exclude: ["*inventory*"]
+      exclude: ["*inventory*", "deletePet"]
       overrides:
         getpetbyid:
           name: get_pet
@@ -131,7 +172,8 @@ audit:
 	require.NoError(t, err)
 	srv := cfg.MCPServer["petstore"]
 	require.Equal(t, []string{"get*", "find*"}, srv.Tools.Include)
-	require.Equal(t, []string{"*inventory*"}, srv.Tools.Exclude)
+	// パターンは大文字小文字を保つ（OpenAPI では operationId にも照合する）
+	require.Equal(t, []string{"*inventory*", "deletePet"}, srv.Tools.Exclude)
 	overrides := srv.Tools.ResolvedOverrides()
 	require.Equal(t, "get_pet", overrides["getpetbyid"].Name)
 	require.Equal(t, "Look up a pet", overrides["getpetbyid"].Description)

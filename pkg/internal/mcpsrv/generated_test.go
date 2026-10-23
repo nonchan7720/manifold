@@ -290,6 +290,54 @@ func verifyTestRegistry(t *testing.T) *MCPToolRegistry {
 	return registry
 }
 
+// TestGeneratedToolsFile_Exclude_RoundTrip pins that a file generated with
+// tools.exclude loads back cleanly with the same exclude list, and that
+// changing it makes the file stale rather than silently exposing (or
+// hiding) a tool.
+func TestGeneratedToolsFile_Exclude_RoundTrip(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(goldenSpec), 0o600))
+	source, err := oastomcptool.LoadSpecSource(t.Context(), specPath)
+	require.NoError(t, err)
+
+	exclude := WithExcludeTools([]string{"createWidget"})
+	registry, err := BuildCatalog(
+		t.Context(), &http.Client{}, source, "https://api.example.com", nil, exclude,
+	)
+	require.NoError(t, err)
+	tools := GeneratedTools(registry.Definitions())
+	require.Len(t, tools, 1)
+	require.Equal(t, "getwidget", tools[0].Name)
+
+	g, err := oastomcptool.NewGeneratedCatalog(
+		t.Context(), source, tools, "manifold test", time.Now(),
+	)
+	require.NoError(t, err)
+	genPath := filepath.Join(t.TempDir(), "generated.yaml")
+	f, err := os.Create(genPath)
+	require.NoError(t, err)
+	require.NoError(t, oastomcptool.WriteGeneratedCatalog(f, g))
+	require.NoError(t, f.Close())
+
+	// 同じ除外設定で読み戻せば検証を通り、除外した operation は無いまま。
+	loaded, err := RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil,
+		WithGeneratedToolsFile(genPath), exclude,
+	)
+	require.NoError(t, err)
+	require.Nil(t, findTool(t, loaded, "createwidget"))
+	require.NotNil(t, findTool(t, loaded, "getwidget"))
+
+	// 除外を外すと、埋め込み spec から再構築したカタログに createwidget が
+	// 現れて生成物と食い違うので stale 扱いになる。
+	_, err = RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil, WithGeneratedToolsFile(genPath),
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, `"createwidget"`)
+	require.ErrorContains(t, err, "missing from generated file")
+}
+
 func TestVerifyGeneratedTools_Matching(t *testing.T) {
 	registry := verifyTestRegistry(t)
 	g := &oastomcptool.GeneratedCatalog{Tools: GeneratedTools(registry.Definitions())}

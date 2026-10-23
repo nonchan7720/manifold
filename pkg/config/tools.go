@@ -22,6 +22,12 @@ var toolNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 // any override). A tool is exposed when it matches at least one Include
 // pattern (or Include is empty) and no Exclude pattern.
 //
+// On an OpenAPI / Swagger server, Exclude is additionally applied while the
+// catalog is built, matched against the operation's operationId as well as
+// the tool name derived from it: a matching operation is never turned into
+// a tool, so it is absent from the generated catalog ("manifold openapi
+// tools", tools.file, "openapi diff"), not merely hidden from tools/list.
+//
 // Overrides is keyed by the original tool name and renames the tool and/or
 // replaces its description. A renamed tool is only reachable under its new
 // name.
@@ -84,6 +90,17 @@ func (c *ToolsConfig) ResolvedOverrides() map[string]ToolOverride {
 		out[original] = override
 	}
 	return out
+}
+
+// Excluded reports whether name matches an Exclude pattern. Unlike Allowed
+// it ignores Include, so an OpenAPI catalog builder can drop excluded
+// operations while leaving Include to the exposure filter. Matching is
+// case-sensitive.
+func (c *ToolsConfig) Excluded(name string) bool {
+	if c == nil {
+		return false
+	}
+	return matchAny(c.Exclude, name)
 }
 
 func (c ToolsConfig) ValidateWithContext(context.Context) error {

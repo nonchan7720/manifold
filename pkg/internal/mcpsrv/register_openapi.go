@@ -11,6 +11,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 )
 
@@ -23,10 +24,7 @@ func RegisterOpenAPI(
 	headers map[string]string,
 	opts ...RegisterOpenAPIOption,
 ) (_ *MCPToolRegistry, rErr error) {
-	opt := &registerOpenAPIOption{}
-	for _, fn := range opts {
-		fn(opt)
-	}
+	opt := newRegisterOpenAPIOption(opts)
 
 	// headers は nil を渡す: 各ツール関数がリクエストごとに付加するため、
 	// トランスポート層でも付加すると二重適用になってしまう。
@@ -39,23 +37,28 @@ func RegisterOpenAPI(
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	if opt.generatedToolsFile != "" {
-		return registerFromGeneratedToolsFile(ctx, c, opt.generatedToolsFile, baseUrl, headers)
+		return registerFromGeneratedToolsFile(
+			ctx, c, opt.generatedToolsFile, baseUrl, headers, opts...,
+		)
 	}
 
 	source, err := oastomcptool.LoadSpecSource(ctx, specPath)
 	if err != nil {
 		return nil, err
 	}
-	return BuildCatalog(ctx, c, source, baseUrl, headers)
+	return BuildCatalog(ctx, c, source, baseUrl, headers, opts...)
 }
 
 // registerFromGeneratedToolsFile builds and verifies a catalog from a
-// generated tools file (tools.file) instead of fetching a spec.
+// generated tools file (tools.file) instead of fetching a spec. The catalog
+// is rebuilt with the same options (tools.exclude included) the file was
+// generated with, so a changed exclude list shows up as a stale file.
 func registerFromGeneratedToolsFile(
 	ctx context.Context,
 	c *http.Client,
 	path, baseUrl string,
 	headers map[string]string,
+	opts ...RegisterOpenAPIOption,
 ) (*MCPToolRegistry, error) {
 	source, catalog, err := oastomcptool.LoadGeneratedSpecSource(ctx, path)
 	if err != nil {
@@ -63,7 +66,7 @@ func registerFromGeneratedToolsFile(
 			`load generated tools file %q: %w (run "manifold openapi generate")`, path, err,
 		)
 	}
-	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers)
+	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -73,16 +76,22 @@ func registerFromGeneratedToolsFile(
 	return registry, nil
 }
 
-// BuildCatalog builds an MCPToolRegistry from an already-loaded spec.
+// BuildCatalog builds an MCPToolRegistry from an already-loaded spec. Of the
+// options, only the catalog-shaping ones (WithToolsConfig / WithExcludeTools)
+// apply here; transport and tools.file options are RegisterOpenAPI's.
 func BuildCatalog(
 	ctx context.Context,
 	client *http.Client,
 	source *oastomcptool.SpecSource,
 	baseUrl string,
 	headers map[string]string,
+	opts ...RegisterOpenAPIOption,
 ) (_ *MCPToolRegistry, rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/BuildCatalog")
 	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	opt := newRegisterOpenAPIOption(opts)
+	exclude := newOperationExcluder(ctx, opt.excludeTools)
 
 	register := NewMCPToolRegistry()
 	register.setSpecHash(source.Hash)
@@ -90,14 +99,14 @@ func BuildCatalog(
 	switch source.Format {
 	case oastomcptool.SpecFormatSwagger2:
 		if err := swagger(
-			ctx, client, register, source.Swagger, source.SpecPath, baseUrl, headers,
+			ctx, client, register, source.Swagger, source.SpecPath, baseUrl, headers, exclude,
 		); err != nil {
 			return nil, err
 		}
 	case oastomcptool.SpecFormatOpenAPI3:
 		register.setOpenAPISpec(source.OpenAPI)
 		if err := openapi(
-			ctx, client, register, source.OpenAPI, source.SpecPath, baseUrl, headers,
+			ctx, client, register, source.OpenAPI, source.SpecPath, baseUrl, headers, exclude,
 		); err != nil {
 			return nil, err
 		}
@@ -115,6 +124,7 @@ func swagger(
 	specPath string,
 	baseUrl string,
 	headers map[string]string,
+	exclude operationExcluder,
 ) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -125,17 +135,11 @@ func swagger(
 	register.setBaseURL(baseUrl)
 	for path, pathItem := range spec.Paths {
 		for method, operation := range pathItem.Operations() {
-			var operationId string
-			if operation.OperationID != "" {
-				operationId = operation.OperationID
-			} else {
-				operationId = fmt.Sprintf(
-					"%s_%s",
-					strings.ToLower(method),
-					strings.ReplaceAll(path, "/", "_"),
-				)
-			}
+			operationId := operationIDOrDerived(operation.OperationID, method, path)
 			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
+			if exclude(operationId, baseToolName, method, path) {
+				continue
+			}
 
 			description := fmt.Sprintf("%s %s", strings.ToUpper(method), path)
 			if operation.Summary != "" {
@@ -187,6 +191,7 @@ func openapi(
 	specPath string,
 	baseUrl string,
 	headers map[string]string,
+	exclude operationExcluder,
 ) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -197,17 +202,11 @@ func openapi(
 	register.setBaseURL(baseUrl)
 	for path, pathItem := range spec.Paths.Map() {
 		for method, operation := range pathItem.Operations() {
-			var operationId string
-			if operation.OperationID != "" {
-				operationId = operation.OperationID
-			} else {
-				operationId = fmt.Sprintf(
-					"%s_%s",
-					strings.ToLower(method),
-					strings.ReplaceAll(path, "/", "_"),
-				)
-			}
+			operationId := operationIDOrDerived(operation.OperationID, method, path)
 			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
+			if exclude(operationId, baseToolName, method, path) {
+				continue
+			}
 
 			description := fmt.Sprintf("%s %s", strings.ToUpper(method), path)
 			if operation.Summary != "" {
@@ -255,6 +254,47 @@ func openapi(
 		}
 	}
 	return nil
+}
+
+// operationIDOrDerived returns the operation's operationId, or the
+// "method_path" id the tool name is derived from when the spec omits it.
+func operationIDOrDerived(operationID, method, path string) string {
+	if operationID != "" {
+		return operationID
+	}
+	return fmt.Sprintf(
+		"%s_%s",
+		strings.ToLower(method),
+		strings.ReplaceAll(path, "/", "_"),
+	)
+}
+
+// operationExcluder reports whether the operation is kept out of the
+// catalog. It is given both the operationId (or the derived id for
+// operations without one) and the tool name derived from it, so a
+// tools.exclude pattern can be written either way ("deletePet" or
+// "deletepet").
+type operationExcluder func(operationID, toolName, method, path string) bool
+
+// newOperationExcluder builds an operationExcluder from tools.exclude
+// patterns (path.Match, case-sensitive). Excluded operations are logged at
+// debug level so a missing tool can be traced back to the config.
+func newOperationExcluder(ctx context.Context, patterns []string) operationExcluder {
+	if len(patterns) == 0 {
+		return func(string, string, string, string) bool { return false }
+	}
+	cfg := &config.ToolsConfig{Exclude: patterns}
+	return func(operationID, toolName, method, path string) bool {
+		if !cfg.Excluded(operationID) && !cfg.Excluded(toolName) {
+			return false
+		}
+		slog.DebugContext(ctx, "operation excluded from catalog by tools.exclude",
+			slog.String("operationId", operationID),
+			slog.String("tool", toolName),
+			slog.String("operation", fmt.Sprintf("%s %s", strings.ToUpper(method), path)),
+		)
+		return true
+	}
 }
 
 // parseAnnotationsExtensionOrWarn parses the operation's x-mcp.annotations.

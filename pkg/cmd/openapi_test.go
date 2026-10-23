@@ -330,6 +330,31 @@ func TestOpenAPITools_Table(t *testing.T) {
 	require.Equal(t, want, stdout)
 }
 
+func TestOpenAPITools_Exclude_OmitsOperations(t *testing.T) {
+	path := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
+	withGlobalConfig(t, &config.Config{
+		MCPServer: config.Servers{
+			"petstore": &config.Server{
+				Spec: path, BaseURL: "http://example.local",
+				Tools: &config.ToolsConfig{Exclude: []string{"uploadFile"}},
+			},
+		},
+	})
+
+	stdout, stderr, err := execOpenAPITools(t, "tools")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+
+	// tools.exclude に一致した operation はツール化されないので一覧にも出ない
+	want := strings.Join([]string{
+		"SERVER    TOOL        OPERATION         DESCRIPTION",
+		"petstore  addpet      POST /pet         Add a new pet to the store",
+		"petstore  getpetbyid  GET /pet/{petId}  Find pet by ID",
+		"",
+	}, "\n")
+	require.Equal(t, want, stdout)
+}
+
 func TestOpenAPITools_Table_MultipleServersSortedByName(t *testing.T) {
 	zPath := writeSpecFile(t, "z.json", petstoreSpecJSON)
 	aPath := writeSpecFile(t, "a.json", petstoreSpecJSON)
