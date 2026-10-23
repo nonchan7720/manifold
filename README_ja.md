@@ -602,6 +602,8 @@ prompts:
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
 
+OpenAPI / Swagger のサーバーでは `tools.exclude` はもう一歩踏み込んで、カタログ構築の時点で適用されます。各 operation の `operationId` と、そこから導出した（小文字の）ツール名の両方に照合するので、`"deletePet"` でも `"deletepet"` でも書けます。一致した operation はツール化されません。`tools/list` にも `manifold openapi tools` にも生成物 `tools.file` にも現れず、`openapi diff` / `specRefresh` のツール対応付けからも外れます。spec にその operation が無いのと同じ扱いです。`include` と `overrides` は従来どおりツール一覧を返す時点で適用されます。
+
 ```yaml
 mcpServers:
   petstore:
@@ -622,26 +624,9 @@ mcpServers:
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
 - 絞り込みは authz より前に行われるため、authz と `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-- `tools.exclude` は生成済みのツールを隠すもので、`tools.excludeOperationIds`（下記）は OpenAPI の operation をそもそもツール化しないものです。
-- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。絞り込みはサービス自身のツールだけに適用され、名前がたまたま `<agent>__` で始まるサービスのツールも対象になります。
-
-#### operation をカタログから外す（`tools.excludeOperationIds`）
-
-OpenAPI / Swagger のサーバーでは、`tools.excludeOperationIds` に同じ [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書くと、各 operation の `operationId` に照合されます（`operationId` と同じく大文字小文字を区別します。`operationId` の無い operation は、ツール名の元になる `<method>_<path>` 形式の導出 ID、例えば `get__pets_{id}` に照合します）。一致した operation はツール化されません。`tools/list` にも `manifold openapi tools` にも生成物 `tools.file` にも現れず、`openapi diff` / `specRefresh` のツール対応付けからも外れます。spec にその operation が無いのと同じ扱いです。
-
-```yaml
-mcpServers:
-  petstore:
-    description: Swagger Petstore
-    spec: https://petstore3.swagger.io/api/v3/openapi.json
-    tools:
-      excludeOperationIds: ["deletePet", "delete*", "uploadFile"]
-```
-
-- エージェントに決して見せたくない operation（破壊的な管理用エンドポイントや、対応していないアップロードなど）にはこちらを使い、公開一覧の絞り込みには `tools.exclude` を使い分けてください。`exclude` は（小文字の）ツール名に照合してカタログはそのまま残し、`excludeOperationIds` は `operationId` に照合してカタログ自体を小さくします。
-- `tools.file` と併用する場合、除外は `manifold openapi generate` の時点で適用され、ゲートウェイが起動時にファイルからカタログを再構築する際にも同じ除外が適用されます。そのため `excludeOperationIds` を変えるとコミット済みのファイルは stale になります（`generated tools are stale … (run "manifold openapi generate")`）。再生成してください。
+- `tools.file` と併用する場合、`exclude` は `manifold openapi generate` の時点で適用され、ゲートウェイが起動時にファイルからカタログを再構築する際にも同じリストが適用されます。そのため `exclude` を変えるとコミット済みのファイルは stale になります（`generated tools are stale … (run "manifold openapi generate")`）。再生成してください。
 - 除外した operation に対して `openapi diff` や `specRefresh` が検出した破壊的変更は、引き続き報告され `--fail-on` / `rejectOn` の判定にも含まれます。対応するツールは無いため、`--by-tool` では `(spec-wide)` に入ります。
-- OpenAPI モード以外のサーバー（MCP バックエンド・A2A エージェント・WebMCP）には operation が無いため無視されます。
+- reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。絞り込みはサービス自身のツールだけに適用され、名前がたまたま `<agent>__` で始まるサービスのツールも対象になります。
 
 ### 監査ログ（`audit`）
 
@@ -792,8 +777,7 @@ gateway:
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
-| `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
-| `tools.excludeOperationIds` | []string | `operationId` に照合する glob パターン。一致した OpenAPI / Swagger の operation はツール化されない（[operation をカタログから外す](#operation-をカタログから外すtoolsexcludeoperationids) 参照） |
+| `tools.include` / `tools.exclude` | []string | 公開するツールを選ぶ glob パターン。OpenAPI / Swagger のサーバーでは `exclude` は `operationId` にも照合され、一致した operation はカタログ自体から外れる（[公開するツールの選択](#公開するツールの選択toolsinclude--exclude--overrides) 参照） |
 | `tools.overrides` | map[string]object | ツールごと（元の名前）の `name`・`description`。`tool` で元のツール名を明示することもできる。キーは設定ファイルに書いた大文字小文字のまま扱うので、`getPetById:` はツール `getPetById` に一致する（大文字小文字だけが異なるキーはエラー） |
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
@@ -850,7 +834,7 @@ mcpServers:
 - `baseURL` は引き続き必須。`tools.file` を設定していれば `spec` は任意 — ゲートウェイは `spec` を一切読まないが、`manifold openapi generate`（および `--check`）がファイルを再生成する際に必要になるため、それらのコマンドを使うなら config に残しておくこと
 - `manifold openapi tools` は `tools.file` が設定されていれば生成物ファイルを読む。`--from-spec` は代わりに live spec を読むが、`spec` が未設定だとエラーになる
 - 起動時、Manifold はファイルに埋め込まれた spec からツールカタログを再構築し、ファイルの `tools` セクションと突き合わせる。一致しない場合（ファイルが埋め込まれた spec に対して古い、あるいは手で編集された場合）、起動は失敗する。例: `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`
-- `tools.excludeOperationIds` はファイル生成時と、ゲートウェイがファイルからカタログを再構築する時の両方で適用されるため、変更するとファイルは stale になる — リストを編集したら再生成すること
+- `tools.exclude` はファイル生成時と、ゲートウェイがファイルからカタログを再構築する時の両方で適用されるため、変更するとファイルは stale になる — リストを編集したら再生成すること
 - `tools.file` と正の値の `specRefreshInterval` は排他。`tools.file` を持つサーバーは `gateway.specRefresh` の対象からも除外される — 取り直す元の spec が無いため
 - `tools.file` はローカルパスのみ指定可能。URL は拒否される
 - Phase 1 では OpenAPI 3.x の spec のみ対応。`spec` が Swagger 2.x の場合、`tools.file` は使用できない

@@ -602,6 +602,8 @@ prompts:
 
 APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
 
+On an OpenAPI / Swagger server, `tools.exclude` goes one step further: it is applied while the catalog is built, matched against each operation's `operationId` as well as the (lowercase) tool name derived from it, so `"deletePet"` and `"deletepet"` both work. A matching operation is never turned into a tool — it is absent from `tools/list`, from `manifold openapi tools`, from the generated `tools.file` and from `openapi diff` / `specRefresh` tool mapping, as if the spec didn't have it. `include` and `overrides` still apply when the tool list is served.
+
 ```yaml
 mcpServers:
   petstore:
@@ -622,26 +624,9 @@ mcpServers:
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
 - Filtering happens before authz, so authz — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-- `tools.exclude` hides a tool that was generated; `tools.excludeOperationIds` (below) stops an OpenAPI operation from being generated at all.
-- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
-
-#### Leaving operations out of the catalog (`tools.excludeOperationIds`)
-
-For OpenAPI / Swagger servers, `tools.excludeOperationIds` takes the same [`path.Match`](https://pkg.go.dev/path#Match) glob patterns, matched against each operation's `operationId` (case-sensitive, as `operationId`s are; an operation without one is matched against the `<method>_<path>` id its tool name is derived from, e.g. `get__pets_{id}`). A matching operation is not turned into a tool: it is absent from `tools/list`, from `manifold openapi tools`, from the generated `tools.file`, and from `openapi diff` / `specRefresh` tool mapping — as if the spec didn't have it.
-
-```yaml
-mcpServers:
-  petstore:
-    description: Swagger Petstore
-    spec: https://petstore3.swagger.io/api/v3/openapi.json
-    tools:
-      excludeOperationIds: ["deletePet", "delete*", "uploadFile"]
-```
-
-- Use it for operations an agent must never see (destructive admin endpoints, uploads you don't support) and keep `tools.exclude` for trimming the exposed list — `exclude` works on tool names (lowercase) and leaves the catalog intact, `excludeOperationIds` works on `operationId`s and shrinks the catalog itself.
-- With `tools.file`, the exclusions are applied by `manifold openapi generate`, and the gateway applies the same ones when it rebuilds the catalog from the file at startup. Changing `excludeOperationIds` therefore makes the committed file stale (`generated tools are stale … (run "manifold openapi generate")`): regenerate it.
+- With `tools.file`, `exclude` is applied by `manifold openapi generate`, and the gateway applies the same list when it rebuilds the catalog from the file at startup. Changing `exclude` therefore makes the committed file stale (`generated tools are stale … (run "manifold openapi generate")`): regenerate it.
 - Breaking changes `openapi diff` or `specRefresh` detects on an excluded operation are still reported and still count toward `--fail-on` / `rejectOn`, with no tool attributed to them (under `(spec-wide)` with `--by-tool`).
-- Ignored on non-OpenAPI servers (MCP backends, A2A agents, WebMCP), which have no operations.
+- On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
 
 ### Audit log (`audit`)
 
@@ -792,8 +777,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
-| `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
-| `tools.excludeOperationIds` | []string | Glob patterns matched against `operationId`; matching OpenAPI / Swagger operations are not turned into tools at all (see [Leaving operations out of the catalog](#leaving-operations-out-of-the-catalog-toolsexcludeoperationids)) |
+| `tools.include` / `tools.exclude` | []string | Glob patterns selecting the exposed tools. On an OpenAPI / Swagger server `exclude` also matches `operationId`s and keeps matching operations out of the catalog entirely (see [Choosing which tools to expose](#choosing-which-tools-to-expose-toolsinclude--exclude--overrides)) |
 | `tools.overrides` | map[string]object | Per tool (original name): `name`, `description`, and `tool` to name the original tool explicitly. Keys keep the case written in the config file, so `getPetById:` matches the tool `getPetById` (keys differing only by case are rejected) |
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
@@ -850,7 +834,7 @@ mcpServers:
 - `baseURL` is still required. `spec` is optional when `tools.file` is set — the gateway never reads it, but `manifold openapi generate` (and `--check`) need it to rebuild the file, so keep it in the config if you use those commands.
 - `manifold openapi tools` reads the generated file when `tools.file` is set. `--from-spec` reads the live spec instead, and errors if `spec` isn't configured.
 - At startup, Manifold rebuilds the tool catalog from the spec embedded in the file and compares it against the file's `tools` section. If they don't match (the file is out of date relative to its own embedded spec, or was hand-edited), startup fails, e.g. `server "petstore": generated tools are stale: tool "addpet" description differs (run "manifold openapi generate")`.
-- `tools.excludeOperationIds` is applied when the file is generated and again when the gateway rebuilds the catalog from it, so changing it also makes the file stale — regenerate after editing the list.
+- `tools.exclude` is applied when the file is generated and again when the gateway rebuilds the catalog from it, so changing it also makes the file stale — regenerate after editing the list.
 - `tools.file` and a positive `specRefreshInterval` are mutually exclusive, and a server with `tools.file` is excluded from `gateway.specRefresh` — there is no live spec to refresh from.
 - `tools.file` must be a local path; a URL is rejected.
 - Phase 1 supports OpenAPI 3.x specs only. `tools.file` cannot be used with a Swagger 2.x `spec`.

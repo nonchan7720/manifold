@@ -330,13 +330,13 @@ func TestOpenAPITools_Table(t *testing.T) {
 	require.Equal(t, want, stdout)
 }
 
-func TestOpenAPITools_ExcludeOperationIds(t *testing.T) {
+func TestOpenAPITools_Exclude_OmitsOperations(t *testing.T) {
 	path := writeSpecFile(t, "petstore.json", petstoreSpecJSON)
 	withGlobalConfig(t, &config.Config{
 		MCPServer: config.Servers{
 			"petstore": &config.Server{
 				Spec: path, BaseURL: "http://example.local",
-				Tools: &config.ToolsConfig{ExcludeOperationIDs: []string{"upload*"}},
+				Tools: &config.ToolsConfig{Exclude: []string{"uploadFile"}},
 			},
 		},
 	})
@@ -345,7 +345,7 @@ func TestOpenAPITools_ExcludeOperationIds(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, stderr)
 
-	// 除外した operation はツール化されないので一覧にも出ない
+	// tools.exclude に一致した operation はツール化されないので一覧にも出ない
 	want := strings.Join([]string{
 		"SERVER    TOOL        OPERATION         DESCRIPTION",
 		"petstore  addpet      POST /pet         Add a new pet to the store",

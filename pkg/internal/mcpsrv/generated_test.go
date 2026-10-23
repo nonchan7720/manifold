@@ -290,17 +290,17 @@ func verifyTestRegistry(t *testing.T) *MCPToolRegistry {
 	return registry
 }
 
-// TestGeneratedToolsFile_ExcludeOperationIDs_RoundTrip pins that a file
-// generated with tools.excludeOperationIds loads back cleanly with the same
-// exclusions, and that changing them makes the file stale rather than
-// silently exposing (or hiding) a tool.
-func TestGeneratedToolsFile_ExcludeOperationIDs_RoundTrip(t *testing.T) {
+// TestGeneratedToolsFile_Exclude_RoundTrip pins that a file generated with
+// tools.exclude loads back cleanly with the same exclude list, and that
+// changing it makes the file stale rather than silently exposing (or
+// hiding) a tool.
+func TestGeneratedToolsFile_Exclude_RoundTrip(t *testing.T) {
 	specPath := filepath.Join(t.TempDir(), "openapi.json")
 	require.NoError(t, os.WriteFile(specPath, []byte(goldenSpec), 0o600))
 	source, err := oastomcptool.LoadSpecSource(t.Context(), specPath)
 	require.NoError(t, err)
 
-	exclude := WithExcludeOperationIDs([]string{"createWidget"})
+	exclude := WithExcludeTools([]string{"createWidget"})
 	registry, err := BuildCatalog(
 		t.Context(), &http.Client{}, source, "https://api.example.com", nil, exclude,
 	)

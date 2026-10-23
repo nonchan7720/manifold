@@ -7,10 +7,10 @@ type registerOpenAPIOption struct {
 	oauth2             *config.OAuth2
 	tokenExchange      *config.TokenExchange
 	generatedToolsFile string
-	// excludeOperationIDs are path.Match patterns; an operation whose
-	// operationId matches one is not turned into a tool (see
-	// config.ToolsConfig.ExcludeOperationIDs).
-	excludeOperationIDs []string
+	// excludeTools are tools.exclude patterns; an operation whose
+	// operationId or derived tool name matches one is not turned into a
+	// tool (see config.ToolsConfig).
+	excludeTools []string
 }
 
 type RegisterOpenAPIOption func(opt *registerOpenAPIOption)
@@ -41,24 +41,25 @@ func WithGeneratedToolsFile(path string) RegisterOpenAPIOption {
 	}
 }
 
-// WithToolsConfig applies the catalog-building parts of a server's tools
-// config (currently tools.excludeOperationIds). The exposure filter
-// (include / exclude / overrides) is not applied here: it runs when the tool
-// list is served. A nil cfg is a no-op.
+// WithToolsConfig applies the catalog-building part of a server's tools
+// config: tools.exclude, so excluded operations are never turned into tools.
+// include / overrides are not applied here; they run when the tool list is
+// served. A nil cfg is a no-op.
 func WithToolsConfig(cfg *config.ToolsConfig) RegisterOpenAPIOption {
 	return func(opt *registerOpenAPIOption) {
 		if cfg == nil {
 			return
 		}
-		opt.excludeOperationIDs = cfg.ExcludeOperationIDs
+		opt.excludeTools = cfg.Exclude
 	}
 }
 
-// WithExcludeOperationIDs keeps every operation whose operationId matches one
-// of the path.Match patterns out of the catalog.
-func WithExcludeOperationIDs(patterns []string) RegisterOpenAPIOption {
+// WithExcludeTools keeps every operation whose operationId or derived tool
+// name matches one of the path.Match patterns (tools.exclude) out of the
+// catalog.
+func WithExcludeTools(patterns []string) RegisterOpenAPIOption {
 	return func(opt *registerOpenAPIOption) {
-		opt.excludeOperationIDs = patterns
+		opt.excludeTools = patterns
 	}
 }
 

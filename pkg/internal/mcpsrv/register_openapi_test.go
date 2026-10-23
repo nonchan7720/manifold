@@ -281,44 +281,51 @@ func TestRegisterOpenAPI_SpecHash_DiffersBetweenSpecs(t *testing.T) {
 	require.NotEqual(t, oas.SpecHash(), swagger.SpecHash())
 }
 
-func TestRegisterOpenAPI_ExcludeOperationIDs(t *testing.T) {
+func TestRegisterOpenAPI_Exclude_SkipsOperations(t *testing.T) {
 	r, err := RegisterOpenAPI(
 		t.Context(), "fixtures/petstore_oas.json", "", nil,
-		WithExcludeOperationIDs([]string{"delete*", "getInventory"}),
+		WithExcludeTools([]string{"delete*", "getInventory"}),
 	)
 	require.NoError(t, err)
 
-	// パターンは operationId（大文字小文字を区別）に照合され、一致した
-	// operation はツールにならない。
+	// tools.exclude のパターンに一致した operation はツール自体が作られない。
 	for _, name := range []string{"deletepet", "deleteorder", "deleteuser", "getinventory"} {
 		require.Nil(t, findTool(t, r, name), "tool %q should be excluded", name)
 	}
 	for _, name := range []string{"getpetbyid", "addpet", "placeorder", "createuser"} {
 		require.NotNil(t, findTool(t, r, name), "tool %q should still be registered", name)
 	}
-
-	// 小文字のツール名ではなく operationId に照合するので、"deletepet" は
-	// "deletePet" に一致しない。
-	r, err = RegisterOpenAPI(
-		t.Context(), "fixtures/petstore_oas.json", "", nil,
-		WithExcludeOperationIDs([]string{"deletepet"}),
-	)
-	require.NoError(t, err)
-	require.NotNil(t, findTool(t, r, "deletepet"))
 }
 
-func TestRegisterOpenAPI_ExcludeOperationIDs_ViaToolsConfig(t *testing.T) {
+func TestRegisterOpenAPI_Exclude_MatchesOperationIDAndToolName(t *testing.T) {
+	// operationId（大文字小文字そのまま）でも、そこから導出した小文字の
+	// ツール名でも書ける。
+	for _, pattern := range []string{"deletePet", "deletepet"} {
+		t.Run(pattern, func(t *testing.T) {
+			r, err := RegisterOpenAPI(
+				t.Context(), "fixtures/petstore_oas.json", "", nil,
+				WithExcludeTools([]string{pattern}),
+			)
+			require.NoError(t, err)
+			require.Nil(t, findTool(t, r, "deletepet"))
+			require.NotNil(t, findTool(t, r, "deleteorder"))
+		})
+	}
+}
+
+func TestRegisterOpenAPI_Exclude_ViaToolsConfig(t *testing.T) {
 	r, err := RegisterOpenAPI(
 		t.Context(), "fixtures/petstore_oas.json", "", nil,
 		WithToolsConfig(&config.ToolsConfig{
-			// include / exclude は公開時の絞り込みで、カタログ構築には影響しない
-			Exclude:             []string{"*"},
-			ExcludeOperationIDs: []string{"uploadFile"},
+			// include は公開時の絞り込みで、カタログ構築には影響しない
+			Include: []string{"get*"},
+			Exclude: []string{"uploadFile"},
 		}),
 	)
 	require.NoError(t, err)
 	require.Nil(t, findTool(t, r, "uploadfile"))
 	require.NotNil(t, findTool(t, r, "getpetbyid"))
+	require.NotNil(t, findTool(t, r, "addpet"))
 
 	// nil の tools 設定は何も除外しない
 	r, err = RegisterOpenAPI(
@@ -328,10 +335,10 @@ func TestRegisterOpenAPI_ExcludeOperationIDs_ViaToolsConfig(t *testing.T) {
 	require.NotNil(t, findTool(t, r, "uploadfile"))
 }
 
-func TestRegisterSwagger_ExcludeOperationIDs(t *testing.T) {
+func TestRegisterSwagger_Exclude_SkipsOperations(t *testing.T) {
 	r, err := RegisterOpenAPI(
 		t.Context(), "fixtures/petstore_swagger.json", "", nil,
-		WithExcludeOperationIDs([]string{"uploadFile", "find*"}),
+		WithExcludeTools([]string{"uploadFile", "find*"}),
 	)
 	require.NoError(t, err)
 	for _, name := range []string{"uploadfile", "findpetsbystatus", "findpetsbytags"} {
@@ -341,7 +348,7 @@ func TestRegisterSwagger_ExcludeOperationIDs(t *testing.T) {
 	require.NotNil(t, findTool(t, r, "updatepet"))
 }
 
-func TestRegisterOpenAPI_ExcludeOperationIDs_DerivedIDWhenOperationIdMissing(t *testing.T) {
+func TestRegisterOpenAPI_Exclude_DerivedIDWhenOperationIdMissing(t *testing.T) {
 	spec := `{
   "openapi": "3.0.0",
   "info": {"title": "t", "version": "1"},
@@ -357,9 +364,9 @@ func TestRegisterOpenAPI_ExcludeOperationIDs_DerivedIDWhenOperationIdMissing(t *
 	require.NoError(t, os.WriteFile(path, []byte(spec), 0o600))
 
 	// operationId が無い operation は、ツール名の元になる "method_path" の
-	// 導出 ID に照合する。
+	// 導出 ID（= ツール名）に照合する。
 	r, err := RegisterOpenAPI(
-		t.Context(), path, "", nil, WithExcludeOperationIDs([]string{"get__widgets"}),
+		t.Context(), path, "", nil, WithExcludeTools([]string{"get__widgets"}),
 	)
 	require.NoError(t, err)
 	require.Nil(t, findTool(t, r, "get__widgets"))

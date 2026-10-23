@@ -51,9 +51,8 @@ func RegisterOpenAPI(
 
 // registerFromGeneratedToolsFile builds and verifies a catalog from a
 // generated tools file (tools.file) instead of fetching a spec. The catalog
-// is rebuilt with the same options (tools.excludeOperationIds included) the
-// file was generated with, so a changed exclusion list shows up as a stale
-// file.
+// is rebuilt with the same options (tools.exclude included) the file was
+// generated with, so a changed exclude list shows up as a stale file.
 func registerFromGeneratedToolsFile(
 	ctx context.Context,
 	c *http.Client,
@@ -78,9 +77,8 @@ func registerFromGeneratedToolsFile(
 }
 
 // BuildCatalog builds an MCPToolRegistry from an already-loaded spec. Of the
-// options, only the catalog-shaping ones (WithToolsConfig /
-// WithExcludeOperationIDs) apply here; transport and tools.file options are
-// RegisterOpenAPI's.
+// options, only the catalog-shaping ones (WithToolsConfig / WithExcludeTools)
+// apply here; transport and tools.file options are RegisterOpenAPI's.
 func BuildCatalog(
 	ctx context.Context,
 	client *http.Client,
@@ -93,7 +91,7 @@ func BuildCatalog(
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
 	opt := newRegisterOpenAPIOption(opts)
-	exclude := newOperationExcluder(ctx, opt.excludeOperationIDs)
+	exclude := newOperationExcluder(ctx, opt.excludeTools)
 
 	register := NewMCPToolRegistry()
 	register.setSpecHash(source.Hash)
@@ -138,10 +136,10 @@ func swagger(
 	for path, pathItem := range spec.Paths {
 		for method, operation := range pathItem.Operations() {
 			operationId := operationIDOrDerived(operation.OperationID, method, path)
-			if exclude(operationId, method, path) {
+			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
+			if exclude(operationId, baseToolName, method, path) {
 				continue
 			}
-			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
 
 			description := fmt.Sprintf("%s %s", strings.ToUpper(method), path)
 			if operation.Summary != "" {
@@ -205,10 +203,10 @@ func openapi(
 	for path, pathItem := range spec.Paths.Map() {
 		for method, operation := range pathItem.Operations() {
 			operationId := operationIDOrDerived(operation.OperationID, method, path)
-			if exclude(operationId, method, path) {
+			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
+			if exclude(operationId, baseToolName, method, path) {
 				continue
 			}
-			baseToolName := strings.ToLower(strings.ReplaceAll(operationId, " ", "_"))
 
 			description := fmt.Sprintf("%s %s", strings.ToUpper(method), path)
 			if operation.Summary != "" {
@@ -271,26 +269,28 @@ func operationIDOrDerived(operationID, method, path string) string {
 	)
 }
 
-// operationExcluder reports whether the operation (identified by its
-// operationId, or the derived id for operations without one) is kept out of
-// the catalog.
-type operationExcluder func(operationID, method, path string) bool
+// operationExcluder reports whether the operation is kept out of the
+// catalog. It is given both the operationId (or the derived id for
+// operations without one) and the tool name derived from it, so a
+// tools.exclude pattern can be written either way ("deletePet" or
+// "deletepet").
+type operationExcluder func(operationID, toolName, method, path string) bool
 
-// newOperationExcluder builds an operationExcluder from
-// tools.excludeOperationIds patterns (path.Match, case-sensitive). Excluded
-// operations are logged at debug level so a missing tool can be traced back
-// to the config.
+// newOperationExcluder builds an operationExcluder from tools.exclude
+// patterns (path.Match, case-sensitive). Excluded operations are logged at
+// debug level so a missing tool can be traced back to the config.
 func newOperationExcluder(ctx context.Context, patterns []string) operationExcluder {
 	if len(patterns) == 0 {
-		return func(string, string, string) bool { return false }
+		return func(string, string, string, string) bool { return false }
 	}
-	cfg := &config.ToolsConfig{ExcludeOperationIDs: patterns}
-	return func(operationID, method, path string) bool {
-		if !cfg.ExcludesOperation(operationID) {
+	cfg := &config.ToolsConfig{Exclude: patterns}
+	return func(operationID, toolName, method, path string) bool {
+		if !cfg.Excluded(operationID) && !cfg.Excluded(toolName) {
 			return false
 		}
-		slog.DebugContext(ctx, "operation excluded from catalog by tools.excludeOperationIds",
+		slog.DebugContext(ctx, "operation excluded from catalog by tools.exclude",
 			slog.String("operationId", operationID),
+			slog.String("tool", toolName),
 			slog.String("operation", fmt.Sprintf("%s %s", strings.ToUpper(method), path)),
 		)
 		return true
