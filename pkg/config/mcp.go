@@ -29,6 +29,17 @@ const (
 	MCPTransportA2A MCPTransport = "a2a"
 )
 
+// ClientRegistration は上流 MCP バックエンドの OAuth 自動検出で、manifold が
+// クライアント登録に使う方式。
+type ClientRegistration string
+
+const (
+	// ClientRegistrationDCR は Dynamic Client Registration のみを使う。
+	ClientRegistrationDCR ClientRegistration = "dcr"
+	// ClientRegistrationCIMD は Client ID Metadata Document のみを使う。
+	ClientRegistrationCIMD ClientRegistration = "cimd"
+)
+
 // DefaultCallTimeout is used when Server.CallTimeout is unset (<= 0) for a
 // reverse transport server.
 const DefaultCallTimeout = 60 * time.Second
@@ -70,6 +81,13 @@ type Server struct {
 	// 優先して client_id に使う。oauth2 とは別に置くのは、oauth2 を書くと
 	// OAuth2 の自動検出が止まるため。MCP バックエンド（http）でのみ有効。
 	CIMDClientID string `mapstructure:"cimdClientID"`
+
+	// ClientRegistration は上流の自動検出で使うクライアント登録方式（dcr / cimd）。
+	// 未設定なら CIMD が使えれば CIMD、使えなければ DCR の順に試す。設定すると
+	// その方式のみを使い、フォールバックしない。cimd には cimdClientID が必須、
+	// dcr は cimdClientID と併用できない。oauth2 とは別に置くのは、oauth2 を書くと
+	// OAuth2 の自動検出が止まるため。MCP バックエンド（http）でのみ有効。
+	ClientRegistration ClientRegistration `mapstructure:"clientRegistration"`
 
 	// MCP バックエンドモード用（Spec が空のとき有効）
 	Transport MCPTransport      `mapstructure:"transport"`
@@ -315,6 +333,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
 		validation.Field(&s.CIMDClientID, validation.By(s.validateCIMDClientID)),
+		validation.Field(&s.ClientRegistration, validation.By(s.validateClientRegistration)),
 		validation.Field(&s.SpecRefreshInterval, validation.By(func(value any) error {
 			if s.SpecRefreshInterval != nil && *s.SpecRefreshInterval < 0 {
 				return fmt.Errorf("must be zero or a positive duration")
@@ -365,6 +384,33 @@ func (s Server) validateCIMDClientID(any) error {
 		return fmt.Errorf(
 			"cannot be combined with oauth2 (oauth2 disables upstream auto-discovery)",
 		)
+	}
+	return nil
+}
+
+// validateClientRegistration は mcpServers.<name>.clientRegistration を検証する。
+func (s Server) validateClientRegistration(any) error {
+	if s.ClientRegistration == "" {
+		return nil
+	}
+	if err := validation.Validate(s.ClientRegistration, validation.In(
+		ClientRegistrationDCR, ClientRegistrationCIMD,
+	)); err != nil {
+		return err
+	}
+	if s.Transport != MCPTransportHTTP || s.IsOpenAPI() {
+		return fmt.Errorf("is only supported for the http transport")
+	}
+	if s.OAuth2 != nil {
+		return fmt.Errorf(
+			"cannot be combined with oauth2 (oauth2 disables upstream auto-discovery)",
+		)
+	}
+	switch {
+	case s.ClientRegistration == ClientRegistrationCIMD && s.CIMDClientID == "":
+		return fmt.Errorf("cimd requires cimdClientID")
+	case s.ClientRegistration == ClientRegistrationDCR && s.CIMDClientID != "":
+		return fmt.Errorf("dcr cannot be combined with cimdClientID")
 	}
 	return nil
 }

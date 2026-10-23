@@ -774,6 +774,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
+| `clientRegistration` | string | How Manifold registers with this upstream MCP server during OAuth auto-discovery (`http` transport): `dcr` or `cimd`. Unset: try CIMD first (when `cimdClientID` is set and the upstream supports it), otherwise DCR. When set, only that method is used with no fallback: `cimd` requires `cimdClientID` and fails discovery if no authorization server supports CIMD; `dcr` cannot be combined with `cimdClientID` and needs a `registration_endpoint`. Cannot be combined with `oauth2` |
 | `cimdClientID`  | string            | OAuth Client ID Metadata Document URL (`https://`) that Manifold presents to this upstream MCP server (`http` transport). Used instead of DCR when the upstream supports CIMD; cannot be combined with `oauth2`. See [docs/cimd/upstream-cimd.md](docs/cimd/upstream-cimd.md) |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
@@ -1249,7 +1250,7 @@ Independently of `clients` and `unknownClient`, a client registered through DCR 
 
 Note that `default` cannot fully prevent the confused deputy problem — unmapped clients still appear upstream as Manifold. Adding `prompt: consent` through `authParams` mitigates it, but `prompt` is an OpenID Connect parameter and plain OAuth 2.0 authorization servers may ignore it. For production, prefer `reject` with an explicit `clients` whitelist.
 
-Automatic OAuth 2.1 discovery (used for MCP backends without an `oauth2` block) uses the configured `cimdClientID` through CIMD when the upstream supports it; otherwise, it registers Manifold through DCR. `clients` does not apply to either flow.
+Automatic OAuth 2.1 discovery (used for MCP backends without an `oauth2` block) uses the configured `cimdClientID` through CIMD when the upstream supports it; otherwise, it registers Manifold through DCR. Set `clientRegistration: cimd` or `dcr` to use only that method (no fallback; a mismatch with the upstream fails discovery). `clients` does not apply to either flow.
 
 ## Tool authorization (OPA sidecar)
 

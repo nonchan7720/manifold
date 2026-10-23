@@ -20,7 +20,19 @@ mcpServers:
 - The value must be an `https://` URL. It is valid only for `transport: http` servers and cannot be combined with `oauth2`.
 - If the upstream authorization server advertises `client_id_metadata_document_supported: true`, the URL becomes the `client_id` and no client secret is used. This takes priority over DCR, and the upstream needs no registration endpoint.
 - Otherwise (the option is unset, or the upstream does not support CIMD) Manifold falls back to DCR, and logs a warning in the second case.
-- The discovery log line carries `cimd=true` when the document URL was used.
+- The discovery log line carries `cimd=true` when the document URL was used, and `client_registration=cimd|dcr` for the method actually used.
+
+## Choosing the registration method (`clientRegistration`)
+
+`clientRegistration` is a server-level enum, placed next to `cimdClientID` (not under `oauth2`).
+
+| Value | Behavior |
+| --- | --- |
+| unset | Tries in order: CIMD if `cimdClientID` is set and the upstream supports it, otherwise DCR. The fallback warning is logged only in this mode. |
+| `cimd` | CIMD only. `cimdClientID` is required. Only authorization servers with `client_id_metadata_document_supported: true` are used; if none exists, discovery fails and does not fall back to DCR. |
+| `dcr` | DCR only. Only authorization servers with a `registration_endpoint` are used, even if the upstream supports CIMD. Cannot be combined with `cimdClientID`. |
+
+Like `cimdClientID`, it is valid only for `transport: http` MCP backends and cannot be combined with `oauth2`.
 
 ## Document template
 

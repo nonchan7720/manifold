@@ -20,7 +20,19 @@ mcpServers:
 - 値は `https://` の URL である必要があります。`transport: http` のサーバーでのみ有効で、`oauth2` とは併用できません。
 - 上流の認可サーバーが `client_id_metadata_document_supported: true` を返す場合、この URL を `client_id` に使い、クライアントシークレットは使いません。DCR より優先され、上流に registration endpoint が無くても動作します。
 - それ以外（未指定、または上流が CIMD 非対応）は従来どおり DCR にフォールバックします。後者では警告ログを出します。
-- ドキュメントの URL を使った場合、検出ログに `cimd=true` が付きます。
+- ドキュメントの URL を使った場合、検出ログに `cimd=true` が付きます。実際に使った方式は `client_registration=cimd|dcr` で確認できます。
+
+## 登録方式の選択（`clientRegistration`）
+
+`clientRegistration` はサーバー単位の enum で、`cimdClientID` と同じくサーバー定義の直下に書きます（`oauth2` の中ではありません）。
+
+| 値 | 動作 |
+| --- | --- |
+| 未設定 | 順に試します。`cimdClientID` があり上流が対応していれば CIMD、使えなければ DCR。フォールバックの警告ログはこのモードでのみ出ます。 |
+| `cimd` | CIMD のみ。`cimdClientID` 必須。`client_id_metadata_document_supported: true` の認可サーバーだけを採用し、無ければ DCR にフォールバックせず検出エラーになります。 |
+| `dcr` | DCR のみ。上流が CIMD に対応していても、`registration_endpoint` を持つ認可サーバーだけを採用します。`cimdClientID` とは併用できません。 |
+
+`cimdClientID` と同様、`transport: http` の MCP バックエンドでのみ有効で、`oauth2` とは併用できません。
 
 ## ドキュメントのテンプレート
 

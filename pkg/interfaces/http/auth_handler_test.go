@@ -2686,6 +2686,100 @@ func TestDiscoverOAuth2_CIMD_UnsupportedUpstreamFallsBackToDCR(t *testing.T) {
 	require.EqualValues(t, 1, dcrCalls.Load())
 }
 
+// clientRegistration=cimd: 上流が CIMD 非対応なら DCR が可能でもエラーになる
+func TestDiscoverOAuth2_ClientRegistrationCIMD_NoFallbackToDCR(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, false, true)
+	srv.CIMDClientID = testUpstreamCIMDClientID
+	srv.ClientRegistration = config.ClientRegistrationCIMD
+
+	h := newCIMDDiscoverHandler()
+	_, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "clientRegistration is cimd")
+	require.Zero(t, dcrCalls.Load())
+	require.Nil(t, h.servers["testsrv"].OAuth2)
+}
+
+// clientRegistration=cimd: 上流が CIMD 対応なら DCR も可能でも CIMD を使う
+func TestDiscoverOAuth2_ClientRegistrationCIMD_Used(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, true, true)
+	srv.CIMDClientID = testUpstreamCIMDClientID
+	srv.ClientRegistration = config.ClientRegistrationCIMD
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, testUpstreamCIMDClientID, result.ClientID)
+	require.Zero(t, dcrCalls.Load())
+}
+
+// clientRegistration=cimd: 1 件目が CIMD 非対応（DCR のみ）、2 件目が CIMD 対応なら 2 件目を使う
+func TestDiscoverOAuth2_ClientRegistrationCIMD_SkipsNonCIMDServer(t *testing.T) {
+	first := newMetaOnlyAuthServer(t, true, "dcr-client")
+	second := newCIMDAuthServer(t, true, false)
+
+	srv := newDiscoverTestBackendFor(t, []string{first, second})
+	srv.CIMDClientID = testUpstreamCIMDClientID
+	srv.ClientRegistration = config.ClientRegistrationCIMD
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, second+"/token", result.TokenURL)
+	require.Equal(t, testUpstreamCIMDClientID, result.ClientID)
+}
+
+// clientRegistration=dcr: 上流が CIMD 対応でも DCR を使う
+func TestDiscoverOAuth2_ClientRegistrationDCR_IgnoresCIMD(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, true, true)
+	srv.ClientRegistration = config.ClientRegistrationDCR
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "dcr-client-id", result.ClientID)
+	require.Equal(t, "dcr-client-secret", result.ClientSecret)
+	require.EqualValues(t, 1, dcrCalls.Load())
+}
+
+// clientRegistration=dcr: registration_endpoint が無ければ CIMD 対応でもエラーになる
+func TestDiscoverOAuth2_ClientRegistrationDCR_NoRegistrationEndpointFails(t *testing.T) {
+	srv, _ := newCIMDDiscoverFixture(t, true, false)
+	srv.ClientRegistration = config.ClientRegistrationDCR
+
+	h := newCIMDDiscoverHandler()
+	_, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "clientRegistration is dcr")
+	require.Nil(t, h.servers["testsrv"].OAuth2)
+}
+
+// newCIMDAuthServer は CIMD 対応を広告する認可サーバーを立てて URL を返す。
+func newCIMDAuthServer(t *testing.T, cimd, withRegistration bool) string {
+	t.Helper()
+	var u string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/.well-known/oauth-authorization-server" {
+			http.NotFound(w, r)
+			return
+		}
+		meta := map[string]any{
+			"issuer":                           u,
+			"authorization_endpoint":           u + "/auth",
+			"token_endpoint":                   u + "/token",
+			"response_types_supported":         []string{"code"},
+			"code_challenge_methods_supported": []string{"S256"},
+		}
+		if cimd {
+			meta["client_id_metadata_document_supported"] = true
+		}
+		if withRegistration {
+			meta["registration_endpoint"] = u + "/register"
+		}
+		json.NewEncoder(w).Encode(meta) //nolint: errcheck
+	}))
+	t.Cleanup(s.Close)
+	u = s.URL
+	return u
+}
+
 // newMetaOnlyAuthServer は認可サーバーのメタデータを返すサーバーを立てて URL を返す。
 // withRegistration のときだけ registration endpoint を広告し、DCR は clientID を返す。
 func newMetaOnlyAuthServer(t *testing.T, withRegistration bool, clientID string) string {
