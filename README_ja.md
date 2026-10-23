@@ -1249,7 +1249,7 @@ mcpServers:
 
 ただし `default` では confused deputy を完全には防げません（マッピングの無いクライアントは上流から見ると Manifold のままです）。`authParams` で `prompt: consent` を付与すると軽減できますが、`prompt` は OpenID Connect のパラメータであり、純粋な OAuth 2.0 認可サーバーでは無視されることがあります。本番用途では `reject` と明示的な `clients` の whitelist を推奨します。
 
-なお、`oauth2` を書かない MCP バックエンド向けの OAuth 2.1 自動検出は、Manifold 自身を DCR で登録して常にその 1 つの共用クライアントを使います。`clients` は自動検出の結果には適用されません。
+なお、`oauth2` を書かない MCP バックエンド向けの OAuth 2.1 自動検出は、`cimdClientID` が設定されていて上流が CIMD に対応していれば CIMD を使い、それ以外は Manifold 自身を DCR で登録します。`clients` はどちらの方式にも適用されません。
 
 ## ツール認可（OPA サイドカー）
 

@@ -1055,6 +1055,14 @@ func (h *AuthHandler) discoverOAuth2(
 			lastErr = err
 			continue
 		}
+		// クライアント登録手段（CIMD か DCR）を持たないサーバーは採用しない。
+		if !canRegisterClient(srv, meta) {
+			lastErr = fmt.Errorf(
+				"authorization server %s supports neither cimd nor dynamic client registration",
+				server,
+			)
+			continue
+		}
 		authMeta = meta
 		break
 	}
@@ -1120,6 +1128,13 @@ func (h *AuthHandler) discoverOAuth2(
 		slog.Bool("cimd", useCIMD),
 	)
 	return oauth2cfg, nil
+}
+
+// canRegisterClient は manifold が meta の認可サーバーで client_id を得られるかを返す。
+// 設定済みの cimdClientID を CIMD で使えるか、DCR の registration_endpoint がある場合に true。
+func canRegisterClient(srv *config.Server, meta *oauthex.AuthServerMeta) bool {
+	return (srv.CIMDClientID != "" && meta.ClientIDMetadataDocumentSupported) ||
+		meta.RegistrationEndpoint != ""
 }
 
 func (h *AuthHandler) getBaseURL(r *http.Request) string {

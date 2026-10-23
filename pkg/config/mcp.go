@@ -353,9 +353,10 @@ func (s Server) validateCIMDClientID(any) error {
 	if s.CIMDClientID == "" {
 		return nil
 	}
-	u, err := url.Parse(s.CIMDClientID)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("must be an https:// URL")
+	if !IsValidCIMDClientID(s.CIMDClientID) {
+		return fmt.Errorf(
+			"must be an https:// URL with a path (no userinfo, fragment, or dot segments)",
+		)
 	}
 	if s.Transport != MCPTransportHTTP || s.IsOpenAPI() {
 		return fmt.Errorf("is only supported for the http transport")
@@ -366,6 +367,26 @@ func (s Server) validateCIMDClientID(any) error {
 		)
 	}
 	return nil
+}
+
+// IsValidCIMDClientID は id が CIMD の Client Identifier URL として有効かを返す。
+// https でホストと "/" 以外のパスを持ち、userinfo・fragment・"." / ".." の
+// パス要素を含まないこと。
+func IsValidCIMDClientID(id string) bool {
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		u.Fragment != "" || strings.Contains(id, "#") {
+		return false
+	}
+	if u.Path == "" || u.Path == "/" {
+		return false
+	}
+	for seg := range strings.SplitSeq(u.Path, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // validateApps は mcpServers.<name>.apps を検証する。MCP Apps のリソースを
@@ -549,8 +570,8 @@ func (c *OAuth2) UnknownClientMode() string {
 func (c *OAuth2) ValidateWithContext(ctx context.Context) error {
 	// 共用クライアントは、マッピングに無い下流クライアントを受け入れるときだけ必須。
 	sharedRequired := c.UnknownClientMode() == OAuth2UnknownClientDefault
-	// clientID が https:// の URL（CIMD）ならパブリッククライアントなので secret は不要。
-	secretRequired := sharedRequired && !strings.HasPrefix(c.ClientID, "https://")
+	// clientID が有効な CIMD の URL ならパブリッククライアントなので secret は不要。
+	secretRequired := sharedRequired && !IsValidCIMDClientID(c.ClientID)
 	return validation.ValidateStructWithContext(ctx, c,
 		validation.Field(&c.ClientID, validation.When(sharedRequired, validation.Required)),
 		validation.Field(&c.ClientSecret, validation.When(secretRequired, validation.Required)),

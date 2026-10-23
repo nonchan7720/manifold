@@ -1249,7 +1249,7 @@ Independently of `clients` and `unknownClient`, a client registered through DCR 
 
 Note that `default` cannot fully prevent the confused deputy problem — unmapped clients still appear upstream as Manifold. Adding `prompt: consent` through `authParams` mitigates it, but `prompt` is an OpenID Connect parameter and plain OAuth 2.0 authorization servers may ignore it. For production, prefer `reject` with an explicit `clients` whitelist.
 
-Automatic OAuth 2.1 discovery (used for MCP backends without an `oauth2` block) registers Manifold itself through DCR and always uses that single shared client; `clients` does not apply to it.
+Automatic OAuth 2.1 discovery (used for MCP backends without an `oauth2` block) uses the configured `cimdClientID` through CIMD when the upstream supports it; otherwise, it registers Manifold through DCR. `clients` does not apply to either flow.
 
 ## Tool authorization (OPA sidecar)
 

@@ -2686,25 +2686,41 @@ func TestDiscoverOAuth2_CIMD_UnsupportedUpstreamFallsBackToDCR(t *testing.T) {
 	require.EqualValues(t, 1, dcrCalls.Load())
 }
 
+// newMetaOnlyAuthServer は認可サーバーのメタデータを返すサーバーを立てて URL を返す。
+// withRegistration のときだけ registration endpoint を広告し、DCR は clientID を返す。
+func newMetaOnlyAuthServer(t *testing.T, withRegistration bool, clientID string) string {
+	t.Helper()
+	var u string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			meta := map[string]any{
+				"issuer":                           u,
+				"authorization_endpoint":           u + "/auth",
+				"token_endpoint":                   u + "/token",
+				"response_types_supported":         []string{"code"},
+				"code_challenge_methods_supported": []string{"S256"},
+			}
+			if withRegistration {
+				meta["registration_endpoint"] = u + "/register"
+			}
+			json.NewEncoder(w).Encode(meta) //nolint: errcheck
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"client_id": clientID}) //nolint: errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(s.Close)
+	u = s.URL
+	return u
+}
+
 // 1 件目の認可サーバーが失敗し 2 件目が成功すれば成功扱いになる
 func TestDiscoverOAuth2_FirstAuthServerFailsSecondSucceeds(t *testing.T) {
-	var authServerURL string
-	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/.well-known/oauth-authorization-server" {
-			http.NotFound(w, r)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-			"issuer":                           authServerURL,
-			"authorization_endpoint":           authServerURL + "/auth",
-			"token_endpoint":                   authServerURL + "/token",
-			"response_types_supported":         []string{"code"},
-			"code_challenge_methods_supported": []string{"S256"},
-		})
-	}))
-	t.Cleanup(authSrv.Close)
-	authServerURL = authSrv.URL
+	authServerURL := newMetaOnlyAuthServer(t, true, "second-client")
 	broken := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(broken.Close)
 
@@ -2712,6 +2728,32 @@ func TestDiscoverOAuth2_FirstAuthServerFailsSecondSucceeds(t *testing.T) {
 	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
 	require.NoError(t, err)
 	require.Equal(t, authServerURL+"/token", result.TokenURL)
+	require.Equal(t, "second-client", result.ClientID)
+}
+
+// 1 件目は取得できても登録手段が無ければ、DCR 可能な 2 件目を使う
+func TestDiscoverOAuth2_SkipsAuthServerWithoutRegistration(t *testing.T) {
+	first := newMetaOnlyAuthServer(t, false, "")
+	second := newMetaOnlyAuthServer(t, true, "second-client")
+
+	srv := newDiscoverTestBackendFor(t, []string{first, second})
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, second+"/token", result.TokenURL)
+	require.Equal(t, "second-client", result.ClientID)
+}
+
+// すべての認可サーバーに登録手段が無ければエラーを返し、キャッシュしない
+func TestDiscoverOAuth2_NoRegistrationMethodFails(t *testing.T) {
+	first := newMetaOnlyAuthServer(t, false, "")
+	second := newMetaOnlyAuthServer(t, false, "")
+
+	srv := newDiscoverTestBackendFor(t, []string{first, second})
+	h := newCIMDDiscoverHandler()
+	_, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "neither cimd nor dynamic client registration")
+	require.Nil(t, h.servers["testsrv"].OAuth2)
 }
 
 // すべての認可サーバーが失敗すれば、最後のエラーを返す

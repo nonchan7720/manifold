@@ -847,6 +847,18 @@ func TestOAuth2_ValidateWithContext_URLClientIDAllowsEmptySecret(t *testing.T) {
 	require.NoError(t, c.ValidateWithContext(t.Context()))
 }
 
+func TestOAuth2_ValidateWithContext_InvalidURLClientIDRequiresSecret(t *testing.T) {
+	for _, id := range []string{
+		"https://", "https://cdn.example.com", "https://cdn.example.com/",
+		"https://cdn.example.com/a/../b.json", "https://cdn.example.com/a.json#x",
+	} {
+		c := baseValidOAuth2()
+		c.ClientID = id
+		c.ClientSecret = ""
+		require.Error(t, c.ValidateWithContext(t.Context()), id)
+	}
+}
+
 func TestOAuth2_ValidateWithContext_PlainClientIDRequiresSecret(t *testing.T) {
 	c := baseValidOAuth2()
 	c.ClientSecret = ""
@@ -874,6 +886,12 @@ func TestServer_Validate_CIMDClientID(t *testing.T) {
 		{name: "http rejected", id: "http://cdn.example.com/github.json", wantErr: true},
 		{name: "no scheme rejected", id: "cdn.example.com/github.json", wantErr: true},
 		{name: "no host rejected", id: "https:///github.json", wantErr: true},
+		{name: "no path rejected", id: "https://cdn.example.com", wantErr: true},
+		{name: "root path rejected", id: "https://cdn.example.com/", wantErr: true},
+		{name: "userinfo rejected", id: "https://u:p@cdn.example.com/a.json", wantErr: true},
+		{name: "fragment rejected", id: "https://cdn.example.com/a.json#x", wantErr: true},
+		{name: "dot segment rejected", id: "https://cdn.example.com/a/./b.json", wantErr: true},
+		{name: "dotdot segment rejected", id: "https://cdn.example.com/a/../b.json", wantErr: true},
 		{
 			name:    "stdio rejected",
 			id:      "https://cdn.example.com/github.json",
