@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/base64"
 	"testing"
 
@@ -13,6 +15,25 @@ var (
 	gifHeader  = []byte("GIF89a" + "0000000000000000")
 	pdfHeader  = []byte("%PDF-1.7\n0000000000000000")
 )
+
+// docxBytes は docx として判定される最小の ZIP（[Content_Types].xml と word/document.xml を含む）
+// を生成する。http.DetectContentType では application/zip にしかならない形式の代表例。
+func docxBytes(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range map[string]string{
+		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+		"word/document.xml":   `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:document>`,
+	} {
+		w, err := zw.Create(name)
+		require.NoError(t, err)
+		_, err = w.Write([]byte(body))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
 
 func TestResolveContentType_UnknownDeclared_SniffsFromBody(t *testing.T) {
 	tests := []struct {
@@ -45,6 +66,18 @@ func TestResolveContentType_UnknownDeclared_SniffsFromBody(t *testing.T) {
 			data:     pdfHeader,
 			want:     "application/pdf",
 		},
+		{
+			name:     "先頭に改行が付いた PDF",
+			declared: "application/octet-stream",
+			data:     append([]byte("\n"), pdfHeader...),
+			want:     "application/pdf",
+		},
+		{
+			name:     "UTF-8 BOM 付きの PDF",
+			declared: "application/octet-stream",
+			data:     append([]byte("\xef\xbb\xbf"), pdfHeader...),
+			want:     "application/pdf",
+		},
 		{name: "Content-Type 未指定の PNG", declared: "", data: pngHeader, want: "image/png"},
 		{
 			name:     "パラメータ付き octet-stream",
@@ -58,6 +91,16 @@ func TestResolveContentType_UnknownDeclared_SniffsFromBody(t *testing.T) {
 			require.Equal(t, tt.want, ResolveContentType(tt.declared, tt.data))
 		})
 	}
+}
+
+func TestResolveContentType_DetectsOfficeDocument(t *testing.T) {
+	// ZIP ベースの Office 文書は http.DetectContentType だと application/zip にしかならない。
+	// mimetype なら docx として判定できる。
+	require.Equal(
+		t,
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		ResolveContentType("application/octet-stream", docxBytes(t)),
+	)
 }
 
 func TestResolveContentType_DecodesBase64BeforeSniffing(t *testing.T) {

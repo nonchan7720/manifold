@@ -1426,9 +1426,9 @@ func resolveFileFieldValue( //nolint: gocyclo
 	return body, filename, contentType, nil
 }
 
-// contentSniffLen は http.DetectContentType が読む先頭バイト数（仕様上 512 固定）に合わせた
-// Peek サイズ。
-const contentSniffLen = 512
+// contentSniffLen は mimetype.Detect が判定に使う先頭バイト数（ライブラリ既定の読み取り上限
+// 3072 バイト）に合わせた Peek サイズ。
+const contentSniffLen = 3072
 
 // sniffedBody は bufio.Reader で先頭を Peek した後も Read/Close を元の body ストリームへ
 // 委譲するための io.ReadCloser。Peek はバッファから読み出すだけで消費しないため、Read を
@@ -1438,12 +1438,14 @@ type sniffedBody struct {
 	io.Closer
 }
 
-// sniffContentType は body の先頭 contentSniffLen バイトを http.DetectContentType で判定し、
+// sniffContentType は body の先頭 contentSniffLen バイトを mimetype で判定し、
 // 推定した Content-Type と、その先頭バイトを含む読み出し可能な body を返す。
+// http.DetectContentType と比べて対応形式が広く、PDF や Office 文書が octet-stream に
+// 落ちにくい。判定できなければ application/octet-stream になる。
 func sniffContentType(body io.ReadCloser) (io.ReadCloser, string) {
-	br := bufio.NewReader(body)
+	br := bufio.NewReaderSize(body, contentSniffLen)
 	peeked, _ := br.Peek(contentSniffLen)
-	return &sniffedBody{Reader: br, Closer: body}, http.DetectContentType(peeked)
+	return &sniffedBody{Reader: br, Closer: body}, mimetype.Detect(peeked).String()
 }
 
 // writeMultipartFile はファイルパートを書き込む。値は base64 文字列、URL 文字列、
