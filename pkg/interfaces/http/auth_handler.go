@@ -1034,7 +1034,7 @@ func (h *AuthHandler) discoverOAuth2(
 	h.mu.RUnlock()
 
 	// Step 1: バックエンドに probe リクエストを送り 401 を取得
-	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL)
+	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL, h.httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -1050,24 +1050,39 @@ func (h *AuthHandler) discoverOAuth2(
 		lastErr  error
 	)
 	for _, server := range authorizationServers {
-		var err error
-		authMeta, err = getAuthMetadata(ctx, server, h.httpClient)
-		if err == nil {
-			break
-		} else {
+		meta, err := getAuthMetadata(ctx, server, h.httpClient)
+		if err != nil {
 			lastErr = err
 			continue
 		}
+		authMeta = meta
+		break
 	}
 
-	if lastErr != nil {
-		return nil, err
+	if authMeta == nil {
+		if lastErr == nil {
+			lastErr = errors.New("no authorization server found")
+		}
+		return nil, lastErr
 	}
 
-	// Step 5: Dynamic Client Registration で ClientID/ClientSecret を取得
+	// Step 5: ClientID/ClientSecret を決定する。
+	// cimdClientID が設定され、上流が CIMD に対応していればそれを使う（DCR より優先）。
+	// それ以外は Dynamic Client Registration で取得する。
 	clientID := ""
 	clientSecret := ""
-	if authMeta.RegistrationEndpoint != "" {
+	useCIMD := srv.CIMDClientID != "" && authMeta.ClientIDMetadataDocumentSupported
+	if srv.CIMDClientID != "" && !useCIMD {
+		slog.WarnContext(
+			ctx,
+			"upstream does not support cimd; falling back to dynamic client registration",
+			slog.String("server", srv.Name),
+		)
+	}
+	switch {
+	case useCIMD:
+		clientID = srv.CIMDClientID
+	case authMeta.RegistrationEndpoint != "":
 		callbackURL := fmt.Sprintf("%s/%s/auth/callback", gatewayBaseURL, srv.Name)
 		regResp, err := oauthex.RegisterClient(ctx, authMeta.RegistrationEndpoint,
 			&oauthex.ClientRegistrationMetadata{
@@ -1102,6 +1117,7 @@ func (h *AuthHandler) discoverOAuth2(
 		slog.String("auth_url", oauth2cfg.AuthURL),
 		slog.String("token_url", oauth2cfg.TokenURL),
 		slog.String("client_id", oauth2cfg.ClientID),
+		slog.Bool("cimd", useCIMD),
 	)
 	return oauth2cfg, nil
 }
@@ -1129,7 +1145,10 @@ func generateS256Challenge(codeVerifier string) string {
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
-func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) {
+// sendProbeRequest は MCP バックエンドへ initialize を送り、401 の WWW-Authenticate を返す。
+// c が nil の場合は http.DefaultClient を使う（本番では NewAuthHandler が
+// SSRF 対策済みの SafeHTTPClient を必ず設定する）。
+func sendProbeRequest(ctx context.Context, url string, c *http.Client) (_ []string, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/sendProbeRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -1145,7 +1164,10 @@ func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) 
 	probeReq.Header.Set("Content-Type", "application/json")
 	probeReq.Header.Set("Accept", "application/json, text/event-stream")
 
-	probeResp, err := http.DefaultClient.Do(probeReq)
+	if c == nil {
+		c = http.DefaultClient
+	}
+	probeResp, err := c.Do(probeReq)
 	if err != nil {
 		return nil, fmt.Errorf("probe request failed: %w", err)
 	}

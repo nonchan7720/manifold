@@ -171,10 +171,17 @@ clients after expandEnvVars: {"https://client-a": {"example": {"com/oauth-client
 - `unknownClient: default` は上流の同意画面に manifold としてしか表示されず、confused deputy を完全には防げない。`authParams` で `prompt: consent` を付与することで軽減できるが、`prompt` は OIDC のパラメータで純 OAuth 2.0 の AS には無視されることがある。
 - 本番用途では `reject` + `clients` による whitelist を推奨する。
 
+## 上流 CIMD（mcpServers.<name>.cimdClientID）
+
+manifold は上流に対しても CIMD で名乗れる。ドキュメントは manifold では配信せず、運用者が S3 等の公開 HTTPS URL に置き、その URL を `Server.CIMDClientID`（`cimdClientID`）に設定する。`oauth2` を書くと自動検出（`srv.OAuth2 == nil` がトリガー）が止まるため、`oauth2` ブロックではなくサーバー直下に置き、`oauth2` との併用は validation で拒否する。
+
+- `discoverOAuth2` は `cimdClientID` が設定され、かつ認可サーバーメタデータの `client_id_metadata_document_supported` が true なら、その URL を `client_id` にし `client_secret` を空にする。DCR より優先し、registration endpoint が無くても動く。それ以外は DCR にフォールバックする（CIMD 非対応の場合は警告ログ）。
+- `config.OAuth2.ValidateWithContext` は `clientID` が `https://` で始まる場合、`clientSecret` が空でも通す。
+- ドキュメントのテンプレートと設置手順は `docs/cimd/upstream-cimd.ja.md` / `docs/cimd/upstream-cimd.md`。
+
 ## 未対応
 
 - CIMD ドキュメントの `private_key_jwt` / `jwks_uri`（パブリッククライアントのみ受け入れる）。
-- 上流に対する CIMD。`discoverOAuth2` はバックエンドごとに DCR しており、上流の認可サーバーメタデータに `client_id_metadata_document_supported: true` があっても manifold 自身の CIMD ドキュメントを `client_id` として使う経路は無い。導入する場合は `GET /{server}/auth/client-metadata.json` の追加と、自動検出経由で `ClientSecret` が空でも `config.OAuth2.ValidateWithContext` を通せるようにする対応が要る。
 - CIMD キャッシュの明示的な無効化手段。失効したドキュメントは TTL が切れるまで有効なままになる。
 
 ## 参考

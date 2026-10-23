@@ -838,3 +838,72 @@ func TestServer_Validate_AppsRejectedOutsideMCPBackends(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "apps is only supported for the http and stdio transports")
 }
+
+func TestOAuth2_ValidateWithContext_URLClientIDAllowsEmptySecret(t *testing.T) {
+	// CIMD の client_id（https URL）はパブリッククライアントなので secret は不要。
+	c := baseValidOAuth2()
+	c.ClientID = "https://cdn.example.com/manifold/github.json"
+	c.ClientSecret = ""
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_PlainClientIDRequiresSecret(t *testing.T) {
+	c := baseValidOAuth2()
+	c.ClientSecret = ""
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func validCIMDServer(cimdClientID string) Server {
+	return Server{
+		Description:  "GitHub",
+		Transport:    MCPTransportHTTP,
+		URL:          "https://mcp.example.com/mcp",
+		CIMDClientID: cimdClientID,
+	}
+}
+
+func TestServer_Validate_CIMDClientID(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Server)
+		id      string
+		wantErr bool
+	}{
+		{name: "unset", id: ""},
+		{name: "https url", id: "https://cdn.example.com/manifold/github.json"},
+		{name: "http rejected", id: "http://cdn.example.com/github.json", wantErr: true},
+		{name: "no scheme rejected", id: "cdn.example.com/github.json", wantErr: true},
+		{name: "no host rejected", id: "https:///github.json", wantErr: true},
+		{
+			name:    "stdio rejected",
+			id:      "https://cdn.example.com/github.json",
+			mutate:  func(s *Server) { s.Transport = MCPTransportStdio; s.URL = ""; s.Command = "x" },
+			wantErr: true,
+		},
+		{
+			name: "oauth2 rejected",
+			id:   "https://cdn.example.com/github.json",
+			mutate: func(s *Server) {
+				s.OAuth2 = &OAuth2{
+					ClientID: "a", ClientSecret: "b",
+					AuthURL: "https://example.com/auth", TokenURL: "https://example.com/token",
+				}
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := validCIMDServer(tt.id)
+			if tt.mutate != nil {
+				tt.mutate(&s)
+			}
+			err := s.ValidateWithContext(t.Context())
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,7 +412,7 @@ func TestSendProbeRequest_Returns401(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	headers, err := sendProbeRequest(context.Background(), srv.URL)
+	headers, err := sendProbeRequest(context.Background(), srv.URL, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, headers)
 }
@@ -421,13 +423,13 @@ func TestSendProbeRequest_NonUnauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := sendProbeRequest(context.Background(), srv.URL)
+	_, err := sendProbeRequest(context.Background(), srv.URL, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "did not return 401")
 }
 
 func TestSendProbeRequest_InvalidURL(t *testing.T) {
-	_, err := sendProbeRequest(context.Background(), "://invalid")
+	_, err := sendProbeRequest(context.Background(), "://invalid", nil)
 	require.Error(t, err)
 }
 
@@ -1956,7 +1958,7 @@ func TestSendProbeRequest_NonUnauthorized_SpanRecordsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := sendProbeRequest(context.Background(), srv.URL)
+	_, err := sendProbeRequest(context.Background(), srv.URL, nil)
 	require.Error(t, err)
 
 	spans := exporter.GetSpans()
@@ -1975,7 +1977,7 @@ func TestSendProbeRequest_Returns401_SpanNoError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := sendProbeRequest(context.Background(), srv.URL)
+	_, err := sendProbeRequest(context.Background(), srv.URL, nil)
 	require.NoError(t, err)
 
 	spans := exporter.GetSpans()
@@ -2559,3 +2561,189 @@ func TestSanitizeStoreErr(t *testing.T) {
 	require.ErrorIs(t, got, context.DeadlineExceeded)
 	require.NotErrorIs(t, got, store.ErrNotFound)
 }
+
+// --- discoverOAuth2: 上流 CIMD ---
+
+const testUpstreamCIMDClientID = "https://cdn.example.com/manifold/github.json"
+
+// newCIMDDiscoverFixture は認可サーバー（メタデータのみ、registration endpoint は
+// withRegistration のときだけ）と、それを指す MCP バックエンドを立てる。
+// DCR が呼ばれた回数を dcrCalls に数える。
+func newCIMDDiscoverFixture(
+	t *testing.T,
+	cimdSupported, withRegistration bool,
+) (srv *config.Server, dcrCalls *atomic.Int64) {
+	t.Helper()
+	dcrCalls = &atomic.Int64{}
+	var authServerURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			meta := map[string]any{
+				"issuer":                           authServerURL,
+				"authorization_endpoint":           authServerURL + "/auth",
+				"token_endpoint":                   authServerURL + "/token",
+				"response_types_supported":         []string{"code"},
+				"code_challenge_methods_supported": []string{"S256"},
+			}
+			if cimdSupported {
+				meta["client_id_metadata_document_supported"] = true
+			}
+			if withRegistration {
+				meta["registration_endpoint"] = authServerURL + "/register"
+			}
+			json.NewEncoder(w).Encode(meta) //nolint: errcheck
+		case "/register":
+			dcrCalls.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"client_id":     "dcr-client-id",
+				"client_secret": "dcr-client-secret",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(authSrv.Close)
+	authServerURL = authSrv.URL
+	return newDiscoverTestBackendFor(t, []string{authServerURL}), dcrCalls
+}
+
+// newDiscoverTestBackendFor は authorization_servers を返す PRM と、それを指す
+// 401 の MCP バックエンドを立てて、バックエンド向けの config.Server を返す。
+func newDiscoverTestBackendFor(t *testing.T, authServers []string) *config.Server {
+	t.Helper()
+	var mcpURL string
+	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"resource":              mcpURL,
+			"authorization_servers": authServers,
+		})
+	}))
+	t.Cleanup(metaSrv.Close)
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().
+			Set("Www-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s"`, metaSrv.URL))
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(mcpSrv.Close)
+	mcpURL = mcpSrv.URL
+	return &config.Server{Name: "testsrv", Transport: config.MCPTransportHTTP, URL: mcpURL}
+}
+
+func newCIMDDiscoverHandler() *AuthHandler {
+	return &AuthHandler{servers: config.Servers{"testsrv": &config.Server{Name: "testsrv"}}}
+}
+
+// 上流が CIMD 対応なら registration endpoint が無くても cimdClientID が使われ、secret は空になる
+func TestDiscoverOAuth2_CIMD_NoRegistrationEndpoint(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, true, false)
+	srv.CIMDClientID = testUpstreamCIMDClientID
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, testUpstreamCIMDClientID, result.ClientID)
+	require.Empty(t, result.ClientSecret)
+	require.Zero(t, dcrCalls.Load())
+	// secret が空でも config の検証を通る
+	require.NoError(t, result.ValidateWithContext(t.Context()))
+}
+
+// 上流が CIMD 対応で DCR も可能なら CIMD を優先する
+func TestDiscoverOAuth2_CIMD_PreferredOverDCR(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, true, true)
+	srv.CIMDClientID = testUpstreamCIMDClientID
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, testUpstreamCIMDClientID, result.ClientID)
+	require.Empty(t, result.ClientSecret)
+	require.Zero(t, dcrCalls.Load())
+}
+
+// cimdClientID 未指定なら上流が CIMD 対応でも DCR にフォールバックする
+func TestDiscoverOAuth2_CIMD_UnsetFallsBackToDCR(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, true, true)
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "dcr-client-id", result.ClientID)
+	require.Equal(t, "dcr-client-secret", result.ClientSecret)
+	require.EqualValues(t, 1, dcrCalls.Load())
+}
+
+// 上流が CIMD 非対応なら cimdClientID を設定していても DCR にフォールバックする
+func TestDiscoverOAuth2_CIMD_UnsupportedUpstreamFallsBackToDCR(t *testing.T) {
+	srv, dcrCalls := newCIMDDiscoverFixture(t, false, true)
+	srv.CIMDClientID = testUpstreamCIMDClientID
+
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "dcr-client-id", result.ClientID)
+	require.Equal(t, "dcr-client-secret", result.ClientSecret)
+	require.EqualValues(t, 1, dcrCalls.Load())
+}
+
+// 1 件目の認可サーバーが失敗し 2 件目が成功すれば成功扱いになる
+func TestDiscoverOAuth2_FirstAuthServerFailsSecondSucceeds(t *testing.T) {
+	var authServerURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/.well-known/oauth-authorization-server" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"issuer":                           authServerURL,
+			"authorization_endpoint":           authServerURL + "/auth",
+			"token_endpoint":                   authServerURL + "/token",
+			"response_types_supported":         []string{"code"},
+			"code_challenge_methods_supported": []string{"S256"},
+		})
+	}))
+	t.Cleanup(authSrv.Close)
+	authServerURL = authSrv.URL
+	broken := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(broken.Close)
+
+	srv := newDiscoverTestBackendFor(t, []string{broken.URL, authServerURL})
+	result, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, authServerURL+"/token", result.TokenURL)
+}
+
+// すべての認可サーバーが失敗すれば、最後のエラーを返す
+func TestDiscoverOAuth2_AllAuthServersFail(t *testing.T) {
+	broken := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(broken.Close)
+	srv := newDiscoverTestBackendFor(t, []string{broken.URL})
+
+	_, err := newCIMDDiscoverHandler().discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "auth server metadata")
+}
+
+// probe リクエストは h.httpClient を通る（SSRF 対策済みクライアントの差し替えが効く）
+func TestDiscoverOAuth2_ProbeUsesHandlerHTTPClient(t *testing.T) {
+	var used atomic.Int64
+	h := NewAuthHandler(
+		newMockStore(map[string]string{}),
+		config.Servers{},
+		WithHTTPClient(
+			&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				used.Add(1)
+				return nil, errors.New("blocked")
+			})},
+		),
+	)
+	_, err := h.discoverOAuth2(t.Context(),
+		&config.Server{Name: "x", URL: "http://mcp.example.com/mcp"}, "http://gateway.example.com")
+	require.Error(t, err)
+	require.EqualValues(t, 1, used.Load())
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

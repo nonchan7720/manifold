@@ -774,6 +774,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
+| `cimdClientID`  | string            | OAuth Client ID Metadata Document URL (`https://`) that Manifold presents to this upstream MCP server (`http` transport). Used instead of DCR when the upstream supports CIMD; cannot be combined with `oauth2`. See [docs/cimd/upstream-cimd.md](docs/cimd/upstream-cimd.md) |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |

@@ -774,6 +774,7 @@ gateway:
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| `cimdClientID`  | string            | この上流 MCP サーバー（`http` トランスポート）に対して Manifold が名乗る OAuth Client ID Metadata Document の URL（`https://`）。上流が CIMD 対応なら DCR の代わりに使います。`oauth2` とは併用不可。[docs/cimd/upstream-cimd.ja.md](docs/cimd/upstream-cimd.ja.md) を参照 |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
