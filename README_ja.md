@@ -774,6 +774,8 @@ gateway:
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| `clientRegistration` | string | OAuth 自動検出時に、この上流 MCP サーバー（`http` トランスポート）へ Manifold が使うクライアント登録方式。`dcr` または `cimd`。未設定: `cimdClientID` があり上流が対応していれば CIMD、使えなければ DCR の順に試します。設定した場合はその方式のみを使いフォールバックしません。`cimd` は `cimdClientID` 必須で、CIMD 対応の認可サーバーが無ければ検出エラー。`dcr` は `cimdClientID` と併用不可で、`registration_endpoint` が必要。`oauth2` とは併用不可 |
+| `cimdClientID`  | string            | この上流 MCP サーバー（`http` トランスポート）に対して Manifold が名乗る OAuth Client ID Metadata Document の URL（`https://`）。上流が CIMD 対応なら DCR の代わりに使います。`oauth2` とは併用不可。[docs/cimd/upstream-cimd.ja.md](docs/cimd/upstream-cimd.ja.md) を参照 |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
@@ -1248,7 +1250,7 @@ mcpServers:
 
 ただし `default` では confused deputy を完全には防げません（マッピングの無いクライアントは上流から見ると Manifold のままです）。`authParams` で `prompt: consent` を付与すると軽減できますが、`prompt` は OpenID Connect のパラメータであり、純粋な OAuth 2.0 認可サーバーでは無視されることがあります。本番用途では `reject` と明示的な `clients` の whitelist を推奨します。
 
-なお、`oauth2` を書かない MCP バックエンド向けの OAuth 2.1 自動検出は、Manifold 自身を DCR で登録して常にその 1 つの共用クライアントを使います。`clients` は自動検出の結果には適用されません。
+なお、`oauth2` を書かない MCP バックエンド向けの OAuth 2.1 自動検出は、`cimdClientID` が設定されていて上流が CIMD に対応していれば CIMD を使い、それ以外は Manifold 自身を DCR で登録します。`clientRegistration: cimd` / `dcr` を指定するとその方式のみを使い、フォールバックしません（上流が非対応なら検出エラー）。`clients` はどちらの方式にも適用されません。
 
 ## ツール認可（OPA サイドカー）
 
