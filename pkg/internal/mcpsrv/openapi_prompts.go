@@ -216,6 +216,7 @@ func newURLPromptSource(server *config.Server) *urlPromptSource {
 				server.AuthValue,
 				server.OAuth2,
 				server.TokenExchange,
+				server.GoogleServiceAccount,
 				server.ExtraHeaders,
 			),
 		},

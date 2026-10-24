@@ -28,7 +28,7 @@ func RegisterOpenAPI(
 
 	// headers は nil を渡す: 各ツール関数がリクエストごとに付加するため、
 	// トランスポート層でも付加すると二重適用になってしまう。
-	rt := httpClientRoundTripper(opt.auth, opt.oauth2, opt.tokenExchange, nil)
+	rt := httpClientRoundTripper(opt.auth, opt.oauth2, opt.tokenExchange, opt.googleSA, nil)
 	c := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: rt,

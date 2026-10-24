@@ -332,3 +332,22 @@ func TestJWTResolver_Resolve_ProfileIsolation_SameSubDifferentProfile_DifferentI
 	require.NoError(t, err)
 	require.NotEqual(t, keyA, keyB)
 }
+
+func TestJWTVerifier_Verify_RequiredExpiration(t *testing.T) {
+	f := newJWTTestFixture(t)
+	claims := newJWTClaims("user-a", f.issuer)
+	delete(claims, "exp")
+	token := f.sign(t, claims)
+
+	lenient, err := NewJWTVerifier(t.Context(), f.profile.Issuer, f.profile.JWKSURL, "")
+	require.NoError(t, err)
+	_, err = lenient.Verify(t.Context(), token)
+	require.NoError(t, err)
+
+	strict, err := NewJWTVerifier(
+		t.Context(), f.profile.Issuer, f.profile.JWKSURL, "", WithRequiredExpiration(),
+	)
+	require.NoError(t, err)
+	_, err = strict.Verify(t.Context(), token)
+	require.ErrorIs(t, err, ErrUnauthenticated)
+}

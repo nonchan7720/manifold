@@ -64,6 +64,7 @@ require (
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/TwiN/go-color v1.4.1 // indirect
 	github.com/a2aproject/a2a-go v0.3.15 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20210307081110-f21760c49a8d // indirect

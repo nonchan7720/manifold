@@ -73,7 +73,7 @@ func (a Agent) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&a.Service),
 		validation.Field(&a.URL, validation.Required, is.RequestURL),
 		validation.Field(&a.AuthValue, validation.By(func(any) error {
-			return validateSingleAuth(a.AuthValue, a.OAuth2, a.TokenExchange)
+			return validateSingleAuth(a.AuthValue, a.OAuth2, a.TokenExchange, nil)
 		})),
 		validation.Field(&a.OAuth2),
 		validation.Field(&a.TokenExchange),
@@ -103,9 +103,15 @@ func validateSkills(value any) error {
 	return nil
 }
 
-// validateSingleAuth は authValue/oauth2/tokenExchange の複数同時設定を拒否する。
-// 許すと httpClientRoundTripper が優先順位で暗黙に 1 つだけを採用してしまうため。
-func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExchange) error {
+// validateSingleAuth は authValue/oauth2/tokenExchange/googleServiceAccount の
+// 複数同時設定を拒否する。許すと httpClientRoundTripper が優先順位で暗黙に 1 つだけを
+// 採用してしまうため。エージェントは googleServiceAccount を持たないので nil を渡す。
+func validateSingleAuth(
+	auth *AuthValue,
+	oauth2 *OAuth2,
+	tokenExchange *TokenExchange,
+	google *GoogleServiceAccount,
+) error {
 	count := 0
 	if auth != nil {
 		count++
@@ -116,8 +122,13 @@ func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExc
 	if tokenExchange != nil {
 		count++
 	}
+	if google != nil {
+		count++
+	}
 	if count > 1 {
-		return fmt.Errorf("only one of authValue, oauth2, tokenExchange may be configured")
+		return fmt.Errorf(
+			"only one of authValue, oauth2, tokenExchange, googleServiceAccount may be configured",
+		)
 	}
 	return nil
 }

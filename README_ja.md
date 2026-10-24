@@ -42,7 +42,7 @@ flowchart TD
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
-- **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
+- **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）/ Google サービスアカウント（`googleServiceAccount`）から 1 つを選択
 - **MCP Apps 対応**: MCP バックエンドの [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)（`io.modelcontextprotocol/ui`）の UI（ツールの `_meta.ui` と、`resources/list`・`resources/read` で取得する `ui://` リソース）を対応ホストへそのまま通し、非対応ホストには取り除いて返す（`mcpServers.<name>.apps`）
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
@@ -774,6 +774,8 @@ gateway:
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| `googleServiceAccount` | object     | Google サービスアカウント設定。OpenAPI モードと `http` トランスポートのみ（下記参照） |
+| `auth.jwt`      | object            | クライアントの Bearer JWT をゲートウェイで検証する（下記参照） |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
@@ -783,7 +785,7 @@ gateway:
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 
-`authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
+`authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 
 ##### ConfigMap から `spec` を読む
 
@@ -883,6 +885,50 @@ mcpServers:
 | フィールド | 型     | 説明                                             |
 | ---------- | ------ | ------------------------------------------------ |
 | `url`      | string | トークン交換エンドポイントの絶対 URL（**必須**） |
+
+#### `mcpServers.<name>.googleServiceAccount`
+
+Google サービスアカウントでバックエンドへのリクエストを認証します。ゲートウェイがアカウントの鍵で JWT に署名し、鍵の `token_uri` でアクセストークンに交換して、期限までキャッシュしたうえで `Authorization: Bearer <token>` として送ります。呼び出し元自身のトークンは転送しません。OpenAPI モードと `http` トランスポートで使えます（`stdio`・`reverse`・A2A エージェントでは不可）。クラウドプロバイダ向け認証の最初のオプションで、他のプロバイダは同じ階層の兄弟キーとして追加する想定です。
+
+```yaml
+mcpServers:
+  ga4:
+    description: Google Analytics Data API
+    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    baseURL: https://analyticsdata.googleapis.com
+    googleServiceAccount:
+      credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # または credentialsFile: /path/to/key.json
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly
+```
+
+| フィールド        | 型       | 説明                                                                        |
+| ----------------- | -------- | --------------------------------------------------------------------------- |
+| `credentialsJSON` | string   | サービスアカウントキー（JSON）そのもの。環境変数からの注入を想定。`credentialsJSON` / `credentialsFile` のどちらか 1 つが必須 |
+| `credentialsFile` | string   | サービスアカウントキー（JSON ファイル）のパス                               |
+| `scopes`          | []string | 要求する OAuth 2.0 スコープ（**必須**）                                     |
+
+鍵は設定ロード時にパースするため、形式が不正な鍵や読めない `credentialsFile` は、最初のリクエストではなく起動時にエラーになります。
+
+#### `mcpServers.<name>.auth.jwt`
+
+既定では、ゲートウェイは `/mcp/<name>` のリクエストに Bearer トークンがあることだけを確認し、判断はバックエンドに任せてそのまま渡します。`auth.jwt` を設定すると、転送の前にゲートウェイがトークンを検証します。検証は `identities`（`source: jwt`）と同じ実装で、JWKS による署名、`iss`、`aud`、`exp` を確認します（`exp` の無いトークンは拒否）。検証に失敗したトークンには、従来と同じ `WWW-Authenticate: Bearer resource_metadata=...` を付けて `401` を返します。`auth.jwt` の無いサーバーは従来どおり素通しです。JWKS は起動時に取得し（`jwksURL` に到達できないと起動エラー）、以降は検証器がキャッシュ・更新します。`transport: reverse` のサーバーは `identity` で認証するため `auth` は指定できません。
+
+```yaml
+mcpServers:
+  ga4:
+    auth:
+      jwt:
+        issuer: https://issuer.example.com
+        jwksURL: https://issuer.example.com/keys
+        audience: manifold
+```
+
+| フィールド | 型     | 説明                                                                      |
+| ---------- | ------ | ------------------------------------------------------------------------- |
+| `issuer`   | string | 期待する `iss`（絶対 URL、**必須**）                                      |
+| `jwksURL`  | string | 署名の検証に使う JWKS の URL（絶対 URL、**必須**）                        |
+| `audience` | string | 期待する `aud`（**必須**。別のリソース向けに発行されたトークンを通さないため） |
 
 #### `agents.<name>`
 
