@@ -337,3 +337,28 @@ func TestGoogleRoundTripper_RedirectToOtherHostDropsToken(t *testing.T) {
 	require.Equal(t, "Bearer tok", backendAuth)
 	require.Empty(t, otherAuth, "token must not follow a redirect to another host")
 }
+
+func TestGoogleTokenSource_ADC_RetriesAfterFailure(t *testing.T) {
+	t.Setenv("TEST", "true")
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "adc-access-token", "token_type": "Bearer", "expires_in": 3600,
+		})
+	}))
+	t.Cleanup(tokenSrv.Close)
+	credFile := filepath.Join(t.TempDir(), "adc.json")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
+
+	// 最初は資格情報が無く失敗するが、失敗はキャッシュされず次の呼び出しで再試行する。
+	source := NewGoogleTokenSource(&config.GoogleServiceAccount{Scopes: []string{testGoogleScope}})
+	_, err := source.Token()
+	require.ErrorContains(t, err, "google application default credentials")
+
+	_, saJSON := fakeServiceAccount(t, tokenSrv.URL)
+	require.NoError(t, os.WriteFile(credFile, []byte(saJSON), 0o600))
+	token, err := source.Token()
+	require.NoError(t, err)
+	require.Equal(t, "adc-access-token", token.AccessToken)
+}

@@ -21,9 +21,8 @@ import (
 type googleTokenSource struct {
 	cfg *config.GoogleServiceAccount
 
-	once   sync.Once
+	mu     sync.Mutex
 	source oauth2.TokenSource
-	err    error
 }
 
 // NewGoogleTokenSource は Google サービスアカウントキー（無ければ ADC）から、
@@ -35,35 +34,43 @@ func NewGoogleTokenSource(cfg *config.GoogleServiceAccount) oauth2.TokenSource {
 }
 
 func (s *googleTokenSource) Token() (*oauth2.Token, error) {
-	s.once.Do(func() {
-		// トークン取得はリクエスト ctx に紐づけず、ソースの寿命で使う ctx を渡す。
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, HTTPClient())
-		if s.cfg.UseADC() {
-			// ADC の解決（メタデータサーバー等）は設定ロード時ではなく、ここで遅延して行う。
-			creds, err := google.FindDefaultCredentials(ctx, s.cfg.Scopes...)
-			if err != nil {
-				s.err = fmt.Errorf("google application default credentials: %w", err)
-				return
-			}
-			s.source = oauth2.ReuseTokenSource(nil, creds.TokenSource)
-			return
-		}
-		raw, err := s.cfg.Credentials()
-		if err != nil {
-			s.err = err
-			return
-		}
-		jwtCfg, err := google.JWTConfigFromJSON(raw, s.cfg.Scopes...)
-		if err != nil {
-			s.err = fmt.Errorf("invalid service account credentials: %w", err)
-			return
-		}
-		s.source = oauth2.ReuseTokenSource(nil, jwtCfg.TokenSource(ctx))
-	})
-	if s.err != nil {
-		return nil, s.err
+	source, err := s.resolve()
+	if err != nil {
+		return nil, err
 	}
-	return s.source.Token()
+	return source.Token()
+}
+
+// resolve は成功したトークンソースだけをキャッシュする。失敗は次の呼び出しで
+// 再試行する（Pod 起動直後にメタデータサーバーが応答しない場合などの一時的な失敗で
+// 再起動まで回復しなくなるのを防ぐ）。
+func (s *googleTokenSource) resolve() (oauth2.TokenSource, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.source != nil {
+		return s.source, nil
+	}
+	// トークン取得はリクエスト ctx に紐づけず、ソースの寿命で使う ctx を渡す。
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, HTTPClient())
+	if s.cfg.UseADC() {
+		// ADC の解決（メタデータサーバー等）は設定ロード時ではなく、ここで遅延して行う。
+		creds, err := google.FindDefaultCredentials(ctx, s.cfg.Scopes...)
+		if err != nil {
+			return nil, fmt.Errorf("google application default credentials: %w", err)
+		}
+		s.source = oauth2.ReuseTokenSource(nil, creds.TokenSource)
+		return s.source, nil
+	}
+	raw, err := s.cfg.Credentials()
+	if err != nil {
+		return nil, err
+	}
+	jwtCfg, err := google.JWTConfigFromJSON(raw, s.cfg.Scopes...)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service account credentials: %w", err)
+	}
+	s.source = oauth2.ReuseTokenSource(nil, jwtCfg.TokenSource(ctx))
+	return s.source, nil
 }
 
 type googleRoundTripper struct {

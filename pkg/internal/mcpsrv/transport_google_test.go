@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nonchan7720/manifold/pkg/config"
@@ -101,4 +103,22 @@ func TestMCPBackendClient_SharedGoogleSource(t *testing.T) {
 
 	none := &MCPBackendClient{name: "n", cfg: &config.Server{}}
 	require.Nil(t, none.sharedGoogleSource())
+}
+
+func TestRegisterOpenAPI_GoogleServiceAccountRequiresBaseURL(t *testing.T) {
+	spec := filepath.Join(t.TempDir(), "openapi.json")
+	require.NoError(t, os.WriteFile(spec, []byte(
+		`{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}`,
+	), 0o600))
+
+	// servers も無くローカルの spec からも baseURL を導出できない場合、トークンの送信先を
+	// 固定できないので登録を失敗させる。
+	_, err := RegisterOpenAPI(t.Context(), spec, "", nil,
+		WithGoogleServiceAccount(&config.GoogleServiceAccount{Scopes: []string{"s"}}),
+	)
+	require.ErrorContains(t, err, "googleServiceAccount requires a resolvable baseURL")
+
+	// Google 認証が無ければ従来どおり登録できる。
+	_, err = RegisterOpenAPI(t.Context(), spec, "", nil)
+	require.NoError(t, err)
 }
