@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -137,4 +139,49 @@ func TestGoogleTokenSource_InvalidCredentials(t *testing.T) {
 	// 失敗は固定され、リクエストのたびに同じエラーを返す。
 	_, err = source.Token()
 	require.ErrorContains(t, err, "invalid service account credentials")
+}
+
+func TestGoogleTokenSource_ADC(t *testing.T) {
+	t.Setenv("TEST", "true")
+
+	var tokenCalls atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "adc-access-token", "token_type": "Bearer", "expires_in": 3600,
+		})
+	}))
+	t.Cleanup(tokenSrv.Close)
+	_, saJSON := fakeServiceAccount(t, tokenSrv.URL)
+	credFile := filepath.Join(t.TempDir(), "adc.json")
+	require.NoError(t, os.WriteFile(credFile, []byte(saJSON), 0o600))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credFile)
+
+	var gotAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+	}))
+	t.Cleanup(backend.Close)
+
+	// 資格情報の解決は最初のリクエストまで遅延する。
+	source := NewGoogleTokenSource(&config.GoogleServiceAccount{Scopes: []string{testGoogleScope}})
+	require.EqualValues(t, 0, tokenCalls.Load())
+	c := &http.Client{Transport: NewGoogleRoundTripper(http.DefaultTransport, source)}
+	for range 2 {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
+		require.NoError(t, err)
+		resp, err := c.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+	require.Equal(t, "Bearer adc-access-token", gotAuth)
+	require.EqualValues(t, 1, tokenCalls.Load(), "token must be cached across requests")
+}
+
+func TestGoogleTokenSource_ADC_NotFound(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "none.json"))
+	source := NewGoogleTokenSource(&config.GoogleServiceAccount{Scopes: []string{testGoogleScope}})
+	_, err := source.Token()
+	require.ErrorContains(t, err, "google application default credentials")
 }

@@ -888,7 +888,7 @@ Exchanges the API key received from the client for an OAuth token at the specifi
 
 #### `mcpServers.<name>.googleServiceAccount`
 
-Authenticates backend requests with a Google service account: the gateway signs a JWT with the account's key, exchanges it at the key's `token_uri` for an access token, caches it until it expires and sends it as `Authorization: Bearer <token>`. The caller's own token is not forwarded. Available for OpenAPI mode and the `http` transport (not `stdio`, `reverse` or A2A agents). It is the first of the cloud-provider options; others would be added as sibling keys.
+Authenticates backend requests with a Google access token: either from a service account key (the gateway signs a JWT with the key and exchanges it at the key's `token_uri`) or, when no key is configured, from Application Default Credentials (ADC). The token is cached until it expires and sent as `Authorization: Bearer <token>`. The caller's own token is not forwarded. Available for OpenAPI mode and the `http` transport (not `stdio`, `reverse` or A2A agents). It is the first of the cloud-provider options; others would be added as sibling keys.
 
 ```yaml
 mcpServers:
@@ -904,11 +904,25 @@ mcpServers:
 
 | Field             | Type     | Description                                                                 |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
-| `credentialsJSON` | string   | The service account key (JSON) itself, e.g. from an environment variable. Exactly one of `credentialsJSON` / `credentialsFile` is required |
+| `credentialsJSON` | string   | The service account key (JSON) itself, e.g. from an environment variable. Mutually exclusive with `credentialsFile`; if neither is set, ADC is used |
 | `credentialsFile` | string   | Path to the service account key (JSON file)                                 |
 | `scopes`          | []string | OAuth 2.0 scopes to request (**required**)                                  |
 
-The key is parsed when the configuration is loaded, so a malformed key or an unreadable `credentialsFile` fails startup instead of the first request.
+An explicit key is parsed when the configuration is loaded, so a malformed key or an unreadable `credentialsFile` fails startup instead of the first request.
+
+**Application Default Credentials (recommended on GKE / GCE / Cloud Run).** Leave out both `credentialsJSON` and `credentialsFile` and only set `scopes`; the gateway resolves credentials the way Google client libraries do: `GOOGLE_APPLICATION_CREDENTIALS` (a service account key or a workload identity federation config file), gcloud user credentials, then the GCE/GKE metadata server (including GKE Workload Identity). Prefer this over long-lived keys wherever the runtime can provide an identity: there is no key to store or rotate.
+
+```yaml
+mcpServers:
+  ga4:
+    baseURL: https://analyticsdata.googleapis.com
+    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    googleServiceAccount:
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly   # credentials come from ADC / Workload Identity
+```
+
+ADC is resolved lazily on the first request, not at configuration load (no metadata-server or network access at startup), so missing credentials show up as request errors.
 
 #### `mcpServers.<name>.auth.jwt`
 

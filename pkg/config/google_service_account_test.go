@@ -63,9 +63,13 @@ func TestGoogleServiceAccount_Validate(t *testing.T) {
 			in:   GoogleServiceAccount{CredentialsFile: file, Scopes: []string{testGoogleScope}},
 		},
 		{
-			name:    "どちらも未設定",
-			in:      GoogleServiceAccount{Scopes: []string{testGoogleScope}},
-			wantErr: "one of credentialsJSON or credentialsFile is required",
+			name: "どちらも未設定は ADC",
+			in:   GoogleServiceAccount{Scopes: []string{testGoogleScope}},
+		},
+		{
+			name:    "ADC でも scopes は必須",
+			in:      GoogleServiceAccount{},
+			wantErr: "Scopes",
 		},
 		{
 			name: "両方設定",

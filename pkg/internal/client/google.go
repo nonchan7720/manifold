@@ -11,10 +11,10 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// googleTokenSource は、最初の Token 呼び出しでサービスアカウントキーを読んで
-// キャッシュ・自動更新付きのトークンソースを作る。キーの不備は設定ロード時に検証
-// 済みで、ここでは（ロード後にキーのファイルが消えた場合など）リクエストの失敗として
-// 返す。
+// googleTokenSource は、最初の Token 呼び出しでサービスアカウントキーを読む（キーが
+// 無ければ ADC を解決する）。キャッシュ・自動更新付きのトークンソースを作る。キーの
+// 不備は設定ロード時に検証済みで、ここでは（ロード後にキーのファイルが消えた場合や
+// ADC が見つからない場合など）リクエストの失敗として返す。
 type googleTokenSource struct {
 	cfg *config.GoogleServiceAccount
 
@@ -23,8 +23,9 @@ type googleTokenSource struct {
 	err    error
 }
 
-// NewGoogleTokenSource は Google サービスアカウントキーから、キャッシュ・自動更新付きの
-// アクセストークンのソースを作る。トークンの取得先はキーの token_uri。
+// NewGoogleTokenSource は Google サービスアカウントキー（無ければ ADC）から、
+// キャッシュ・自動更新付きのアクセストークンのソースを作る。
+// トークンの取得先はキーの token_uri（ADC では資格情報の種類による）。
 // ソースは呼び出しをまたいで共有する想定で、バックエンドごとに 1 つ作る。
 func NewGoogleTokenSource(cfg *config.GoogleServiceAccount) oauth2.TokenSource {
 	return &googleTokenSource{cfg: cfg}
@@ -32,6 +33,18 @@ func NewGoogleTokenSource(cfg *config.GoogleServiceAccount) oauth2.TokenSource {
 
 func (s *googleTokenSource) Token() (*oauth2.Token, error) {
 	s.once.Do(func() {
+		// トークン取得はリクエスト ctx に紐づけず、ソースの寿命で使う ctx を渡す。
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, HTTPClient())
+		if s.cfg.UseADC() {
+			// ADC の解決（メタデータサーバー等）は設定ロード時ではなく、ここで遅延して行う。
+			creds, err := google.FindDefaultCredentials(ctx, s.cfg.Scopes...)
+			if err != nil {
+				s.err = fmt.Errorf("google application default credentials: %w", err)
+				return
+			}
+			s.source = oauth2.ReuseTokenSource(nil, creds.TokenSource)
+			return
+		}
 		raw, err := s.cfg.Credentials()
 		if err != nil {
 			s.err = err
@@ -42,8 +55,6 @@ func (s *googleTokenSource) Token() (*oauth2.Token, error) {
 			s.err = fmt.Errorf("invalid service account credentials: %w", err)
 			return
 		}
-		// トークン取得はリクエスト ctx に紐づけず、ソースの寿命で使う ctx を渡す。
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, HTTPClient())
 		s.source = oauth2.ReuseTokenSource(nil, jwtCfg.TokenSource(ctx))
 	})
 	if s.err != nil {

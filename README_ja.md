@@ -888,7 +888,7 @@ mcpServers:
 
 #### `mcpServers.<name>.googleServiceAccount`
 
-Google サービスアカウントでバックエンドへのリクエストを認証します。ゲートウェイがアカウントの鍵で JWT に署名し、鍵の `token_uri` でアクセストークンに交換して、期限までキャッシュしたうえで `Authorization: Bearer <token>` として送ります。呼び出し元自身のトークンは転送しません。OpenAPI モードと `http` トランスポートで使えます（`stdio`・`reverse`・A2A エージェントでは不可）。クラウドプロバイダ向け認証の最初のオプションで、他のプロバイダは同じ階層の兄弟キーとして追加する想定です。
+Google のアクセストークンでバックエンドへのリクエストを認証します。トークンはサービスアカウントキー（ゲートウェイが鍵で JWT に署名し、鍵の `token_uri` で交換）から、鍵を設定しない場合は Application Default Credentials（ADC）から取得します。トークンは期限までキャッシュし、`Authorization: Bearer <token>` として送ります。呼び出し元自身のトークンは転送しません。OpenAPI モードと `http` トランスポートで使えます（`stdio`・`reverse`・A2A エージェントでは不可）。クラウドプロバイダ向け認証の最初のオプションで、他のプロバイダは同じ階層の兄弟キーとして追加する想定です。
 
 ```yaml
 mcpServers:
@@ -904,11 +904,25 @@ mcpServers:
 
 | フィールド        | 型       | 説明                                                                        |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
-| `credentialsJSON` | string   | サービスアカウントキー（JSON）そのもの。環境変数からの注入を想定。`credentialsJSON` / `credentialsFile` のどちらか 1 つが必須 |
+| `credentialsJSON` | string   | サービスアカウントキー（JSON）そのもの。環境変数からの注入を想定。`credentialsFile` とは排他で、どちらも未設定なら ADC を使う |
 | `credentialsFile` | string   | サービスアカウントキー（JSON ファイル）のパス                               |
 | `scopes`          | []string | 要求する OAuth 2.0 スコープ（**必須**）                                     |
 
-鍵は設定ロード時にパースするため、形式が不正な鍵や読めない `credentialsFile` は、最初のリクエストではなく起動時にエラーになります。
+明示した鍵は設定ロード時にパースするため、形式が不正な鍵や読めない `credentialsFile` は、最初のリクエストではなく起動時にエラーになります。
+
+**Application Default Credentials（GKE / GCE / Cloud Run では推奨）。** `credentialsJSON` と `credentialsFile` の両方を省略して `scopes` だけを指定すると、Google のクライアントライブラリと同じ順序で資格情報を解決します。`GOOGLE_APPLICATION_CREDENTIALS`（サービスアカウントキー、または Workload Identity 連携の設定ファイル）、gcloud のユーザー資格情報、GCE/GKE のメタデータサーバー（GKE Workload Identity を含む）の順です。実行環境が ID を提供できるなら、保管やローテーションが必要な長期キーよりこちらを使ってください。
+
+```yaml
+mcpServers:
+  ga4:
+    baseURL: https://analyticsdata.googleapis.com
+    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    googleServiceAccount:
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly   # 資格情報は ADC / Workload Identity から
+```
+
+ADC は設定ロード時ではなく最初のリクエストで遅延して解決します（起動時にメタデータサーバーやネットワークへは接続しません）。資格情報が見つからない場合はリクエストのエラーになります。
 
 #### `mcpServers.<name>.auth.jwt`
 
