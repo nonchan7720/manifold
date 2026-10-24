@@ -413,6 +413,7 @@ func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
 		WithAuth(server.AuthValue),
 		WithOAuth2(server.OAuth2),
 		WithTokenExchange(server.TokenExchange),
+		WithGoogleServiceAccount(server.GoogleServiceAccount),
 		WithToolsConfig(server.Tools),
 	}
 	if file := server.GeneratedToolsFile(); file != "" {

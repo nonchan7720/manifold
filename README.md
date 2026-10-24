@@ -42,7 +42,7 @@ flowchart TD
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
-- **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
+- **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`) / Google service account (`googleServiceAccount`)
 - **MCP Apps**: Passes [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) UIs of MCP backends through to hosts that support them — `_meta.ui` on tools, and the `ui://` resources via `resources/list` / `resources/read` — and strips them for hosts that don't (`mcpServers.<name>.apps`)
 - **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
@@ -774,6 +774,8 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
+| `googleServiceAccount` | object     | Google service account settings, OpenAPI mode and `http` transport only (see below) |
+| `auth.jwt`      | object            | Verify the client's Bearer JWT at the gateway (see below)            |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
@@ -783,7 +785,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 
-`authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
+`authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 
 ##### `spec` from a ConfigMap
 
@@ -883,6 +885,66 @@ Exchanges the API key received from the client for an OAuth token at the specifi
 | Field | Type   | Description                                                |
 | ----- | ------ | ---------------------------------------------------------- |
 | `url` | string | Absolute URL of the token exchange endpoint (**required**) |
+
+#### `mcpServers.<name>.googleServiceAccount`
+
+Authenticates backend requests with a Google access token: either from a service account key (the gateway signs a JWT with the key and exchanges it at the key's `token_uri`) or, when no key is configured, from Application Default Credentials (ADC). The token is cached until it expires and sent as `Authorization: Bearer <token>`. The caller's own token is not forwarded. Available for OpenAPI mode and the `http` transport (not `stdio`, `reverse` or A2A agents). It is the first of the cloud-provider options; others would be added as sibling keys.
+
+```yaml
+mcpServers:
+  ga4:
+    description: Google Analytics Data API
+    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    baseURL: https://analyticsdata.googleapis.com
+    googleServiceAccount:
+      credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # or credentialsFile: /path/to/key.json
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly
+```
+
+| Field             | Type     | Description                                                                 |
+| ----------------- | -------- | --------------------------------------------------------------------------- |
+| `credentialsJSON` | string   | The service account key (JSON) itself, e.g. from an environment variable. Mutually exclusive with `credentialsFile`; if neither is set, ADC is used |
+| `credentialsFile` | string   | Path to the service account key (JSON file)                                 |
+| `scopes`          | []string | OAuth 2.0 scopes to request (**required**)                                  |
+
+An explicit key is parsed when the configuration is loaded, so a malformed key or an unreadable `credentialsFile` fails startup instead of the first request.
+
+**Application Default Credentials (recommended on GKE / GCE / Cloud Run).** Leave out both `credentialsJSON` and `credentialsFile` and only set `scopes`; the gateway resolves credentials the way Google client libraries do: `GOOGLE_APPLICATION_CREDENTIALS` (a service account key or a workload identity federation config file), gcloud user credentials, then the GCE/GKE metadata server (including GKE Workload Identity). Prefer this over long-lived keys wherever the runtime can provide an identity: there is no key to store or rotate.
+
+```yaml
+mcpServers:
+  ga4:
+    baseURL: https://analyticsdata.googleapis.com
+    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    googleServiceAccount:
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly   # credentials come from ADC / Workload Identity
+```
+
+ADC is resolved lazily on the first request, not at configuration load (no metadata-server or network access at startup), so missing credentials show up as request errors.
+
+The token is only sent to the configured backend host (`baseURL`, or `url` for the `http` transport; `prompts.url` is also allowed) and only over `https` (plain `http` is accepted for loopback addresses only; configuration with a non-loopback `http://` URL is rejected). A request to any other host, such as a redirect target, is forwarded without an `Authorization` header.
+
+#### `mcpServers.<name>.auth.jwt`
+
+By default the gateway only checks that `/mcp/<name>` requests carry a Bearer token and passes it through for the backend to judge. With `auth.jwt` the gateway verifies the token before forwarding, with the same verifier as `identities` (`source: jwt`): signature against the JWKS, `iss`, `aud` and `exp` (a token without `exp` is rejected). A token that fails verification gets `401` with the usual `WWW-Authenticate: Bearer resource_metadata=...` challenge. Servers without `auth.jwt` keep the pass-through behavior. The JWKS is fetched at startup (an unreachable `jwksURL` fails startup) and cached and refreshed by the verifier. `transport: reverse` servers authenticate through `identity` instead and reject `auth`.
+
+```yaml
+mcpServers:
+  ga4:
+    auth:
+      jwt:
+        issuer: https://issuer.example.com
+        jwksURL: https://issuer.example.com/keys
+        audience: manifold
+```
+
+| Field      | Type   | Description                                                                          |
+| ---------- | ------ | ------------------------------------------------------------------------------------ |
+| `issuer`   | string | Expected `iss` (absolute URL, **required**)                                          |
+| `jwksURL`  | string | JWKS URL used to verify the signature (absolute URL, **required**)                   |
+| `audience` | string | Expected `aud` (**required**, so a token minted for another resource is not accepted) |
 
 #### `agents.<name>`
 
