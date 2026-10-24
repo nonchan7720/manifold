@@ -76,6 +76,22 @@ func (r *jwtResolver) Resolve(
 		return "", ErrUnauthenticated
 	}
 
+	claims, err := r.verify(ctx, tokenString)
+	if err != nil {
+		return "", err
+	}
+
+	value, _ := claims[r.claim].(string)
+	if value == "" {
+		return "", fmt.Errorf("%w: claim %q missing or empty", ErrUnauthenticated, r.claim)
+	}
+	return encodeIdentityKey(r.profile, value), nil
+}
+
+// verify checks tokenString's signature (JWKS), issuer, algorithm and audience
+// (when configured), and returns its claims. Shared by Resolve and
+// JWTVerifier so both apply exactly the same verification.
+func (r *jwtResolver) verify(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
 	opts := []jwt.ParserOption{jwt.WithIssuer(r.issuer), jwt.WithValidMethods(allowedJWTAlgorithms)}
 	if r.audience != "" {
 		opts = append(opts, jwt.WithAudience(r.audience))
@@ -87,14 +103,35 @@ func (r *jwtResolver) Resolve(
 		claims,
 		r.kf.KeyfuncCtx(ctx),
 		opts...); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrUnauthenticated, err)
+		return nil, fmt.Errorf("%w: %w", ErrUnauthenticated, err)
 	}
+	return claims, nil
+}
 
-	value, _ := claims[r.claim].(string)
-	if value == "" {
-		return "", fmt.Errorf("%w: claim %q missing or empty", ErrUnauthenticated, r.claim)
+// JWTVerifier verifies a downstream Bearer JWT (mcpServers.<name>.auth.jwt)
+// with the same issuer / JWKS / audience checks as an identities profile with
+// source: jwt, without requiring an identity claim.
+type JWTVerifier struct {
+	r *jwtResolver
+}
+
+// NewJWTVerifier builds a verifier for cfg. It fetches the JWKS up front, so
+// an unreachable JWKS URL is a startup error.
+func NewJWTVerifier(
+	ctx context.Context,
+	name string,
+	cfg *config.DownstreamJWT,
+) (*JWTVerifier, error) {
+	r, err := newJWTResolver(ctx, name, cfg.Profile())
+	if err != nil {
+		return nil, err
 	}
-	return encodeIdentityKey(r.profile, value), nil
+	return &JWTVerifier{r: r}, nil
+}
+
+// Verify returns the verified claims, or an error wrapping ErrUnauthenticated.
+func (v *JWTVerifier) Verify(ctx context.Context, token string) (map[string]any, error) {
+	return v.r.verify(ctx, token)
 }
 
 func bearerToken(req *http.Request) (string, bool) {

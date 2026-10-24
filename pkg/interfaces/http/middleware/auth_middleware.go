@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -10,7 +12,21 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
-func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.Handler {
+// TokenVerifier verifies a downstream Bearer token (mcpServers.<name>.auth.jwt).
+type TokenVerifier interface {
+	Verify(ctx context.Context, token string) (map[string]any, error)
+}
+
+// JWT is the /mcp/{server_name} auth middleware. By default it only requires a
+// Bearer token to be present and passes it through to the backend. A server
+// with an entry in verifiers (auth.jwt) additionally has the token verified
+// here, and a token that fails verification gets the same 401 challenge as a
+// missing one.
+func JWT(
+	servers config.Servers,
+	pathValueName string,
+	verifiers map[string]TokenVerifier,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -25,6 +41,15 @@ func JWT(servers config.Servers, pathValueName string) func(http.Handler) http.H
 				return
 			}
 			tokenStr := extractBearerToken(r)
+			if tokenStr != "" {
+				if v, ok := verifiers[srvName]; ok {
+					if _, err := v.Verify(ctx, tokenStr); err != nil {
+						slog.WarnContext(ctx, "JWT verification failed",
+							slog.String("server", srvName), slog.String("error", err.Error()))
+						tokenStr = ""
+					}
+				}
+			}
 			if tokenStr == "" {
 				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
 					`Bearer resource_metadata="%s"`,

@@ -63,6 +63,13 @@ type Server struct {
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
+	// クラウドベンダーのサービスアカウント / IAM 認証。authValue / oauth2 /
+	// tokenExchange とは排他（validateSingleAuth）。
+	GoogleServiceAccount *GoogleServiceAccount `mapstructure:"googleServiceAccount"`
+	AWSIAM               *AWSIAM               `mapstructure:"awsIAM"`
+
+	// Auth は /mcp/{name} の下流認証。未設定なら Bearer トークンを検証せず透過する。
+	Auth *ServerAuth `mapstructure:"auth"`
 
 	// MCP バックエンドモード用（Spec が空のとき有効）
 	Transport MCPTransport      `mapstructure:"transport"`
@@ -241,9 +248,10 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 					return fmt.Errorf(
 						"reverse transport does not support tools.file (OpenAPI mode)",
 					)
-				case s.AuthValue != nil, s.OAuth2 != nil, s.TokenExchange != nil:
+				case s.hasBackendAuth():
 					return fmt.Errorf(
-						"reverse transport does not support authValue/oauth2/tokenExchange " +
+						"reverse transport does not support authValue/oauth2/tokenExchange/" +
+							"googleServiceAccount/awsIAM " +
 							"(the page's own session authenticates its tools)",
 					)
 				case s.Command != "":
@@ -303,10 +311,13 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		// TokenExchange の優先順位で暗黙に1つだけを採用してしまうため、複数同時設定を
 		// 設定ロード時点でエラーにする。いずれか1つ、または設定無しのみを許可する。
 		validation.Field(&s.AuthValue, validation.By(func(any) error {
-			return validateSingleAuth(s.AuthValue, s.OAuth2, s.TokenExchange)
+			return validateSingleAuth(s.AuthValue, s.OAuth2, s.TokenExchange, s.cloudAuthCount())
 		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
+		validation.Field(&s.GoogleServiceAccount),
+		validation.Field(&s.AWSIAM),
+		validation.Field(&s.Auth, validation.By(s.validateAuth)),
 		validation.Field(&s.SpecRefreshInterval, validation.By(func(value any) error {
 			if s.SpecRefreshInterval != nil && *s.SpecRefreshInterval < 0 {
 				return fmt.Errorf("must be zero or a positive duration")
@@ -336,6 +347,21 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 				"(MCP backends relay the backend's own prompts)"),
 		)),
 	)
+}
+
+// hasBackendAuth は authValue / oauth2 / tokenExchange / クラウドベンダー認証の
+// いずれかが設定されているかを返す。
+func (s Server) hasBackendAuth() bool {
+	return s.AuthValue != nil || s.OAuth2 != nil || s.TokenExchange != nil || s.cloudAuthCount() > 0
+}
+
+// validateAuth は auth（下流認証）を検証する。reverse は identity で認証するため
+// auth.jwt を受け付けない（a2a は agents 由来で mcpServers 配下には現れない）。
+func (s Server) validateAuth(any) error {
+	if s.Auth != nil && s.Auth.JWT != nil && s.Transport == MCPTransportReverse {
+		return fmt.Errorf("auth.jwt is not supported for the reverse transport (use identity)")
+	}
+	return nil
 }
 
 // validateApps は mcpServers.<name>.apps を検証する。MCP Apps のリソースを

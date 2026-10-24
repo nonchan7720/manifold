@@ -11,6 +11,7 @@ func httpClientRoundTripper(
 	auth *config.AuthValue,
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
+	cloud client.CloudAuth,
 	headers map[string]string,
 ) (rt http.RoundTripper) {
 	var registry client.TokenSource
@@ -23,6 +24,7 @@ func httpClientRoundTripper(
 		auth,
 		oauth2,
 		tokenExchange,
+		cloud,
 		headers,
 	)
 }
@@ -42,6 +44,7 @@ func newHTTPClientRoundTripper(
 	auth *config.AuthValue,
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
+	cloud client.CloudAuth,
 	headers map[string]string,
 ) http.RoundTripper {
 	var base http.RoundTripper
@@ -61,6 +64,10 @@ func newHTTPClientRoundTripper(
 			registry = newTokenExchangeRegistry(tokenExchange)
 		}
 		base = client.NewTokenExchangeRoundTrip(transport, registry)
+	case cloud != nil:
+		// Google サービスアカウント / AWS IAM など。トークン取得や署名は
+		// CloudAuth が持つキャッシュ付きの資格情報で行い、コンテキストのトークンは使わない。
+		base = cloud.Wrap(transport)
 	default:
 		base = transport
 	}

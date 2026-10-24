@@ -73,7 +73,7 @@ func (a Agent) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&a.Service),
 		validation.Field(&a.URL, validation.Required, is.RequestURL),
 		validation.Field(&a.AuthValue, validation.By(func(any) error {
-			return validateSingleAuth(a.AuthValue, a.OAuth2, a.TokenExchange)
+			return validateSingleAuth(a.AuthValue, a.OAuth2, a.TokenExchange, 0)
 		})),
 		validation.Field(&a.OAuth2),
 		validation.Field(&a.TokenExchange),
@@ -105,8 +105,10 @@ func validateSkills(value any) error {
 
 // validateSingleAuth は authValue/oauth2/tokenExchange の複数同時設定を拒否する。
 // 許すと httpClientRoundTripper が優先順位で暗黙に 1 つだけを採用してしまうため。
-func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExchange) error {
-	count := 0
+func validateSingleAuth(
+	auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExchange, cloudAuths int,
+) error {
+	count := cloudAuths
 	if auth != nil {
 		count++
 	}
@@ -117,7 +119,9 @@ func validateSingleAuth(auth *AuthValue, oauth2 *OAuth2, tokenExchange *TokenExc
 		count++
 	}
 	if count > 1 {
-		return fmt.Errorf("only one of authValue, oauth2, tokenExchange may be configured")
+		return fmt.Errorf(
+			"only one of authValue, oauth2, tokenExchange, googleServiceAccount, awsIAM may be configured",
+		)
 	}
 	return nil
 }
