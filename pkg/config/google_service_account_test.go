@@ -136,8 +136,44 @@ func validGoogleServiceAccount(t *testing.T) *GoogleServiceAccount {
 
 func TestServer_ValidateWithContext_GoogleServiceAccount_Valid(t *testing.T) {
 	s := baseValidServer()
+	s.URL = "https://example.com"
 	s.GoogleServiceAccount = validGoogleServiceAccount(t)
 	require.NoError(t, s.ValidateWithContext(t.Context()))
+}
+
+func TestServer_ValidateWithContext_GoogleServiceAccount_RejectsPlainHTTP(t *testing.T) {
+	t.Run("http transport", func(t *testing.T) {
+		s := baseValidServer() // http://example.com
+		s.GoogleServiceAccount = validGoogleServiceAccount(t)
+		err := s.ValidateWithContext(t.Context())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "https")
+	})
+	t.Run("openapi baseURL", func(t *testing.T) {
+		s := Server{
+			Description:          "ga4",
+			Spec:                 "https://example.com/openapi.yaml",
+			BaseURL:              "http://api.example.com",
+			GoogleServiceAccount: validGoogleServiceAccount(t),
+		}
+		err := s.ValidateWithContext(t.Context())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "https")
+	})
+	t.Run("loopback is allowed", func(t *testing.T) {
+		s := baseValidServer()
+		s.URL = "http://127.0.0.1:8080"
+		s.GoogleServiceAccount = validGoogleServiceAccount(t)
+		require.NoError(t, s.ValidateWithContext(t.Context()))
+		s.URL = "http://localhost:8080"
+		require.NoError(t, s.ValidateWithContext(t.Context()))
+	})
+	t.Run("ADC without keys", func(t *testing.T) {
+		s := baseValidServer()
+		s.URL = "https://example.com"
+		s.GoogleServiceAccount = &GoogleServiceAccount{Scopes: []string{testGoogleScope}}
+		require.NoError(t, s.ValidateWithContext(t.Context()))
+	})
 }
 
 func TestServer_ValidateWithContext_GoogleServiceAccount_OpenAPI_Valid(t *testing.T) {

@@ -924,6 +924,8 @@ mcpServers:
 
 ADC は設定ロード時ではなく最初のリクエストで遅延して解決します（起動時にメタデータサーバーやネットワークへは接続しません）。資格情報が見つからない場合はリクエストのエラーになります。
 
+トークンは設定したバックエンドのホスト（`baseURL`、`http` トランスポートでは `url`。`prompts.url` も対象）にだけ、かつ `https` でのみ送ります（平文の `http` は loopback アドレスのみ許可。loopback 以外の `http://` URL は設定エラー）。リダイレクト先など他のホストへのリクエストは `Authorization` ヘッダーを付けずに転送します。
+
 #### `mcpServers.<name>.auth.jwt`
 
 既定では、ゲートウェイは `/mcp/<name>` のリクエストに Bearer トークンがあることだけを確認し、判断はバックエンドに任せてそのまま渡します。`auth.jwt` を設定すると、転送の前にゲートウェイがトークンを検証します。検証は `identities`（`source: jwt`）と同じ実装で、JWKS による署名、`iss`、`aud`、`exp` を確認します（`exp` の無いトークンは拒否）。検証に失敗したトークンには、従来と同じ `WWW-Authenticate: Bearer resource_metadata=...` を付けて `401` を返します。`auth.jwt` の無いサーバーは従来どおり素通しです。JWKS は起動時に取得し（`jwksURL` に到達できないと起動エラー）、以降は検証器がキャッシュ・更新します。`transport: reverse` のサーバーは `identity` で認証するため `auth` は指定できません。

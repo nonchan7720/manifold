@@ -924,6 +924,8 @@ mcpServers:
 
 ADC is resolved lazily on the first request, not at configuration load (no metadata-server or network access at startup), so missing credentials show up as request errors.
 
+The token is only sent to the configured backend host (`baseURL`, or `url` for the `http` transport; `prompts.url` is also allowed) and only over `https` (plain `http` is accepted for loopback addresses only; configuration with a non-loopback `http://` URL is rejected). A request to any other host, such as a redirect target, is forwarded without an `Authorization` header.
+
 #### `mcpServers.<name>.auth.jwt`
 
 By default the gateway only checks that `/mcp/<name>` requests carry a Bearer token and passes it through for the backend to judge. With `auth.jwt` the gateway verifies the token before forwarding, with the same verifier as `identities` (`source: jwt`): signature against the JWKS, `iss`, `aud` and `exp` (a token without `exp` is rejected). A token that fails verification gets `401` with the usual `WWW-Authenticate: Bearer resource_metadata=...` challenge. Servers without `auth.jwt` keep the pass-through behavior. The JWKS is fetched at startup (an unreachable `jwksURL` fails startup) and cached and refreshed by the verifier. `transport: reverse` servers authenticate through `identity` instead and reject `auth`.

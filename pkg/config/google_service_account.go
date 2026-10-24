@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,4 +79,13 @@ func (g *GoogleServiceAccount) ValidateWithContext(ctx context.Context) error {
 			return nil
 		})),
 	)
+}
+
+// IsLoopbackHost は host が localhost またはループバック IP かを返す。
+func IsLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }

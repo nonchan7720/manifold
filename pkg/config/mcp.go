@@ -366,6 +366,22 @@ func (s Server) validateGoogleServiceAccount(any) error {
 	if s.GoogleServiceAccount != nil && !s.IsOpenAPI() && s.Transport != MCPTransportHTTP {
 		return fmt.Errorf("is only supported in OpenAPI mode and for the http transport")
 	}
+	if s.GoogleServiceAccount == nil {
+		return nil
+	}
+	// アクセストークンは平文の http では送らない（loopback を除く）。
+	// baseURL を spec から導出する場合はここでは分からないため、実行時にも確認する。
+	for _, raw := range []string{s.BaseURL, s.URL} {
+		u, err := url.Parse(raw)
+		if raw == "" || err != nil {
+			continue
+		}
+		if u.Scheme == "http" && !IsLoopbackHost(u.Hostname()) {
+			return fmt.Errorf(
+				"requires an https URL (got %q); the access token is not sent over plain http", raw,
+			)
+		}
+	}
 	return nil
 }
 

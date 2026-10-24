@@ -13,6 +13,7 @@ func httpClientRoundTripper(
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
 	googleSA *config.GoogleServiceAccount,
+	googleURLs []string,
 	headers map[string]string,
 ) (rt http.RoundTripper) {
 	var registry client.TokenSource
@@ -27,6 +28,7 @@ func httpClientRoundTripper(
 		client.Transport(),
 		registry,
 		googleSource,
+		googleURLs,
 		auth,
 		oauth2,
 		tokenExchange,
@@ -47,6 +49,7 @@ func newHTTPClientRoundTripper(
 	transport http.RoundTripper,
 	registry client.TokenSource,
 	googleSource goauth2.TokenSource,
+	googleURLs []string,
 	auth *config.AuthValue,
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
@@ -70,8 +73,8 @@ func newHTTPClientRoundTripper(
 		}
 		base = client.NewTokenExchangeRoundTrip(transport, registry)
 	case googleSource != nil:
-		// Google サービスアカウントのアクセストークンを付加する。
-		base = client.NewGoogleRoundTripper(transport, googleSource)
+		// Google のアクセストークンを付加する（googleURLs のホストにのみ）。
+		base = client.NewGoogleRoundTripper(transport, googleSource, googleURLs...)
 	default:
 		base = transport
 	}

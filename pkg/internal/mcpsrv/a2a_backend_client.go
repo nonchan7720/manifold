@@ -110,11 +110,11 @@ func NewA2ABackendClient(
 		cfg:          cfg,
 		mediaService: mediaService,
 		cardHTTPClient: &http.Client{
-			Transport: httpClientRoundTripper(cfg.AuthValue, nil, nil, nil, cfg.ExtraHeaders),
+			Transport: httpClientRoundTripper(cfg.AuthValue, nil, nil, nil, nil, cfg.ExtraHeaders),
 		},
 		messageHTTPClient: &http.Client{
 			Transport: httpClientRoundTripper(
-				cfg.AuthValue, cfg.OAuth2, cfg.TokenExchange, nil, cfg.ExtraHeaders,
+				cfg.AuthValue, cfg.OAuth2, cfg.TokenExchange, nil, nil, cfg.ExtraHeaders,
 			),
 		},
 	}

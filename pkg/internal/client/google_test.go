@@ -6,16 +6,19 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 const testGoogleScope = "https://www.googleapis.com/auth/analytics.readonly"
@@ -167,7 +170,7 @@ func TestGoogleTokenSource_ADC(t *testing.T) {
 	// 資格情報の解決は最初のリクエストまで遅延する。
 	source := NewGoogleTokenSource(&config.GoogleServiceAccount{Scopes: []string{testGoogleScope}})
 	require.EqualValues(t, 0, tokenCalls.Load())
-	c := &http.Client{Transport: NewGoogleRoundTripper(http.DefaultTransport, source)}
+	c := &http.Client{Transport: NewGoogleRoundTripper(http.DefaultTransport, source, backend.URL)}
 	for range 2 {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
 		require.NoError(t, err)
@@ -184,4 +187,153 @@ func TestGoogleTokenSource_ADC_NotFound(t *testing.T) {
 	source := NewGoogleTokenSource(&config.GoogleServiceAccount{Scopes: []string{testGoogleScope}})
 	_, err := source.Token()
 	require.ErrorContains(t, err, "google application default credentials")
+}
+
+// countingSource はトークン取得の回数を数える。
+type countingSource struct{ calls atomic.Int32 }
+
+func (s *countingSource) Token() (*oauth2.Token, error) {
+	s.calls.Add(1)
+	return &oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}, nil
+}
+
+// recordingRT は最後に受け取ったリクエストを記録して 200 を返す。
+type recordingRT struct{ last *http.Request }
+
+func (r *recordingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.last = req
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+}
+
+type trackedBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackedBody) Close() error { b.closed = true; return nil }
+
+func TestGoogleRoundTripper_SchemeAndHost(t *testing.T) {
+	tests := []struct {
+		name      string
+		allowed   []string
+		url       string
+		wantErr   bool
+		wantToken bool
+	}{
+		{
+			"https allowed",
+			[]string{"https://api.example.com"},
+			"https://api.example.com/x",
+			false,
+			true,
+		},
+		{
+			"https with default port",
+			[]string{"https://api.example.com:443"},
+			"https://api.example.com/x",
+			false,
+			true,
+		},
+		{
+			"https host case-insensitive",
+			[]string{"https://API.example.com"},
+			"https://api.example.com/x",
+			false,
+			true,
+		},
+		{
+			"http non-loopback rejected",
+			[]string{"http://api.example.com"},
+			"http://api.example.com/x",
+			true,
+			false,
+		},
+		{"http non-loopback rejected without pin", nil, "http://api.example.com/x", true, false},
+		{
+			"http localhost allowed",
+			[]string{"http://localhost:8080"},
+			"http://localhost:8080/x",
+			false,
+			true,
+		},
+		{"http 127.0.0.1 allowed", nil, "http://127.0.0.1:8080/x", false, true},
+		{"http ipv6 loopback allowed", nil, "http://[::1]:8080/x", false, true},
+		{
+			"redirect to other host gets no token",
+			[]string{"https://api.example.com"},
+			"https://evil.example.net/x",
+			false,
+			false,
+		},
+		{
+			"other port gets no token",
+			[]string{"https://api.example.com"},
+			"https://api.example.com:8443/x",
+			false,
+			false,
+		},
+		{
+			"other host over http gets no token",
+			[]string{"https://api.example.com"},
+			"http://evil.example.net/x",
+			false,
+			false,
+		},
+		{"no pin allows any https host", nil, "https://anything.example.org/x", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &countingSource{}
+			rec := &recordingRT{}
+			rt := NewGoogleRoundTripper(rec, src, tt.allowed...)
+			body := &trackedBody{Reader: strings.NewReader("x")}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, tt.url, body)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer downstream")
+			resp, err := rt.RoundTrip(req)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Nil(t, resp)
+				require.True(t, body.closed, "body must be closed on rejection")
+				require.EqualValues(t, 0, src.calls.Load(), "token must not be fetched")
+				require.Nil(t, rec.last, "request must not be forwarded")
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			if tt.wantToken {
+				require.Equal(t, "Bearer tok", rec.last.Header.Get("Authorization"))
+				require.EqualValues(t, 1, src.calls.Load())
+			} else {
+				require.Empty(t, rec.last.Header.Get("Authorization"))
+				require.EqualValues(t, 0, src.calls.Load(), "token must not be fetched")
+			}
+		})
+	}
+}
+
+func TestGoogleRoundTripper_RedirectToOtherHostDropsToken(t *testing.T) {
+	var otherAuth string
+	other := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		otherAuth = r.Header.Get("Authorization")
+	}))
+	t.Cleanup(other.Close)
+	var backendAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendAuth = r.Header.Get("Authorization")
+		http.Redirect(w, r, other.URL, http.StatusFound)
+	}))
+	t.Cleanup(backend.Close)
+
+	// 2 つの httptest サーバーはどちらも 127.0.0.1 だがポートが異なる。
+	c := &http.Client{
+		Transport: NewGoogleRoundTripper(http.DefaultTransport, &countingSource{}, backend.URL),
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
+	require.NoError(t, err)
+	resp, err := c.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, "Bearer tok", backendAuth)
+	require.Empty(t, otherAuth, "token must not follow a redirect to another host")
 }

@@ -58,6 +58,7 @@ func TestHTTPClientRoundTripper_GoogleServiceAccount_InjectsBearer(t *testing.T)
 		nil,
 		nil,
 		newGoogleTestServiceAccount(t, "ga-token"),
+		[]string{backend.URL},
 		map[string]string{"X-Extra": "1"},
 	)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
@@ -73,7 +74,7 @@ func TestHTTPClientRoundTripper_GoogleServiceAccount_InjectsBearer(t *testing.T)
 func TestHTTPClientRoundTripper_GoogleServiceAccount_InvalidCredentialsFailRequests(t *testing.T) {
 	rt := httpClientRoundTripper(nil, nil, nil, &config.GoogleServiceAccount{
 		CredentialsJSON: "{", Scopes: []string{"s"},
-	}, nil)
+	}, nil, nil)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:1", nil)
 	require.NoError(t, err)
 	resp, err := rt.RoundTrip(req) //nolint:bodyclose // エラー時はレスポンスが無い
