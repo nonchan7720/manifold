@@ -1426,9 +1426,11 @@ func resolveFileFieldValue( //nolint: gocyclo
 	return body, filename, contentType, nil
 }
 
-// contentSniffLen は mimetype.Detect に渡す先頭バイト数（Peek サイズ）。ライブラリ既定の
-// 読み取り上限である 4096 バイトに合わせる。
-const contentSniffLen = 4096
+// contentSniffLen は mimetype.Detect に渡す先頭バイト数（Peek サイズ）。mimetype の既定上限は
+// 4096 バイトだが、先行する ZIP エントリが大きい docx/xlsx/pptx はそれでは word/ 等のエントリに
+// 届かず application/zip に落ちるため、storage.ResolveContentType 側の検出上限（64 KiB）と
+// 同じ範囲まで見る。
+const contentSniffLen = 64 << 10
 
 // sniffedBody は bufio.Reader で先頭を Peek した後も Read/Close を元の body ストリームへ
 // 委譲するための io.ReadCloser。Peek はバッファから読み出すだけで消費しないため、Read を
