@@ -265,7 +265,16 @@ func newTestMCPAuthMux(
 	mux := http.NewServeMux()
 	mux.Handle(
 		"/mcp/{server_name}",
-		mcpAuthMiddleware(servers, reverseGateway, edgeCfg, identityResolvers, "server_name")(next),
+		mcpAuthMiddleware(
+			servers,
+			reverseGateway,
+			edgeCfg,
+			identityResolvers,
+			nil,
+			"server_name",
+		)(
+			next,
+		),
 	)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -630,7 +639,7 @@ func TestMCPAuthMiddleware_RemotePairing_RoutesEachUserToTheirOwnBinding(t *test
 	mux := http.NewServeMux()
 	mux.Handle(
 		"/mcp/{server_name}",
-		mcpAuthMiddleware(servers, gateway, edgeCfg, resolvers, "server_name")(next),
+		mcpAuthMiddleware(servers, gateway, edgeCfg, resolvers, nil, "server_name")(next),
 	)
 	httpSrv := httptest.NewServer(mux)
 	t.Cleanup(httpSrv.Close)

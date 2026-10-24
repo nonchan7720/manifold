@@ -61,7 +61,7 @@ identityKey は **(プロファイル名, 導出値)** のタプル。identityKe
 1. **ユーザーごとに一意**であること
 2. **クレデンシャルのローテーションを跨いで安定**であること
 
-既存の `/mcp/{server_name}` の JWT ミドルウェアは意図的な**パススルー**（非空の Bearer の存在確認のみ）であり、トークンの検証はバックエンドの API / MCP サーバーの責務としている。reverse ではトークンを転送するバックエンドが存在せず **Manifold が検証の終端**になるため、`jwt` プロファイルは Manifold 自身による署名検証（issuer / JWKS / audience）を必須とする。また `pairing.type: static` の reverse サーバーでは、転送先が無い以上パススルーの Bearer 存在チェックにも意味が無いため、JWT ミドルウェア自体を適用しない。
+既存の `/mcp/{server_name}` の JWT ミドルウェアは意図的な**パススルー**（非空の Bearer の存在確認のみ）であり、トークンの検証はバックエンドの API / MCP サーバーの責務としている。非 reverse のサーバーは `mcpServers.<name>.auth.jwt`（issuer / jwksURL / audience。`jwt` プロファイルと同じ検証コード）で Manifold による検証を任意で有効にでき、未設定なら挙動は変わらない。reverse ではトークンを転送するバックエンドが存在せず **Manifold が検証の終端**になるため、`jwt` プロファイルは Manifold 自身による署名検証（issuer / JWKS / audience）を必須とする。また `pairing.type: static` の reverse サーバーでは、転送先が無い以上パススルーの Bearer 存在チェックにも意味が無いため、JWT ミドルウェア自体を適用しない。
 
 ```yaml
 identities:
@@ -319,7 +319,7 @@ mcpServer:
 - `transport` の enum に `reverse` を追加
 - `reverse` のとき `origin` 必須。scheme + host（+ port）のみで path 禁止。正規化して保持し、全サーバー間で一意
 - `reverse` のとき `identity` のプロファイル参照必須（グローバル既定を 1 つ指定できる場合は省略可）。参照先の存在チェック。ただし `edge.pairing.type: static` のときは不要
-- `reverse` では `authValue` / `oauth2` / `tokenExchange` / `command` / `url` は設定エラー（バックエンドへの認証はページ自身のセッションが担うため不要）
+- `reverse` では `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` / `awsIAM` / `command` / `url` は設定エラー（バックエンドへの認証はページ自身のセッションが担うため不要）
 
 ## エラー体系
 

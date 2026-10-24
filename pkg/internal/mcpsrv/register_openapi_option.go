@@ -1,11 +1,15 @@
 package mcpsrv
 
-import "github.com/nonchan7720/manifold/pkg/config"
+import (
+	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
+)
 
 type registerOpenAPIOption struct {
 	auth               *config.AuthValue
 	oauth2             *config.OAuth2
 	tokenExchange      *config.TokenExchange
+	cloudAuth          client.CloudAuth
 	generatedToolsFile string
 	// excludeTools are tools.exclude patterns; an operation whose
 	// operationId or derived tool name matches one is not turned into a
@@ -30,6 +34,14 @@ func WithOAuth2(cfg *config.OAuth2) RegisterOpenAPIOption {
 func WithTokenExchange(cfg *config.TokenExchange) RegisterOpenAPIOption {
 	return func(opt *registerOpenAPIOption) {
 		opt.tokenExchange = cfg
+	}
+}
+
+// WithCloudAuth sets the cloud vendor credentials (googleServiceAccount /
+// awsIAM) used to authenticate backend requests. A nil auth is a no-op.
+func WithCloudAuth(auth client.CloudAuth) RegisterOpenAPIOption {
+	return func(opt *registerOpenAPIOption) {
+		opt.cloudAuth = auth
 	}
 }
 

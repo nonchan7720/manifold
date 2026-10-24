@@ -42,7 +42,7 @@ flowchart TD
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
-- **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）から 1 つを選択
+- **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）/ Google サービスアカウント（`googleServiceAccount`）/ AWS IAM SigV4（`awsIAM`）から 1 つを選択
 - **MCP Apps 対応**: MCP バックエンドの [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)（`io.modelcontextprotocol/ui`）の UI（ツールの `_meta.ui` と、`resources/list`・`resources/read` で取得する `ui://` リソース）を対応ホストへそのまま通し、非対応ホストには取り除いて返す（`mcpServers.<name>.apps`）
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
@@ -774,6 +774,9 @@ gateway:
 | `authValue`     | object            | 静的認証設定（`header`, `prefix`, `value`）                |
 | `oauth2`        | object            | OAuth 2.0 設定（下記参照）                                 |
 | `tokenExchange` | object            | Token Exchange 設定（下記参照）                            |
+| `googleServiceAccount` | object     | Google サービスアカウントでバックエンドへのリクエストを認証（下記参照） |
+| `awsIAM`        | object            | AWS IAM の SigV4 でバックエンドへのリクエストに署名（下記参照） |
+| `auth.jwt`      | object            | `/mcp/<name>` の下流 Bearer JWT を検証（下記参照）。既定は検証なし（パススルー） |
 | `specRefreshInterval` | duration    | `gateway.specRefresh.interval` のサーバー単位の上書き。`0` でこのサーバーのみリフレッシュ無効 |
 | `specRefreshRejectOn` | string      | `gateway.specRefresh.rejectOn` のサーバー単位の上書き（`ERR`・`WARN`・`INFO`）。`NONE`（または `""`）でこのサーバーのみ拒否しない |
 | `tools.file`    | string            | 生成物ファイルのパス（[`mcpServers.<name>.tools`](#mcpserversnametools) 参照）。設定すると、ゲートウェイは `spec` を取得せずこのファイルから起動する |
@@ -783,7 +786,7 @@ gateway:
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 
-`authValue` / `oauth2` / `tokenExchange` は排他で、同時に設定できるのは 1 つだけです。
+`authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` / `awsIAM` は排他で、同時に設定できるのは 1 つだけです。
 
 ##### ConfigMap から `spec` を読む
 
@@ -883,6 +886,79 @@ mcpServers:
 | フィールド | 型     | 説明                                             |
 | ---------- | ------ | ------------------------------------------------ |
 | `url`      | string | トークン交換エンドポイントの絶対 URL（**必須**） |
+
+#### `mcpServers.<name>.googleServiceAccount`
+
+バックエンド用の Pod を立てずに、OpenAPI モード（または `http` の MCP バックエンド）から Google API（例: GA4 Data API）を呼び出します。Manifold はサービスアカウント鍵から（JWT bearer フローで）アクセストークンを取得し、期限の直前までキャッシュして自動更新し、バックエンドへのすべてのリクエストに `Authorization: Bearer <token>` を付けます。呼び出し元のトークンは転送されません。
+
+```yaml
+mcpServers:
+  ga4:
+    description: Google Analytics 4 Data API
+    spec: ./analyticsdata-v1beta-openapi.yaml   # API の OpenAPI ドキュメント
+    baseURL: https://analyticsdata.googleapis.com
+    googleServiceAccount:
+      credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # または credentialsFile: /path/to/key.json
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly
+```
+
+| フィールド        | 型       | 説明                                                                 |
+| ----------------- | -------- | -------------------------------------------------------------------- |
+| `credentialsJSON` | string   | サービスアカウント鍵の JSON（`type: service_account`）。`${VAR}` の環境変数展開は他の値と同じ。`credentialsJSON` / `credentialsFile` のどちらか一方だけ |
+| `credentialsFile` | string   | 鍵 JSON ファイルのパス（初回リクエスト時に読み込む）                 |
+| `scopes`          | []string | 要求する OAuth スコープ（**必須**）                                  |
+
+鍵 JSON は設定のロード時に検証されます（読めない `credentialsFile` は初回リクエスト時に報告されます）。トークンを取得できない場合、ツール呼び出しには 502 を返します。
+
+#### `mcpServers.<name>.awsIAM`
+
+[既定の認証情報チェーン](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html)（環境変数・共有設定・IRSA / Web ID・ECS/EC2 ロールなど）の認証情報で、バックエンドへのすべてのリクエストに AWS Signature Version 4 の署名を付けます。API Gateway（`execute-api`）や Lambda 関数 URL（`lambda`）のような IAM 認証のエンドポイント向けです。
+
+```yaml
+mcpServers:
+  internal-api:
+    description: IAM 保護された API
+    spec: ./openapi.yaml
+    baseURL: https://abc123.execute-api.us-east-1.amazonaws.com/prod
+    awsIAM:
+      region: us-east-1
+      service: execute-api
+      # profile: my-profile
+      # roleARN: arn:aws:iam::123456789012:role/manifold-caller
+```
+
+| フィールド | 型     | 説明                                                              |
+| ---------- | ------ | ----------------------------------------------------------------- |
+| `region`   | string | 署名のリージョン（**必須**）                                      |
+| `service`  | string | 署名のサービス名（例: `execute-api`）（**必須**）                 |
+| `profile`  | string | 共有設定ファイルのプロファイル名（任意）                          |
+| `roleARN`  | string | 署名の前に STS で AssumeRole するロール（任意）                   |
+
+署名に使うペイロードの SHA-256 を計算するため、リクエストボディはメモリに読み込まれます。
+
+#### `mcpServers.<name>.auth.jwt`
+
+既定では `/mcp/<name>` は空でない `Authorization: Bearer` ヘッダーがあることだけを確認し、トークンをそのままバックエンドへ渡します（検証はバックエンドの責務）。`auth.jwt` を設定すると、Manifold 自身がトークンを検証します（JWKS による署名、`iss`、`exp`、設定時は `aud`。非対称アルゴリズムのみ）。トークンが無い、または無効な場合は、従来と同じ `WWW-Authenticate: Bearer resource_metadata=...` 付きの `401` を返します。検証ロジックは `identities` の `source: jwt`（`docs/design/webmcp-reverse-gateway.ja.md` 参照） と共通です。
+
+```yaml
+mcpServers:
+  ga4:
+    auth:
+      jwt:
+        issuer: https://issuer.example.com
+        jwksURL: https://issuer.example.com/keys
+        audience: manifold   # 任意
+```
+
+| フィールド | 型     | 説明                                                          |
+| ---------- | ------ | ------------------------------------------------------------- |
+| `issuer`   | string | 期待する `iss`（**必須**、絶対 URL）                          |
+| `jwksURL`  | string | 署名検証に使う JWKS の URL（**必須**）。起動時に取得し、到達できないと起動エラー |
+| `audience` | string | 期待する `aud`（任意。空なら検査しない）                      |
+
+> **Note**
+> Manifold 自身の `oauth2` フローを使うサーバーはオペークなアクセストークンを受け取るため、`auth.jwt` とは併用しないでください。`transport: reverse` のサーバーでは `auth.jwt` は使えません（`identity` を使ってください）。
 
 #### `agents.<name>`
 

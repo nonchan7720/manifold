@@ -15,6 +15,7 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/storage"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
 	"github.com/nonchan7720/manifold/pkg/version"
 	"go.opentelemetry.io/otel"
@@ -413,6 +414,7 @@ func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
 		WithAuth(server.AuthValue),
 		WithOAuth2(server.OAuth2),
 		WithTokenExchange(server.TokenExchange),
+		WithCloudAuth(client.NewCloudAuth(server.GoogleServiceAccount, server.AWSIAM)),
 		WithToolsConfig(server.Tools),
 	}
 	if file := server.GeneratedToolsFile(); file != "" {

@@ -64,6 +64,8 @@ type MCPBackendClient struct {
 	baseTransport *http.Transport
 	baseRT        http.RoundTripper
 	tokenRegistry client.TokenSource
+	// cloudAuth は googleServiceAccount / awsIAM の認証（未設定なら nil）。rtMu で保護する。
+	cloudAuth client.CloudAuth
 }
 
 // withCallTimeout は ctx に1呼び出し分のタイムアウト（CallTimeoutOrDefault）を
@@ -88,6 +90,18 @@ func (c *MCPBackendClient) sharedTransport() (http.RoundTripper, client.TokenSou
 		c.tokenRegistry = newTokenExchangeRegistry(c.cfg.TokenExchange)
 	}
 	return c.baseRT, c.tokenRegistry
+}
+
+// sharedCloudAuth は googleServiceAccount / awsIAM の認証を返す。トークンや
+// 認証情報のキャッシュを接続間で共有するため、初回呼び出し時に1度だけ生成する。
+// 未設定なら nil。
+func (c *MCPBackendClient) sharedCloudAuth() client.CloudAuth {
+	c.rtMu.Lock()
+	defer c.rtMu.Unlock()
+	if c.cloudAuth == nil {
+		c.cloudAuth = client.NewCloudAuth(c.cfg.GoogleServiceAccount, c.cfg.AWSIAM)
+	}
+	return c.cloudAuth
 }
 
 // closeIdleConnections は共有トランスポートのアイドル接続を閉じる。
@@ -649,6 +663,7 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 					c.cfg.AuthValue,
 					c.cfg.OAuth2,
 					c.cfg.TokenExchange,
+					c.sharedCloudAuth(),
 					c.cfg.ExtraHeaders,
 				),
 			},

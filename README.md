@@ -42,7 +42,7 @@ flowchart TD
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
-- **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`)
+- **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`) / Google service account (`googleServiceAccount`) / AWS IAM SigV4 (`awsIAM`)
 - **MCP Apps**: Passes [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) UIs of MCP backends through to hosts that support them — `_meta.ui` on tools, and the `ui://` resources via `resources/list` / `resources/read` — and strips them for hosts that don't (`mcpServers.<name>.apps`)
 - **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
@@ -774,6 +774,9 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `authValue`     | object            | Static authentication settings (`header`, `prefix`, `value`)         |
 | `oauth2`        | object            | OAuth 2.0 settings (see below)                                       |
 | `tokenExchange` | object            | Token Exchange settings (see below)                                  |
+| `googleServiceAccount` | object     | Authenticate backend requests with a Google service account (see below) |
+| `awsIAM`        | object            | Sign backend requests with AWS IAM SigV4 (see below)                 |
+| `auth.jwt`      | object            | Verify the downstream Bearer JWT on `/mcp/<name>` (see below). Default: no verification (pass-through) |
 | `specRefreshInterval` | duration    | Per-server override of `gateway.specRefresh.interval`. `0` disables refreshing for this server |
 | `specRefreshRejectOn` | string      | Per-server override of `gateway.specRefresh.rejectOn` (`ERR`, `WARN`, `INFO`). `NONE` (or `""`) never rejects for this server |
 | `tools.file`    | string            | Path to a generated tools file (see [`mcpServers.<name>.tools`](#mcpserversnametools)). When set, the gateway starts from this file instead of fetching `spec` |
@@ -783,7 +786,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 
-`authValue` / `oauth2` / `tokenExchange` are mutually exclusive; only one may be configured at a time.
+`authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` / `awsIAM` are mutually exclusive; only one may be configured at a time.
 
 ##### `spec` from a ConfigMap
 
@@ -883,6 +886,79 @@ Exchanges the API key received from the client for an OAuth token at the specifi
 | Field | Type   | Description                                                |
 | ----- | ------ | ---------------------------------------------------------- |
 | `url` | string | Absolute URL of the token exchange endpoint (**required**) |
+
+#### `mcpServers.<name>.googleServiceAccount`
+
+Calls Google APIs (for example the GA4 Data API) from OpenAPI mode (or an `http` MCP backend) without a backend pod. Manifold obtains an access token from a service account key (JWT bearer flow), caches it until shortly before it expires, refreshes it automatically, and sends `Authorization: Bearer <token>` on every backend request. The caller's own token is not forwarded.
+
+```yaml
+mcpServers:
+  ga4:
+    description: Google Analytics 4 Data API
+    spec: ./analyticsdata-v1beta-openapi.yaml   # an OpenAPI document of the API
+    baseURL: https://analyticsdata.googleapis.com
+    googleServiceAccount:
+      credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # or credentialsFile: /path/to/key.json
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly
+```
+
+| Field             | Type     | Description                                                              |
+| ----------------- | -------- | ------------------------------------------------------------------------ |
+| `credentialsJSON` | string   | Service account key JSON (`type: service_account`). `${VAR}` expansion works like any other value. Exactly one of `credentialsJSON` / `credentialsFile` |
+| `credentialsFile` | string   | Path to the key JSON file, read on the first request                     |
+| `scopes`          | []string | OAuth scopes to request (**required**)                                   |
+
+The key JSON is checked when the configuration is loaded (a `credentialsFile` that cannot be read is only reported at the first request). If a token cannot be obtained, the gateway returns a 502 to the tool call.
+
+#### `mcpServers.<name>.awsIAM`
+
+Signs every backend request with AWS Signature Version 4 using the [default credential chain](https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html) (environment variables, shared config, IRSA / web identity, ECS/EC2 roles, ...). Use it for IAM-authenticated endpoints such as API Gateway (`execute-api`) or Lambda function URLs (`lambda`).
+
+```yaml
+mcpServers:
+  internal-api:
+    description: IAM-protected API
+    spec: ./openapi.yaml
+    baseURL: https://abc123.execute-api.us-east-1.amazonaws.com/prod
+    awsIAM:
+      region: us-east-1
+      service: execute-api
+      # profile: my-profile
+      # roleARN: arn:aws:iam::123456789012:role/manifold-caller
+```
+
+| Field     | Type   | Description                                                                   |
+| --------- | ------ | ----------------------------------------------------------------------------- |
+| `region`  | string | Signing region (**required**)                                                 |
+| `service` | string | Signing service name, for example `execute-api` (**required**)               |
+| `profile` | string | Shared config profile name (optional)                                         |
+| `roleARN` | string | Role to assume with STS before signing (optional)                             |
+
+The request body is buffered in memory to compute its SHA-256 for the signature.
+
+#### `mcpServers.<name>.auth.jwt`
+
+By default `/mcp/<name>` only checks that a non-empty `Authorization: Bearer` header is present and passes the token through to the backend, which is responsible for verifying it. Set `auth.jwt` to have Manifold verify the token itself (signature against the JWKS, `iss`, `exp`, and `aud` when configured; asymmetric algorithms only). A missing or invalid token gets a `401` with the same `WWW-Authenticate: Bearer resource_metadata=...` challenge. This uses the same verifier as an `identities` profile with `source: jwt` (see `docs/design/webmcp-reverse-gateway.md`).
+
+```yaml
+mcpServers:
+  ga4:
+    auth:
+      jwt:
+        issuer: https://issuer.example.com
+        jwksURL: https://issuer.example.com/keys
+        audience: manifold   # optional
+```
+
+| Field      | Type   | Description                                                   |
+| ---------- | ------ | ------------------------------------------------------------- |
+| `issuer`   | string | Expected `iss` (**required**, absolute URL)                   |
+| `jwksURL`  | string | JWKS URL used for signature verification (**required**). Fetched at startup; an unreachable URL fails startup |
+| `audience` | string | Expected `aud` (optional; not checked when empty)             |
+
+> **Note**
+> Servers using Manifold's own `oauth2` flow receive opaque access tokens, so do not combine them with `auth.jwt`. `auth.jwt` is not available for `transport: reverse` servers (use `identity`).
 
 #### `agents.<name>`
 

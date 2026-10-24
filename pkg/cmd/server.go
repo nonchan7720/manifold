@@ -180,15 +180,17 @@ func writeIdentityError(w http.ResponseWriter, r *http.Request, err error) {
 // docs/design/webmcp-reverse-gateway.ja.md「拡張と identity の紐づけ」) and
 // stores it in the request context (domainedge.WithIdentityKey) for
 // ReverseGateway.ResolveServer to read back. Every other server keeps the
-// existing pass-through middleware.JWT check.
+// middleware.JWT check, which passes the Bearer token through unless the
+// server opts in to verification with auth.jwt (verifiers).
 func mcpAuthMiddleware(
 	servers config.Servers,
 	reverseGateway *mcpsrv.ReverseGateway,
 	edgeCfg config.EdgeConfig,
 	identityResolvers map[string]identity.Resolver,
+	verifiers map[string]middleware.TokenVerifier,
 	pathValueName string,
 ) func(http.Handler) http.Handler {
-	jwt := middleware.JWT(servers, pathValueName)
+	jwt := middleware.JWT(servers, pathValueName, verifiers)
 	return func(next http.Handler) http.Handler {
 		withJWT := jwt(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +212,26 @@ func mcpAuthMiddleware(
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// newDownstreamJWTVerifiers builds a verifier for every server that sets
+// auth.jwt, keyed by server name.
+func newDownstreamJWTVerifiers(
+	ctx context.Context,
+	servers config.Servers,
+) (map[string]middleware.TokenVerifier, error) {
+	verifiers := map[string]middleware.TokenVerifier{}
+	for name, srv := range servers {
+		if srv == nil || srv.Auth == nil || srv.Auth.JWT == nil {
+			continue
+		}
+		v, err := identity.NewJWTVerifier(ctx, name, srv.Auth.JWT)
+		if err != nil {
+			return nil, err
+		}
+		verifiers[name] = v
+	}
+	return verifiers, nil
 }
 
 // newAuthHandler builds the OAuth 2.1 authorization server handler that cfg
@@ -457,6 +479,13 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 
+	// auth.jwt が設定されたサーバーだけ、Manifold が Bearer JWT を検証する。
+	// JWKS に到達できない場合は起動エラーにする。
+	verifiers, err := newDownstreamJWTVerifiers(ctx, globalConfig.MCPServer)
+	if err != nil {
+		return err
+	}
+
 	mcpHTTPSrv := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return resolveMCPServer(r.Context(), mcpSrv, reverseGateway, r.PathValue(pathServerName))
 	}, &mcp.StreamableHTTPOptions{
@@ -472,8 +501,15 @@ func runGatewayServer(ctx context.Context) error {
 		fmt.Sprintf("/mcp/{%s}", pathServerName),
 		middleware.MaxBodyBytes(globalConfig.Gateway.MaxRequestBodySize)(
 			mcpAuthMiddleware(
-				globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
-			)(mcpHTTPSrv),
+				globalConfig.MCPServer,
+				reverseGateway,
+				edgeCfg,
+				identityResolvers,
+				verifiers,
+				pathServerName,
+			)(
+				mcpHTTPSrv,
+			),
 		),
 	)
 	mux.Handle("/mcp/list", http.HandlerFunc(mcpHandler.MCPList))

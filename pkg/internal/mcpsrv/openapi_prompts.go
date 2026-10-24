@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
+	"github.com/nonchan7720/manifold/pkg/internal/client"
 )
 
 // OpenAPI モードのサーバーの prompts（mcpServers.<name>.prompts）。
@@ -216,6 +217,7 @@ func newURLPromptSource(server *config.Server) *urlPromptSource {
 				server.AuthValue,
 				server.OAuth2,
 				server.TokenExchange,
+				client.NewCloudAuth(server.GoogleServiceAccount, server.AWSIAM),
 				server.ExtraHeaders,
 			),
 		},

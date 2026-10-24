@@ -332,3 +332,78 @@ func TestJWTResolver_Resolve_ProfileIsolation_SameSubDifferentProfile_DifferentI
 	require.NoError(t, err)
 	require.NotEqual(t, keyA, keyB)
 }
+
+// --- JWTVerifier (mcpServers.<name>.auth.jwt) ---
+
+func newVerifierFixture(t *testing.T, audience string) (*jwtTestFixture, *JWTVerifier) {
+	t.Helper()
+	f := newJWTTestFixture(t)
+	v, err := NewJWTVerifier(t.Context(), "ga4", &config.DownstreamJWT{
+		Issuer: f.issuer, JWKSURL: f.profile.JWKSURL, Audience: audience,
+	})
+	require.NoError(t, err)
+	return f, v
+}
+
+func TestJWTVerifier_Verify_ValidToken_ReturnsClaims(t *testing.T) {
+	f, v := newVerifierFixture(t, "manifold")
+	claims := newJWTClaims("user-a", f.issuer)
+	claims["aud"] = "manifold"
+	got, err := v.Verify(t.Context(), f.sign(t, claims))
+	require.NoError(t, err)
+	require.Equal(t, "user-a", got["sub"])
+}
+
+func TestJWTVerifier_Verify_DoesNotRequireIdentityClaim(t *testing.T) {
+	f, v := newVerifierFixture(t, "")
+	claims := newJWTClaims("", f.issuer)
+	delete(claims, "sub")
+	_, err := v.Verify(t.Context(), f.sign(t, claims))
+	require.NoError(t, err)
+}
+
+func TestJWTVerifier_Verify_Rejects(t *testing.T) {
+	f, v := newVerifierFixture(t, "manifold")
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	good := func() jwt.MapClaims {
+		c := newJWTClaims("user-a", f.issuer)
+		c["aud"] = "manifold"
+		return c
+	}
+	expired := good()
+	expired["exp"] = time.Now().Add(-time.Hour).Unix()
+	wrongIss := good()
+	wrongIss["iss"] = "https://evil.example.com"
+	wrongAud := good()
+	wrongAud["aud"] = "other"
+
+	tests := map[string]string{
+		"expired":       f.sign(t, expired),
+		"wrong issuer":  f.sign(t, wrongIss),
+		"wrong aud":     f.sign(t, wrongAud),
+		"wrong key":     signRSAToken(t, other, f.kid, good()),
+		"opaque token":  "not-a-jwt",
+		"empty":         "",
+		"unknown kid":   signRSAToken(t, f.priv, "unknown", good()),
+		"alg none-like": "eyJhbGciOiJub25lIn0.e30.",
+	}
+	for name, token := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := v.Verify(t.Context(), token)
+			require.ErrorIs(t, err, ErrUnauthenticated)
+		})
+	}
+}
+
+func TestNewJWTVerifier_UnreachableJWKS_Fails(t *testing.T) {
+	t.Setenv("TEST", "true")
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	_, err := NewJWTVerifier(t.Context(), "ga4", &config.DownstreamJWT{
+		Issuer: "https://idp.example.com", JWKSURL: url,
+	})
+	require.Error(t, err)
+}

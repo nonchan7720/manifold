@@ -61,7 +61,7 @@ The identityKey is the tuple **(profile name, derived value)**. It must satisfy 
 1. **Unique per user**
 2. **Stable across credential rotation**
 
-The existing JWT middleware on `/mcp/{server_name}` is an intentional **pass-through** (it only checks that a non-empty Bearer header exists); token verification is the responsibility of the backend API / MCP server. With reverse there is no backend to forward the token to — **Manifold is the terminal verifier** — so the `jwt` profile requires Manifold itself to verify signatures (issuer / JWKS / audience). For reverse servers under `pairing.type: static`, even the pass-through Bearer-presence check is meaningless without a forwarding target, so the JWT middleware is not applied at all.
+The existing JWT middleware on `/mcp/{server_name}` is an intentional **pass-through** (it only checks that a non-empty Bearer header exists); token verification is the responsibility of the backend API / MCP server by default. A non-reverse server can opt in to verification with `mcpServers.<name>.auth.jwt` (issuer / jwksURL / audience, verified with the same code as the `jwt` profile); without it, behavior is unchanged. With reverse there is no backend to forward the token to — **Manifold is the terminal verifier** — so the `jwt` profile requires Manifold itself to verify signatures (issuer / JWKS / audience). For reverse servers under `pairing.type: static`, even the pass-through Bearer-presence check is meaningless without a forwarding target, so the JWT middleware is not applied at all.
 
 ```yaml
 identities:
@@ -319,7 +319,7 @@ Validation:
 - Add `reverse` to the `transport` enum
 - With `reverse`, `origin` is required: scheme + host (+ port) only, no path; normalized, and unique across all servers
 - With `reverse`, an `identity` profile reference is required (may be omitted if a single global default is configured); referenced profiles must exist. Not required when `edge.pairing.type: static`
-- With `reverse`, setting `authValue` / `oauth2` / `tokenExchange` / `command` / `url` is a configuration error (backend auth is carried by the page's own session)
+- With `reverse`, setting `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` / `awsIAM` / `command` / `url` is a configuration error (backend auth is carried by the page's own session)
 
 ## Error taxonomy
 
