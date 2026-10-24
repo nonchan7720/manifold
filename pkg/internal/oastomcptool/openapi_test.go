@@ -2254,7 +2254,7 @@ func TestCreateToolFunction_Multipart_FileObjectValue_Base64LargeBodyKeepsLeadin
 ) {
 	// mimetype のスニフィング窓（先頭 contentSniffLen バイト）を超えるサイズの本文でも、
 	// 先頭部分が失われずボディ全体が送信されることを確認する。
-	content := append([]byte("%PDF-1.4 "), bytes.Repeat([]byte("A"), 4096)...)
+	content := append([]byte("%PDF-1.4 "), bytes.Repeat([]byte("A"), 2*contentSniffLen)...)
 
 	var capturedContentType string
 	var capturedContent []byte
