@@ -180,7 +180,7 @@ manifold は上流に対しても CIMD で名乗れる。ドキュメントは m
   - `cimd`: `cimdClientID` 必須。`ClientIDMetadataDocumentSupported` の認可サーバーだけを採用し、無ければ DCR にフォールバックせず discovery エラー。
   - `dcr`: `registration_endpoint` を持つ認可サーバーだけを採用する。`cimdClientID` との併用は矛盾するため validation で拒否。
   - 候補の採否と Step 5 の分岐は `selectRegistrationMethod` に集約し、検出ログには `client_registration` 属性で使用方式を残す。警告ログは未設定時のみ。
-- `config.OAuth2.ValidateWithContext` は `clientID` が `https://` で始まる場合、`clientSecret` が空でも通す。
+- `config.OAuth2.ValidateWithContext` は、`unknownClient` の実効値が `default` で `clientID` が有効な CIMD Client Identifier URL（`config.IsValidCIMDClientID`）の場合に限り、`clientSecret` が空でも通す。`https://` で始まるだけの無効な URL では `clientSecret` は必須のまま。`unknownClient` の実効値が `reject` の場合は従来どおり `clientSecret` を必須としない。
 - ドキュメントのテンプレートと設置手順は `docs/cimd/upstream-cimd.ja.md` / `docs/cimd/upstream-cimd.md`。
 
 ## 未対応
