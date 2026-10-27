@@ -29,6 +29,17 @@ const (
 	MCPTransportA2A MCPTransport = "a2a"
 )
 
+// ClientRegistration は上流 MCP バックエンドの OAuth 自動検出で、manifold が
+// クライアント登録に使う方式。
+type ClientRegistration string
+
+const (
+	// ClientRegistrationDCR は Dynamic Client Registration のみを使う。
+	ClientRegistrationDCR ClientRegistration = "dcr"
+	// ClientRegistrationCIMD は Client ID Metadata Document のみを使う。
+	ClientRegistrationCIMD ClientRegistration = "cimd"
+)
+
 // DefaultCallTimeout is used when Server.CallTimeout is unset (<= 0) for a
 // reverse transport server.
 const DefaultCallTimeout = 60 * time.Second
@@ -70,6 +81,20 @@ type Server struct {
 	// Auth はこのサーバーの /mcp/{name} に対する下流（MCP クライアント → Manifold）
 	// 側の認証設定。バックエンドへの認証（authValue など）とは独立している。
 	Auth *ServerAuth `mapstructure:"auth"`
+
+	// CIMDClientID は上流 MCP サーバーに対して manifold が名乗る OAuth Client ID
+	// Metadata Document の URL（https://）。運用者が公開 HTTPS URL に置いた
+	// ドキュメントを指す。上流の認可サーバーが CIMD に対応していれば DCR より
+	// 優先して client_id に使う。oauth2 とは別に置くのは、oauth2 を書くと
+	// OAuth2 の自動検出が止まるため。MCP バックエンド（http）でのみ有効。
+	CIMDClientID string `mapstructure:"cimdClientID"`
+
+	// ClientRegistration は上流の自動検出で使うクライアント登録方式（dcr / cimd）。
+	// 未設定なら CIMD が使えれば CIMD、使えなければ DCR の順に試す。設定すると
+	// その方式のみを使い、フォールバックしない。cimd には cimdClientID が必須、
+	// dcr は cimdClientID と併用できない。oauth2 とは別に置くのは、oauth2 を書くと
+	// OAuth2 の自動検出が止まるため。MCP バックエンド（http）でのみ有効。
+	ClientRegistration ClientRegistration `mapstructure:"clientRegistration"`
 
 	// MCP バックエンドモード用（Spec が空のとき有効）
 	Transport MCPTransport      `mapstructure:"transport"`
@@ -296,6 +321,8 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
+		validation.Field(&s.CIMDClientID, validation.By(s.validateCIMDClientID)),
+		validation.Field(&s.ClientRegistration, validation.By(s.validateClientRegistration)),
 		validation.Field(&s.GoogleServiceAccount, validation.By(s.validateGoogleServiceAccount)),
 		validation.Field(&s.Auth),
 		validation.Field(&s.SpecRefreshInterval, validation.By(func(value any) error {
@@ -327,6 +354,56 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 				"(MCP backends relay the backend's own prompts)"),
 		)),
 	)
+}
+
+// validateCIMDClientID は mcpServers.<name>.cimdClientID を検証する。
+// CIMD の client_id は https スキームのホスト付き URL でなければならない。
+// 上流 OAuth の自動検出を使う HTTP の MCP バックエンドでのみ意味を持つ。
+func (s Server) validateCIMDClientID(any) error {
+	if s.CIMDClientID == "" {
+		return nil
+	}
+	if !IsValidCIMDClientID(s.CIMDClientID) {
+		return fmt.Errorf(
+			"must be an https:// URL with a path (no userinfo, fragment, or dot segments)",
+		)
+	}
+	if s.Transport != MCPTransportHTTP || s.IsOpenAPI() {
+		return fmt.Errorf("is only supported for the http transport")
+	}
+	if s.OAuth2 != nil {
+		return fmt.Errorf(
+			"cannot be combined with oauth2 (oauth2 disables upstream auto-discovery)",
+		)
+	}
+	return nil
+}
+
+// validateClientRegistration は mcpServers.<name>.clientRegistration を検証する。
+func (s Server) validateClientRegistration(any) error {
+	if s.ClientRegistration == "" {
+		return nil
+	}
+	if err := validation.Validate(s.ClientRegistration, validation.In(
+		ClientRegistrationDCR, ClientRegistrationCIMD,
+	)); err != nil {
+		return err
+	}
+	if s.Transport != MCPTransportHTTP || s.IsOpenAPI() {
+		return fmt.Errorf("is only supported for the http transport")
+	}
+	if s.OAuth2 != nil {
+		return fmt.Errorf(
+			"cannot be combined with oauth2 (oauth2 disables upstream auto-discovery)",
+		)
+	}
+	switch {
+	case s.ClientRegistration == ClientRegistrationCIMD && s.CIMDClientID == "":
+		return fmt.Errorf("cimd requires cimdClientID")
+	case s.ClientRegistration == ClientRegistrationDCR && s.CIMDClientID != "":
+		return fmt.Errorf("dcr cannot be combined with cimdClientID")
+	}
+	return nil
 }
 
 // validateReverseTransport は reverse トランスポートと併用できない設定を拒否する。
@@ -383,6 +460,26 @@ func (s Server) validateGoogleServiceAccount(any) error {
 		}
 	}
 	return nil
+}
+
+// IsValidCIMDClientID は id が CIMD の Client Identifier URL として有効かを返す。
+// https でホストと "/" 以外のパスを持ち、userinfo・fragment・"." / ".." の
+// パス要素を含まないこと。
+func IsValidCIMDClientID(id string) bool {
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
+		u.Fragment != "" || strings.Contains(id, "#") {
+		return false
+	}
+	if u.Path == "" || u.Path == "/" {
+		return false
+	}
+	for seg := range strings.SplitSeq(u.Path, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // validateApps は mcpServers.<name>.apps を検証する。MCP Apps のリソースを
@@ -566,9 +663,11 @@ func (c *OAuth2) UnknownClientMode() string {
 func (c *OAuth2) ValidateWithContext(ctx context.Context) error {
 	// 共用クライアントは、マッピングに無い下流クライアントを受け入れるときだけ必須。
 	sharedRequired := c.UnknownClientMode() == OAuth2UnknownClientDefault
+	// clientID が有効な CIMD の URL ならパブリッククライアントなので secret は不要。
+	secretRequired := sharedRequired && !IsValidCIMDClientID(c.ClientID)
 	return validation.ValidateStructWithContext(ctx, c,
 		validation.Field(&c.ClientID, validation.When(sharedRequired, validation.Required)),
-		validation.Field(&c.ClientSecret, validation.When(sharedRequired, validation.Required)),
+		validation.Field(&c.ClientSecret, validation.When(secretRequired, validation.Required)),
 		// is.RequestURI はスキーム無しの相対パス（例: "/auth"）も許容してしまうため、
 		// スキーム付きの絶対 URL を要求する is.RequestURL を使う（TokenExchange.URL と同様）。
 		validation.Field(&c.AuthURL, validation.Required, is.RequestURL),
