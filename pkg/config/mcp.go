@@ -74,6 +74,13 @@ type Server struct {
 	AuthValue     *AuthValue     `mapstructure:"authValue"`
 	OAuth2        *OAuth2        `mapstructure:"oauth2"`
 	TokenExchange *TokenExchange `mapstructure:"tokenExchange"`
+	// GoogleServiceAccount は Google サービスアカウントのアクセストークンを
+	// バックエンドへ付ける（OpenAPI モードと http トランスポートのみ）。
+	GoogleServiceAccount *GoogleServiceAccount `mapstructure:"googleServiceAccount"`
+
+	// Auth はこのサーバーの /mcp/{name} に対する下流（MCP クライアント → Manifold）
+	// 側の認証設定。バックエンドへの認証（authValue など）とは独立している。
+	Auth *ServerAuth `mapstructure:"auth"`
 
 	// CIMDClientID は上流 MCP サーバーに対して manifold が名乗る OAuth Client ID
 	// Metadata Document の URL（https://）。運用者が公開 HTTPS URL に置いた
@@ -255,30 +262,7 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 				validation.In(MCPTransportHTTP, MCPTransportStdio, MCPTransportReverse).
 					Error("must be a valid value (a2a agents are configured under agents or mcpServers.<name>.agents)"),
 			),
-			validation.By(func(value any) error {
-				if s.Transport != MCPTransportReverse {
-					return nil
-				}
-				switch {
-				case s.Spec != "":
-					return fmt.Errorf("reverse transport does not support spec (OpenAPI mode)")
-				case s.GeneratedToolsFile() != "":
-					return fmt.Errorf(
-						"reverse transport does not support tools.file (OpenAPI mode)",
-					)
-				case s.AuthValue != nil, s.OAuth2 != nil, s.TokenExchange != nil:
-					return fmt.Errorf(
-						"reverse transport does not support authValue/oauth2/tokenExchange " +
-							"(the page's own session authenticates its tools)",
-					)
-				case s.Command != "":
-					return fmt.Errorf("reverse transport does not support command")
-				case s.URL != "":
-					return fmt.Errorf("reverse transport does not support url")
-				default:
-					return nil
-				}
-			}),
+			validation.By(s.validateReverseTransport),
 		),
 		validation.Field(
 			&s.URL,
@@ -328,12 +312,19 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		// TokenExchange の優先順位で暗黙に1つだけを採用してしまうため、複数同時設定を
 		// 設定ロード時点でエラーにする。いずれか1つ、または設定無しのみを許可する。
 		validation.Field(&s.AuthValue, validation.By(func(any) error {
-			return validateSingleAuth(s.AuthValue, s.OAuth2, s.TokenExchange)
+			return validateSingleAuth(
+				s.AuthValue,
+				s.OAuth2,
+				s.TokenExchange,
+				s.GoogleServiceAccount,
+			)
 		})),
 		validation.Field(&s.OAuth2),
 		validation.Field(&s.TokenExchange),
 		validation.Field(&s.CIMDClientID, validation.By(s.validateCIMDClientID)),
 		validation.Field(&s.ClientRegistration, validation.By(s.validateClientRegistration)),
+		validation.Field(&s.GoogleServiceAccount, validation.By(s.validateGoogleServiceAccount)),
+		validation.Field(&s.Auth),
 		validation.Field(&s.SpecRefreshInterval, validation.By(func(value any) error {
 			if s.SpecRefreshInterval != nil && *s.SpecRefreshInterval < 0 {
 				return fmt.Errorf("must be zero or a positive duration")
@@ -411,6 +402,62 @@ func (s Server) validateClientRegistration(any) error {
 		return fmt.Errorf("cimd requires cimdClientID")
 	case s.ClientRegistration == ClientRegistrationDCR && s.CIMDClientID != "":
 		return fmt.Errorf("dcr cannot be combined with cimdClientID")
+	}
+	return nil
+}
+
+// validateReverseTransport は reverse トランスポートと併用できない設定を拒否する。
+func (s Server) validateReverseTransport(any) error {
+	if s.Transport != MCPTransportReverse {
+		return nil
+	}
+	switch {
+	case s.Spec != "":
+		return fmt.Errorf("reverse transport does not support spec (OpenAPI mode)")
+	case s.GeneratedToolsFile() != "":
+		return fmt.Errorf(
+			"reverse transport does not support tools.file (OpenAPI mode)",
+		)
+	case s.AuthValue != nil, s.OAuth2 != nil, s.TokenExchange != nil,
+		s.GoogleServiceAccount != nil:
+		return fmt.Errorf(
+			"reverse transport does not support authValue/oauth2/tokenExchange/googleServiceAccount " +
+				"(the page's own session authenticates its tools)",
+		)
+	case s.Command != "":
+		return fmt.Errorf("reverse transport does not support command")
+	case s.URL != "":
+		return fmt.Errorf("reverse transport does not support url")
+	case s.Auth != nil:
+		return fmt.Errorf(
+			"reverse transport does not support auth (use identity to authenticate the agent)",
+		)
+	default:
+		return nil
+	}
+}
+
+// validateGoogleServiceAccount は googleServiceAccount を使えるのが OpenAPI モードと
+// http トランスポートのみであることを確認する。
+func (s Server) validateGoogleServiceAccount(any) error {
+	if s.GoogleServiceAccount != nil && !s.IsOpenAPI() && s.Transport != MCPTransportHTTP {
+		return fmt.Errorf("is only supported in OpenAPI mode and for the http transport")
+	}
+	if s.GoogleServiceAccount == nil {
+		return nil
+	}
+	// アクセストークンは平文の http では送らない（loopback を除く）。
+	// baseURL を spec から導出する場合はここでは分からないため、実行時にも確認する。
+	for _, raw := range []string{s.BaseURL, s.URL} {
+		u, err := url.Parse(raw)
+		if raw == "" || err != nil {
+			continue
+		}
+		if u.Scheme == "http" && !IsLoopbackHost(u.Hostname()) {
+			return fmt.Errorf(
+				"requires an https URL (got %q); the access token is not sent over plain http", raw,
+			)
+		}
 	}
 	return nil
 }
@@ -669,6 +716,37 @@ func validateOAuth2AuthParams(value any) error {
 		}
 	}
 	return nil
+}
+
+// ServerAuth は mcpServers.<name>.auth。下流クライアントの Bearer トークンの
+// 扱いを決める。何も設定しなければ従来どおり存在確認のみで素通しする。
+type ServerAuth struct {
+	JWT *DownstreamJWT `mapstructure:"jwt"`
+}
+
+func (a *ServerAuth) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(ctx, a,
+		validation.Field(&a.JWT),
+	)
+}
+
+// DownstreamJWT は下流の Bearer トークンを Manifold 自身が検証する設定
+// （署名は JWKS、issuer、audience、exp）。identities の source: jwt と同じ検証を使う。
+type DownstreamJWT struct {
+	Issuer string `mapstructure:"issuer"`
+	// JWKSURL は署名検証用の公開鍵セット。
+	JWKSURL string `mapstructure:"jwksURL"`
+	// Audience は必須。無いと同じ issuer が別のリソース向けに発行したトークンも
+	// 通ってしまう。
+	Audience string `mapstructure:"audience"`
+}
+
+func (c *DownstreamJWT) ValidateWithContext(ctx context.Context) error {
+	return validation.ValidateStructWithContext(ctx, c,
+		validation.Field(&c.Issuer, validation.Required, is.RequestURL),
+		validation.Field(&c.JWKSURL, validation.Required, is.RequestURL),
+		validation.Field(&c.Audience, validation.Required),
+	)
 }
 
 type AuthValue struct {

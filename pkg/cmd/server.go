@@ -180,15 +180,18 @@ func writeIdentityError(w http.ResponseWriter, r *http.Request, err error) {
 // docs/design/webmcp-reverse-gateway.ja.md「拡張と identity の紐づけ」) and
 // stores it in the request context (domainedge.WithIdentityKey) for
 // ReverseGateway.ResolveServer to read back. Every other server keeps the
-// existing pass-through middleware.JWT check.
+// middleware.JWT check, which verifies the Bearer token only for servers with
+// mcpServers.<name>.auth.jwt (see newTokenVerifiers) and passes it through
+// otherwise.
 func mcpAuthMiddleware(
 	servers config.Servers,
 	reverseGateway *mcpsrv.ReverseGateway,
 	edgeCfg config.EdgeConfig,
 	identityResolvers map[string]identity.Resolver,
 	pathValueName string,
+	jwtOpts ...middleware.JWTOption,
 ) func(http.Handler) http.Handler {
-	jwt := middleware.JWT(servers, pathValueName)
+	jwt := middleware.JWT(servers, pathValueName, jwtOpts...)
 	return func(next http.Handler) http.Handler {
 		withJWT := jwt(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +213,30 @@ func mcpAuthMiddleware(
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// newTokenVerifiers builds, once per server at startup, the verifier for every
+// server with mcpServers.<name>.auth.jwt, keyed by server name. A verifier
+// failing to construct (e.g. an unreachable JWKS URL) is a startup error, not
+// a per-request one, as for identities.
+func newTokenVerifiers(
+	ctx context.Context, servers config.Servers,
+) (map[string]middleware.TokenVerifier, error) {
+	verifiers := map[string]middleware.TokenVerifier{}
+	for name, srv := range servers {
+		if srv == nil || srv.Auth == nil || srv.Auth.JWT == nil {
+			continue
+		}
+		cfg := srv.Auth.JWT
+		v, err := identity.NewJWTVerifier(
+			ctx, cfg.Issuer, cfg.JWKSURL, cfg.Audience, identity.WithRequiredExpiration(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("mcpServers.%s.auth.jwt: %w", name, err)
+		}
+		verifiers[name] = v
+	}
+	return verifiers, nil
 }
 
 // newAuthHandler builds the OAuth 2.1 authorization server handler that cfg
@@ -457,6 +484,11 @@ func runGatewayServer(ctx context.Context) error {
 		return err
 	}
 
+	tokenVerifiers, err := newTokenVerifiers(ctx, globalConfig.MCPServer)
+	if err != nil {
+		return err
+	}
+
 	mcpHTTPSrv := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		return resolveMCPServer(r.Context(), mcpSrv, reverseGateway, r.PathValue(pathServerName))
 	}, &mcp.StreamableHTTPOptions{
@@ -473,6 +505,7 @@ func runGatewayServer(ctx context.Context) error {
 		middleware.MaxBodyBytes(globalConfig.Gateway.MaxRequestBodySize)(
 			mcpAuthMiddleware(
 				globalConfig.MCPServer, reverseGateway, edgeCfg, identityResolvers, pathServerName,
+				middleware.WithTokenVerifiers(tokenVerifiers),
 			)(mcpHTTPSrv),
 		),
 	)

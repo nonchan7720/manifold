@@ -26,54 +26,76 @@ func RegisterOpenAPI(
 ) (_ *MCPToolRegistry, rErr error) {
 	opt := newRegisterOpenAPIOption(opts)
 
+	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
+	var (
+		source  *oastomcptool.SpecSource
+		catalog *oastomcptool.GeneratedCatalog
+		err     error
+	)
+	if opt.generatedToolsFile != "" {
+		source, catalog, err = oastomcptool.LoadGeneratedSpecSource(ctx, opt.generatedToolsFile)
+		if err != nil {
+			return nil, fmt.Errorf(
+				`load generated tools file %q: %w (run "manifold openapi generate")`,
+				opt.generatedToolsFile, err,
+			)
+		}
+	} else {
+		source, err = oastomcptool.LoadSpecSource(ctx, specPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// トランスポートを作る前に baseUrl を確定させる。googleServiceAccount はこのホストに
+	// だけトークンを送るため、未確定のままだと送信先を固定できない。
+	if baseUrl == "" {
+		baseUrl = resolveBaseUrl(ctx, source)
+	}
+	if opt.googleSA != nil && baseUrl == "" {
+		return nil, fmt.Errorf("googleServiceAccount requires a resolvable baseURL")
+	}
+
 	// headers は nil を渡す: 各ツール関数がリクエストごとに付加するため、
 	// トランスポート層でも付加すると二重適用になってしまう。
-	rt := httpClientRoundTripper(opt.auth, opt.oauth2, opt.tokenExchange, nil)
+	rt := httpClientRoundTripper(
+		opt.auth,
+		opt.oauth2,
+		opt.tokenExchange,
+		opt.googleSA,
+		[]string{baseUrl},
+		nil,
+	)
 	c := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: rt,
 	}
-	ctx = trace.StartSpan(ctx, "mcpsrv/RegisterOpenAPI")
-	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	if opt.generatedToolsFile != "" {
-		return registerFromGeneratedToolsFile(
-			ctx, c, opt.generatedToolsFile, baseUrl, headers, opts...,
-		)
-	}
-
-	source, err := oastomcptool.LoadSpecSource(ctx, specPath)
-	if err != nil {
-		return nil, err
-	}
-	return BuildCatalog(ctx, c, source, baseUrl, headers, opts...)
-}
-
-// registerFromGeneratedToolsFile builds and verifies a catalog from a
-// generated tools file (tools.file) instead of fetching a spec. The catalog
-// is rebuilt with the same options (tools.exclude included) the file was
-// generated with, so a changed exclude list shows up as a stale file.
-func registerFromGeneratedToolsFile(
-	ctx context.Context,
-	c *http.Client,
-	path, baseUrl string,
-	headers map[string]string,
-	opts ...RegisterOpenAPIOption,
-) (*MCPToolRegistry, error) {
-	source, catalog, err := oastomcptool.LoadGeneratedSpecSource(ctx, path)
-	if err != nil {
-		return nil, fmt.Errorf(
-			`load generated tools file %q: %w (run "manifold openapi generate")`, path, err,
-		)
-	}
 	registry, err := BuildCatalog(ctx, c, source, baseUrl, headers, opts...)
 	if err != nil {
 		return nil, err
 	}
-	if err := VerifyGeneratedTools(registry, catalog); err != nil {
-		return nil, fmt.Errorf(`%w (run "manifold openapi generate")`, err)
+	if catalog != nil {
+		// tools.file は生成時と同じオプション（tools.exclude を含む）で作り直して照合する。
+		// exclude の変更などは古いファイルとして検出される。
+		if err := VerifyGeneratedTools(registry, catalog); err != nil {
+			return nil, fmt.Errorf(`%w (run "manifold openapi generate")`, err)
+		}
 	}
 	return registry, nil
+}
+
+// resolveBaseUrl は spec から baseUrl を導出する。導出できなければ空文字を返す。
+func resolveBaseUrl(ctx context.Context, source *oastomcptool.SpecSource) string {
+	switch source.Format {
+	case oastomcptool.SpecFormatSwagger2:
+		return oastomcptool.GetBaseUrlFromSwagger(ctx, source.Swagger, source.SpecPath)
+	case oastomcptool.SpecFormatOpenAPI3:
+		return oastomcptool.GetBaseUrlFromOpenAPI3(ctx, source.OpenAPI, source.SpecPath)
+	default:
+		return ""
+	}
 }
 
 // BuildCatalog builds an MCPToolRegistry from an already-loaded spec. Of the

@@ -6,6 +6,7 @@ type registerOpenAPIOption struct {
 	auth               *config.AuthValue
 	oauth2             *config.OAuth2
 	tokenExchange      *config.TokenExchange
+	googleSA           *config.GoogleServiceAccount
 	generatedToolsFile string
 	// excludeTools are tools.exclude patterns; an operation whose
 	// operationId or derived tool name matches one is not turned into a
@@ -30,6 +31,12 @@ func WithOAuth2(cfg *config.OAuth2) RegisterOpenAPIOption {
 func WithTokenExchange(cfg *config.TokenExchange) RegisterOpenAPIOption {
 	return func(opt *registerOpenAPIOption) {
 		opt.tokenExchange = cfg
+	}
+}
+
+func WithGoogleServiceAccount(cfg *config.GoogleServiceAccount) RegisterOpenAPIOption {
+	return func(opt *registerOpenAPIOption) {
+		opt.googleSA = cfg
 	}
 }
 

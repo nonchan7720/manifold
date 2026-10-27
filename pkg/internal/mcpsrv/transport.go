@@ -5,21 +5,30 @@ import (
 
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
+	goauth2 "golang.org/x/oauth2"
 )
 
 func httpClientRoundTripper(
 	auth *config.AuthValue,
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
+	googleSA *config.GoogleServiceAccount,
+	googleURLs []string,
 	headers map[string]string,
 ) (rt http.RoundTripper) {
 	var registry client.TokenSource
 	if tokenExchange != nil {
 		registry = newTokenExchangeRegistry(tokenExchange)
 	}
+	var googleSource goauth2.TokenSource
+	if googleSA != nil {
+		googleSource = client.NewGoogleTokenSource(googleSA)
+	}
 	return newHTTPClientRoundTripper(
 		client.Transport(),
 		registry,
+		googleSource,
+		googleURLs,
 		auth,
 		oauth2,
 		tokenExchange,
@@ -39,6 +48,8 @@ func newTokenExchangeRegistry(tokenExchange *config.TokenExchange) client.TokenS
 func newHTTPClientRoundTripper(
 	transport http.RoundTripper,
 	registry client.TokenSource,
+	googleSource goauth2.TokenSource,
+	googleURLs []string,
 	auth *config.AuthValue,
 	oauth2 *config.OAuth2,
 	tokenExchange *config.TokenExchange,
@@ -61,6 +72,9 @@ func newHTTPClientRoundTripper(
 			registry = newTokenExchangeRegistry(tokenExchange)
 		}
 		base = client.NewTokenExchangeRoundTrip(transport, registry)
+	case googleSource != nil:
+		// Google のアクセストークンを付加する（googleURLs のホストにのみ）。
+		base = client.NewGoogleRoundTripper(transport, googleSource, googleURLs...)
 	default:
 		base = transport
 	}

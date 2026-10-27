@@ -19,6 +19,7 @@ import (
 	"github.com/nonchan7720/manifold/pkg/version"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
+	goauth2 "golang.org/x/oauth2"
 )
 
 // MCPBackendClient はバックエンドの MCP サーバーへの接続を管理する。
@@ -64,6 +65,9 @@ type MCPBackendClient struct {
 	baseTransport *http.Transport
 	baseRT        http.RoundTripper
 	tokenRegistry client.TokenSource
+	// googleSource は googleServiceAccount のアクセストークンのキャッシュ。
+	// 接続ごとに作り直すと毎回トークンを取り直してしまうため共有する。
+	googleSource goauth2.TokenSource
 }
 
 // withCallTimeout は ctx に1呼び出し分のタイムアウト（CallTimeoutOrDefault）を
@@ -88,6 +92,17 @@ func (c *MCPBackendClient) sharedTransport() (http.RoundTripper, client.TokenSou
 		c.tokenRegistry = newTokenExchangeRegistry(c.cfg.TokenExchange)
 	}
 	return c.baseRT, c.tokenRegistry
+}
+
+// sharedGoogleSource は googleServiceAccount のトークンソースを返す。初回呼び出し時に
+// 1度だけ生成する。未設定なら nil。
+func (c *MCPBackendClient) sharedGoogleSource() goauth2.TokenSource {
+	c.rtMu.Lock()
+	defer c.rtMu.Unlock()
+	if c.googleSource == nil && c.cfg.GoogleServiceAccount != nil {
+		c.googleSource = client.NewGoogleTokenSource(c.cfg.GoogleServiceAccount)
+	}
+	return c.googleSource
 }
 
 // closeIdleConnections は共有トランスポートのアイドル接続を閉じる。
@@ -640,12 +655,15 @@ func (c *MCPBackendClient) buildTransport(ctx context.Context) (_ mcp.Transport,
 		// 共有し、認証ラッパーは cfg.OAuth2 が OAuth discovery で更新され得る
 		// ため接続ごとに現在の設定から組み立てる（軽量）。
 		base, registry := c.sharedTransport()
+		googleSource := c.sharedGoogleSource()
 		return &mcp.StreamableClientTransport{
 			Endpoint: c.cfg.URL,
 			HTTPClient: &http.Client{
 				Transport: newHTTPClientRoundTripper(
 					base,
 					registry,
+					googleSource,
+					[]string{c.cfg.URL},
 					c.cfg.AuthValue,
 					c.cfg.OAuth2,
 					c.cfg.TokenExchange,
