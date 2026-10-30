@@ -1,0 +1,201 @@
+desc: Tool filtering (tools.include) and renaming (tools.overrides) per MCP server
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+vars:
+  # Shared request headers; every step merges these with <<: and adds or
+  # overrides what it needs. SSE responses are decoded in each test with
+  #   let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"))
+  mcp: &mcp
+    Content-Type: application/json
+    Accept: application/json, text/event-stream
+    MCP-Protocol-Version: "2025-06-18"
+    Authorization: Bearer runn-token
+  operators: &operators
+    x-user-id: user-001
+    x-user-groups: operators
+  readers: &readers
+    x-user-id: user-001
+    x-user-groups: readers
+steps:
+  list_included_tools:
+    desc: "tools/list returns the included tools under their exposed names"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 11, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["deletepet", "findpetsbystatus", "findpetsbytags", "get_pet", "getinventory"]
+  override_keeps_description:
+    desc: "The renamed get_pet keeps the original operation description"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 12, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && len(filter(rpc.result.tools, .name == "get_pet" && .description contains "Find pet by ID")) == 1
+  call_renamed_tool:
+    desc: "get_pet is callable and the caller token reaches the backend"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 13, method: tools/call, params: {name: get_pet, arguments: {petId: 7}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.isError != true
+      && body.id == 7
+      && body.auth == "Bearer runn-token"
+  original_name_is_unknown:
+    desc: "The original name getpetbyid is unknown after the rename"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 14, method: tools/call, params: {name: getpetbyid, arguments: {petId: 7}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"getpetbyid\""
+  excluded_tool_is_unknown:
+    desc: "addpet is in the spec but not included, so it is unknown"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 15, method: tools/call, params: {name: addpet, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"addpet\""
+  nonexistent_tool_is_unknown:
+    desc: "A tool that exists nowhere is unknown too"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 16, method: tools/call, params: {name: no_such_tool, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"no_such_tool\""
+  empty_tool_name_is_unknown:
+    desc: "An empty tool name is unknown"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 17, method: tools/call, params: {name: "", arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"\""
+  call_wildcard_included_tool:
+    desc: "find* also matched findpetsbytags, which is callable"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 18, method: tools/call, params: {name: findpetsbytags, arguments: {tags: [a, b]}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && len(body.items) == 0
+  small_lists_one_tool:
+    desc: "petstore_small lists only getinventory"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 19, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["getinventory"]
+  small_call:
+    desc: "getinventory is callable on petstore_small"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 20, method: tools/call, params: {name: getinventory, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.isError != true
+      && body.available == 3
+      && body.sold == 1
+  small_does_not_inherit_petstore_tools:
+    desc: "Includes are per server: get_pet is unknown on petstore_small"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 21, method: tools/call, params: {name: get_pet, arguments: {petId: 7}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"get_pet\""
+  small_excludes_deletepet:
+    desc: "deletepet is unknown on petstore_small even for operators"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 22, method: tools/call, params: {name: deletepet, arguments: {petId: 7}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error.code == -32602
+      && rpc.error.message == "unknown tool \"deletepet\""

@@ -1,7 +1,7 @@
-// Command stub is the fake Petstore API behind the Postman CLI end-to-end
-// run (tests/postman/run.sh). It serves the petstore OpenAPI fixture at
-// /openapi.json and answers the handful of operations the collection calls,
-// echoing the Authorization header it received so the collection can check
+// Command stub is the fake Petstore API behind the runn end-to-end run
+// (tests/runn/run.sh). It serves the petstore OpenAPI fixture at
+// /openapi.json and answers the handful of operations the runbooks call,
+// echoing the Authorization header it received so the runbooks can check
 // that the gateway forwards the caller's token.
 package main
 
@@ -51,7 +51,7 @@ func main() {
 		writeJSON(w, map[string]any{
 			"id":   id,
 			"name": "doggie",
-			// 呼び出し元のトークンがゲートウェイ経由で届いたことをコレクション側で確認する。
+			// 呼び出し元のトークンがゲートウェイ経由で届いたことをrunbook 側で確認する。
 			"auth": r.Header.Get("Authorization"),
 		})
 	})

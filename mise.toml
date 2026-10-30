@@ -1,10 +1,10 @@
 [tool_alias]
 golangci-lint = "go:github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
 setup-envtest = "go:sigs.k8s.io/controller-runtime/tools/setup-envtest"
-postman-cli = "npm:postman-cli"
+runn = "aqua:k1LoW/runn"
 
 [tools]
 go = "1.27.3"
 golangci-lint = "2.15.0"
 setup-envtest = "0.25.2"
-postman-cli = "1.69.0"
+runn = "1.11.1"

@@ -1,0 +1,137 @@
+desc: Bearer authentication on /mcp/{server} and the initialize handshake
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+vars:
+  # Shared request headers; every step merges these with <<: and adds or
+  # overrides what it needs. SSE responses are decoded in each test with
+  #   let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"))
+  mcp: &mcp
+    Content-Type: application/json
+    Accept: application/json, text/event-stream
+    MCP-Protocol-Version: "2025-06-18"
+    Authorization: Bearer runn-token
+  operators: &operators
+    x-user-id: user-001
+    x-user-groups: operators
+steps:
+  initialize:
+    desc: initialize is 200 and serverInfo names the server
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 1, method: initialize, params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: runn, version: "1"}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.serverInfo.name == "petstore"
+  initialize_without_identity:
+    desc: initialize needs no identity headers (authz only guards tools)
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 2, method: initialize, params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: runn, version: "1"}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result.serverInfo.name == "petstore"
+  no_bearer:
+    desc: tools/list without a bearer token is 401 with a WWW-Authenticate challenge
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            MCP-Protocol-Version: "2025-06-18"
+            <<: *operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 3, method: tools/list}
+    test: |
+      current.res.status == 401
+      && current.res.rawBody == "Unauthorized\n"
+      && len(current.res.headers["Www-Authenticate"]) == 1
+      && hasPrefix(current.res.headers["Www-Authenticate"][0], "Bearer resource_metadata=")
+  basic_scheme:
+    desc: The Basic scheme is rejected with 401
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Authorization: Basic dXNlcjpwYXNz
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 4, method: tools/list}
+    test: |
+      current.res.status == 401
+      && hasPrefix(current.res.headers["Www-Authenticate"][0], "Bearer ")
+  lowercase_scheme:
+    desc: The Bearer prefix is case-sensitive, so "bearer <token>" is 401
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Authorization: bearer runn-token
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 5, method: tools/list}
+    test: current.res.status == 401
+  empty_authorization:
+    desc: An empty Authorization header is 401
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Authorization: ""
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 6, method: tools/list}
+    test: current.res.status == 401
+  scheme_without_token:
+    desc: '"Bearer" with no token at all is 401'
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Authorization: Bearer
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 7, method: tools/list}
+    test: current.res.status == 401
+  empty_token:
+    desc: '"Bearer " with an empty token is 401'
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Authorization: "Bearer "
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 8, method: tools/list}
+    test: current.res.status == 401
+  auth_before_body_parsing:
+    desc: A malformed body without a token is 401, not 400 (authentication runs first)
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            <<: *operators
+          body:
+            text/plain: "{not json"
+    test: current.res.status == 401

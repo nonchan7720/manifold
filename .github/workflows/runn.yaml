@@ -1,13 +1,13 @@
-name: Postman E2E
+name: runn E2E
 
-# End-to-end run of tool filtering, tool authorization and the audit log with the
-# Postman CLI against a locally built gateway (tests/postman/run.sh).
+# End-to-end run of tool filtering, tool authorization and the audit log with
+# runn against a locally built gateway (tests/runn/run.sh).
 on:
   pull_request:
   workflow_dispatch:
 
 jobs:
-  postman:
+  runn:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -16,16 +16,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up tools # go and the Postman CLI (postman-cli in mise.toml)
+      - name: Set up tools # go and runn (runn in mise.toml)
         uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
           # Skip golangci-lint (built from source), setup-envtest, etc.
-          install_args: "go postman-cli"
-      - name: Run the Postman collection
-        run: tests/postman/run.sh
+          install_args: "go runn"
+      - name: Run the runn runbooks
+        run: tests/runn/run.sh
       - name: Show logs
         if: failure()
         run: |
-          for f in tests/postman/tmp/gateway.log tests/postman/tmp/stub.log tests/postman/tmp/audit.jsonl; do
+          for f in tests/runn/tmp/gateway.log tests/runn/tmp/stub.log tests/runn/tmp/audit.jsonl; do
             echo "::group::$f"; cat "$f" 2>/dev/null || true; echo "::endgroup::"
           done

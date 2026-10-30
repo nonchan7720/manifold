@@ -1,0 +1,107 @@
+desc: The GET /mcp/list catalog, and its access control when tools=true
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+steps:
+  list_without_credentials:
+    desc: "GET /mcp/list needs no credentials and lists the servers by name"
+    req:
+      /mcp/list:
+        get:
+          body: null
+    test: |
+      current.res.status == 200
+      && map(current.res.body.mcp, .name) == ["petstore", "petstore_small"]
+      && current.res.body.mcp[0].description == "Petstore with filtered and renamed tools"
+      && current.res.body.mcp[0].service.code == "petstore"
+      && len(filter(current.res.body.mcp, .tools != nil)) == 0
+  tools_false_is_the_same:
+    desc: "?tools=false behaves like no query: no tools key"
+    req:
+      /mcp/list?tools=false:
+        get:
+          body: null
+    test: |
+      current.res.status == 200
+      && len(filter(current.res.body.mcp, .tools != nil)) == 0
+  tools_without_identity:
+    desc: "?tools=true without identity headers is 403"
+    req:
+      /mcp/list?tools=true:
+        get:
+          body: null
+    test: |
+      current.res.status == 403
+      && current.res.body.error == "forbidden"
+  tools_for_readers:
+    desc: "?tools=true for readers (no catalog permission) is 403"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-user-id: user-001
+            x-user-groups: readers
+    test: |
+      current.res.status == 403
+      && current.res.body.error == "forbidden"
+  tools_for_unknown_group:
+    desc: "?tools=true for a group the policy does not know is 403"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-user-id: user-001
+            x-user-groups: guests
+    test: current.res.status == 403
+  tools_with_groups_only:
+    desc: "?tools=true with groups but no x-user-id is 403 even for operators"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-user-groups: operators
+    test: current.res.status == 403
+  tools_for_operators:
+    desc: "?tools=true for operators (catalog: true) lists the tools after include and rename"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-user-id: user-001
+            x-user-groups: operators
+    test: |
+      let petstore = filter(current.res.body.mcp, .name == "petstore")[0];
+      let small = filter(current.res.body.mcp, .name == "petstore_small")[0];
+      current.res.status == 200
+      && map(current.res.body.mcp, .name) == ["petstore", "petstore_small"]
+      && sort(map(petstore.tools, .name)) == ["deletepet", "findpetsbystatus", "findpetsbytags", "get_pet", "getinventory"]
+      && map(small.tools, .name) == ["getinventory"]
+      && filter(petstore.tools, .name == "get_pet")[0].summary == "Find pet by ID."
+  tools_for_operators_among_others:
+    desc: "?tools=true with several groups is allowed when any of them has catalog: true"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-user-id: user-001
+            x-user-groups: readers, operators
+    test: |
+      current.res.status == 200
+      && len(filter(current.res.body.mcp, .tools != nil)) == 2
+  tools_with_bypass:
+    desc: "?tools=true with x-authz-bypass: true and no identity is 200"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-authz-bypass: "true"
+    test: |
+      current.res.status == 200
+      && len(filter(current.res.body.mcp, .tools != nil)) == 2
+  tools_with_wrong_bypass_value:
+    desc: "?tools=true with x-authz-bypass: TRUE is still 403"
+    req:
+      /mcp/list?tools=true:
+        get:
+          headers:
+            x-authz-bypass: "TRUE"
+    test: current.res.status == 403
