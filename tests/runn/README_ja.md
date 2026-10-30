@@ -27,7 +27,7 @@ make runn             # または tests/runn/run.sh
 OPA_BIN=/path/to/opa tests/runn/run.sh   # docker なしの場合
 ```
 
-ランブックはゲートウェイの URL を `BASE_URL`（既定は `http://127.0.0.1:19999`）から読むので、すでに起動しているゲートウェイに対して手で実行することもできます: `cd tests/runn && BASE_URL=... runn run --verbose --debug-on-failure 'runbooks/*.yml'`。`runn run --run 30_authz` で 1 つのランブックだけ実行できます。
+ランブックはゲートウェイの URL を `BASE_URL`（既定は `http://127.0.0.1:19999`）から読むので、すでに起動しているゲートウェイに対して手で実行することもできます: `cd tests/runn && BASE_URL=... runn run --verbose --debug-on-failure 'runbooks/*.yml'`。`runn run runbooks/30_authz.yml` で 1 つのランブックだけ実行できます。
 
 ログ・監査ログ・runn の出力（`runn.log`）は `tests/runn/tmp/` に書き出されます。失敗したステップはリクエストとレスポンス（`--debug-on-failure`）と、アサーションを部分式ごとの値つきで展開したツリーを出力します。
 

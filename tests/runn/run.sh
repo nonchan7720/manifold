@@ -116,10 +116,14 @@ audit_has() {
     exit 1
   fi
 }
-audit_has '"tool":"get_pet".*"outcome":"success"'
-audit_has '"tool":"getinventory".*"outcome":"success"'
-audit_has '"tool":"getpetbyid".*"outcome":"error"'
-audit_has '"tool":"deletepet".*"outcome":"denied"'
-audit_has '"tool":"deletepet".*"outcome":"success"'
+# Each line pins the caller's groups as well, since the same tool and outcome
+# can be recorded for several callers (e.g. deletepet succeeds for operators
+# and for readers with x-authz-bypass, and is denied for readers).
+audit_has '"tool":"get_pet".*"outcome":"success".*"groups":"operators"'
+audit_has '"tool":"get_pet".*"outcome":"success".*"groups":"readers"'
+audit_has '"tool":"getinventory".*"outcome":"success".*"groups":"operators"'
+audit_has '"tool":"getpetbyid".*"outcome":"error".*"groups":"operators"'
+audit_has '"tool":"deletepet".*"outcome":"denied".*"groups":"readers"'
+audit_has '"tool":"deletepet".*"outcome":"success".*"groups":"operators"'
 
 echo "==> OK"

@@ -27,7 +27,7 @@ make runn             # or tests/runn/run.sh
 OPA_BIN=/path/to/opa tests/runn/run.sh   # without docker
 ```
 
-The runbooks read the gateway URL from `BASE_URL` (default `http://127.0.0.1:19999`), so they can also be run by hand against a gateway that is already up: `cd tests/runn && BASE_URL=... runn run --verbose --debug-on-failure 'runbooks/*.yml'`. `runn run --run 30_authz` runs one runbook.
+The runbooks read the gateway URL from `BASE_URL` (default `http://127.0.0.1:19999`), so they can also be run by hand against a gateway that is already up: `cd tests/runn && BASE_URL=... runn run --verbose --debug-on-failure 'runbooks/*.yml'`. `runn run runbooks/30_authz.yml` runs one runbook.
 
 Logs, the audit file and the runn output (`runn.log`) are written to `tests/runn/tmp/`. A failed step prints its request and response (`--debug-on-failure`) and a tree of the assertion with the value of each sub-expression.
 
