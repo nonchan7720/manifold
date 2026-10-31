@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.25.0](https://github.com/nonchan7720/manifold/compare/v1.24.1...v1.25.0) (2026-10-31)
+
+
+### Features
+
+* Google サービスアカウント認証と下流 JWT 検証を追加 ([#344](https://github.com/nonchan7720/manifold/issues/344)) ([fefb4bf](https://github.com/nonchan7720/manifold/commit/fefb4bfcd96b2e78a02acb7f401c6ad4306eaf99))
+* **openapi:** tools.exclude に一致した operation をツール化しない ([#336](https://github.com/nonchan7720/manifold/issues/336)) ([78d27d2](https://github.com/nonchan7720/manifold/commit/78d27d2b02252d80a836f1588d3911b3e6fbac7b))
+
+
+### Bug Fixes
+
+* **deps:** Go 1.27.3 へ更新し distroless digest を更新 / bump Go to 1.27.3 and distroless digest (eMudhra CA compromise) ([#332](https://github.com/nonchan7720/manifold/issues/332)) ([dd1741f](https://github.com/nonchan7720/manifold/commit/dd1741fb5772cc76b1c871d4305279971b93a24a))
+* **deps:** update dependency playwright to v1.64.0 ([#310](https://github.com/nonchan7720/manifold/issues/310)) ([2487faa](https://github.com/nonchan7720/manifold/commit/2487faa1cab0649ac252a16cd17cb6f466e3f2f5))
+* **deps:** update go patch dependencies ([#334](https://github.com/nonchan7720/manifold/issues/334)) ([60d7108](https://github.com/nonchan7720/manifold/commit/60d710895fe588ffed4a5a2491683f75b5b14212))
+* **deps:** update go patch dependencies ([#346](https://github.com/nonchan7720/manifold/issues/346)) ([1403114](https://github.com/nonchan7720/manifold/commit/140311478ae89b73a6551c97a7373cbb4cf7c625))
+* **deps:** update js non-major dependencies ([#313](https://github.com/nonchan7720/manifold/issues/313)) ([47b7953](https://github.com/nonchan7720/manifold/commit/47b7953902ab9750a153ff1cec73768b4d0d87bc))
+* **deps:** update module github.com/n-creativesystem/go-packages/lib/trace to v1.3.0 ([#309](https://github.com/nonchan7720/manifold/issues/309)) ([839c363](https://github.com/nonchan7720/manifold/commit/839c36387f2ca4ab2a47fbb7bdc6a93de590821f))
+* **edge:** タブの不正なツール定義でゲートウェイが落ちないようにする ([#325](https://github.com/nonchan7720/manifold/issues/325)) ([b4aaff4](https://github.com/nonchan7720/manifold/commit/b4aaff4afd09caeeef63575a5a4109c1106cb949))
+* **oauth:** リフレッシュトークン・認可コードをログとスパンに出さない ([#327](https://github.com/nonchan7720/manifold/issues/327)) ([d850111](https://github.com/nonchan7720/manifold/commit/d850111f3214ce1bd28b0a940667886731395232))
+* **ssrf:** 呼び出し側指定 URL の取得先検査を粒度を上げて常時有効にする ([#326](https://github.com/nonchan7720/manifold/issues/326)) ([c5f9d6a](https://github.com/nonchan7720/manifold/commit/c5f9d6a59ddbb3135938dd7aebc3651410d6a2d7))
+* **storage:** ファイルの Content-Type 判定を mimetype に切り替える ([#341](https://github.com/nonchan7720/manifold/issues/341)) ([5b9705c](https://github.com/nonchan7720/manifold/commit/5b9705c15a2c0751e838fe13b861da2cb8f3e607))
+
+
+### Miscellaneous
+
+* **deps:** update dependency golangci-lint to v2.15.0 ([#335](https://github.com/nonchan7720/manifold/issues/335)) ([42be9bb](https://github.com/nonchan7720/manifold/commit/42be9bbd7f62ff855b4bc08c9b83622b279c6a9e))
+* **deps:** update dependency vitest to v5 ([#201](https://github.com/nonchan7720/manifold/issues/201)) ([7a66cbc](https://github.com/nonchan7720/manifold/commit/7a66cbc9e2350a5870ed0fae3837cba01f4adfcc))
+
 ## [1.24.1](https://github.com/nonchan7720/manifold/compare/v1.24.0...v1.24.1) (2026-10-18)
 
 
