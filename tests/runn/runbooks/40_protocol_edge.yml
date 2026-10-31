@@ -1,0 +1,399 @@
+desc: Routing, Streamable HTTP protocol edge cases, tools/call arguments and the request body limit
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+vars:
+  # Shared request headers; every step merges these with <<: and adds or
+  # overrides what it needs. SSE responses are decoded in each test with
+  #   let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"))
+  mcp: &mcp
+    Content-Type: application/json
+    Accept: application/json, text/event-stream
+    MCP-Protocol-Version: "2025-06-18"
+    Authorization: Bearer runn-token
+  operators: &operators
+    x-user-id: user-001
+    x-user-groups: operators
+  readers: &readers
+    x-user-id: user-001
+    x-user-groups: readers
+steps:
+  # --- routing
+  unknown_server:
+    desc: "An unknown server name is 400 (the SDK finds no server to serve it)"
+    req:
+      /mcp/does_not_exist:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 101, method: tools/list}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody == "no server available\n"
+  unknown_server_skips_token_check:
+    desc: "Token verification only applies to configured servers: an unknown one is 400 even without a token"
+    req:
+      /mcp/does_not_exist:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            <<: *operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 102, method: tools/list}
+    test: current.res.status == 400
+  extra_path_segment:
+    desc: "/mcp/{server}/extra does not match any route: 404"
+    req:
+      /mcp/petstore/extra:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 103, method: tools/list}
+    test: current.res.status == 404
+  # --- HTTP-level protocol checks
+  malformed_json:
+    desc: "A body that is not JSON is 400 (malformed payload)"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            text/plain: "{not json"
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "malformed payload"
+  empty_body:
+    desc: "An empty POST body is 400"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            text/plain: ""
+    test: |
+      current.res.status == 400
+      && current.res.rawBody == "POST requires a non-empty body\n"
+  accept_header_missing:
+    desc: "Without an Accept header the request is 400"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            MCP-Protocol-Version: "2025-06-18"
+            Authorization: Bearer runn-token
+            <<: *operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 104, method: tools/list}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "Accept must contain both"
+  accept_json_only:
+    desc: "Accept: application/json alone is 400 (both JSON and SSE are required)"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Accept: application/json
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 105, method: tools/list}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "Accept must contain both"
+  accept_sse_only:
+    desc: "Accept: text/event-stream alone is 400 as well"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Accept: text/event-stream
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 106, method: tools/list}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "Accept must contain both"
+  unsupported_content_type:
+    desc: "A Content-Type other than application/json is 415"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Content-Type: text/plain
+          body:
+            text/plain: '{"jsonrpc": "2.0", "id": 107, "method": "tools/list"}'
+    test: current.res.status == 415
+  content_type_with_charset:
+    desc: "application/json; charset=utf-8 is accepted"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            Content-Type: application/json; charset=utf-8
+          body:
+            text/plain: '{"jsonrpc": "2.0", "id": 108, "method": "ping"}'
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+  get_is_not_allowed:
+    desc: "GET /mcp/{server} is 405 (stateless mode has no standalone SSE stream)"
+    req:
+      /mcp/petstore:
+        get:
+          headers:
+            Accept: text/event-stream
+            Authorization: Bearer runn-token
+            <<: *operators
+    test: |
+      current.res.status == 405
+      && current.res.headers["Allow"][0] == "POST"
+  delete_is_not_allowed:
+    desc: "DELETE /mcp/{server} is 405 (there are no sessions to terminate)"
+    req:
+      /mcp/petstore:
+        delete:
+          headers:
+            Authorization: Bearer runn-token
+            <<: *operators
+    test: |
+      current.res.status == 405
+      && current.res.headers["Allow"][0] == "POST"
+  unsupported_protocol_version:
+    desc: "An unknown MCP-Protocol-Version header is 400"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+            MCP-Protocol-Version: "1999-01-01"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 109, method: tools/list}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "Unsupported protocol version"
+  # --- JSON-RPC level
+  notification:
+    desc: "A notification (no id) is acknowledged with 202 and an empty body"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", method: notifications/initialized}
+    test: |
+      current.res.status == 202
+      && current.res.rawBody == ""
+  ping:
+    desc: "ping returns an empty result, whatever the caller's groups"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: guests
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 110, method: ping}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.id == 110
+      && rpc.result == {}
+  unknown_method:
+    desc: "An unknown JSON-RPC method is rejected by the SDK with a plain-text 400, not a -32601 error"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 111, method: foo/bar}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "foo/bar"
+  tools_call_without_params:
+    desc: "tools/call without params is 400"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 112, method: tools/call}
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "params"
+  string_request_id:
+    desc: "A string request id is echoed back unchanged"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: req-abc, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.id == "req-abc"
+  batch_is_rejected_on_current_protocol:
+    desc: "JSON-RPC batching is 400 on protocol 2025-06-18 and later"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              [{jsonrpc: "2.0", id: 113, method: tools/list}, {jsonrpc: "2.0", id: 114, method: tools/list}]
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "batching is not supported"
+  empty_batch:
+    desc: "An empty batch is 400"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            Authorization: Bearer runn-token
+            <<: *operators
+          body:
+            application/json: []
+    test: |
+      current.res.status == 400
+      && current.res.rawBody contains "empty batch"
+  batch_is_authorized_per_message:
+    desc: "On the legacy protocol (no version header) a batch is allowed, and each message is authorized on its own"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            Authorization: Bearer runn-token
+            <<: *readers
+          body:
+            application/json:
+              [{jsonrpc: "2.0", id: 115, method: tools/call, params: {name: deletepet, arguments: {petId: 3}}}, {jsonrpc: "2.0", id: 116, method: tools/call, params: {name: get_pet, arguments: {petId: 3}}}]
+    test: |
+      let msgs = map(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:")), fromJSON(trimPrefix(#, "data:")));
+      let denied = filter(msgs, .id == 115)[0];
+      let allowed = filter(msgs, .id == 116)[0];
+      current.res.status == 200
+      && len(msgs) == 2
+      && denied.error.message == "tool not allowed by policy"
+      && fromJSON(allowed.result.content[0].text).id == 3
+  # --- tools/call arguments
+  argument_missing_required:
+    desc: "A missing required argument is not rejected by the gateway: the backend answers 400 and its text comes back as the tool output"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 120, method: tools/call, params: {name: get_pet, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.content[0].text == "invalid pet id\n"
+  argument_wrong_type:
+    desc: "A non-numeric petId is forwarded as is and the backend's 400 text comes back"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 121, method: tools/call, params: {name: get_pet, arguments: {petId: abc}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.content[0].text == "invalid pet id\n"
+  argument_unknown_key:
+    desc: "An argument the operation does not declare is ignored"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 122, method: tools/call, params: {name: get_pet, arguments: {petId: 9, unexpected: true}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.isError != true
+      && body.id == 9
+  # --- request body limit (gateway.maxRequestBodySize: 4096)
+  body_under_limit:
+    desc: "A body under maxRequestBodySize goes through (a 3000 byte argument is echoed back whole)"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 130, method: tools/call, params: {name: findpetsbystatus, arguments: {status: "{{ repeat('a', 3000) }}"}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      current.res.status == 200
+      && rpc.error == nil
+      && len(body.items[0].status) == 3000
+  body_over_limit:
+    desc: "A body over maxRequestBodySize is 413 (rejected from Content-Length)"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 131, method: tools/call, params: {name: findpetsbystatus, arguments: {status: "{{ repeat('a', 5000) }}"}}}
+    test: |
+      current.res.status == 413
+      && current.res.rawBody == "request body too large\n"
+  body_limit_precedes_authentication:
+    desc: "The size limit is checked before the bearer token: an oversized body without a token is 413, not 401"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            Content-Type: application/json
+            Accept: application/json, text/event-stream
+            <<: *operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 132, method: tools/call, params: {name: findpetsbystatus, arguments: {status: "{{ repeat('a', 5000) }}"}}}
+    test: current.res.status == 413

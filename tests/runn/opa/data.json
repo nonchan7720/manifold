@@ -4,6 +4,7 @@
       "tools": ["petstore/get_pet", "petstore/findpetsbystatus", "petstore_small/*"]
     },
     "operators": {
+      "catalog": true,
       "tools": ["petstore/*", "petstore_small/*"]
     }
   }

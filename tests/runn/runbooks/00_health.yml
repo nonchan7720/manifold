@@ -1,0 +1,22 @@
+desc: Health and readiness probes answer without any credentials
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+steps:
+  healthz:
+    desc: GET /healthz is 200 with status ok
+    req:
+      /healthz:
+        get:
+          body: null
+    test: |
+      current.res.status == 200
+      && current.res.body.status == "ok"
+  readyz:
+    desc: GET /readyz is 200 with status ok
+    req:
+      /readyz:
+        get:
+          body: null
+    test: |
+      current.res.status == 200
+      && current.res.body.status == "ok"

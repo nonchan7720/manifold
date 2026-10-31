@@ -1,10 +1,12 @@
-# Gateway configuration for the Postman CLI end-to-end run (see run.sh).
+# Gateway configuration for the runn end-to-end run (see run.sh).
 #
 # Two servers share the stub Petstore API. `petstore` exposes five tools (one
 # of them renamed) to the operators group; readers only see two of them, and
 # `petstore_small` exposes a single tool.
 gateway:
   port: 19999
+  # Small enough for the oversized-body case in runbooks/40_protocol_edge.yml.
+  maxRequestBodySize: 4096
 
 mcpServers:
   petstore:
@@ -22,7 +24,7 @@ mcpServers:
       include: ["getinventory"]
 
 # OPA sidecar started by run.sh with examples/opa/policy.rego and
-# tests/postman/opa/data.json.
+# tests/runn/opa/data.json.
 authz:
   enabled: true
   opaURL: http://127.0.0.1:8181

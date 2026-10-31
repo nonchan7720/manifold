@@ -1,0 +1,124 @@
+desc: The x-authz-bypass header (exact "true" only) skips tool authorization
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+vars:
+  # Shared request headers; every step merges these with <<: and adds or
+  # overrides what it needs. SSE responses are decoded in each test with
+  #   let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"))
+  mcp: &mcp
+    Content-Type: application/json
+    Accept: application/json, text/event-stream
+    MCP-Protocol-Version: "2025-06-18"
+    Authorization: Bearer runn-token
+  operators: &operators
+    x-user-id: user-001
+    x-user-groups: operators
+  readers: &readers
+    x-user-id: user-001
+    x-user-groups: readers
+steps:
+  bypass_lists_everything:
+    desc: "Without identity, x-authz-bypass: true lists all five tools"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "true"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 61, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["deletepet", "findpetsbystatus", "findpetsbytags", "get_pet", "getinventory"]
+  bypass_call:
+    desc: "Without identity, x-authz-bypass: true allows tools/call"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "true"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 62, method: tools/call, params: {name: get_pet, arguments: {petId: 5}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && body.id == 5
+  bypass_beats_groups:
+    desc: "The bypass wins over a restrictive group: readers may call deletepet"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "true"
+            x-user-id: user-001
+            x-user-groups: readers
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 63, method: tools/call, params: {name: deletepet, arguments: {petId: 5}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && body.deleted == "5"
+  bypass_uppercase_value:
+    desc: "x-authz-bypass: TRUE is not \"true\" and is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "TRUE"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 64, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  bypass_numeric_value:
+    desc: "x-authz-bypass: 1 is not \"true\" and is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "1"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 65, method: tools/call, params: {name: get_pet, arguments: {petId: 5}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  bypass_false_keeps_policy:
+    desc: "x-authz-bypass: false leaves the group policy in force"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-authz-bypass: "false"
+            x-user-id: user-001
+            x-user-groups: readers
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 66, method: tools/call, params: {name: deletepet, arguments: {petId: 5}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"

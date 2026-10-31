@@ -12,7 +12,7 @@ import (
 // normalizeCacheable は SEP-2549 のキャッシュ項目に既定値を入れる。cacheScope は
 // ワイヤ上必須の enum（"public" / "private"）で、SDK の tools/list ハンドラは空なら
 // "public" に正規化する。パススルーはそのハンドラを通らないため、同じ正規化を
-// ここで行う。空のまま送ると enum を厳密に検証するクライアント（Postman 等）が
+// ここで行う。空のまま送ると enum を厳密に検証するクライアント（スキーマ検証付きの MCP クライアント等）が
 // レスポンス全体を捨て、ツールが 1 つも表示されない。
 func normalizeCacheable(c *mcp.Cacheable) {
 	if c.CacheScope == "" {

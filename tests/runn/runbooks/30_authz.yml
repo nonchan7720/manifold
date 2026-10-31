@@ -1,0 +1,421 @@
+desc: Tool authorization with OPA - groups, identity headers and denial responses
+runners:
+  req: ${BASE_URL:-http://127.0.0.1:19999}
+vars:
+  # Shared request headers; every step merges these with <<: and adds or
+  # overrides what it needs. SSE responses are decoded in each test with
+  #   let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"))
+  mcp: &mcp
+    Content-Type: application/json
+    Accept: application/json, text/event-stream
+    MCP-Protocol-Version: "2025-06-18"
+    Authorization: Bearer runn-token
+  operators: &operators
+    x-user-id: user-001
+    x-user-groups: operators
+  readers: &readers
+    x-user-id: user-001
+    x-user-groups: readers
+steps:
+  # --- readers (get_pet, findpetsbystatus, petstore_small/*)
+  readers_list_is_filtered:
+    desc: "readers see only the two tools the policy allows"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 31, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["findpetsbystatus", "get_pet"]
+  readers_call_allowed_tool:
+    desc: "readers can call get_pet"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 32, method: tools/call, params: {name: get_pet, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && body.id == 3
+  readers_query_is_forwarded:
+    desc: "readers findpetsbystatus forwards the status query to the backend"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 33, method: tools/call, params: {name: findpetsbystatus, arguments: {status: available}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && len(body.items) == 1
+      && body.items[0].status == "available"
+  readers_denied_tool:
+    desc: "readers are refused deletepet"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 34, method: tools/call, params: {name: deletepet, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  readers_denied_included_tool:
+    desc: "findpetsbytags is included but outside the policy: denied, not unknown"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 35, method: tools/call, params: {name: findpetsbytags, arguments: {tags: [a]}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  readers_denied_unknown_tool:
+    desc: "An unknown tool is denied before the lookup, so its existence is not revealed"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 36, method: tools/call, params: {name: no_such_tool, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  readers_denied_original_name:
+    desc: "The pre-rename name getpetbyid is denied too"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 37, method: tools/call, params: {name: getpetbyid, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  readers_small_list:
+    desc: "petstore_small/* lets readers list getinventory"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 38, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["getinventory"]
+  readers_small_call:
+    desc: "petstore_small/* lets readers call getinventory"
+    req:
+      /mcp/petstore_small:
+        post:
+          headers:
+            <<: [*mcp, *readers]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 39, method: tools/call, params: {name: getinventory, arguments: {}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && body.available == 3
+  # --- operators (petstore/*, petstore_small/*)
+  operators_delete_succeeds:
+    desc: "operators may call deletepet"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 40, method: tools/call, params: {name: deletepet, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      let body = fromJSON(rpc.result.content[0].text);
+      rpc.error == nil
+      && rpc.result.isError != true
+      && body.deleted == "3"
+  # --- identity headers
+  no_identity_list:
+    desc: "tools/list without identity headers is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 41, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  no_identity_call:
+    desc: "tools/call without identity headers is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 42, method: tools/call, params: {name: get_pet, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  user_id_only:
+    desc: "x-user-id without x-user-groups is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 43, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  groups_only:
+    desc: "x-user-groups without x-user-id is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-groups: operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 44, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  empty_user_id:
+    desc: "An empty x-user-id is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: ""
+            x-user-groups: operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 45, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  empty_groups:
+    desc: "An empty x-user-groups is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: ""
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 46, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  blank_group_elements:
+    desc: "x-user-groups made only of separators and blanks is denied"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: " , ,"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 47, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  unknown_group_list:
+    desc: "A group the policy does not know gets an empty tools/list"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: guests
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 48, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.tools == []
+  unknown_group_call:
+    desc: "A group the policy does not know is denied on tools/call"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: guests
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 49, method: tools/call, params: {name: get_pet, arguments: {petId: 3}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.result == nil
+      && rpc.error.code == -32603
+      && rpc.error.message == "tool not allowed by policy"
+  group_names_are_case_sensitive:
+    desc: "Group names are case-sensitive: \"Operators\" is not operators"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: Operators
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 50, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && rpc.result.tools == []
+  multiple_groups_with_blanks:
+    desc: "Several groups, with blanks around them, are unioned"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: " readers , operators "
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 51, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["deletepet", "findpetsbystatus", "findpetsbytags", "get_pet", "getinventory"]
+  multiple_groups_with_empty_element:
+    desc: "An empty element between commas is ignored"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: "readers,,operators"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 52, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["deletepet", "findpetsbystatus", "findpetsbytags", "get_pet", "getinventory"]
+  multiple_groups_one_unknown:
+    desc: "Unknown groups next to a known one do not hide its tools"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            x-user-id: user-001
+            x-user-groups: "guests,readers"
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 53, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["findpetsbystatus", "get_pet"]
+  uppercase_header_names:
+    desc: "Header names are case-insensitive: X-USER-ID / X-USER-GROUPS"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: *mcp
+            X-USER-ID: user-001
+            X-USER-GROUPS: readers
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 54, method: tools/list}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      current.res.status == 200
+      && rpc.error == nil
+      && sort(map(rpc.result.tools, {.name})) == ["findpetsbystatus", "get_pet"]

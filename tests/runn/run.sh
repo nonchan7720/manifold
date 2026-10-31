@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Runs the Postman CLI end-to-end suite for tool filtering, tool
-# authorization and the audit log against a locally built gateway:
+# Runs the runn end-to-end suite for tool filtering, tool authorization, the
+# protocol edge cases and the audit log against a locally built gateway:
 #
 #   OPA (docker)  <--  manifold gateway  -->  stub Petstore API (Go)
 #                           ^
-#                     postman collection run
+#                       runn run
 #
-# Needs go, docker and the Postman CLI (https://learning.postman.com/docs/postman-cli/).
+# Needs go, docker, curl and runn (https://github.com/k1LoW/runn).
 # Without docker, point OPA_BIN at an opa binary (https://www.openpolicyagent.org/docs/#running-opa)
-# and it is started directly instead. Logs, the audit file and the JUnit report
-# land in tests/postman/tmp/.
+# and it is started directly instead. Logs, the audit file and the runn output
+# land in tests/runn/tmp/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DIR="$ROOT/tests/postman"
+DIR="$ROOT/tests/runn"
 TMP="$DIR/tmp"
 OPA_IMAGE="${OPA_IMAGE:-openpolicyagent/opa:1.19.1}"
-OPA_CONTAINER="${OPA_CONTAINER:-manifold-postman-opa}"
+OPA_CONTAINER="${OPA_CONTAINER:-manifold-runn-opa}"
 STUB_ADDR="127.0.0.1:18080"
 GATEWAY_URL="http://127.0.0.1:19999"
 OPA_URL="http://127.0.0.1:8181"
@@ -26,7 +26,7 @@ OPA_URL="http://127.0.0.1:8181"
 export TEST=true
 export AUDIT_OUTPUT="$TMP/audit.jsonl"
 
-required=(go curl postman)
+required=(go curl runn)
 if [ -z "${OPA_BIN:-}" ]; then
   required+=(docker)
 fi
@@ -38,7 +38,7 @@ for cmd in "${required[@]}"; do
 done
 
 mkdir -p "$TMP"
-rm -f "$AUDIT_OUTPUT" "$TMP"/*.log "$TMP"/junit.xml
+rm -f "$AUDIT_OUTPUT" "$TMP"/*.log
 
 STUB_PID=""
 GW_PID=""
@@ -67,7 +67,7 @@ wait_for() {
 
 echo "==> building manifold and the stub API"
 go build -o "$TMP/manifold" "$ROOT"
-go build -o "$TMP/stub" "$ROOT/tests/postman/stub"
+go build -o "$TMP/stub" "$ROOT/tests/runn/stub"
 
 # The OPA bundle: the policy shared with examples/opa plus this suite's groups.
 rm -rf "$TMP/opa-bundle"
@@ -97,10 +97,16 @@ echo "==> starting the gateway on $GATEWAY_URL"
 GW_PID=$!
 wait_for "$GATEWAY_URL/healthz" "gateway"
 
-echo "==> running the Postman collection"
-postman collection run "$DIR/manifold.postman_collection.json" \
-  --env-var "baseUrl=$GATEWAY_URL" \
-  -r cli,junit --reporter-junit-export "$TMP/junit.xml"
+echo "==> running the runn runbooks"
+# The runbooks read the gateway URL from BASE_URL. --debug-on-failure dumps the
+# request and response of a failed step; the whole output is kept in runn.log.
+export BASE_URL="$GATEWAY_URL"
+# runn only reads runbooks below the working directory, hence the cd. stdin is
+# closed because runn waits for input on a non-terminal stdin.
+if ! (cd "$DIR" && runn run --verbose --debug-on-failure 'runbooks/*.yml' </dev/null) 2>&1 | tee "$TMP/runn.log"; then
+  echo "error: runn failed; see $TMP/runn.log, gateway.log, stub.log and audit.jsonl" >&2
+  exit 1
+fi
 
 echo "==> checking the audit log"
 audit_has() {
@@ -110,9 +116,14 @@ audit_has() {
     exit 1
   fi
 }
-audit_has '"tool":"get_pet".*"outcome":"success"'
-audit_has '"tool":"getinventory".*"outcome":"success"'
-audit_has '"tool":"getpetbyid".*"outcome":"error"'
-audit_has '"tool":"deletepet".*"outcome":"denied"'
+# Each line pins the caller's groups as well, since the same tool and outcome
+# can be recorded for several callers (e.g. deletepet succeeds for operators
+# and for readers with x-authz-bypass, and is denied for readers).
+audit_has '"tool":"get_pet".*"outcome":"success".*"groups":"operators"'
+audit_has '"tool":"get_pet".*"outcome":"success".*"groups":"readers"'
+audit_has '"tool":"getinventory".*"outcome":"success".*"groups":"operators"'
+audit_has '"tool":"getpetbyid".*"outcome":"error".*"groups":"operators"'
+audit_has '"tool":"deletepet".*"outcome":"denied".*"groups":"readers"'
+audit_has '"tool":"deletepet".*"outcome":"success".*"groups":"operators"'
 
 echo "==> OK"
