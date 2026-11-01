@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"golang.org/x/oauth2"
 )
 
 // --- generateRandomString ---
@@ -2883,3 +2885,257 @@ func TestDiscoverOAuth2_ProbeUsesHandlerHTTPClient(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// --- discoverOAuth2: DCR の登録リクエストもハンドラの httpClient を通る ---
+
+func TestDiscoverOAuth2_DCR_RegistrationUsesHandlerHTTPClient(t *testing.T) {
+	var authServerURL string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		issuer := authServerURL
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"issuer":                           issuer,
+				"authorization_endpoint":           issuer + "/auth",
+				"token_endpoint":                   issuer + "/token",
+				"registration_endpoint":            issuer + "/register",
+				"response_types_supported":         []string{"code"},
+				"grant_types_supported":            []string{"authorization_code"},
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"client_id":     "dcr-client-id",
+				"client_secret": "dcr-client-secret",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSrv.Close()
+	authServerURL = authSrv.URL
+
+	var metaServerURL, mcpServerURL string
+	metaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+			"resource":              mcpServerURL,
+			"authorization_servers": []string{authServerURL},
+		})
+	}))
+	defer metaSrv.Close()
+	metaServerURL = metaSrv.URL
+
+	mcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Www-Authenticate",
+			fmt.Sprintf(`Bearer resource_metadata="%s"`, metaServerURL))
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mcpSrv.Close()
+	mcpServerURL = mcpSrv.URL
+
+	// ハンドラの httpClient を通ったリクエストのパスを記録する
+	var mu sync.Mutex
+	var seenPaths []string
+	h := NewAuthHandler(
+		newMockStore(map[string]string{}),
+		config.Servers{"testsrv": &config.Server{Name: "testsrv"}},
+		WithHTTPClient(
+			&http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				mu.Lock()
+				seenPaths = append(seenPaths, r.URL.Path)
+				mu.Unlock()
+				return http.DefaultTransport.RoundTrip(r)
+			})},
+		),
+	)
+	srv := &config.Server{
+		Name:      "testsrv",
+		Transport: config.MCPTransportHTTP,
+		URL:       mcpSrv.URL,
+	}
+
+	result, err := h.discoverOAuth2(t.Context(), srv, "http://gateway.example.com")
+	require.NoError(t, err)
+	require.Equal(t, "dcr-client-id", result.ClientID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, seenPaths, "/register",
+		"DCR registration must go through the handler's SSRF-safe httpClient, got %v", seenPaths)
+}
+
+// --- upstreamAuthStyle ---
+
+func TestUpstreamAuthStyle(t *testing.T) {
+	require.Equal(t, oauth2.AuthStyleInParams, upstreamAuthStyle(""))
+	require.Equal(t, oauth2.AuthStyleAutoDetect, upstreamAuthStyle("secret"))
+}
+
+// --- CallbackEndpoint: client_secret 空（CIMD などのパブリッククライアント）---
+
+func TestCallbackEndpoint_PublicClientSendsClientIDInParams(t *testing.T) {
+	const upstreamClientID = "https://cdn.example.com/manifold/client.json"
+	var calls atomic.Int64
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		// Basic 認証ヘッダを送られたらパブリッククライアント非対応の AS と同じく拒否する
+		if r.Header.Get("Authorization") != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_client"})
+			return
+		}
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, upstreamClientID, r.FormValue("client_id"))
+		require.Empty(t, r.FormValue("client_secret"))
+		require.Equal(t, "upstream-code", r.FormValue("code"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "upstream-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenSrv.Close()
+
+	session := AuthSession{
+		ClientID:             "client1",
+		RedirectURI:          "http://localhost:3000/callback",
+		State:                "mystate",
+		CodeChallenge:        "challenge",
+		CodeChallengeMethod:  "S256",
+		OAuth2ClientID:       upstreamClientID,
+		OAuth2ClientSecret:   "",
+		OAuth2TokenURL:       tokenSrv.URL + "/token",
+		UpstreamCodeVerifier: "verifier",
+		MCPServerName:        "myserver",
+	}
+	sessionJSON, _ := json.Marshal(session)
+	st := newMockStore(map[string]string{"auth_session:mystate": string(sessionJSON)})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(make([]byte, 32)))
+	h.httpClient = http.DefaultClient
+	srv := &config.Server{
+		Name:   "myserver",
+		OAuth2: &config.OAuth2{ClientID: upstreamClientID, TokenURL: tokenSrv.URL + "/token"},
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/callback?state=mystate&code=upstream-code", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusFound, rw.Code, rw.Body.String())
+	// 認可コードは 1 回しか送られない（Basic → params の再送が起きない）
+	require.EqualValues(t, 1, calls.Load())
+}
+
+// --- CallbackEndpoint: client_secret あり（DCR）は従来どおり Basic 認証から試す ---
+
+func TestCallbackEndpoint_ConfidentialClientKeepsBasicAuth(t *testing.T) {
+	var calls atomic.Int64
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		user, pass, ok := r.BasicAuth()
+		require.True(t, ok, "expected Basic auth header")
+		require.Equal(t, "upstream-client", user)
+		require.Equal(t, "upstream-secret", pass)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "upstream-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer tokenSrv.Close()
+
+	session := AuthSession{
+		ClientID:             "client1",
+		RedirectURI:          "http://localhost:3000/callback",
+		State:                "mystate",
+		CodeChallenge:        "challenge",
+		CodeChallengeMethod:  "S256",
+		OAuth2ClientID:       "upstream-client",
+		OAuth2ClientSecret:   "upstream-secret",
+		OAuth2TokenURL:       tokenSrv.URL + "/token",
+		UpstreamCodeVerifier: "verifier",
+		MCPServerName:        "myserver",
+	}
+	sessionJSON, _ := json.Marshal(session)
+	st := newMockStore(map[string]string{"auth_session:mystate": string(sessionJSON)})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(make([]byte, 32)))
+	h.httpClient = http.DefaultClient
+	srv := &config.Server{
+		Name:   "myserver",
+		OAuth2: &config.OAuth2{ClientID: "upstream-client", TokenURL: tokenSrv.URL + "/token"},
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/myserver/auth/callback?state=mystate&code=upstream-code", nil)
+	req.Host = "gateway.example.com"
+	rw := httptest.NewRecorder()
+
+	h.CallbackEndpoint(rw, req, srv)
+
+	require.Equal(t, http.StatusFound, rw.Code, rw.Body.String())
+	require.EqualValues(t, 1, calls.Load())
+}
+
+// --- TokenEndpoint refresh_token: client_secret 空のときは client_id をボディで送る ---
+
+func TestTokenEndpoint_RefreshToken_PublicClientSendsClientIDInParams(t *testing.T) {
+	const upstreamClientID = "https://cdn.example.com/manifold/client.json"
+	var calls atomic.Int64
+	upstreamSrv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if r.Header.Get("Authorization") != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_client"})
+				return
+			}
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, "refresh_token", r.FormValue("grant_type"))
+			require.Equal(t, upstreamClientID, r.FormValue("client_id"))
+			require.Empty(t, r.FormValue("client_secret"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "new-access-token",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+				"refresh_token": "new-refresh-token",
+			})
+		}),
+	)
+	defer upstreamSrv.Close()
+
+	st := newMockStore(map[string]string{})
+	h := NewAuthHandler(st, config.Servers{}, WithEncryptKey(make([]byte, 32)))
+	h.httpClient = http.DefaultClient
+
+	rtSession := RefreshTokenSession{
+		ClientID:       "client1",
+		OAuth2ClientID: upstreamClientID,
+		OAuth2TokenURL: upstreamSrv.URL + "/token",
+	}
+	rtSessionJSON, _ := json.Marshal(rtSession)
+	encrypted, err := h.encryptToken(rtSessionJSON)
+	require.NoError(t, err)
+	st.data["refresh_session:old-refresh-token"] = encrypted
+
+	body := "grant_type=refresh_token&refresh_token=old-refresh-token&client_id=client1"
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/testserver/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	h.TokenEndpoint(rw, req, &config.Server{Name: "testserver"})
+
+	require.Equal(t, http.StatusOK, rw.Code, rw.Body.String())
+	require.EqualValues(t, 1, calls.Load())
+}
