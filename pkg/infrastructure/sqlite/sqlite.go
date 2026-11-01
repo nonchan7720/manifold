@@ -99,7 +99,7 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	).Scan(&value)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
+			return "", fmt.Errorf("key not found: %w", store.ErrNotFound)
 		}
 		return "", fmt.Errorf("sqlite Get: %w", err)
 	}
@@ -125,7 +125,7 @@ func (c *Client) Expire(ctx context.Context, key string, expiration time.Duratio
 		return fmt.Errorf("sqlite Expire: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("key not found: %s", key)
+		return fmt.Errorf("key not found: %w", store.ErrNotFound)
 	}
 	return nil
 }

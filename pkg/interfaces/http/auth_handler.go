@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -610,9 +611,14 @@ func (h *AuthHandler) resolveLoginServer(
 		return nil
 	}
 
-	// OAuth2 設定がない HTTP MCP バックエンドは OAuth2.1 Auto-Discovery を試みる
+	// OAuth2 設定がない HTTP MCP バックエンドは OAuth2.1 Auto-Discovery を試みる。
+	// authValue / tokenExchange / googleServiceAccount で上流を認証しているサーバーは対象外:
+	// 検出結果を srv.OAuth2 に書き込むと transport の認証方式が oauth2 に切り替わり、
+	// 設定した認証が黙って無効化されたうえ下流のトークンが上流へ転送されてしまう。
+	// /register と /auth/login は未認証でも叩けるため、第三者がこの切り替えを起こせる。
 	if srv.OAuth2 == nil {
-		if !srv.IsMCPBackend() || srv.Transport != config.MCPTransportHTTP {
+		if !srv.IsMCPBackend() || srv.Transport != config.MCPTransportHTTP ||
+			srv.HasNonOAuth2BackendAuth() {
 			http.Error(w, "oauth2 not configured for this server", http.StatusInternalServerError)
 			return nil
 		}
@@ -620,7 +626,8 @@ func (h *AuthHandler) resolveLoginServer(
 		if err != nil {
 			slog.ErrorContext(ctx, "oauth2 discovery failed",
 				slog.String("server", srv.Name), slog.String("error", err.Error()))
-			http.Error(w, "oauth2 discovery failed: "+err.Error(), http.StatusInternalServerError)
+			// 詳細はログにだけ残す。上流の応答に由来する文言を下流クライアントへ返さない。
+			http.Error(w, "oauth2 discovery failed", http.StatusInternalServerError)
 			return nil
 		}
 		srv.OAuth2 = discovered
@@ -671,7 +678,7 @@ func (h *AuthHandler) startUpstreamAuthorization(
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 
 	sessionJSON, _ := json.Marshal(session)
-	if err = h.store.Set(ctx, "auth_session:"+sessionID, sessionJSON, 10*time.Minute); err != nil {
+	if err = h.store.Set(ctx, secretStoreKey(authSessionKeyPrefix, sessionID), sessionJSON, 10*time.Minute); err != nil {
 		slog.ErrorContext(ctx, "failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return err
@@ -747,7 +754,7 @@ func (h *AuthHandler) CallbackEndpoint(
 		return
 	}
 
-	sessionJSON, err := h.store.Get(ctx, "auth_session:"+sessionID)
+	sessionJSON, err := h.getSecretKeyed(ctx, authSessionKeyPrefix, sessionID)
 	if err != nil {
 		err = sanitizeStoreErr("auth session not found", err)
 		slog.WarnContext(
@@ -764,7 +771,7 @@ func (h *AuthHandler) CallbackEndpoint(
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	_ = h.store.Del(ctx, "auth_session:"+sessionID)
+	h.delSecretKeyed(ctx, authSessionKeyPrefix, sessionID)
 	if srv == nil {
 		if v, ok := h.servers[session.MCPServerName]; ok {
 			srv = v
@@ -827,7 +834,7 @@ func (h *AuthHandler) CallbackEndpoint(
 		encryptedRTSession, err := h.encryptToken(rtSessionJSON)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to encrypt refresh session", slog.Any("error", err))
-		} else if err = h.store.Set(ctx, "refresh_session:"+upstreamToken.RefreshToken, encryptedRTSession, 30*24*time.Hour); err != nil {
+		} else if err = h.store.Set(ctx, secretStoreKey(refreshSessionKeyPrefix, upstreamToken.RefreshToken), encryptedRTSession, 30*24*time.Hour); err != nil {
 			slog.ErrorContext(ctx, "failed to store refresh session", slog.Any("error", err))
 		}
 	}
@@ -842,7 +849,7 @@ func (h *AuthHandler) CallbackEndpoint(
 		MCPServerName:       srv.Name,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
-	if err = h.store.Set(ctx, "auth_code:"+mcpCode, authCodeJSON, 5*time.Minute); err != nil {
+	if err = h.store.Set(ctx, secretStoreKey(authCodeKeyPrefix, mcpCode), authCodeJSON, 5*time.Minute); err != nil {
 		slog.ErrorContext(ctx, "failed to store auth code", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -900,7 +907,7 @@ func (h *AuthHandler) TokenEndpoint(
 		return
 	}
 
-	authCodeJSON, err := h.store.Get(ctx, "auth_code:"+code)
+	authCodeJSON, err := h.getSecretKeyed(ctx, authCodeKeyPrefix, code)
 	if err != nil {
 		err = sanitizeStoreErr("auth code not found", err)
 		slog.WarnContext(
@@ -940,7 +947,7 @@ func (h *AuthHandler) TokenEndpoint(
 		return
 	}
 
-	_ = h.store.Del(ctx, "auth_code:"+code)
+	h.delSecretKeyed(ctx, authCodeKeyPrefix, code)
 
 	encryptedToken, err := h.store.Get(ctx, authCodeData.UpstreamTokenKey)
 	if err != nil {
@@ -1116,7 +1123,7 @@ func (h *AuthHandler) discoverOAuth2(
 				GrantTypes:   []string{"authorization_code", "refresh_token"},
 			}, h.httpClient)
 		if err != nil {
-			return nil, fmt.Errorf("dynamic client registration: %w", err)
+			return nil, fmt.Errorf("dynamic client registration: %w", sanitizeDCRError(err))
 		}
 		clientID = regResp.ClientID
 		clientSecret = regResp.ClientSecret
@@ -1370,7 +1377,7 @@ func (h *AuthHandler) handleRefreshTokenGrant(
 		return
 	}
 
-	encryptedRTSession, err := h.store.Get(r.Context(), "refresh_session:"+refreshToken)
+	encryptedRTSession, err := h.getSecretKeyed(r.Context(), refreshSessionKeyPrefix, refreshToken)
 	if err != nil {
 		err = sanitizeStoreErr("refresh session not found", err)
 		slog.WarnContext(
@@ -1421,13 +1428,13 @@ func (h *AuthHandler) handleRefreshTokenGrant(
 		return
 	}
 
-	_ = h.store.Del(r.Context(), "refresh_session:"+refreshToken)
+	h.delSecretKeyed(r.Context(), refreshSessionKeyPrefix, refreshToken)
 	if newToken.RefreshToken != "" {
 		rtSessionJSON2, _ := json.Marshal(rtSession)
 		encryptedNew, err := h.encryptToken(rtSessionJSON2)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to encrypt new refresh session", slog.Any("error", err))
-		} else if err = h.store.Set(r.Context(), "refresh_session:"+newToken.RefreshToken, encryptedNew, 30*24*time.Hour); err != nil {
+		} else if err = h.store.Set(r.Context(), secretStoreKey(refreshSessionKeyPrefix, newToken.RefreshToken), encryptedNew, 30*24*time.Hour); err != nil {
 			slog.ErrorContext(ctx, "failed to store new refresh session", slog.Any("error", err))
 		}
 	}
@@ -1490,6 +1497,62 @@ func (h *AuthHandler) decryptToken(encoded string) ([]byte, error) {
 	}
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// 秘匿値（state・認可コード・上流のリフレッシュトークン）から作るストアキーの接頭辞。
+const (
+	authSessionKeyPrefix    = "auth_session:"
+	authCodeKeyPrefix       = "auth_code:"
+	refreshSessionKeyPrefix = "refresh_session:"
+)
+
+// secretStoreKey は秘匿値 secret をそのまま含まないストアキーを返す。
+// キーはストア層のスパン・Redis のコマンド・永続化されたデータ（RDB/AOF・SQLite ファイル）に
+// 平文で現れるため、SHA-256 にしてから使う。値はリクエストで受け取った秘匿値から毎回
+// 計算できるので、ハッシュにしても引き当てられる。
+func secretStoreKey(prefix, secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return prefix + "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// getSecretKeyed は secretStoreKey のキーで値を引く。見つからなければ、秘匿値をそのまま
+// キーにしていた旧形式（1.25.0 以前）でも引く。アップグレード前に発行したリフレッシュ
+// トークン（30 日有効）や、ローリングアップデート中に旧レプリカが保存したセッションを
+// 失効させないための互換経路。
+func (h *AuthHandler) getSecretKeyed(ctx context.Context, prefix, secret string) (string, error) {
+	v, err := h.store.Get(ctx, secretStoreKey(prefix, secret))
+	if err == nil || !errors.Is(err, store.ErrNotFound) {
+		return v, err
+	}
+	return h.store.Get(ctx, prefix+secret)
+}
+
+// delSecretKeyed は getSecretKeyed が引き得る両方の形式のキーを消す。
+func (h *AuthHandler) delSecretKeyed(ctx context.Context, prefix, secret string) {
+	_ = h.store.Del(ctx, secretStoreKey(prefix, secret))
+	_ = h.store.Del(ctx, prefix+secret)
+}
+
+// sanitizeDCRError は oauthex.RegisterClient のエラーから上流の応答本文を取り除く。
+// go-sdk は 2xx 応答を decode できなかったときや想定外のステータスのとき、応答本文を
+// そのままエラー文に埋め込む。2xx の本文には発行された client_secret が含まれ得るため、
+// そのままログに出すと秘匿値が漏れる。RFC 7591 のエラー応答（error / error_description）と
+// 通信エラーはそのまま返す。
+func sanitizeDCRError(err error) error {
+	var regErr *oauthex.ClientRegistrationError
+	if errors.As(err, &regErr) {
+		return regErr
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("registration request failed: %w", urlErr)
+	}
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+		return errors.New("registration response could not be decoded (response body omitted)")
+	}
+	return errors.New("registration failed (response body omitted)")
 }
 
 // sanitizeStoreErr は秘匿値（認可コード・state・リフレッシュトークン）をキーに含む

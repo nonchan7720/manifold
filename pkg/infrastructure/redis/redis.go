@@ -78,7 +78,9 @@ func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
 		rdb = redis.NewClient(opt)
 	}
 
-	if err := redisotel.InstrumentTracing(rdb); err != nil {
+	// db.statement にはコマンド全体（キーを含む）が載る。OAuth のセッションキーなど
+	// 秘匿値から作ったキーをトレースバックエンドへ送らないよう、記録しない。
+	if err := redisotel.InstrumentTracing(rdb, redisotel.WithDBStatement(false)); err != nil {
 		slog.WarnContext(ctx, "failed to redisotel InstrumentTracing")
 	}
 	if err := redisotel.InstrumentMetrics(rdb); err != nil {
@@ -117,7 +119,7 @@ func (c *Client) Get(ctx context.Context, key string) (_ string, rErr error) {
 	val, err := c.client.Get(ctx, c.prefixed(key)).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
+			return "", fmt.Errorf("key not found: %w", store.ErrNotFound)
 		}
 		return "", err
 	}
@@ -134,7 +136,7 @@ func (c *Client) Expire(ctx context.Context, key string, expiration time.Duratio
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("key not found: %s", key)
+		return fmt.Errorf("key not found: %w", store.ErrNotFound)
 	}
 	return nil
 }
