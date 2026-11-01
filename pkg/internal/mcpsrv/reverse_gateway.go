@@ -227,6 +227,24 @@ func (g *ReverseGateway) HandleAppUp(
 	if err != nil {
 		return fmt.Errorf("connect to app %s: %w", origin, err)
 	}
+	// Until every binding below is in place, nothing else owns connected: a
+	// panic past this point (the tab's tools/list is untrusted input) would
+	// otherwise leave the session and its read goroutine running forever.
+	// Close it and turn the panic into an error for the caller.
+	bound := false
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if !bound {
+			_ = connected.Close()
+		}
+		slog.ErrorContext(ctx, "reverse app.up panicked",
+			slog.String("origin", origin), slog.Any("panic", r),
+			slog.String("stack", string(debug.Stack())))
+		rErr = fmt.Errorf("initialize tool server for app %s: internal error", origin)
+	}()
 	sessionMu.Lock()
 	session = connected
 	sessionMu.Unlock()
@@ -249,6 +267,7 @@ func (g *ReverseGateway) HandleAppUp(
 		}
 		bindings = append(bindings, binding)
 	}
+	bound = true
 	for _, binding := range bindings {
 		previous, hadPrevious := g.registry.Bind(ctx, binding, connected)
 		if hadPrevious {
@@ -374,7 +393,7 @@ func (g *ReverseGateway) rebuildUserServer(
 	if g.middlewareFn != nil {
 		srv.AddReceivingMiddleware(g.middlewareFn(name)...)
 	}
-	g.registerPairingTool(srv, binding.IdentityKey)
+	g.registerPairingTool(ctx, srv, binding.IdentityKey)
 
 	if session != nil {
 		result, err := session.ListTools(ctx, nil)
@@ -414,8 +433,13 @@ func (g *ReverseGateway) sessionResolver(binding domainedge.Binding) SessionReso
 	}
 }
 
-func (g *ReverseGateway) registerPairingTool(srv *mcp.Server, identityKey domainedge.IdentityKey) {
-	srv.AddTool(
+func (g *ReverseGateway) registerPairingTool(
+	ctx context.Context,
+	srv *mcp.Server,
+	identityKey domainedge.IdentityKey,
+) {
+	err := addToolSafely(
+		srv,
 		&mcp.Tool{
 			Name: createPairingCodeToolName,
 			Description: "Issue a short-lived pairing code so the user can link their browser " +
@@ -440,6 +464,9 @@ func (g *ReverseGateway) registerPairingTool(srv *mcp.Server, identityKey domain
 			return result, nil
 		},
 	)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to register the pairing tool", slog.String("error", err.Error()))
+	}
 }
 
 // dropReservedSessionTools returns tools without any named like a tool the
@@ -450,6 +477,12 @@ func (g *ReverseGateway) registerPairingTool(srv *mcp.Server, identityKey domain
 func dropReservedSessionTools(ctx context.Context, origin string, tools []*mcp.Tool) []*mcp.Tool {
 	out := make([]*mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
+		if tool == nil {
+			// A malformed "tools":[null] entry; RegisterSessionTools would skip
+			// it anyway, but reading tool.Name here would panic first.
+			slog.WarnContext(ctx, "ignoring null tab tool", slog.String("origin", origin))
+			continue
+		}
 		if tool.Name == createPairingCodeToolName {
 			slog.WarnContext(ctx, "ignoring tab tool that shadows a gateway tool",
 				slog.String("origin", origin), slog.String("tool", tool.Name))

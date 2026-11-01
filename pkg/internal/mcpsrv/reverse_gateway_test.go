@@ -870,6 +870,9 @@ func TestReverseGateway_HandleAppUp_InvalidTabToolDefinition_DoesNotPanic(t *tes
 		`{"tools":[`+
 			`{"name":"evil","description":"x","inputSchema":{"type":"string"}},`+
 			`{"name":"no_schema","description":"x"},`+
+			`{"name":"bad_header","description":"x","inputSchema":{"type":"object",`+
+			`"properties":{"a":{"type":"object","x-mcp-header":"X-A"}}}},`+
+			`null,`+
 			`{"name":"fine","description":"x","inputSchema":{"type":"object"}}]}`)
 
 	require.NotPanics(t, func() {

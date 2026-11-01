@@ -2,9 +2,6 @@ package mcpsrv
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,10 +22,11 @@ type SessionResolver func(ctx context.Context) (*mcp.ClientSession, error)
 //
 // tools come from a tab's tools/list, i.e. from an untrusted peer. A
 // definition that (*mcp.Server).AddTool would panic on (no inputSchema, an
-// inputSchema whose type is not "object", an unmarshalable outputSchema) is
-// skipped with a warning instead of taking the whole gateway process down
-// (AddTool runs outside any HTTP handler, so middleware.Recover never sees
-// it). The remaining tools of the same tab are still registered.
+// inputSchema whose type is not "object", an unmarshalable outputSchema,
+// invalid x-mcp-header annotations, ...) is skipped with a warning instead of
+// taking the whole gateway process down (AddTool runs outside any HTTP
+// handler, so middleware.Recover never sees it). The remaining tools of the
+// same tab are still registered.
 func RegisterSessionTools(
 	ctx context.Context,
 	srv *mcp.Server,
@@ -37,16 +35,8 @@ func RegisterSessionTools(
 ) {
 	for _, tool := range tools {
 		t := tool
-		if err := validateSessionTool(t); err != nil {
-			name := ""
-			if t != nil {
-				name = t.Name
-			}
-			slog.WarnContext(ctx, "skipping tab tool with an invalid definition",
-				slog.String("tool", name), slog.String("error", err.Error()))
-			continue
-		}
-		srv.AddTool(
+		err := addToolSafely(
+			srv,
 			t,
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				session, err := resolve(ctx)
@@ -61,42 +51,13 @@ func RegisterSessionTools(
 				})
 			},
 		)
-	}
-}
-
-// validateSessionTool mirrors the checks (*mcp.Server).AddTool panics on, so a
-// peer-supplied tool definition can be rejected before it reaches AddTool.
-// Both schema fields are compared after a JSON round trip, which covers every
-// representation the SDK accepts (map[string]any, json.RawMessage,
-// *jsonschema.Schema, ...).
-func validateSessionTool(t *mcp.Tool) error {
-	if t == nil {
-		return errors.New("tool is nil")
-	}
-	if t.InputSchema == nil {
-		return errors.New("missing input schema")
-	}
-	var input map[string]any
-	if err := remarshalJSON(t.InputSchema, &input); err != nil {
-		return fmt.Errorf("input schema is not a JSON object: %w", err)
-	}
-	if typ, _ := input["type"].(string); typ != "object" {
-		return fmt.Errorf(`input schema must have type "object" (got %v)`, input["type"])
-	}
-	if t.OutputSchema != nil {
-		var output any
-		if err := remarshalJSON(t.OutputSchema, &output); err != nil {
-			return fmt.Errorf("output schema is not valid JSON: %w", err)
+		if err != nil {
+			name := ""
+			if t != nil {
+				name = t.Name
+			}
+			slog.WarnContext(ctx, "skipping tab tool with an invalid definition",
+				slog.String("tool", name), slog.String("error", err.Error()))
 		}
 	}
-	return nil
-}
-
-// remarshalJSON converts from through JSON into to.
-func remarshalJSON(from, to any) error {
-	data, err := json.Marshal(from)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, to)
 }
