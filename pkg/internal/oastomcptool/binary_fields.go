@@ -60,12 +60,16 @@ func ResponseBinaryFieldsSwagger(operation *openapi2.Operation, spec *openapi2.T
 		return nil
 	}
 	var fields []BinaryField
-	statuses := make([]string, 0, len(operation.Responses))
-	for s := range operation.Responses {
+	var responses map[string]*openapi2.Response
+	if operation.Responses != nil {
+		responses = operation.Responses.Map()
+	}
+	statuses := make([]string, 0, len(responses))
+	for s := range responses {
 		statuses = append(statuses, s)
 	}
 	for _, status := range sortedSuccessStatusKeys(statuses) {
-		resp := operation.Responses[status]
+		resp := responses[status]
 		if resp == nil || resp.Schema == nil {
 			continue
 		}
