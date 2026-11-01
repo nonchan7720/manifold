@@ -624,7 +624,7 @@ mcpServers:
 - A renamed tool is only callable under its new name. If the new name equals another tool's original name, the renamed tool wins and the other one is hidden.
 - Filtering happens before authz, so authz — and `/mcp/list?tools=true` — only see the exposed names. Write OPA policies against the exposed names.
 - A tool that is filtered out behaves exactly like a tool that doesn't exist (`unknown tool`).
-- With `tools.file`, `exclude` is applied by `manifold openapi generate`, and the gateway applies the same list when it rebuilds the catalog from the file at startup. Changing `exclude` therefore makes the committed file stale (`generated tools are stale … (run "manifold openapi generate")`): regenerate it.
+- With `tools.file`, `exclude` is applied by `manifold openapi generate`, and the gateway applies the same list when it rebuilds the catalog from the file at startup. Changing `exclude` therefore makes the committed file stale (`generated tools are stale … (run "manifold openapi generate")`): regenerate it. The one exception is a file that still lists the excluded tools, such as one generated before 1.25.0 (whose `generate` did not apply `exclude` yet) or one not regenerated after adding a pattern: if it matches the catalog built without `exclude`, the gateway still starts, drops the excluded tools and logs a warning to regenerate it. `manifold openapi generate --check` stays strict and reports such a file as stale.
 - Breaking changes `openapi diff` or `specRefresh` detects on an excluded operation are still reported and still count toward `--fail-on` / `rejectOn`, with no tool attributed to them (under `(spec-wide)` with `--by-tool`).
 - On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
 
@@ -896,13 +896,15 @@ Authenticates backend requests with a Google access token: either from a service
 mcpServers:
   ga4:
     description: Google Analytics Data API
-    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    spec: ./specs/analyticsdata-v1beta.openapi.yaml   # an OpenAPI 3 / Swagger 2 document (see below)
     baseURL: https://analyticsdata.googleapis.com
     googleServiceAccount:
       credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # or credentialsFile: /path/to/key.json
       scopes:
         - https://www.googleapis.com/auth/analytics.readonly
 ```
+
+`spec` must be an OpenAPI 3 or Swagger 2 document. Google APIs publish [Google API Discovery](https://developers.google.com/discovery) documents (such as `analyticsdata/v1beta/analyticsdata-api.json` or `https://<service>.googleapis.com/$discovery/rest`) instead. Those are a different format, and pointing `spec` at one starts the server with no tools, so convert it to OpenAPI first or write a spec covering the operations you need.
 
 | Field             | Type     | Description                                                                 |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
@@ -918,7 +920,7 @@ An explicit key is parsed when the configuration is loaded, so a malformed key o
 mcpServers:
   ga4:
     baseURL: https://analyticsdata.googleapis.com
-    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    spec: ./specs/analyticsdata-v1beta.openapi.yaml
     googleServiceAccount:
       scopes:
         - https://www.googleapis.com/auth/analytics.readonly   # credentials come from ADC / Workload Identity
