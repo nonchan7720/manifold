@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
@@ -347,10 +348,12 @@ func TestResolveLoginServer_NonOAuth2BackendAuth_DoesNotDiscover(t *testing.T) {
 	for name, srv := range cases {
 		t.Run(name, func(t *testing.T) {
 			var probed bool
-			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				probed = true
-				w.WriteHeader(http.StatusUnauthorized)
-			}))
+			backend := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					probed = true
+					w.WriteHeader(http.StatusUnauthorized)
+				}),
+			)
 			t.Cleanup(backend.Close)
 
 			srv.Name = "testserver"
@@ -3202,7 +3205,10 @@ func TestGetSecretKeyed_FallsBackToLegacyKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "old", v)
 
-	require.NoError(t, st.Set(t.Context(), secretStoreKey(refreshSessionKeyPrefix, "legacy"), "new", 0))
+	require.NoError(
+		t,
+		st.Set(t.Context(), secretStoreKey(refreshSessionKeyPrefix, "legacy"), "new", 0),
+	)
 	v, err = h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "legacy")
 	require.NoError(t, err)
 	require.Equal(t, "new", v)
@@ -3212,4 +3218,67 @@ func TestGetSecretKeyed_FallsBackToLegacyKey(t *testing.T) {
 
 	_, err = h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "missing")
 	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// DCR の応答を decode できないとき、go-sdk はエラー文に応答本文を埋め込む。2xx の本文には
+// 発行された client_secret が含まれ得るので、sanitizeDCRError を通した後のエラーに残らないこと。
+func TestSanitizeDCRError_OmitsResponseBody(t *testing.T) {
+	const secret = "issued-client-secret-value"
+	cases := map[string]struct {
+		status int
+		body   string
+	}{
+		"undecodable 2xx": {
+			status: http.StatusCreated,
+			body:   `{"client_id":"c","client_secret":"` + secret + `","client_id_issued_at":"not-a-number"}`,
+		},
+		"unexpected status": {
+			status: http.StatusInternalServerError,
+			body:   `{"client_secret":"` + secret + `"}`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(as.Close)
+
+			_, rawErr := oauthex.RegisterClient(
+				t.Context(),
+				as.URL,
+				&oauthex.ClientRegistrationMetadata{
+					RedirectURIs: []string{"https://gw.example.com/cb"},
+				},
+				as.Client(),
+			)
+			require.Error(t, rawErr)
+			require.Contains(t, rawErr.Error(), secret, "precondition: the SDK embeds the body")
+
+			err := sanitizeDCRError(rawErr)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), secret)
+		})
+	}
+}
+
+// RFC 7591 のエラー応答はそのまま返す（error / error_description は運用者の調査に要る）。
+func TestSanitizeDCRError_KeepsRegistrationError(t *testing.T) {
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"bad uri"}`))
+	}))
+	t.Cleanup(as.Close)
+
+	_, rawErr := oauthex.RegisterClient(t.Context(), as.URL,
+		&oauthex.ClientRegistrationMetadata{RedirectURIs: []string{"https://gw.example.com/cb"}},
+		as.Client())
+	require.Error(t, rawErr)
+
+	var regErr *oauthex.ClientRegistrationError
+	require.ErrorAs(t, sanitizeDCRError(rawErr), &regErr)
+	require.Equal(t, "invalid_redirect_uri", regErr.ErrorCode)
 }

@@ -678,7 +678,12 @@ func (h *AuthHandler) startUpstreamAuthorization(
 	callbackURL := fmt.Sprintf("%s/%s/auth/callback", baseURL, srv.Name)
 
 	sessionJSON, _ := json.Marshal(session)
-	if err = h.store.Set(ctx, secretStoreKey(authSessionKeyPrefix, sessionID), sessionJSON, 10*time.Minute); err != nil {
+	if err = h.store.Set(
+		ctx,
+		secretStoreKey(authSessionKeyPrefix, sessionID),
+		sessionJSON,
+		10*time.Minute,
+	); err != nil {
 		slog.ErrorContext(ctx, "failed to store auth session", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return err
@@ -849,7 +854,12 @@ func (h *AuthHandler) CallbackEndpoint(
 		MCPServerName:       srv.Name,
 	}
 	authCodeJSON, _ := json.Marshal(authCodeData)
-	if err = h.store.Set(ctx, secretStoreKey(authCodeKeyPrefix, mcpCode), authCodeJSON, 5*time.Minute); err != nil {
+	if err = h.store.Set(
+		ctx,
+		secretStoreKey(authCodeKeyPrefix, mcpCode),
+		authCodeJSON,
+		5*time.Minute,
+	); err != nil {
 		slog.ErrorContext(ctx, "failed to store auth code", slog.Any("error", err))
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -1547,12 +1557,9 @@ func sanitizeDCRError(err error) error {
 	if errors.As(err, &urlErr) {
 		return fmt.Errorf("registration request failed: %w", urlErr)
 	}
-	var syntaxErr *json.SyntaxError
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
-		return errors.New("registration response could not be decoded (response body omitted)")
-	}
-	return errors.New("registration failed (response body omitted)")
+	// 応答の decode 失敗・必須フィールド欠落・想定外のステータスなど。本文を含み得るので
+	// 文言は使わない。
+	return errors.New("registration failed (upstream response body omitted)")
 }
 
 // sanitizeStoreErr は秘匿値（認可コード・state・リフレッシュトークン）をキーに含む
