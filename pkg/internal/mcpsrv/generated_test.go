@@ -574,3 +574,70 @@ func TestGeneratedCatalog_RoundTrip_PetstoreFixture(t *testing.T) {
 		require.Equal(t, len(reg.Definitions()), len(reg2.Definitions()))
 	}
 }
+
+// writeGoldenToolsFile builds the catalog of goldenSpec with opts, lets
+// mutate edit its tools, and writes it as a tools.file.
+func writeGoldenToolsFile(
+	t *testing.T,
+	mutate func([]oastomcptool.GeneratedTool),
+	opts ...RegisterOpenAPIOption,
+) string {
+	t.Helper()
+	specPath := filepath.Join(t.TempDir(), "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(goldenSpec), 0o600))
+	source, err := oastomcptool.LoadSpecSource(t.Context(), specPath)
+	require.NoError(t, err)
+	registry, err := BuildCatalog(
+		t.Context(), &http.Client{}, source, "https://api.example.com", nil, opts...,
+	)
+	require.NoError(t, err)
+	tools := GeneratedTools(registry.Definitions())
+	if mutate != nil {
+		mutate(tools)
+	}
+	g, err := oastomcptool.NewGeneratedCatalog(
+		t.Context(), source, tools, "manifold test", time.Now(),
+	)
+	require.NoError(t, err)
+	genPath := filepath.Join(t.TempDir(), "generated.yaml")
+	f, err := os.Create(genPath)
+	require.NoError(t, err)
+	require.NoError(t, oastomcptool.WriteGeneratedCatalog(f, g))
+	require.NoError(t, f.Close())
+	return genPath
+}
+
+// TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads pins the upgrade
+// path from releases whose "openapi generate" did not apply tools.exclude: a
+// tools.file listing the excluded tools must not stop the server from
+// starting, and the excluded tools must still be kept out of the catalog.
+func TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads(t *testing.T) {
+	genPath := writeGoldenToolsFile(t, nil)
+
+	loaded, err := RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil,
+		WithGeneratedToolsFile(genPath), WithExcludeTools([]string{"createWidget"}),
+	)
+	require.NoError(t, err)
+	require.Nil(t, findTool(t, loaded, "createwidget"))
+	require.NotNil(t, findTool(t, loaded, "getwidget"))
+}
+
+// The fallback only forgives the tools.exclude difference: a file that is
+// stale for any other reason is still rejected.
+func TestGeneratedToolsFile_GeneratedWithoutExclude_OtherwiseStale_Rejected(t *testing.T) {
+	genPath := writeGoldenToolsFile(t, func(tools []oastomcptool.GeneratedTool) {
+		for i := range tools {
+			if tools[i].Name == "getwidget" {
+				tools[i].Description = "stale description"
+			}
+		}
+	})
+
+	_, err := RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil,
+		WithGeneratedToolsFile(genPath), WithExcludeTools([]string{"createWidget"}),
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "generated tools are stale")
+}
