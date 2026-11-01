@@ -981,6 +981,20 @@ func (h *AuthHandler) TokenEndpoint(
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// upstreamAuthStyle は上流トークンエンドポイントへのクライアント認証方式を返す。
+//
+// client_secret が空のパブリッククライアント（CIMD など）では、x/oauth2 の自動検出が
+// まず Basic 認証ヘッダで試し、上流が invalid_client を返すと同じ認可コードを
+// client_id をボディに載せて再送する。最初の失敗で認可コードを失効させる認可サーバーでは
+// ログインが失敗するため、最初から AuthStyleInParams に固定する。
+// client_secret がある場合は従来どおり自動検出に任せる。
+func upstreamAuthStyle(clientSecret string) oauth2.AuthStyle {
+	if clientSecret == "" {
+		return oauth2.AuthStyleInParams
+	}
+	return oauth2.AuthStyleAutoDetect
+}
+
 func (h *AuthHandler) exchangeUpstreamToken(
 	ctx context.Context,
 	session AuthSession,
@@ -996,7 +1010,8 @@ func (h *AuthHandler) exchangeUpstreamToken(
 		RedirectURL:  callbackURL,
 		Scopes:       session.OAuth2Scopes,
 		Endpoint: oauth2.Endpoint{
-			TokenURL: session.OAuth2TokenURL,
+			TokenURL:  session.OAuth2TokenURL,
+			AuthStyle: upstreamAuthStyle(session.OAuth2ClientSecret),
 		},
 	}
 	var opts []oauth2.AuthCodeOption
@@ -1099,7 +1114,7 @@ func (h *AuthHandler) discoverOAuth2(
 				RedirectURIs: []string{callbackURL},
 				ClientName:   "manifold",
 				GrantTypes:   []string{"authorization_code", "refresh_token"},
-			}, nil)
+			}, h.httpClient)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic client registration: %w", err)
 		}
@@ -1393,7 +1408,8 @@ func (h *AuthHandler) handleRefreshTokenGrant(
 		ClientSecret: rtSession.OAuth2ClientSecret,
 		Scopes:       rtSession.OAuth2Scopes,
 		Endpoint: oauth2.Endpoint{
-			TokenURL: rtSession.OAuth2TokenURL,
+			TokenURL:  rtSession.OAuth2TokenURL,
+			AuthStyle: upstreamAuthStyle(rtSession.OAuth2ClientSecret),
 		},
 	}
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
