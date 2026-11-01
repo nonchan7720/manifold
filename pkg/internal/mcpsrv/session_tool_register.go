@@ -22,11 +22,12 @@ type SessionResolver func(ctx context.Context) (*mcp.ClientSession, error)
 //
 // tools come from a tab's tools/list, i.e. from an untrusted peer. A
 // definition that (*mcp.Server).AddTool would panic on (no inputSchema, an
-// inputSchema whose type is not "object", an unmarshalable outputSchema,
-// invalid x-mcp-header annotations, ...) is skipped with a warning instead of
-// taking the whole gateway process down (AddTool runs outside any HTTP
-// handler, so middleware.Recover never sees it). The remaining tools of the
-// same tab are still registered.
+// inputSchema whose type is not "object", an unmarshalable outputSchema) is
+// skipped with a warning instead of taking the whole gateway process down
+// (AddTool runs outside any HTTP handler, so middleware.Recover never sees
+// it). The remaining tools of the same tab are still registered.
+//
+// 検査と登録は addToolSafely が行う（x-mcp-header 注釈の検査と recover を含む）。
 func RegisterSessionTools(
 	ctx context.Context,
 	srv *mcp.Server,

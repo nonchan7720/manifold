@@ -227,10 +227,10 @@ func (g *ReverseGateway) HandleAppUp(
 	if err != nil {
 		return fmt.Errorf("connect to app %s: %w", origin, err)
 	}
-	// Until every binding below is in place, nothing else owns connected: a
-	// panic past this point (the tab's tools/list is untrusted input) would
-	// otherwise leave the session and its read goroutine running forever.
-	// Close it and turn the panic into an error for the caller.
+	// 下のバインドがすべて済むまでは、connected を所有しているのはこの関数だけ。
+	// ここから先で panic すると（タブの tools/list は信頼できない入力）、セッションと
+	// その読み取りゴルーチンが残り続ける。panic したらセッションを閉じ、呼び出し元には
+	// エラーとして返す。
 	bound := false
 	defer func() {
 		r := recover()
@@ -465,7 +465,11 @@ func (g *ReverseGateway) registerPairingTool(
 		},
 	)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to register the pairing tool", slog.String("error", err.Error()))
+		slog.ErrorContext(
+			ctx,
+			"failed to register the pairing tool",
+			slog.String("error", err.Error()),
+		)
 	}
 }
 
@@ -478,8 +482,8 @@ func dropReservedSessionTools(ctx context.Context, origin string, tools []*mcp.T
 	out := make([]*mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
 		if tool == nil {
-			// A malformed "tools":[null] entry; RegisterSessionTools would skip
-			// it anyway, but reading tool.Name here would panic first.
+			// 不正な "tools":[null] の要素。RegisterSessionTools でも読み飛ばされるが、
+			// その前にここで tool.Name を読むと panic する。
 			slog.WarnContext(ctx, "ignoring null tab tool", slog.String("origin", origin))
 			continue
 		}

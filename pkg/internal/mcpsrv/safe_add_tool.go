@@ -11,16 +11,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// addToolSafely registers t on srv like (*mcp.Server).AddTool, but returns an
-// error instead of panicking when the definition is one AddTool rejects.
+// addToolSafely は (*mcp.Server).AddTool と同じく t を srv に登録する。ただし AddTool が
+// 受け付けない定義では panic せず、エラーを返す。
 //
-// Tool definitions reach AddTool from places the gateway does not fully
-// control (a tab's tools/list, a fetched OpenAPI spec), and AddTool often runs
-// outside any HTTP handler (an edge WebSocket goroutine, the SDK's read
-// goroutine, a spec refetch), where middleware.Recover never sees a panic.
-// So the definition is checked up front with validateToolDefinition, and the
-// call itself is guarded by recover as a last line of defence against checks
-// a future SDK version adds.
+// AddTool に渡るツール定義は、ゲートウェイが完全には制御できない場所（タブの tools/list、
+// 取得した OpenAPI spec）から来る。また AddTool は HTTP ハンドラの外（edge の WebSocket
+// ゴルーチン、SDK の読み取りゴルーチン、spec の再取得）で呼ばれることが多く、そこでの
+// panic は middleware.Recover に届かない。そのため validateToolDefinition で事前に検査し、
+// 将来の SDK が検査を増やした場合に備えて、呼び出し自体も recover で守る。
 func addToolSafely(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (rErr error) {
 	if srv == nil {
 		return errors.New("server is nil")
@@ -43,11 +41,10 @@ func addToolSafely(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (rErr error)
 	return nil
 }
 
-// validateToolDefinition mirrors the checks (*mcp.Server).AddTool panics on
-// (go-sdk v1.8.0), so a bad definition can be rejected before it reaches
-// AddTool. Both schema fields are compared after a JSON round trip, which
-// covers every representation the SDK accepts (map[string]any,
-// json.RawMessage, *jsonschema.Schema, ...).
+// validateToolDefinition は (*mcp.Server).AddTool が panic する条件（go-sdk v1.8.0）を
+// 再現し、不正な定義を AddTool に渡す前に弾く。スキーマはどちらも JSON を往復させてから
+// 調べるので、SDK が受け付ける表現（map[string]any、json.RawMessage、
+// *jsonschema.Schema など）をすべて扱える。
 func validateToolDefinition(t *mcp.Tool) error {
 	if t == nil {
 		return errors.New("tool is nil")
@@ -74,7 +71,7 @@ func validateToolDefinition(t *mcp.Tool) error {
 	return nil
 }
 
-// remarshalJSON converts from through JSON into to.
+// remarshalJSON は from を JSON 経由で to に変換する。
 func remarshalJSON(from, to any) error {
 	data, err := json.Marshal(from)
 	if err != nil {
@@ -83,24 +80,23 @@ func remarshalJSON(from, to any) error {
 	return json.Unmarshal(data, to)
 }
 
-// headerSchemaProperty captures the fields the SDK's x-mcp-header check reads
-// from an input schema property.
+// headerSchemaProperty は、SDK の x-mcp-header 検査が入力スキーマのプロパティから読む
+// フィールドだけを取り出す。
 type headerSchemaProperty struct {
 	Type       string                          `json:"type"`
 	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
 	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
 }
 
-// validateParamHeaderAnnotations mirrors the SDK's check of x-mcp-header
-// annotations (AddTool panics when it fails): an annotation may appear on a
-// property at any depth, must sit on a primitive (string / integer /
-// boolean) property, must be a non-empty HTTP token, and must be unique
-// case-insensitively across the whole schema. A schema the SDK cannot decode
-// into this shape is skipped, as the SDK does.
+// validateParamHeaderAnnotations は SDK の x-mcp-header 注釈の検査（失敗すると AddTool が
+// panic する）を再現する。注釈はどの深さのプロパティにも付けられるが、プリミティブ型
+// （string / integer / boolean）のプロパティに限られ、値は空でない HTTP トークンで、
+// スキーマ全体で大文字小文字を区別せず一意でなければならない。この形に decode できない
+// スキーマは、SDK と同じく検査しない。
 func validateParamHeaderAnnotations(schema any) error {
 	var root headerSchemaProperty
 	if err := remarshalJSON(schema, &root); err != nil {
-		return nil //nolint:nilerr // the SDK skips the check for such schemas too
+		return nil //nolint:nilerr // SDK もこの場合は検査しない
 	}
 	if len(root.Properties) == 0 {
 		return nil
@@ -135,7 +131,9 @@ func validateParamHeadersIn(
 			lower := strings.ToLower(headerName)
 			if seen[lower] {
 				return fmt.Errorf(
-					"property %q: duplicate x-mcp-header value %q (case-insensitive)", path, headerName,
+					"property %q: duplicate x-mcp-header value %q (case-insensitive)",
+					path,
+					headerName,
 				)
 			}
 			seen[lower] = true
@@ -149,8 +147,8 @@ func validateParamHeadersIn(
 	return nil
 }
 
-// validateHeaderToken checks name against the HTTP field-name token syntax
-// (1*tchar, RFC 9110 §5.6.2).
+// validateHeaderToken は name が HTTP のフィールド名のトークン構文
+// （1*tchar、RFC 9110 §5.6.2）に従うか検査する。
 func validateHeaderToken(name string) error {
 	for _, c := range name {
 		if !isHeaderTChar(c) {

@@ -575,8 +575,8 @@ func TestGeneratedCatalog_RoundTrip_PetstoreFixture(t *testing.T) {
 	}
 }
 
-// writeGoldenToolsFile builds the catalog of goldenSpec with opts, lets
-// mutate edit its tools, and writes it as a tools.file.
+// writeGoldenToolsFile は goldenSpec のカタログを opts で構築し、mutate でツールを
+// 書き換えたうえで tools.file として書き出す。
 func writeGoldenToolsFile(
 	t *testing.T,
 	mutate func([]oastomcptool.GeneratedTool),
@@ -607,10 +607,9 @@ func writeGoldenToolsFile(
 	return genPath
 }
 
-// TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads pins the upgrade
-// path from releases whose "openapi generate" did not apply tools.exclude: a
-// tools.file listing the excluded tools must not stop the server from
-// starting, and the excluded tools must still be kept out of the catalog.
+// TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads は、"openapi generate" が
+// tools.exclude を適用しなかったリリースからのアップグレードを固定する。除外対象を
+// 含む tools.file でも起動を止めず、除外対象はカタログに入れないこと。
 func TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads(t *testing.T) {
 	genPath := writeGoldenToolsFile(t, nil)
 
@@ -623,8 +622,8 @@ func TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads(t *testing.T) {
 	require.NotNil(t, findTool(t, loaded, "getwidget"))
 }
 
-// The fallback only forgives the tools.exclude difference: a file that is
-// stale for any other reason is still rejected.
+// 許容するのは tools.exclude による差分だけ。それ以外の理由で古いファイルは
+// 引き続き拒否する。
 func TestGeneratedToolsFile_GeneratedWithoutExclude_OtherwiseStale_Rejected(t *testing.T) {
 	genPath := writeGoldenToolsFile(t, func(tools []oastomcptool.GeneratedTool) {
 		for i := range tools {

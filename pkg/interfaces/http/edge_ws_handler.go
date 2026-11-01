@@ -237,11 +237,10 @@ func (s *edgeConnSession) handleAppUp(ctx context.Context, frame mcpsrv.EdgeEnve
 			})
 			s.mu.Lock()
 			// Only remove this binding's own entry: a later app.up for the
-			// same key may have already replaced (and closed) it. Close it as
-			// well, so whatever is still reading from it (an SDK read
-			// goroutine HandleAppUp failed to shut down) stops instead of
-			// waiting forever — once deleted, closeAllChannels no longer
-			// sees it.
+			// same key may have already replaced (and closed) it.
+			// map から消すと closeAllChannels の対象から外れるので、ここで閉じる。
+			// 閉じないと、HandleAppUp が止められなかった SDK の読み取りゴルーチンが
+			// このチャネルを待ち続けて残る。
 			if current, ok := s.channels[key]; ok && current == incoming {
 				delete(s.channels, key)
 				close(incoming)

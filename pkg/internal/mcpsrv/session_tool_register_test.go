@@ -186,9 +186,12 @@ func TestValidateToolDefinition_MatchesSDKHeaderAnnotationCheck(t *testing.T) {
 	require.NoError(t, validateToolDefinition(valid))
 	front := mcp.NewServer(&mcp.Implementation{Name: "front", Version: "0.0.1"}, nil)
 	require.NotPanics(t, func() {
-		front.AddTool(valid, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{}, nil
-		})
+		front.AddTool(
+			valid,
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{}, nil
+			},
+		)
 	})
 
 	invalid := &mcp.Tool{
@@ -198,11 +201,14 @@ func TestValidateToolDefinition_MatchesSDKHeaderAnnotationCheck(t *testing.T) {
 		),
 	}
 	require.Error(t, validateToolDefinition(invalid))
-	// validateToolDefinition must reject everything AddTool panics on.
+	// AddTool が panic する定義は、validateToolDefinition でも必ず弾くこと。
 	require.Panics(t, func() {
-		front.AddTool(invalid, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{}, nil
-		})
+		front.AddTool(
+			invalid,
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{}, nil
+			},
+		)
 	})
 }
 

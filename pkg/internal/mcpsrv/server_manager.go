@@ -503,8 +503,8 @@ func attachTools(
 			},
 		)
 		if err != nil {
-			// A spec is fetched (and refetched) from outside the gateway; one
-			// operation the SDK rejects must not take the server down.
+			// spec はゲートウェイの外から取得（再取得）する。SDK が受け付けない operation が
+			// 1 つあっても、サーバー全体を止めない。
 			slog.Warn("skipping openapi tool with an invalid definition",
 				slog.String("tool", tool.tool.Name), slog.String("error", err.Error()))
 			continue
