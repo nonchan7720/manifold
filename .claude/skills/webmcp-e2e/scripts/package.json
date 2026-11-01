@@ -5,8 +5,8 @@
   "description": "Runtime dependencies for the webmcp-e2e skill's Playwright/MCP scripts",
   "type": "module",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "jose": "^6.2.9",
-    "playwright": "1.64.0"
+    "playwright": "1.64.1"
   }
 }
