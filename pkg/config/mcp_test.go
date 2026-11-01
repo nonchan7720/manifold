@@ -838,3 +838,153 @@ func TestServer_Validate_AppsRejectedOutsideMCPBackends(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "apps is only supported for the http and stdio transports")
 }
+
+func TestOAuth2_ValidateWithContext_URLClientIDAllowsEmptySecret(t *testing.T) {
+	// CIMD の client_id（https URL）はパブリッククライアントなので secret は不要。
+	c := baseValidOAuth2()
+	c.ClientID = "https://cdn.example.com/manifold/github.json"
+	c.ClientSecret = ""
+	require.NoError(t, c.ValidateWithContext(t.Context()))
+}
+
+func TestOAuth2_ValidateWithContext_InvalidURLClientIDRequiresSecret(t *testing.T) {
+	for _, id := range []string{
+		"https://", "https://cdn.example.com", "https://cdn.example.com/",
+		"https://cdn.example.com/a/../b.json", "https://cdn.example.com/a.json#x",
+	} {
+		c := baseValidOAuth2()
+		c.ClientID = id
+		c.ClientSecret = ""
+		require.Error(t, c.ValidateWithContext(t.Context()), id)
+	}
+}
+
+func TestOAuth2_ValidateWithContext_PlainClientIDRequiresSecret(t *testing.T) {
+	c := baseValidOAuth2()
+	c.ClientSecret = ""
+	require.Error(t, c.ValidateWithContext(t.Context()))
+}
+
+func validCIMDServer(cimdClientID string) Server {
+	return Server{
+		Description:  "GitHub",
+		Transport:    MCPTransportHTTP,
+		URL:          "https://mcp.example.com/mcp",
+		CIMDClientID: cimdClientID,
+	}
+}
+
+func TestServer_Validate_CIMDClientID(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Server)
+		id      string
+		wantErr bool
+	}{
+		{name: "unset", id: ""},
+		{name: "https url", id: "https://cdn.example.com/manifold/github.json"},
+		{name: "http rejected", id: "http://cdn.example.com/github.json", wantErr: true},
+		{name: "no scheme rejected", id: "cdn.example.com/github.json", wantErr: true},
+		{name: "no host rejected", id: "https:///github.json", wantErr: true},
+		{name: "no path rejected", id: "https://cdn.example.com", wantErr: true},
+		{name: "root path rejected", id: "https://cdn.example.com/", wantErr: true},
+		{name: "userinfo rejected", id: "https://u:p@cdn.example.com/a.json", wantErr: true},
+		{name: "fragment rejected", id: "https://cdn.example.com/a.json#x", wantErr: true},
+		{name: "dot segment rejected", id: "https://cdn.example.com/a/./b.json", wantErr: true},
+		{name: "dotdot segment rejected", id: "https://cdn.example.com/a/../b.json", wantErr: true},
+		{
+			name:    "stdio rejected",
+			id:      "https://cdn.example.com/github.json",
+			mutate:  func(s *Server) { s.Transport = MCPTransportStdio; s.URL = ""; s.Command = "x" },
+			wantErr: true,
+		},
+		{
+			name: "oauth2 rejected",
+			id:   "https://cdn.example.com/github.json",
+			mutate: func(s *Server) {
+				s.OAuth2 = &OAuth2{
+					ClientID: "a", ClientSecret: "b",
+					AuthURL: "https://example.com/auth", TokenURL: "https://example.com/token",
+				}
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := validCIMDServer(tt.id)
+			if tt.mutate != nil {
+				tt.mutate(&s)
+			}
+			err := s.ValidateWithContext(t.Context())
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestServer_Validate_ClientRegistration(t *testing.T) {
+	const id = "https://cdn.example.com/manifold/github.json"
+	tests := []struct {
+		name   string
+		cr     ClientRegistration
+		cimdID string
+		mutate func(*Server)
+		errMsg string
+	}{
+		{name: "unset"},
+		{name: "unset with cimdClientID", cimdID: id},
+		{name: "cimd with cimdClientID", cr: ClientRegistrationCIMD, cimdID: id},
+		{name: "dcr alone", cr: ClientRegistrationDCR},
+		{name: "invalid value", cr: "other", errMsg: "must be a valid value"},
+		{
+			name:   "cimd without cimdClientID",
+			cr:     ClientRegistrationCIMD,
+			errMsg: "requires cimdClientID",
+		},
+		{
+			name: "dcr with cimdClientID", cr: ClientRegistrationDCR, cimdID: id,
+			errMsg: "cannot be combined with cimdClientID",
+		},
+		{
+			name:   "stdio rejected",
+			cr:     ClientRegistrationDCR,
+			mutate: func(s *Server) { s.Transport = MCPTransportStdio; s.URL = ""; s.Command = "x" },
+			errMsg: "only supported for the http transport",
+		},
+		{
+			name: "openapi rejected", cr: ClientRegistrationDCR,
+			mutate: func(s *Server) { s.Spec = "spec.yaml" },
+			errMsg: "only supported for the http transport",
+		},
+		{
+			name: "oauth2 rejected", cr: ClientRegistrationDCR,
+			mutate: func(s *Server) {
+				s.OAuth2 = &OAuth2{
+					ClientID: "a", ClientSecret: "b",
+					AuthURL: "https://example.com/auth", TokenURL: "https://example.com/token",
+				}
+			},
+			errMsg: "cannot be combined with oauth2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := validCIMDServer(tt.cimdID)
+			s.ClientRegistration = tt.cr
+			if tt.mutate != nil {
+				tt.mutate(&s)
+			}
+			err := s.ValidateWithContext(t.Context())
+			if tt.errMsg != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

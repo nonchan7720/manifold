@@ -1034,7 +1034,7 @@ func (h *AuthHandler) discoverOAuth2(
 	h.mu.RUnlock()
 
 	// Step 1: バックエンドに probe リクエストを送り 401 を取得
-	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL)
+	wwwAuthenticate, err := sendProbeRequest(ctx, srv.URL, h.httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,27 +1047,52 @@ func (h *AuthHandler) discoverOAuth2(
 	// Step 4: 認可サーバーのメタデータを取得
 	var (
 		authMeta *oauthex.AuthServerMeta
+		method   config.ClientRegistration
 		lastErr  error
 	)
 	for _, server := range authorizationServers {
-		var err error
-		authMeta, err = getAuthMetadata(ctx, server, h.httpClient)
-		if err == nil {
-			break
-		} else {
+		meta, err := getAuthMetadata(ctx, server, h.httpClient)
+		if err != nil {
 			lastErr = err
 			continue
 		}
+		// クライアント登録手段（CIMD か DCR）を持たないサーバーは採用しない。
+		m, ok := selectRegistrationMethod(srv, meta)
+		if !ok {
+			lastErr = fmt.Errorf(
+				"authorization server %s %s",
+				server, describeRegistrationUnsupported(srv),
+			)
+			continue
+		}
+		authMeta = meta
+		method = m
+		break
 	}
 
-	if lastErr != nil {
-		return nil, err
+	if authMeta == nil {
+		if lastErr == nil {
+			lastErr = errors.New("no authorization server found")
+		}
+		return nil, lastErr
 	}
 
-	// Step 5: Dynamic Client Registration で ClientID/ClientSecret を取得
+	// Step 5: ClientID/ClientSecret を決定する。
+	// 方式は Step 4 で選んだ method に従う（未設定時は CIMD 優先、無理なら DCR）。
 	clientID := ""
 	clientSecret := ""
-	if authMeta.RegistrationEndpoint != "" {
+	if srv.ClientRegistration == "" && method == config.ClientRegistrationDCR &&
+		srv.CIMDClientID != "" {
+		slog.WarnContext(
+			ctx,
+			"upstream does not support cimd; falling back to dynamic client registration",
+			slog.String("server", srv.Name),
+		)
+	}
+	switch method {
+	case config.ClientRegistrationCIMD:
+		clientID = srv.CIMDClientID
+	case config.ClientRegistrationDCR:
 		callbackURL := fmt.Sprintf("%s/%s/auth/callback", gatewayBaseURL, srv.Name)
 		regResp, err := oauthex.RegisterClient(ctx, authMeta.RegistrationEndpoint,
 			&oauthex.ClientRegistrationMetadata{
@@ -1102,8 +1127,44 @@ func (h *AuthHandler) discoverOAuth2(
 		slog.String("auth_url", oauth2cfg.AuthURL),
 		slog.String("token_url", oauth2cfg.TokenURL),
 		slog.String("client_id", oauth2cfg.ClientID),
+		slog.String("client_registration", string(method)),
+		slog.Bool("cimd", method == config.ClientRegistrationCIMD),
 	)
 	return oauth2cfg, nil
+}
+
+// selectRegistrationMethod は meta の認可サーバーで manifold が使うクライアント登録方式を返す。
+// clientRegistration 未設定なら、設定済みの cimdClientID を CIMD で使えれば CIMD、
+// 次に registration_endpoint があれば DCR。cimd / dcr 指定時はその方式のみを判定し、
+// フォールバックしない。使える方式が無ければ false。
+func selectRegistrationMethod(
+	srv *config.Server,
+	meta *oauthex.AuthServerMeta,
+) (config.ClientRegistration, bool) {
+	canCIMD := srv.CIMDClientID != "" && meta.ClientIDMetadataDocumentSupported
+	canDCR := meta.RegistrationEndpoint != ""
+	switch srv.ClientRegistration {
+	case config.ClientRegistrationCIMD:
+		return config.ClientRegistrationCIMD, canCIMD
+	case config.ClientRegistrationDCR:
+		return config.ClientRegistrationDCR, canDCR
+	}
+	if canCIMD {
+		return config.ClientRegistrationCIMD, true
+	}
+	return config.ClientRegistrationDCR, canDCR
+}
+
+// describeRegistrationUnsupported はエラーメッセージ用に、srv の登録方式が使えない理由を説明する。
+func describeRegistrationUnsupported(srv *config.Server) string {
+	switch srv.ClientRegistration {
+	case config.ClientRegistrationCIMD:
+		return "does not support cimd (client_id_metadata_document_supported) " +
+			"and clientRegistration is cimd"
+	case config.ClientRegistrationDCR:
+		return "has no registration_endpoint and clientRegistration is dcr"
+	}
+	return "supports neither cimd nor dynamic client registration"
 }
 
 func (h *AuthHandler) getBaseURL(r *http.Request) string {
@@ -1129,7 +1190,10 @@ func generateS256Challenge(codeVerifier string) string {
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
-func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) {
+// sendProbeRequest は MCP バックエンドへ initialize を送り、401 の WWW-Authenticate を返す。
+// c が nil の場合は http.DefaultClient を使う（本番では NewAuthHandler が
+// SSRF 対策済みの SafeHTTPClient を必ず設定する）。
+func sendProbeRequest(ctx context.Context, url string, c *http.Client) (_ []string, rErr error) {
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/sendProbeRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
@@ -1145,7 +1209,10 @@ func sendProbeRequest(ctx context.Context, url string) (_ []string, rErr error) 
 	probeReq.Header.Set("Content-Type", "application/json")
 	probeReq.Header.Set("Accept", "application/json, text/event-stream")
 
-	probeResp, err := http.DefaultClient.Do(probeReq)
+	if c == nil {
+		c = http.DefaultClient
+	}
+	probeResp, err := c.Do(probeReq)
 	if err != nil {
 		return nil, fmt.Errorf("probe request failed: %w", err)
 	}
