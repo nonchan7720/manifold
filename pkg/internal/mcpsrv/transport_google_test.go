@@ -122,3 +122,30 @@ func TestRegisterOpenAPI_GoogleServiceAccountRequiresBaseURL(t *testing.T) {
 	_, err = RegisterOpenAPI(t.Context(), spec, "", nil)
 	require.NoError(t, err)
 }
+
+// OAuth2.1 Auto-Discovery は実行時に srv.OAuth2 を後付けし得る。その状態でも
+// googleServiceAccount のトークンを付け続け、下流のトークンを転送しないこと。
+func TestHTTPClientRoundTripper_GoogleServiceAccount_WinsOverDiscoveredOAuth2(t *testing.T) {
+	var gotAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+	}))
+	t.Cleanup(backend.Close)
+
+	rt := httpClientRoundTripper(
+		nil,
+		&config.OAuth2{ClientID: "discovered"},
+		nil,
+		newGoogleTestServiceAccount(t, "ga-token"),
+		[]string{backend.URL},
+		nil,
+	)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer downstream-token")
+	resp, err := (&http.Client{Transport: rt}).Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Equal(t, "Bearer ga-token", gotAuth)
+}
