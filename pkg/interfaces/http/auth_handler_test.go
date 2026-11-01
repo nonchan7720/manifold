@@ -1155,7 +1155,7 @@ func upstreamAuthQuery(t *testing.T, rw *httptest.ResponseRecorder) url.Values {
 func storedAuthSession(t *testing.T, st *mockStore) AuthSession {
 	t.Helper()
 	for k, v := range st.data {
-		if !strings.HasPrefix(k, "auth_session:") {
+		if !strings.HasPrefix(k, hashedSecretKeyPrefix+authSessionKeyPrefix) {
 			continue
 		}
 		var session AuthSession
@@ -1360,7 +1360,7 @@ func TestLoginEndpoint_SessionStoresMCPServerName(t *testing.T) {
 	// 保存されたセッションに MCPServerName が設定されていることを確認
 	var sessionKey string
 	for k := range st.data {
-		if len(k) > len("auth_session:") && k[:len("auth_session:")] == "auth_session:" {
+		if strings.HasPrefix(k, hashedSecretKeyPrefix+authSessionKeyPrefix) {
 			sessionKey = k
 			break
 		}
@@ -1425,7 +1425,7 @@ func TestCallbackEndpoint_AuthCodeStoresMCPServerName(t *testing.T) {
 	// 保存された authCode に MCPServerName が設定されていることを確認
 	var authCodeKey string
 	for k := range st.data {
-		if len(k) > len("auth_code:") && k[:len("auth_code:")] == "auth_code:" {
+		if strings.HasPrefix(k, hashedSecretKeyPrefix+authCodeKeyPrefix) {
 			authCodeKey = k
 			break
 		}
@@ -3190,7 +3190,7 @@ func TestTokenEndpoint_RefreshToken_PublicClientSendsClientIDInParams(t *testing
 func TestSecretStoreKey_DoesNotContainSecret(t *testing.T) {
 	const secret = "upstream-refresh-token"
 	key := secretStoreKey(refreshSessionKeyPrefix, secret)
-	require.True(t, strings.HasPrefix(key, refreshSessionKeyPrefix+"sha256:"))
+	require.True(t, strings.HasPrefix(key, hashedSecretKeyPrefix+refreshSessionKeyPrefix))
 	require.NotContains(t, key, secret)
 	require.Equal(t, key, secretStoreKey(refreshSessionKeyPrefix, secret))
 	require.NotEqual(t, key, secretStoreKey(authCodeKeyPrefix, secret))
@@ -3218,6 +3218,27 @@ func TestGetSecretKeyed_FallsBackToLegacyKey(t *testing.T) {
 
 	_, err = h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "missing")
 	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// ハッシュ済みキーを知っていても、その一部を秘匿値として送って旧形式のフォールバックで
+// 引き当てたり、消したりできないこと（キーが漏れても秘匿値の代わりにならない）。
+func TestGetSecretKeyed_HashedKeyIsNotUsableAsSecret(t *testing.T) {
+	const secret = "upstream-refresh-token"
+	key := secretStoreKey(refreshSessionKeyPrefix, secret)
+	st := newMockStore(map[string]string{key: "session"})
+	h := &AuthHandler{store: st}
+
+	for _, forged := range []string{
+		key,
+		strings.TrimPrefix(key, refreshSessionKeyPrefix),
+		strings.TrimPrefix(key, hashedSecretKeyPrefix+refreshSessionKeyPrefix),
+		strings.TrimPrefix(key, hashedSecretKeyPrefix),
+	} {
+		_, err := h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, forged)
+		require.ErrorIs(t, err, store.ErrNotFound, forged)
+		h.delSecretKeyed(t.Context(), refreshSessionKeyPrefix, forged)
+	}
+	require.Equal(t, map[string]string{key: "session"}, st.data)
 }
 
 // DCR の応答を decode できないとき、go-sdk はエラー文に応答本文を埋め込む。2xx の本文には

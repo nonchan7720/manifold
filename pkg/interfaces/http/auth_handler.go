@@ -1520,10 +1520,18 @@ const (
 // キーはストア層のスパン・Redis のコマンド・永続化されたデータ（RDB/AOF・SQLite ファイル）に
 // 平文で現れるため、SHA-256 にしてから使う。値はリクエストで受け取った秘匿値から毎回
 // 計算できるので、ハッシュにしても引き当てられる。
+//
+// 旧形式のキー（prefix + 秘匿値）とは先頭を変えて名前空間を分ける。prefix の後ろに
+// ハッシュを続ける形だと、ハッシュ済みキーの後半を秘匿値として送ったとき、旧形式への
+// フォールバック（getSecretKeyed）で同じキーに当たってしまう。
 func secretStoreKey(prefix, secret string) string {
 	sum := sha256.Sum256([]byte(secret))
-	return prefix + "sha256:" + hex.EncodeToString(sum[:])
+	return hashedSecretKeyPrefix + prefix + hex.EncodeToString(sum[:])
 }
+
+// hashedSecretKeyPrefix は secretStoreKey のキーの先頭。旧形式のキーは
+// authSessionKeyPrefix などで始まるため、これで始まることはない。
+const hashedSecretKeyPrefix = "sha256/"
 
 // getSecretKeyed は secretStoreKey のキーで値を引く。見つからなければ、秘匿値をそのまま
 // キーにしていた旧形式（1.25.0 以前）でも引く。アップグレード前に発行したリフレッシュ
