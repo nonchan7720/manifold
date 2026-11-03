@@ -126,11 +126,33 @@ func verifyGeneratedToolsFile(
 	if VerifyGeneratedTools(unfiltered, catalog) != nil {
 		return err
 	}
+	// 除外なしのカタログと一致しても、配信するのは registry（除外後）のツール。同じツール名に
+	// 別の operation が当たる場合（"Foo" と "foo" など）に備えて、配信する各ツールがファイル側の
+	// 定義と一致することも確かめる。
+	if servedErr := verifyServedTools(registry, catalog); servedErr != nil {
+		return servedErr
+	}
 	slog.WarnContext(ctx,
 		"tools.file was generated without tools.exclude applied; excluded tools are dropped. "+
 			`Run "manifold openapi generate" to regenerate it`,
 		slog.String("file", opt.generatedToolsFile))
 	return nil
+}
+
+// verifyServedTools は registry の各ツールが、catalog（tools.file）の同名ツールと一致するかを
+// 確かめる。catalog にだけあるツール（除外対象）は無視する。
+func verifyServedTools(registry *MCPToolRegistry, catalog *oastomcptool.GeneratedCatalog) error {
+	served := make(map[string]struct{})
+	for _, d := range registry.Definitions() {
+		served[d.Name] = struct{}{}
+	}
+	subset := &oastomcptool.GeneratedCatalog{}
+	for _, gt := range catalog.Tools {
+		if _, ok := served[gt.Name]; ok {
+			subset.Tools = append(subset.Tools, gt)
+		}
+	}
+	return VerifyGeneratedTools(registry, subset)
 }
 
 // resolveBaseUrl は spec から baseUrl を導出する。導出できなければ空文字を返す。

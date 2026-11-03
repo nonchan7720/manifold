@@ -640,3 +640,33 @@ func TestGeneratedToolsFile_GeneratedWithoutExclude_OtherwiseStale_Rejected(t *t
 	require.Error(t, err)
 	require.ErrorContains(t, err, "generated tools are stale")
 }
+
+// 配信するツール（除外後の registry）は、ファイル側の同名ツールと一致していなければならない。
+// ファイルにだけあるツール（除外対象）は無視する。
+func TestVerifyServedTools(t *testing.T) {
+	registry := verifyTestRegistry(t)
+	tools := GeneratedTools(registry.Definitions())
+
+	withExtra := append(slices.Clone(tools), oastomcptool.GeneratedTool{
+		Name: "excludedtool", Operation: "DELETE /widgets/{id}",
+	})
+	require.NoError(
+		t,
+		verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: withExtra}),
+	)
+
+	mismatched := slices.Clone(tools)
+	for i := range mismatched {
+		if mismatched[i].Name == "getwidget" {
+			mismatched[i].Operation = "DELETE /widgets/{id}"
+		}
+	}
+	err := verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: mismatched})
+	require.ErrorContains(t, err, `"getwidget" operation differs`)
+
+	missing := slices.DeleteFunc(slices.Clone(tools), func(gt oastomcptool.GeneratedTool) bool {
+		return gt.Name == "getwidget"
+	})
+	err = verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: missing})
+	require.ErrorContains(t, err, `"getwidget" missing from generated file`)
+}
