@@ -1224,6 +1224,13 @@ spec:
           memory: 1Gi
 ```
 
+### Upgrading from 1.24.x or earlier
+
+From 1.25.0 the gateway stores the OAuth `state`, the authorization codes it issues and upstream refresh sessions under SHA-256 keys instead of keys that contain those values, so they no longer appear in store keys, Redis commands or traces. 1.25.0 still reads entries written by older versions, so existing logins and refresh tokens keep working after the upgrade. The other direction does not work, which matters while old and new pods run side by side:
+
+- **During a rolling update**, a login, code exchange or token refresh that a 1.25.0 pod stored and an older pod then handles fails (`invalid or expired session`, `invalid or expired code`, `invalid_grant`). The stored entry is not deleted, so a retry that reaches a new pod succeeds; whether the user has to log in again depends on the client. Keep the rollout short, or use `strategy: Recreate` (with a short outage) if mixed versions are not acceptable.
+- **Rolling back** to 1.24.x after 1.25.0 has served traffic: refresh sessions issued or rotated by 1.25.0 cannot be read by the older version, so those clients have to log in again.
+
 ## Downstream client registration
 
 Manifold acts as an OAuth 2.1 authorization server for the MCP clients in front of it, and as an OAuth client towards the backend it proxies. A downstream client becomes known to Manifold in one of two ways:
