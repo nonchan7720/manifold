@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/infrastructure/store"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
@@ -331,6 +332,50 @@ func TestLoginEndpoint_NoOAuth2_NotMCPBackend(t *testing.T) {
 	h.LoginEndpoint(rw, req, srv)
 
 	require.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
+// authValue / tokenExchange / googleServiceAccount で上流を認証している HTTP MCP バックエンドに
+// OAuth2.1 Auto-Discovery を走らせると srv.OAuth2 が後付けされ、設定した認証が置き換わる。
+// ログインエンドポイントは検出を試みず、srv.OAuth2 も書き換えないこと。
+func TestResolveLoginServer_NonOAuth2BackendAuth_DoesNotDiscover(t *testing.T) {
+	cases := map[string]*config.Server{
+		"googleServiceAccount": {
+			GoogleServiceAccount: &config.GoogleServiceAccount{CredentialsJSON: "{}"},
+		},
+		"authValue":     {AuthValue: &config.AuthValue{}},
+		"tokenExchange": {TokenExchange: &config.TokenExchange{URL: "https://sts.example.com"}},
+	}
+	for name, srv := range cases {
+		t.Run(name, func(t *testing.T) {
+			var probed bool
+			backend := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					probed = true
+					w.WriteHeader(http.StatusUnauthorized)
+				}),
+			)
+			t.Cleanup(backend.Close)
+
+			srv.Name = "testserver"
+			srv.Transport = config.MCPTransportHTTP
+			srv.URL = backend.URL
+			h := &AuthHandler{
+				servers:    map[string]*config.Server{srv.Name: srv},
+				httpClient: backend.Client(),
+			}
+			req := httptest.NewRequestWithContext(
+				t.Context(), http.MethodGet, "/testserver/auth/login", nil,
+			)
+			rw := httptest.NewRecorder()
+
+			got := h.resolveLoginServer(t.Context(), rw, req, srv, &StoreClientRegistration{})
+
+			require.Nil(t, got)
+			require.Equal(t, http.StatusInternalServerError, rw.Code)
+			require.False(t, probed, "must not probe the backend for OAuth metadata")
+			require.Nil(t, srv.OAuth2)
+		})
+	}
 }
 
 func TestLoginEndpoint_MissingPKCE(t *testing.T) {
@@ -1110,7 +1155,7 @@ func upstreamAuthQuery(t *testing.T, rw *httptest.ResponseRecorder) url.Values {
 func storedAuthSession(t *testing.T, st *mockStore) AuthSession {
 	t.Helper()
 	for k, v := range st.data {
-		if !strings.HasPrefix(k, "auth_session:") {
+		if !strings.HasPrefix(k, hashedSecretKeyPrefix+authSessionKeyPrefix) {
 			continue
 		}
 		var session AuthSession
@@ -1250,7 +1295,7 @@ func TestLoginEndpoint_MappedUpstreamClientReachesRefreshSession(t *testing.T) {
 	h.CallbackEndpoint(cbRW, cbReq, srv)
 	require.Equal(t, http.StatusFound, cbRW.Code)
 
-	encrypted, ok := st.data["refresh_session:upstream-refresh-token"]
+	encrypted, ok := st.data[secretStoreKey(refreshSessionKeyPrefix, "upstream-refresh-token")]
 	require.True(t, ok, "refresh_session should be stored")
 	rtSessionJSON, err := h.decryptToken(encrypted)
 	require.NoError(t, err)
@@ -1315,7 +1360,7 @@ func TestLoginEndpoint_SessionStoresMCPServerName(t *testing.T) {
 	// 保存されたセッションに MCPServerName が設定されていることを確認
 	var sessionKey string
 	for k := range st.data {
-		if len(k) > len("auth_session:") && k[:len("auth_session:")] == "auth_session:" {
+		if strings.HasPrefix(k, hashedSecretKeyPrefix+authSessionKeyPrefix) {
 			sessionKey = k
 			break
 		}
@@ -1380,7 +1425,7 @@ func TestCallbackEndpoint_AuthCodeStoresMCPServerName(t *testing.T) {
 	// 保存された authCode に MCPServerName が設定されていることを確認
 	var authCodeKey string
 	for k := range st.data {
-		if len(k) > len("auth_code:") && k[:len("auth_code:")] == "auth_code:" {
+		if strings.HasPrefix(k, hashedSecretKeyPrefix+authCodeKeyPrefix) {
 			authCodeKey = k
 			break
 		}
@@ -1634,7 +1679,7 @@ func TestTokenEndpoint_RefreshToken_Success(t *testing.T) {
 	// 古いセッションが削除され、新しいセッションが保存されていることを確認
 	_, oldExists := st.data["refresh_session:old-refresh-token"]
 	require.False(t, oldExists, "old refresh session should be deleted")
-	_, newExists := st.data["refresh_session:new-refresh-token"]
+	_, newExists := st.data[secretStoreKey(refreshSessionKeyPrefix, "new-refresh-token")]
 	require.True(t, newExists, "new refresh session should be stored")
 }
 
@@ -1689,7 +1734,7 @@ func TestCallbackEndpoint_StoresRefreshSession(t *testing.T) {
 	require.Equal(t, http.StatusFound, rw.Code)
 
 	// refresh_session が暗号化されて保存されていることを確認
-	encryptedRTSession, exists := st.data["refresh_session:upstream-refresh-token"]
+	encryptedRTSession, exists := st.data[secretStoreKey(refreshSessionKeyPrefix, "upstream-refresh-token")]
 	require.True(t, exists, "refresh_session should be stored when upstream returns refresh_token")
 
 	// 復号して内容を確認
@@ -3138,4 +3183,123 @@ func TestTokenEndpoint_RefreshToken_PublicClientSendsClientIDInParams(t *testing
 
 	require.Equal(t, http.StatusOK, rw.Code, rw.Body.String())
 	require.EqualValues(t, 1, calls.Load())
+}
+
+// 秘匿値（state・認可コード・リフレッシュトークン）はストアキーに平文で現れない。
+// キーはストア層のスパンや Redis のコマンド、永続化データにそのまま残るため。
+func TestSecretStoreKey_DoesNotContainSecret(t *testing.T) {
+	const secret = "upstream-refresh-token"
+	key := secretStoreKey(refreshSessionKeyPrefix, secret)
+	require.True(t, strings.HasPrefix(key, hashedSecretKeyPrefix+refreshSessionKeyPrefix))
+	require.NotContains(t, key, secret)
+	require.Equal(t, key, secretStoreKey(refreshSessionKeyPrefix, secret))
+	require.NotEqual(t, key, secretStoreKey(authCodeKeyPrefix, secret))
+}
+
+// 旧形式（秘匿値をそのままキーにしたもの）で保存された値も引けて、削除では両形式とも消える。
+func TestGetSecretKeyed_FallsBackToLegacyKey(t *testing.T) {
+	st := newMockStore(map[string]string{"refresh_session:legacy": "old"})
+	h := &AuthHandler{store: st}
+
+	v, err := h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "legacy")
+	require.NoError(t, err)
+	require.Equal(t, "old", v)
+
+	require.NoError(
+		t,
+		st.Set(t.Context(), secretStoreKey(refreshSessionKeyPrefix, "legacy"), "new", 0),
+	)
+	v, err = h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "legacy")
+	require.NoError(t, err)
+	require.Equal(t, "new", v)
+
+	h.delSecretKeyed(t.Context(), refreshSessionKeyPrefix, "legacy")
+	require.Empty(t, st.data)
+
+	_, err = h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, "missing")
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// ハッシュ済みキーを知っていても、その一部を秘匿値として送って旧形式のフォールバックで
+// 引き当てたり、消したりできないこと（キーが漏れても秘匿値の代わりにならない）。
+func TestGetSecretKeyed_HashedKeyIsNotUsableAsSecret(t *testing.T) {
+	const secret = "upstream-refresh-token"
+	key := secretStoreKey(refreshSessionKeyPrefix, secret)
+	st := newMockStore(map[string]string{key: "session"})
+	h := &AuthHandler{store: st}
+
+	for _, forged := range []string{
+		key,
+		strings.TrimPrefix(key, refreshSessionKeyPrefix),
+		strings.TrimPrefix(key, hashedSecretKeyPrefix+refreshSessionKeyPrefix),
+		strings.TrimPrefix(key, hashedSecretKeyPrefix),
+	} {
+		_, err := h.getSecretKeyed(t.Context(), refreshSessionKeyPrefix, forged)
+		require.ErrorIs(t, err, store.ErrNotFound, forged)
+		h.delSecretKeyed(t.Context(), refreshSessionKeyPrefix, forged)
+	}
+	require.Equal(t, map[string]string{key: "session"}, st.data)
+}
+
+// DCR の応答を decode できないとき、go-sdk はエラー文に応答本文を埋め込む。2xx の本文には
+// 発行された client_secret が含まれ得るので、sanitizeDCRError を通した後のエラーに残らないこと。
+func TestSanitizeDCRError_OmitsResponseBody(t *testing.T) {
+	const secret = "issued-client-secret-value"
+	cases := map[string]struct {
+		status int
+		body   string
+	}{
+		"undecodable 2xx": {
+			status: http.StatusCreated,
+			body:   `{"client_id":"c","client_secret":"` + secret + `","client_id_issued_at":"not-a-number"}`,
+		},
+		"unexpected status": {
+			status: http.StatusInternalServerError,
+			body:   `{"client_secret":"` + secret + `"}`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			t.Cleanup(as.Close)
+
+			_, rawErr := oauthex.RegisterClient(
+				t.Context(),
+				as.URL,
+				&oauthex.ClientRegistrationMetadata{
+					RedirectURIs: []string{"https://gw.example.com/cb"},
+				},
+				as.Client(),
+			)
+			require.Error(t, rawErr)
+			require.Contains(t, rawErr.Error(), secret, "precondition: the SDK embeds the body")
+
+			err := sanitizeDCRError(rawErr)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), secret)
+		})
+	}
+}
+
+// RFC 7591 のエラー応答はそのまま返す（error / error_description は運用者の調査に要る）。
+func TestSanitizeDCRError_KeepsRegistrationError(t *testing.T) {
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_redirect_uri","error_description":"bad uri"}`))
+	}))
+	t.Cleanup(as.Close)
+
+	_, rawErr := oauthex.RegisterClient(t.Context(), as.URL,
+		&oauthex.ClientRegistrationMetadata{RedirectURIs: []string{"https://gw.example.com/cb"}},
+		as.Client())
+	require.Error(t, rawErr)
+
+	var regErr *oauthex.ClientRegistrationError
+	require.ErrorAs(t, sanitizeDCRError(rawErr), &regErr)
+	require.Equal(t, "invalid_redirect_uri", regErr.ErrorCode)
 }

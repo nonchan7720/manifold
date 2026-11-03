@@ -62,10 +62,6 @@ func newHTTPClientRoundTripper(
 		// コンテキストのトークンは転送せず、AuthValue のヘッダーを付加する。
 		// AuthValue が未設定の場合はコンテキストのトークンを転送する。
 		base = client.NewAuthValueRoundTripper(transport, auth)
-	case oauth2 != nil:
-		// OAuth2.0（gateway が exchange したトークン）も
-		// OAuth2.1（クライアントのトークンをそのまま）もこの経路を通る。
-		base = client.NewOAuth2RoundTripper(transport)
 	case tokenExchange != nil:
 		// API Key をトークン交換してOAuthトークンを利用する場合
 		if registry == nil {
@@ -75,6 +71,13 @@ func newHTTPClientRoundTripper(
 	case googleSource != nil:
 		// Google のアクセストークンを付加する（googleURLs のホストにのみ）。
 		base = client.NewGoogleRoundTripper(transport, googleSource, googleURLs...)
+	case oauth2 != nil:
+		// OAuth2.0（gateway が exchange したトークン）も
+		// OAuth2.1（クライアントのトークンをそのまま）もこの経路を通る。
+		// oauth2 は OAuth2.1 Auto-Discovery で実行時に後付けされ得るため、設定ファイルで
+		// 明示した認証（authValue / tokenExchange / googleServiceAccount）より後に判定する。
+		// 先に判定すると、後付けされた oauth2 が明示した認証を黙って置き換えてしまう。
+		base = client.NewOAuth2RoundTripper(transport)
 	default:
 		base = transport
 	}

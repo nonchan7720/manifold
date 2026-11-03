@@ -574,3 +574,99 @@ func TestGeneratedCatalog_RoundTrip_PetstoreFixture(t *testing.T) {
 		require.Equal(t, len(reg.Definitions()), len(reg2.Definitions()))
 	}
 }
+
+// writeGoldenToolsFile は goldenSpec のカタログを opts で構築し、mutate でツールを
+// 書き換えたうえで tools.file として書き出す。
+func writeGoldenToolsFile(
+	t *testing.T,
+	mutate func([]oastomcptool.GeneratedTool),
+	opts ...RegisterOpenAPIOption,
+) string {
+	t.Helper()
+	specPath := filepath.Join(t.TempDir(), "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(goldenSpec), 0o600))
+	source, err := oastomcptool.LoadSpecSource(t.Context(), specPath)
+	require.NoError(t, err)
+	registry, err := BuildCatalog(
+		t.Context(), &http.Client{}, source, "https://api.example.com", nil, opts...,
+	)
+	require.NoError(t, err)
+	tools := GeneratedTools(registry.Definitions())
+	if mutate != nil {
+		mutate(tools)
+	}
+	g, err := oastomcptool.NewGeneratedCatalog(
+		t.Context(), source, tools, "manifold test", time.Now(),
+	)
+	require.NoError(t, err)
+	genPath := filepath.Join(t.TempDir(), "generated.yaml")
+	f, err := os.Create(genPath)
+	require.NoError(t, err)
+	require.NoError(t, oastomcptool.WriteGeneratedCatalog(f, g))
+	require.NoError(t, f.Close())
+	return genPath
+}
+
+// TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads は、"openapi generate" が
+// tools.exclude を適用しなかったリリースからのアップグレードを固定する。除外対象を
+// 含む tools.file でも起動を止めず、除外対象はカタログに入れないこと。
+func TestGeneratedToolsFile_GeneratedWithoutExclude_StillLoads(t *testing.T) {
+	genPath := writeGoldenToolsFile(t, nil)
+
+	loaded, err := RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil,
+		WithGeneratedToolsFile(genPath), WithExcludeTools([]string{"createWidget"}),
+	)
+	require.NoError(t, err)
+	require.Nil(t, findTool(t, loaded, "createwidget"))
+	require.NotNil(t, findTool(t, loaded, "getwidget"))
+}
+
+// 許容するのは tools.exclude による差分だけ。それ以外の理由で古いファイルは
+// 引き続き拒否する。
+func TestGeneratedToolsFile_GeneratedWithoutExclude_OtherwiseStale_Rejected(t *testing.T) {
+	genPath := writeGoldenToolsFile(t, func(tools []oastomcptool.GeneratedTool) {
+		for i := range tools {
+			if tools[i].Name == "getwidget" {
+				tools[i].Description = "stale description"
+			}
+		}
+	})
+
+	_, err := RegisterOpenAPI(
+		t.Context(), "", "https://api.example.com", nil,
+		WithGeneratedToolsFile(genPath), WithExcludeTools([]string{"createWidget"}),
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "generated tools are stale")
+}
+
+// 配信するツール（除外後の registry）は、ファイル側の同名ツールと一致していなければならない。
+// ファイルにだけあるツール（除外対象）は無視する。
+func TestVerifyServedTools(t *testing.T) {
+	registry := verifyTestRegistry(t)
+	tools := GeneratedTools(registry.Definitions())
+
+	withExtra := append(slices.Clone(tools), oastomcptool.GeneratedTool{
+		Name: "excludedtool", Operation: "DELETE /widgets/{id}",
+	})
+	require.NoError(
+		t,
+		verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: withExtra}),
+	)
+
+	mismatched := slices.Clone(tools)
+	for i := range mismatched {
+		if mismatched[i].Name == "getwidget" {
+			mismatched[i].Operation = "DELETE /widgets/{id}"
+		}
+	}
+	err := verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: mismatched})
+	require.ErrorContains(t, err, `"getwidget" operation differs`)
+
+	missing := slices.DeleteFunc(slices.Clone(tools), func(gt oastomcptool.GeneratedTool) bool {
+		return gt.Name == "getwidget"
+	})
+	err = verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: missing})
+	require.ErrorContains(t, err, `"getwidget" missing from generated file`)
+}

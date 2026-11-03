@@ -53,11 +53,11 @@ func (c *Client) Get(_ context.Context, key string) (string, error) {
 
 	e, ok := c.data[key]
 	if !ok {
-		return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
+		return "", fmt.Errorf("key not found: %w", store.ErrNotFound)
 	}
 	if time.Now().After(e.expiresAt) {
 		delete(c.data, key)
-		return "", fmt.Errorf("key not found: %s: %w", key, store.ErrNotFound)
+		return "", fmt.Errorf("key not found: %w", store.ErrNotFound)
 	}
 	return e.value, nil
 }
@@ -70,7 +70,7 @@ func (c *Client) Expire(_ context.Context, key string, expiration time.Duration)
 	e, ok := c.data[key]
 	if !ok || time.Now().After(e.expiresAt) {
 		delete(c.data, key)
-		return fmt.Errorf("key not found: %s", key)
+		return fmt.Errorf("key not found: %w", store.ErrNotFound)
 	}
 	e.expiresAt = time.Now().Add(expiration)
 	c.data[key] = e

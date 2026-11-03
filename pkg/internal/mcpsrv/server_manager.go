@@ -448,12 +448,8 @@ func attachTools(
 	tools := register.ListTools()
 	infos := make([]ToolInfo, 0, len(tools))
 	for _, tool := range tools {
-		infos = append(infos, ToolInfo{
-			Name:        tool.tool.Name,
-			Summary:     tool.summary,
-			Description: tool.description,
-		})
-		srv.AddTool(
+		err := addToolSafely(
+			srv,
 			&tool.tool,
 			func(ctx context.Context, ctr *mcp.CallToolRequest) (res *mcp.CallToolResult, rErr error) {
 				spanName := fmt.Sprintf("mcpsrv/MCPServer/Handler/%s", ctr.Params.Name)
@@ -506,6 +502,18 @@ func attachTools(
 				return &result, nil
 			},
 		)
+		if err != nil {
+			// spec はゲートウェイの外から取得（再取得）する。SDK が受け付けない operation が
+			// 1 つあっても、サーバー全体を止めない。
+			slog.Warn("skipping openapi tool with an invalid definition",
+				slog.String("tool", tool.tool.Name), slog.String("error", err.Error()))
+			continue
+		}
+		infos = append(infos, ToolInfo{
+			Name:        tool.tool.Name,
+			Summary:     tool.summary,
+			Description: tool.description,
+		})
 	}
 	return infos
 }

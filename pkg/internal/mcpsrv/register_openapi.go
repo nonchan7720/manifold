@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,11 +80,79 @@ func RegisterOpenAPI(
 	if catalog != nil {
 		// tools.file は生成時と同じオプション（tools.exclude を含む）で作り直して照合する。
 		// exclude の変更などは古いファイルとして検出される。
-		if err := VerifyGeneratedTools(registry, catalog); err != nil {
+		if err := verifyGeneratedToolsFile(
+			ctx, c, source, baseUrl, headers, registry, catalog, opts,
+		); err != nil {
 			return nil, fmt.Errorf(`%w (run "manifold openapi generate")`, err)
 		}
 	}
 	return registry, nil
+}
+
+// verifyGeneratedToolsFile は catalog（tools.file）を、同じ spec から opts で作り直した
+// registry と照合する。
+//
+// 1.25.0 より前の "manifold openapi generate" は tools.exclude を適用しなかったため、
+// 古いリリースで生成した tools.file には除外対象のツールが残っている（以前は tools/list
+// から隠すだけだった）。このファイルで起動を拒むと、アップグレードしただけでクラッシュ
+// ループになる。そこで厳密な照合に失敗し、かつ tools.exclude が設定されているときは、
+// tools.exclude を外して構築したカタログともう一度照合する。一致すれば再生成を促す警告を
+// 出して受け入れる。除外対象は registry に入らないので、配信される内容は再生成した
+// ファイルと同じになる。"manifold openapi generate --check" は従来どおり厳密に判定する。
+func verifyGeneratedToolsFile(
+	ctx context.Context,
+	c *http.Client,
+	source *oastomcptool.SpecSource,
+	baseUrl string,
+	headers map[string]string,
+	registry *MCPToolRegistry,
+	catalog *oastomcptool.GeneratedCatalog,
+	opts []RegisterOpenAPIOption,
+) error {
+	err := VerifyGeneratedTools(registry, catalog)
+	if err == nil {
+		return nil
+	}
+	opt := newRegisterOpenAPIOption(opts)
+	if len(opt.excludeTools) == 0 {
+		return err
+	}
+	unfiltered, buildErr := BuildCatalog(
+		ctx, c, source, baseUrl, headers, append(slices.Clone(opts), WithExcludeTools(nil))...,
+	)
+	if buildErr != nil {
+		return err
+	}
+	if VerifyGeneratedTools(unfiltered, catalog) != nil {
+		return err
+	}
+	// 除外なしのカタログと一致しても、配信するのは registry（除外後）のツール。同じツール名に
+	// 別の operation が当たる場合（"Foo" と "foo" など）に備えて、配信する各ツールがファイル側の
+	// 定義と一致することも確かめる。
+	if servedErr := verifyServedTools(registry, catalog); servedErr != nil {
+		return servedErr
+	}
+	slog.WarnContext(ctx,
+		"tools.file was generated without tools.exclude applied; excluded tools are dropped. "+
+			`Run "manifold openapi generate" to regenerate it`,
+		slog.String("file", opt.generatedToolsFile))
+	return nil
+}
+
+// verifyServedTools は registry の各ツールが、catalog（tools.file）の同名ツールと一致するかを
+// 確かめる。catalog にだけあるツール（除外対象）は無視する。
+func verifyServedTools(registry *MCPToolRegistry, catalog *oastomcptool.GeneratedCatalog) error {
+	served := make(map[string]struct{})
+	for _, d := range registry.Definitions() {
+		served[d.Name] = struct{}{}
+	}
+	subset := &oastomcptool.GeneratedCatalog{}
+	for _, gt := range catalog.Tools {
+		if _, ok := served[gt.Name]; ok {
+			subset.Tools = append(subset.Tools, gt)
+		}
+	}
+	return VerifyGeneratedTools(registry, subset)
 }
 
 // resolveBaseUrl は spec から baseUrl を導出する。導出できなければ空文字を返す。

@@ -100,6 +100,25 @@ func TestRegisterSessionTools_InvalidDefinition_SkippedWithoutPanic(t *testing.T
 		{"non-object inputSchema", `{"name":"evil","inputSchema":{"type":"string"}}`},
 		{"inputSchema is not an object", `{"name":"evil","inputSchema":"object"}`},
 		{"null inputSchema", `{"name":"evil","inputSchema":null}`},
+		{"null tool", `null`},
+		{
+			"x-mcp-header on a non-primitive property",
+			`{"name":"evil","inputSchema":{"type":"object","properties":{"a":{"type":"object","x-mcp-header":"X-A"}}}}`,
+		},
+		{
+			"empty x-mcp-header",
+			`{"name":"evil","inputSchema":{"type":"object","properties":{"a":{"type":"string","x-mcp-header":""}}}}`,
+		},
+		{
+			"x-mcp-header with an invalid character",
+			`{"name":"evil","inputSchema":{"type":"object","properties":{"a":{"type":"string","x-mcp-header":"X A"}}}}`,
+		},
+		{
+			"duplicate x-mcp-header (case-insensitive, nested)",
+			`{"name":"evil","inputSchema":{"type":"object","properties":{` +
+				`"a":{"type":"string","x-mcp-header":"X-A"},` +
+				`"b":{"type":"object","properties":{"c":{"type":"integer","x-mcp-header":"x-a"}}}}}}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,26 +152,90 @@ func TestRegisterSessionTools_InvalidDefinition_SkippedWithoutPanic(t *testing.T
 	}
 }
 
-func TestValidateSessionTool(t *testing.T) {
-	require.Error(t, validateSessionTool(nil))
-	require.Error(t, validateSessionTool(&mcp.Tool{Name: "x"}))
-	require.Error(t, validateSessionTool(&mcp.Tool{
+func TestValidateToolDefinition(t *testing.T) {
+	require.Error(t, validateToolDefinition(nil))
+	require.Error(t, validateToolDefinition(&mcp.Tool{Name: "x"}))
+	require.Error(t, validateToolDefinition(&mcp.Tool{
 		Name:        "x",
 		InputSchema: map[string]any{"type": "array"},
 	}))
-	require.Error(t, validateSessionTool(&mcp.Tool{Name: "x", InputSchema: []any{"object"}}))
-	require.Error(t, validateSessionTool(&mcp.Tool{
+	require.Error(t, validateToolDefinition(&mcp.Tool{Name: "x", InputSchema: []any{"object"}}))
+	require.Error(t, validateToolDefinition(&mcp.Tool{
 		Name:         "x",
 		InputSchema:  map[string]any{"type": "object"},
 		OutputSchema: make(chan int),
 	}))
-	require.NoError(t, validateSessionTool(&mcp.Tool{
+	require.NoError(t, validateToolDefinition(&mcp.Tool{
 		Name:        "x",
 		InputSchema: map[string]any{"type": "object"},
 	}))
-	require.NoError(t, validateSessionTool(&mcp.Tool{
+	require.NoError(t, validateToolDefinition(&mcp.Tool{
 		Name:         "x",
 		InputSchema:  json.RawMessage(`{"type":"object","properties":{}}`),
 		OutputSchema: map[string]any{"type": "object"},
 	}))
+}
+
+func TestValidateToolDefinition_MatchesSDKHeaderAnnotationCheck(t *testing.T) {
+	valid := &mcp.Tool{
+		Name: "x",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{` +
+			`"a":{"type":"string","x-mcp-header":"X-A"},` +
+			`"b":{"type":"object","properties":{"c":{"type":"boolean","x-mcp-header":"X-C"}}}}}`),
+	}
+	require.NoError(t, validateToolDefinition(valid))
+	front := mcp.NewServer(&mcp.Implementation{Name: "front", Version: "0.0.1"}, nil)
+	require.NotPanics(t, func() {
+		front.AddTool(
+			valid,
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{}, nil
+			},
+		)
+	})
+
+	invalid := &mcp.Tool{
+		Name: "y",
+		InputSchema: json.RawMessage(
+			`{"type":"object","properties":{"a":{"type":"array","x-mcp-header":"X-A"}}}`,
+		),
+	}
+	require.Error(t, validateToolDefinition(invalid))
+	// AddTool が panic する定義は、validateToolDefinition でも必ず弾くこと。
+	require.Panics(t, func() {
+		front.AddTool(
+			invalid,
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return &mcp.CallToolResult{}, nil
+			},
+		)
+	})
+}
+
+func TestAddToolSafely_RecoversFromPanic(t *testing.T) {
+	require.Error(t, addToolSafely(nil, &mcp.Tool{Name: "x"}, nil))
+
+	front := mcp.NewServer(&mcp.Implementation{Name: "front", Version: "0.0.1"}, nil)
+	handler := func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	}
+	require.Error(t, addToolSafely(front, &mcp.Tool{Name: "x"}, nil))
+	require.Error(t, addToolSafely(front, nil, handler))
+	require.NoError(t, addToolSafely(front, &mcp.Tool{
+		Name:        "ok",
+		InputSchema: map[string]any{"type": "object"},
+	}, handler))
+	// 型付きの nil の outputSchema は JSON では null になるが、SDK は panic する。
+	require.Error(t, addToolSafely(front, &mcp.Tool{
+		Name:         "typed_nil_output",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: (*map[string]any)(nil),
+	}, handler))
+}
+
+// 事前検査をすり抜けた定義で AddTool が panic しても、エラーとして返ること。
+func TestRecoverAddTool_ConvertsPanicToError(t *testing.T) {
+	err := recoverAddTool("boom", func() { panic("unexpected") })
+	require.ErrorContains(t, err, `add tool "boom": unexpected`)
+	require.NoError(t, recoverAddTool("fine", func() {}))
 }

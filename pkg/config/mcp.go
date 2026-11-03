@@ -578,6 +578,13 @@ func (s *Server) IsMCPBackend() bool {
 		s.Transport != MCPTransportReverse && s.Transport != MCPTransportA2A
 }
 
+// HasNonOAuth2BackendAuth は上流への認証として oauth2 以外（authValue / tokenExchange /
+// googleServiceAccount）が設定されているかを返す。これらと oauth2 は排他（validateSingleAuth）
+// なので、真ならこのサーバーに OAuth2.1 Auto-Discovery で oauth2 を後付けしてはならない。
+func (s *Server) HasNonOAuth2BackendAuth() bool {
+	return s.AuthValue != nil || s.TokenExchange != nil || s.GoogleServiceAccount != nil
+}
+
 // IsA2ABackend はこの Server が agents ディレクティブ由来の A2A エージェントかどうかを返す。
 func (s *Server) IsA2ABackend() bool {
 	return s.Transport == MCPTransportA2A

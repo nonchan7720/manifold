@@ -624,7 +624,7 @@ mcpServers:
 - リネームしたツールは新しい名前でしか呼べません。新しい名前が別のツールの元の名前と同じ場合は、リネームした側が優先され、もう一方は隠れます。
 - 絞り込みは authz より前に行われるため、authz と `/mcp/list?tools=true` はすべて公開名だけを見ます。OPA のポリシーも公開名で書いてください。
 - 絞り込みで外したツールは、存在しないツールとまったく同じに振る舞います（`unknown tool`）。
-- `tools.file` と併用する場合、`exclude` は `manifold openapi generate` の時点で適用され、ゲートウェイが起動時にファイルからカタログを再構築する際にも同じリストが適用されます。そのため `exclude` を変えるとコミット済みのファイルは stale になります（`generated tools are stale … (run "manifold openapi generate")`）。再生成してください。
+- `tools.file` と併用する場合、`exclude` は `manifold openapi generate` の時点で適用され、ゲートウェイが起動時にファイルからカタログを再構築する際にも同じリストが適用されます。そのため `exclude` を変えるとコミット済みのファイルは stale になります（`generated tools are stale … (run "manifold openapi generate")`）。再生成してください。ただし、除外対象のツールがまだ載っているファイルは例外として扱います。たとえば 1.25.0 より前の `generate`（まだ `exclude` を適用していなかった）で生成したファイルや、パターンを追加した後に再生成していないファイルです。`exclude` を外して構築したカタログと一致すれば、ゲートウェイは起動し、除外対象のツールを外したうえで再生成を促す警告ログを出します。`manifold openapi generate --check` は従来どおり厳密に判定し、stale として報告します。
 - 除外した operation に対して `openapi diff` や `specRefresh` が検出した破壊的変更は、引き続き報告され `--fail-on` / `rejectOn` の判定にも含まれます。対応するツールは無いため、`--by-tool` では `(spec-wide)` に入ります。
 - reverse（WebMCP）サーバーでは絞り込みはタブ由来のツールだけに適用されます。`create_pairing_code` はゲートウェイ自身が登録するツールなので、`include` に一致しなくても常にその名前で公開され、ペアリングは引き続き行えます。同様に `mcpServers.<name>.agents` の `<agent>__<skill>` ツールも絞り込み・リネームの対象になりません。絞り込みはサービス自身のツールだけに適用され、名前がたまたま `<agent>__` で始まるサービスのツールも対象になります。
 
@@ -896,13 +896,15 @@ Google のアクセストークンでバックエンドへのリクエストを�
 mcpServers:
   ga4:
     description: Google Analytics Data API
-    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    spec: ./specs/analyticsdata-v1beta.openapi.yaml   # OpenAPI 3 / Swagger 2 の文書（下記参照）
     baseURL: https://analyticsdata.googleapis.com
     googleServiceAccount:
       credentialsJSON: ${GA4_SERVICE_ACCOUNT_JSON}   # または credentialsFile: /path/to/key.json
       scopes:
         - https://www.googleapis.com/auth/analytics.readonly
 ```
+
+`spec` には OpenAPI 3 または Swagger 2 の文書を指定してください。Google の API が公開しているのは [Google API Discovery](https://developers.google.com/discovery) 形式の文書（`analyticsdata/v1beta/analyticsdata-api.json` や `https://<service>.googleapis.com/$discovery/rest` など）で、形式が異なります。これを `spec` に指定するとツールが 1 つも無い状態で起動するため、事前に OpenAPI へ変換するか、必要な operation だけを書いた spec を用意してください。
 
 | フィールド        | 型       | 説明                                                                        |
 | ----------------- | -------- | --------------------------------------------------------------------------- |
@@ -918,7 +920,7 @@ mcpServers:
 mcpServers:
   ga4:
     baseURL: https://analyticsdata.googleapis.com
-    spec: https://raw.githubusercontent.com/googleapis/google-api-go-client/main/analyticsdata/v1beta/analyticsdata-api.json
+    spec: ./specs/analyticsdata-v1beta.openapi.yaml
     googleServiceAccount:
       scopes:
         - https://www.googleapis.com/auth/analytics.readonly   # 資格情報は ADC / Workload Identity から
@@ -1221,6 +1223,13 @@ spec:
         limits:
           memory: 1Gi
 ```
+
+### 1.24.x 以前からのアップグレード
+
+1.25.0 から、OAuth の `state`、ゲートウェイが発行する認可コード、上流のリフレッシュセッションを、値そのものを含むキーではなく SHA-256 のキーで保存します。これらの値はストアのキー・Redis のコマンド・トレースに現れなくなります。旧バージョンが書いたエントリは 1.25.0 でも読めるため、アップグレード後も既存のログインとリフレッシュトークンはそのまま使えます。逆方向は読めないため、新旧の Pod が混在する間は次の点に注意してください。
+
+- **ローリングアップデート中**: 1.25.0 の Pod が保存したログイン・認可コード・トークン更新を旧バージョンの Pod が処理すると失敗します（`invalid or expired session`、`invalid or expired code`、`invalid_grant`）。保存済みのエントリは削除されないので、新しい Pod に届いた再試行は成功します。再ログインが必要になるかはクライアントの動作によります。ロールアウトを短く保つか、バージョンの混在を避けたい場合は `strategy: Recreate`（短い停止を伴う）を使ってください。
+- **ロールバック**: 1.25.0 で運用した後に 1.24.x へ戻すと、1.25.0 が発行・更新したリフレッシュセッションは旧バージョンで読めないため、該当するクライアントは再ログインが必要です。
 
 ## 下流クライアントの登録
 
