@@ -285,6 +285,7 @@ func TestTokenExchangeRoundTrip_EmptyContextToken_Returns401(t *testing.T) {
 }
 
 func TestTokenExchangeRoundTrip_RateLimited_Returns503WithRetryAfter(t *testing.T) {
+	t.Setenv("TEST", "true") // HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -302,6 +303,7 @@ func TestTokenExchangeRoundTrip_RateLimited_Returns503WithRetryAfter(t *testing.
 }
 
 func TestTokenExchangeRoundTrip_UpstreamServerError_Returns502(t *testing.T) {
+	t.Setenv("TEST", "true") // HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -317,6 +319,7 @@ func TestTokenExchangeRoundTrip_UpstreamServerError_Returns502(t *testing.T) {
 }
 
 func TestTokenExchangeRoundTrip_ExchangeRejectsCredential_Returns401(t *testing.T) {
+	t.Setenv("TEST", "true") // HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -332,6 +335,7 @@ func TestTokenExchangeRoundTrip_ExchangeRejectsCredential_Returns401(t *testing.
 }
 
 func TestTokenExchangeRoundTrip_NetworkError_Returns502(t *testing.T) {
+	t.Setenv("TEST", "true") // HTTPClient() が httptest (127.0.0.1) を許可するために必要
 	// サーバーを起動直後に閉じることで、接続エラー（ネットワーク到達不能）を発生させる。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	url := srv.URL

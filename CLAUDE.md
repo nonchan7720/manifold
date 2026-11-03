@@ -49,9 +49,8 @@
 
 - **PR タイトル** は Conventional Commits に従う（CI が検査する）。
 - **バージョンと CHANGELOG** は release-please が更新する。`CHANGELOG.md` と `pkg/version/version.go` は手で触らない。
-- **テスト**: `make test`。`go test` を直接実行するときは `CI=true go test ./pkg/...` とする。
-  - `CI` / `TEST` / `LOCAL` が未設定だと、HTTP クライアントが loopback への接続を拒否し、トークン交換のテストが落ちる。
-  - `pkg/internal/mcpsrv` のテストには envtest のバイナリが要る。先に `setup-envtest use 1.36.2` を実行しておく。
+- **テスト**: `make test`。`go test` を直接実行する場合、`pkg/internal/mcpsrv` のテストには envtest のバイナリが要る。先に `setup-envtest use 1.36.2` を実行しておく。
+  - テストは環境変数（`CI` など）に頼らず通るようにする。`CI` / `TEST` / `LOCAL` が未設定だと HTTP クライアントは loopback への接続を拒否するので、httptest に接続するテストは自分で `t.Setenv("TEST", "true")` を設定する（下記）。
 - **Lint**: CI と同じく `golangci-lint run --new-from-rev=origin/main` を使う。golines の指摘は `golangci-lint fmt <files>` で直す。
 - テストで httptest（127.0.0.1）に接続する必要があるとき:
   - まず `t.Setenv("TEST", "true")` で回避できないかを考える。
