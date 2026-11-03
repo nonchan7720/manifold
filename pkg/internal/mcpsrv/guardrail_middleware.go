@@ -197,13 +197,5 @@ func logGuardrailDecision(
 // as its arguments, leaving req itself untouched. req must carry
 // *mcp.CallToolParamsRaw params.
 func withToolArguments(req mcp.Request, args json.RawMessage) mcp.Request {
-	params, _ := req.GetParams().(*mcp.CallToolParamsRaw)
-	copiedParams := *params
-	copiedParams.Arguments = args
-	if typed, ok := req.(*mcp.CallToolRequest); ok {
-		copied := *typed
-		copied.Params = &copiedParams
-		return &copied
-	}
-	return &mcp.CallToolRequest{Params: &copiedParams, Extra: req.GetExtra()}
+	return withCallToolParams(req, func(params *mcp.CallToolParamsRaw) { params.Arguments = args })
 }

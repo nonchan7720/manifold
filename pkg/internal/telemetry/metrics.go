@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -107,26 +106,33 @@ func newPushMeterProvider(
 	return meterProvider, nil, cleanup, nil
 }
 
+// metricHTTPOptions / metricGRPCOptions は共通設定を otlpmetrichttp / otlpmetricgrpc のオプションに変換する。
+var (
+	metricHTTPOptions = otlpOptionFuncs[otlpmetrichttp.Option]{
+		endpoint:    otlpmetrichttp.WithEndpoint,
+		endpointURL: otlpmetrichttp.WithEndpointURL,
+		gzip: func() otlpmetrichttp.Option {
+			return otlpmetrichttp.WithCompression(otlpmetrichttp.GzipCompression)
+		},
+		headers: otlpmetrichttp.WithHeaders,
+	}
+	metricGRPCOptions = otlpOptionFuncs[otlpmetricgrpc.Option]{
+		insecure:    otlpmetricgrpc.WithInsecure,
+		endpoint:    otlpmetricgrpc.WithEndpoint,
+		endpointURL: otlpmetricgrpc.WithEndpointURL,
+		gzip:        func() otlpmetricgrpc.Option { return otlpmetricgrpc.WithCompressor("gzip") },
+		headers:     otlpmetricgrpc.WithHeaders,
+	}
+)
+
 func newHTTPMetricExporter(
 	ctx context.Context,
 	opt *MetricsConfig,
 	gzipCompression bool,
 ) (sdkmetric.Exporter, error) {
-	opts := []otlpmetrichttp.Option{}
-	endpoint := opt.HTTP.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		opts = append(opts, otlpmetrichttp.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		opts = append(opts, otlpmetrichttp.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
-	}
-	if gzipCompression {
-		opts = append(opts, otlpmetrichttp.WithCompression(otlpmetrichttp.GzipCompression))
-	}
-	if len(endpoint.Headers) > 0 {
-		opts = append(opts, otlpmetrichttp.WithHeaders(endpoint.Headers))
+	opts, err := metricHTTPOptions.buildHTTP(opt.HTTP, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
 	return otlpmetrichttp.New(ctx, opts...)
 }
@@ -136,25 +142,9 @@ func newGRPCMetricExporter(
 	opt *MetricsConfig,
 	gzipCompression bool,
 ) (sdkmetric.Exporter, error) {
-	opts := make([]otlpmetricgrpc.Option, 0, 10)
-	grpc := opt.GRPC
-	if grpc.Insecure {
-		opts = append(opts, otlpmetricgrpc.WithInsecure())
-	}
-	endpoint := grpc.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		opts = append(opts, otlpmetricgrpc.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		opts = append(opts, otlpmetricgrpc.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
-	}
-	if gzipCompression {
-		opts = append(opts, otlpmetricgrpc.WithCompressor("gzip"))
-	}
-	if len(endpoint.Headers) > 0 {
-		opts = append(opts, otlpmetricgrpc.WithHeaders(endpoint.Headers))
+	opts, err := metricGRPCOptions.buildGRPC(opt.GRPC, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
 	return otlpmetricgrpc.New(ctx, opts...)
 }

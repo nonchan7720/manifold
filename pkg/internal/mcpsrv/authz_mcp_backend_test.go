@@ -39,8 +39,8 @@ func authzGroupsAllow(groups []string, server, tool string) bool {
 	target := server + "/" + tool
 	for _, g := range groups {
 		for _, pattern := range authzGroupPatterns[g] {
-			if strings.HasSuffix(pattern, "*") {
-				if strings.HasPrefix(target, strings.TrimSuffix(pattern, "*")) {
+			if before, ok := strings.CutSuffix(pattern, "*"); ok {
+				if strings.HasPrefix(target, before) {
 					return true
 				}
 			} else if pattern == target {

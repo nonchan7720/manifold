@@ -421,6 +421,40 @@ func (c *MCPBackendClient) withSession(
 	return err
 }
 
+// callBackendWithCapability は resources/* や prompts/* のように、バックエンドの
+// capability に依存するメソッドを転送する共通処理。spanName（attrs を属性に付ける）
+// のスパンを張り、1呼び出し分のタイムアウトを課した上で withSession のセッション
+// で実行する。supported がセッションの capability を未広告と判定した場合は
+// call を呼ばずに unsupported と unsupportedErr をそのまま返し、広告していれば
+// call(session, ctx, params) の結果を返す。
+func callBackendWithCapability[P, R any](
+	c *MCPBackendClient,
+	ctx context.Context,
+	spanName string,
+	params P,
+	supported func(*mcp.ClientSession) bool,
+	call func(*mcp.ClientSession, context.Context, P) (R, error),
+	unsupported R,
+	unsupportedErr error,
+	attrs ...attribute.KeyValue,
+) (_ R, rErr error) {
+	ctx = trace.StartSpan(ctx, spanName, attrs...)
+	defer func() { trace.EndSpan(ctx, rErr) }()
+	ctx, cancel := c.withCallTimeout(ctx)
+	defer cancel()
+
+	var res R
+	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
+		if !supported(session) {
+			res = unsupported
+			return unsupportedErr
+		}
+		res, err = call(session, ctx, params)
+		return err
+	})
+	return res, err
+}
+
 // backendSupportsResources は session のバックエンドが resources capability を
 // 広告したかを返す。
 func backendSupportsResources(session *mcp.ClientSession) bool {
@@ -434,22 +468,10 @@ func backendSupportsResources(session *mcp.ClientSession) bool {
 func (c *MCPBackendClient) ListResources(
 	ctx context.Context,
 	params *mcp.ListResourcesParams,
-) (_ *mcp.ListResourcesResult, rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResources")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-	ctx, cancel := c.withCallTimeout(ctx)
-	defer cancel()
-
-	var res *mcp.ListResourcesResult
-	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
-		if !backendSupportsResources(session) {
-			res = &mcp.ListResourcesResult{Resources: []*mcp.Resource{}}
-			return nil
-		}
-		res, err = session.ListResources(ctx, params)
-		return err
-	})
-	return res, err
+) (*mcp.ListResourcesResult, error) {
+	return callBackendWithCapability(c, ctx, "mcpsrv/MCPBackendClient/ListResources", params,
+		backendSupportsResources, (*mcp.ClientSession).ListResources,
+		&mcp.ListResourcesResult{Resources: []*mcp.Resource{}}, nil)
 }
 
 // ListResourceTemplates はバックエンドへ resources/templates/list を転送する。
@@ -457,22 +479,10 @@ func (c *MCPBackendClient) ListResources(
 func (c *MCPBackendClient) ListResourceTemplates(
 	ctx context.Context,
 	params *mcp.ListResourceTemplatesParams,
-) (_ *mcp.ListResourceTemplatesResult, rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListResourceTemplates")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-	ctx, cancel := c.withCallTimeout(ctx)
-	defer cancel()
-
-	var res *mcp.ListResourceTemplatesResult
-	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
-		if !backendSupportsResources(session) {
-			res = &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}}
-			return nil
-		}
-		res, err = session.ListResourceTemplates(ctx, params)
-		return err
-	})
-	return res, err
+) (*mcp.ListResourceTemplatesResult, error) {
+	return callBackendWithCapability(c, ctx, "mcpsrv/MCPBackendClient/ListResourceTemplates",
+		params, backendSupportsResources, (*mcp.ClientSession).ListResourceTemplates,
+		&mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}}, nil)
 }
 
 // ReadResource はバックエンドへ resources/read を転送する。MCP Apps の
@@ -481,22 +491,11 @@ func (c *MCPBackendClient) ListResourceTemplates(
 func (c *MCPBackendClient) ReadResource(
 	ctx context.Context,
 	params *mcp.ReadResourceParams,
-) (_ *mcp.ReadResourceResult, rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ReadResource",
+) (*mcp.ReadResourceResult, error) {
+	return callBackendWithCapability(c, ctx, "mcpsrv/MCPBackendClient/ReadResource", params,
+		backendSupportsResources, (*mcp.ClientSession).ReadResource,
+		nil, mcp.ResourceNotFoundError(params.URI),
 		attribute.String("resource-uri", params.URI))
-	defer func() { trace.EndSpan(ctx, rErr) }()
-	ctx, cancel := c.withCallTimeout(ctx)
-	defer cancel()
-
-	var res *mcp.ReadResourceResult
-	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
-		if !backendSupportsResources(session) {
-			return mcp.ResourceNotFoundError(params.URI)
-		}
-		res, err = session.ReadResource(ctx, params)
-		return err
-	})
-	return res, err
 }
 
 // backendSupportsPrompts は session のバックエンドが prompts capability を
@@ -513,22 +512,10 @@ func backendSupportsPrompts(session *mcp.ClientSession) bool {
 func (c *MCPBackendClient) ListPrompts(
 	ctx context.Context,
 	params *mcp.ListPromptsParams,
-) (_ *mcp.ListPromptsResult, rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/ListPrompts")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-	ctx, cancel := c.withCallTimeout(ctx)
-	defer cancel()
-
-	var res *mcp.ListPromptsResult
-	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
-		if !backendSupportsPrompts(session) {
-			res = &mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}}
-			return nil
-		}
-		res, err = session.ListPrompts(ctx, params)
-		return err
-	})
-	return res, err
+) (*mcp.ListPromptsResult, error) {
+	return callBackendWithCapability(c, ctx, "mcpsrv/MCPBackendClient/ListPrompts", params,
+		backendSupportsPrompts, (*mcp.ClientSession).ListPrompts,
+		&mcp.ListPromptsResult{Prompts: []*mcp.Prompt{}}, nil)
 }
 
 // GetPrompt はバックエンドへ prompts/get を転送する。バックエンドが
@@ -537,22 +524,11 @@ func (c *MCPBackendClient) ListPrompts(
 func (c *MCPBackendClient) GetPrompt(
 	ctx context.Context,
 	params *mcp.GetPromptParams,
-) (_ *mcp.GetPromptResult, rErr error) {
-	ctx = trace.StartSpan(ctx, "mcpsrv/MCPBackendClient/GetPrompt",
+) (*mcp.GetPromptResult, error) {
+	return callBackendWithCapability(c, ctx, "mcpsrv/MCPBackendClient/GetPrompt", params,
+		backendSupportsPrompts, (*mcp.ClientSession).GetPrompt,
+		nil, unknownPromptError(params.Name),
 		attribute.String("prompt-name", params.Name))
-	defer func() { trace.EndSpan(ctx, rErr) }()
-	ctx, cancel := c.withCallTimeout(ctx)
-	defer cancel()
-
-	var res *mcp.GetPromptResult
-	err := c.withSession(ctx, func(session *mcp.ClientSession) (err error) {
-		if !backendSupportsPrompts(session) {
-			return unknownPromptError(params.Name)
-		}
-		res, err = session.GetPrompt(ctx, params)
-		return err
-	})
-	return res, err
 }
 
 // Close はバックエンドとの接続を閉じ、以降の接続を禁止する。

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2166,11 +2167,9 @@ func TestClientAllowedForServer(t *testing.T) {
 func newBoundClientHandler(t *testing.T, source string) (*AuthHandler, *mockStore) {
 	t.Helper()
 	regJSON, err := json.Marshal(StoreClientRegistration{
-		ClientRegistration: ClientRegistration{
-			ClientID:     "client1",
-			ClientName:   "Client One",
-			RedirectURIs: []string{"https://app.example.com/callback"},
-		},
+		ClientID:      "client1",
+		ClientName:    "Client One",
+		RedirectURIs:  []string{"https://app.example.com/callback"},
 		MCPServerName: "server-a",
 		Source:        source,
 	})
@@ -2351,19 +2350,17 @@ func newDiscoverTestBackend(
 	t.Helper()
 	var baseURL string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, mp := range metaPaths {
-			if r.URL.Path == mp {
-				res := resource
-				if res == "" {
-					res = baseURL + mcpPath
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-					"resource":              res,
-					"authorization_servers": []string{authURL},
-				})
-				return
+		if slices.Contains(metaPaths, r.URL.Path) {
+			res := resource
+			if res == "" {
+				res = baseURL + mcpPath
 			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"resource":              res,
+				"authorization_servers": []string{authURL},
+			})
+			return
 		}
 		if r.URL.Path == mcpPath {
 			if withResourceMetadata {

@@ -206,9 +206,16 @@ func newToolFilterMiddleware(cfg *config.ToolsConfig, builtin ...string) mcp.Mid
 // instead, leaving req itself untouched. req must carry
 // *mcp.CallToolParamsRaw params.
 func withToolName(req mcp.Request, name string) mcp.Request {
+	return withCallToolParams(req, func(params *mcp.CallToolParamsRaw) { params.Name = name })
+}
+
+// withCallToolParams は tools/call のリクエスト req の params を複製し、edit で
+// 書き換えたものを持つリクエストの複製を返す。req 自体（と元の params）は変更
+// しない。req は *mcp.CallToolParamsRaw の params を持っていなければならない。
+func withCallToolParams(req mcp.Request, edit func(*mcp.CallToolParamsRaw)) mcp.Request {
 	params, _ := req.GetParams().(*mcp.CallToolParamsRaw)
 	copiedParams := *params
-	copiedParams.Name = name
+	edit(&copiedParams)
 	if typed, ok := req.(*mcp.CallToolRequest); ok {
 		copied := *typed
 		copied.Params = &copiedParams

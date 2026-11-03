@@ -302,11 +302,9 @@ func (s *MCPServer) StartSpecRefresh(ctx context.Context, global config.SpecRefr
 	s.mu.Unlock()
 
 	for name, interval := range targets {
-		s.refreshWG.Add(1)
-		go func() {
-			defer s.refreshWG.Done()
+		s.refreshWG.Go(func() {
 			s.refreshLoop(ctx, name, interval)
-		}()
+		})
 	}
 }
 

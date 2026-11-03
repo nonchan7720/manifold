@@ -286,10 +286,8 @@ func TestCIMDCacheTTL(t *testing.T) {
 
 func TestResolveClient_DCRTakesPrecedence(t *testing.T) {
 	reg := StoreClientRegistration{
-		ClientRegistration: ClientRegistration{
-			ClientID:     "client1",
-			RedirectURIs: []string{"https://app.example.com/callback"},
-		},
+		ClientID:      "client1",
+		RedirectURIs:  []string{"https://app.example.com/callback"},
 		MCPServerName: "myserver",
 	}
 	regJSON, err := json.Marshal(reg)

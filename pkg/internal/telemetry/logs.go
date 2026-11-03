@@ -2,15 +2,14 @@ package telemetry
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/nonchan7720/manifold/pkg/version"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/log/noop"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -49,30 +48,37 @@ func NewLoggerProvider(ctx context.Context, opt *Config) (log.LoggerProvider, fu
 			slog.Warn(err.Error())
 		}
 	}
-	global.SetLoggerProvider(loggerProvider)
+	otel.SetLoggerProvider(loggerProvider)
 	return loggerProvider, cleanup, nil
 }
+
+// logHTTPOptions / logGRPCOptions は共通設定を otlploghttp / otlploggrpc のオプションに変換する。
+var (
+	logHTTPOptions = otlpOptionFuncs[otlploghttp.Option]{
+		endpoint:    otlploghttp.WithEndpoint,
+		endpointURL: otlploghttp.WithEndpointURL,
+		gzip: func() otlploghttp.Option {
+			return otlploghttp.WithCompression(otlploghttp.GzipCompression)
+		},
+		headers: otlploghttp.WithHeaders,
+	}
+	logGRPCOptions = otlpOptionFuncs[otlploggrpc.Option]{
+		insecure:    otlploggrpc.WithInsecure,
+		endpoint:    otlploggrpc.WithEndpoint,
+		endpointURL: otlploggrpc.WithEndpointURL,
+		gzip:        func() otlploggrpc.Option { return otlploggrpc.WithCompressor("gzip") },
+		headers:     otlploggrpc.WithHeaders,
+	}
+)
 
 func newHTTPLogExporter(
 	ctx context.Context,
 	opt *LogsConfig,
 	gzipCompression bool,
 ) (sdklog.Exporter, error) {
-	opts := []otlploghttp.Option{}
-	endpoint := opt.HTTP.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		opts = append(opts, otlploghttp.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		opts = append(opts, otlploghttp.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
-	}
-	if gzipCompression {
-		opts = append(opts, otlploghttp.WithCompression(otlploghttp.GzipCompression))
-	}
-	if len(endpoint.Headers) > 0 {
-		opts = append(opts, otlploghttp.WithHeaders(endpoint.Headers))
+	opts, err := logHTTPOptions.buildHTTP(opt.HTTP, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
 	return otlploghttp.New(ctx, opts...)
 }
@@ -82,25 +88,9 @@ func newGRPCLogExporter(
 	opt *LogsConfig,
 	gzipCompression bool,
 ) (sdklog.Exporter, error) {
-	opts := make([]otlploggrpc.Option, 0, 10)
-	grpc := opt.GRPC
-	if grpc.Insecure {
-		opts = append(opts, otlploggrpc.WithInsecure())
-	}
-	endpoint := grpc.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		opts = append(opts, otlploggrpc.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		opts = append(opts, otlploggrpc.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
-	}
-	if gzipCompression {
-		opts = append(opts, otlploggrpc.WithCompressor("gzip"))
-	}
-	if len(endpoint.Headers) > 0 {
-		opts = append(opts, otlploggrpc.WithHeaders(endpoint.Headers))
+	opts, err := logGRPCOptions.buildGRPC(opt.GRPC, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
 	return otlploggrpc.New(ctx, opts...)
 }
