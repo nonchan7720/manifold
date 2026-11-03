@@ -17,14 +17,14 @@ func (f *fakeTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func TestInMemoryRegistry_Get_Miss(t *testing.T) {
-	r := &InMemoryRegistry{}
+	r := &InMemoryBaseTokenRegister{}
 	ts, ok := r.Get("missing")
 	require.False(t, ok)
 	require.Nil(t, ts)
 }
 
 func TestInMemoryRegistry_Get_Hit(t *testing.T) {
-	r := &InMemoryRegistry{}
+	r := &InMemoryBaseTokenRegister{}
 	want := &fakeTokenSource{token: &oauth2.Token{AccessToken: "abc"}}
 	require.NoError(t, r.Set("key", want))
 
@@ -34,7 +34,7 @@ func TestInMemoryRegistry_Get_Hit(t *testing.T) {
 }
 
 func TestInMemoryRegistry_GetOrCreate_CreatesOnMiss(t *testing.T) {
-	r := &InMemoryRegistry{}
+	r := &InMemoryBaseTokenRegister{}
 	want := &fakeTokenSource{token: &oauth2.Token{AccessToken: "created"}}
 	created := false
 
@@ -58,7 +58,7 @@ func TestInMemoryRegistry_GetOrCreate_CreatesOnMiss(t *testing.T) {
 // 最終的に全ての呼び出し元が同じ TokenSource インスタンスへ収束することを確認する
 // （sync.Map.LoadOrStore によるアトミックな get-or-create）。
 func TestInMemoryRegistry_GetOrCreate_ConcurrentSameKey(t *testing.T) {
-	r := &InMemoryRegistry{}
+	r := &InMemoryBaseTokenRegister{}
 	const goroutines = 50
 
 	results := make([]oauth2.TokenSource, goroutines)

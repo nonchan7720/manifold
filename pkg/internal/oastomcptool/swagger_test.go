@@ -11,6 +11,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 )
@@ -947,7 +948,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("swagger streamed file")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -1157,7 +1158,7 @@ func callSwaggerJSONBody(
 func swaggerFileServer(t *testing.T, content []byte) *httptest.Server {
 	t.Helper()
 	// テスト用のダウンロード先は httptest のループバックなので AllowLocal を有効化する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
 	}))

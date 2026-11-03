@@ -354,13 +354,7 @@ func runGatewayServer(ctx context.Context) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
-	if err := oastomcptool.SetFileFetchConfig(oastomcptool.FileFetchConfig{
-		AllowLocal:   globalConfig.FileFetch.AllowLocal,
-		AllowedHosts: globalConfig.FileFetch.AllowedHosts,
-		DeniedHosts:  globalConfig.FileFetch.DeniedHosts,
-		DeniedCIDRs:  globalConfig.FileFetch.DeniedCIDRs,
-		MaxSize:      globalConfig.FileFetch.MaxSize,
-	}); err != nil {
+	if err := oastomcptool.SetFileFetchConfig(globalConfig.FileFetch); err != nil {
 		return err
 	}
 
