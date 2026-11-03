@@ -225,4 +225,17 @@ func TestAddToolSafely_RecoversFromPanic(t *testing.T) {
 		Name:        "ok",
 		InputSchema: map[string]any{"type": "object"},
 	}, handler))
+	// 型付きの nil の outputSchema は JSON では null になるが、SDK は panic する。
+	require.Error(t, addToolSafely(front, &mcp.Tool{
+		Name:         "typed_nil_output",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: (*map[string]any)(nil),
+	}, handler))
+}
+
+// 事前検査をすり抜けた定義で AddTool が panic しても、エラーとして返ること。
+func TestRecoverAddTool_ConvertsPanicToError(t *testing.T) {
+	err := recoverAddTool("boom", func() { panic("unexpected") })
+	require.ErrorContains(t, err, `add tool "boom": unexpected`)
+	require.NoError(t, recoverAddTool("fine", func() {}))
 }

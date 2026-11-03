@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"runtime/debug"
 	"strings"
 
@@ -29,15 +30,20 @@ func addToolSafely(srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandler) (rErr error)
 	if err := validateToolDefinition(t); err != nil {
 		return err
 	}
+	return recoverAddTool(t.Name, func() { srv.AddTool(t, h) })
+}
+
+// recoverAddTool は add を呼び、panic したらエラーに変換して返す。
+func recoverAddTool(name string, add func()) (rErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("AddTool panicked; tool skipped",
-				slog.String("tool", t.Name), slog.Any("panic", r),
+				slog.String("tool", name), slog.Any("panic", r),
 				slog.String("stack", string(debug.Stack())))
-			rErr = fmt.Errorf("add tool %q: %v", t.Name, r)
+			rErr = fmt.Errorf("add tool %q: %v", name, r)
 		}
 	}()
-	srv.AddTool(t, h)
+	add()
 	return nil
 }
 
@@ -59,6 +65,11 @@ func validateToolDefinition(t *mcp.Tool) error {
 	if typ, _ := input["type"].(string); typ != "object" {
 		return fmt.Errorf(`input schema must have type "object" (got %v)`, input["type"])
 	}
+	if isNilPointer(t.OutputSchema) {
+		// 型付きの nil（*jsonschema.Schema(nil) など）は JSON では null になり下の検査を
+		// 通ってしまうが、SDK は "output schema is nil" で panic する。
+		return errors.New("output schema is a nil pointer")
+	}
 	if t.OutputSchema != nil {
 		var output any
 		if err := remarshalJSON(t.OutputSchema, &output); err != nil {
@@ -69,6 +80,12 @@ func validateToolDefinition(t *mcp.Tool) error {
 		return fmt.Errorf("invalid parameter header annotations: %w", err)
 	}
 	return nil
+}
+
+// isNilPointer は v が型付きの nil ポインタかどうかを返す。
+func isNilPointer(v any) bool {
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }
 
 // remarshalJSON は from を JSON 経由で to に変換する。
