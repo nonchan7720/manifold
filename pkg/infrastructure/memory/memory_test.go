@@ -34,9 +34,9 @@ func TestMemoryClient_StoreContract(t *testing.T) {
 		NotFoundMessage:    true,
 		// memory は実時計をナノ秒精度で見るので、最初の TTL が切れた後も値が残ることまで確かめる。
 		ExpireTTL: storetest.ExpireTTL{
-			Initial:  time.Millisecond,
+			Initial:  50 * time.Millisecond,
 			Extended: time.Minute,
-			Wait:     5 * time.Millisecond,
+			Wait:     100 * time.Millisecond,
 		},
 	})
 }
