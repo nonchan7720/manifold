@@ -219,7 +219,15 @@ func (h *AuthHandler) OauthProtectedResource(
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/OauthProtectedResource")
 	defer func() { trace.EndSpan(ctx, nil) }()
 
-	u, _ := url.Parse(h.getBaseURL(r))
+	// ベース URL は外部から来る X-Forwarded-Proto と Host から組み立てるので、解析できない値も
+	// 来うる。そのまま u.JoinPath を呼ぶと nil で panic するため、400 で打ち切る。
+	u, err := url.Parse(h.getBaseURL(r))
+	if err != nil {
+		slog.WarnContext(ctx, "invalid base URL for protected resource metadata",
+			slog.String("server", srv.Name))
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
 	mcpServerURL := u.JoinPath("/mcp", srv.Name).String()
 	writeWellKnownMetadata(w, srv, map[string]any{
 		"authorization_servers":    []string{u.JoinPath("/mcp", srv.Name).String()},

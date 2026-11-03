@@ -126,6 +126,25 @@ func TestOauthProtectedResource(t *testing.T) {
 	require.Contains(t, body, "scopes_supported")
 }
 
+func TestOauthProtectedResource_InvalidForwardedProto(t *testing.T) {
+	// X-Forwarded-Proto は外部から来る値。ベース URL として解析できない値でも panic せず 400 を返す。
+	h := &AuthHandler{}
+	srv := &config.Server{Name: "myserver"}
+
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-protected-resource/mcp/myserver",
+		nil,
+	)
+	req.Host = "gateway.example.com"
+	req.Header.Set("X-Forwarded-Proto", "1http")
+	rw := httptest.NewRecorder()
+
+	require.NotPanics(t, func() { h.OauthProtectedResource(rw, req, srv) })
+	require.Equal(t, http.StatusBadRequest, rw.Code)
+}
+
 func TestOauthProtectedResource_NoOAuth2(t *testing.T) {
 	h := &AuthHandler{}
 	srv := &config.Server{
