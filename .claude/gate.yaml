@@ -25,6 +25,19 @@ rules:
     run:
       - cmd: pnpm typecheck
         timeout: 180
+  # depgraph: このセッションで増えた設計上の負債（循環 import・重複関数など）を検出する。
+  # `depgraph watch` が動いていないとき・depgraph が無いときは何もせず通る。
+  # timeout は depgraph gate 自身の --timeout（60s、超えたら通す）より長くし、
+  # gate 側の強制終了で失敗扱いにならないようにする。
+  - match: ["**/*.go", "**/*.{ts,tsx,js,jsx,mjs,cjs}", "**/*.py"]
+    timeout: 90
+    run:
+      - { name: depgraph, cmd: "command -v depgraph >/dev/null || exit 0; depgraph gate" }
+session_start:
+  # 起動時に depgraph の Findings の要約を context に入れ、depgraph gate の基準（baseline）を記録する。
+  - name: depgraph
+    timeout: 10
+    cmd: "command -v depgraph >/dev/null || exit 0; depgraph hook session-start --format text"
 consistency_checks:
   - name: all
     run:
