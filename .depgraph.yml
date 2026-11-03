@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/nonchan7720/depgraph/main/schema/depgraph.schema.json
+# depgraph（依存グラフの解析）の設定。Neo4j は compose.yaml の neo4j、接続先は mise.toml の [env]。
+
+layers:
+  domain: ["pkg/domain/**"]
+  services: ["pkg/services/**"]
+  infrastructure: ["pkg/infrastructure/**"]
+  interfaces: ["pkg/interfaces/**", "pkg/cmd/**"]
+  # pkg/config・pkg/internal・pkg/util は層をまたいで使う共通部品なので、どの層にも入れない。
+
+forbidden:
+  domain: [services, infrastructure, interfaces]
+  # services は infrastructure/store の Client（インターフェース）に依存してよい。
+  services: [interfaces]
+  infrastructure: [services, interfaces]
+
+rules:
+  # Client / NewClient / Config は、memory.Client / redis.Client のようにパッケージ名で区別する
+  # Go の慣用名なので重複扱いしない（ignore は既定を置き換えるので、depgraph の既定の名前も並べる）。
+  duplicate-symbol:
+    ignore: [main, init, New, String, Error, Close, Run, Validate, default, index, setup, teardown, handler, render, App, Client, NewClient, Config]
+  # 拡張の入口。background は manifest.json の service_worker、content は vite.config.ts の
+  # additionalInputs から読み込まれるので、import をたどっても見つからない。
+  unreachable-file:
+    entries:
+      - "tools/extension/src/background/index.ts"
+      - "tools/extension/src/content/index.ts"
+      - "tools/extension/src/content/nativeAdapter.ts"

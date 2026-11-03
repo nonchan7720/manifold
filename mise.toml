@@ -8,3 +8,39 @@ go = "1.27.3"
 golangci-lint = "2.15.0"
 setup-envtest = "0.25.2"
 runn = "1.11.1"
+
+[env]
+# depgraph の接続先（compose.yaml の neo4j。ローカル開発用の資格情報）
+NEO4J_URI = "bolt://localhost:27687"
+NEO4J_USER = "neo4j"
+NEO4J_PASSWORD = "manifold123"
+NEO4J_DATABASE = "neo4j"
+# depgraph の UI。depgraph 本体（127.0.0.1:7777）と衝突しないようずらす
+DEPGRAPH_ADDR = "127.0.0.1:27777"
+
+# ---------------------------------------------------------------------------
+# depgraph（依存解析。Neo4j は compose.yaml の neo4j）
+# ---------------------------------------------------------------------------
+
+[tasks.neo4j]
+description = "depgraph 用の Neo4j（compose.yaml の neo4j）を起動して healthy まで待つ"
+run = "docker compose up -d --wait neo4j"
+
+[tasks."neo4j:down"]
+description = "Neo4j を止める（データボリュームは残す）"
+run = "docker compose stop neo4j"
+
+[tasks."depgraph:scan"]
+description = "このリポジトリを depgraph でスキャンして Neo4j に保存し、CLAUDE.md を更新する"
+depends = ["neo4j"]
+run = "depgraph scan --root ."
+
+[tasks."depgraph:watch"]
+description = "depgraph でファイルの変更を監視し、グラフと CLAUDE.md を更新し続ける（UI: http://127.0.0.1:27777）"
+depends = ["neo4j"]
+run = "depgraph watch --root ."
+
+[tasks."depgraph:serve"]
+description = "depgraph のブラウザ UI を起動（http://127.0.0.1:27777）"
+depends = ["neo4j"]
+run = "depgraph serve --root ."

@@ -45,6 +45,20 @@ make lint
 
 CI runs both lint and tests on every pull request, so running them locally first saves a round trip.
 
+### Dependency graph (optional)
+
+[depgraph](https://github.com/nonchan7720/depgraph) checks the import graph (cycles, layer violations, duplicated or unused code) against [`.depgraph.yml`](.depgraph.yml). It is optional and not run in CI. With `depgraph` on your `PATH`:
+
+```bash
+# Neo4j for depgraph (compose.yaml's "depgraph" profile; `docker compose up -d` does not start it)
+mise run neo4j
+
+# Scan, then keep the graph up to date while you edit (UI: http://127.0.0.1:27777)
+mise run depgraph:watch
+```
+
+`watch` also rewrites the `<!-- depgraph:start -->` section of `CLAUDE.md`. For Claude Code, [`.claude/gate.yaml`](.claude/gate.yaml) ([claude-hook-gate](https://github.com/nonchan7720/claude-hook-gate)) and [`.claude/settings.json`](.claude/settings.json) feed the findings to the agent and fail an edit that adds new ones. Without depgraph or a running Neo4j they do nothing.
+
 ## How to contribute
 
 ### Reporting bugs

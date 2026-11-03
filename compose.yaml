@@ -13,5 +13,27 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
 
+  # depgraph（依存グラフの解析）の保存先。接続先は mise.toml の [env]。
+  # ポートは depgraph 本体（7474/7687）や他リポジトリの Neo4j と重ならないようずらす。
+  # profiles により `docker compose up -d` では起動しない（`mise run neo4j` で名前を指定して起動する）。
+  neo4j:
+    profiles: ["depgraph"]
+    image: neo4j:5.26.32@sha256:249a1ec6e3c52d82101a5ed33d6ed2b5ed5b0017b21a28c0bfebc335e87fb177
+    container_name: manifold-neo4j
+    ports:
+      - "127.0.0.1:27474:7474" # browser UI
+      - "127.0.0.1:27687:7687" # bolt
+    environment:
+      NEO4J_AUTH: neo4j/manifold123
+      NEO4J_dbms_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   redis_data:
+  neo4j_data:

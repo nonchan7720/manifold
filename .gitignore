@@ -42,3 +42,4 @@ examples/webmcp-reverse/tmp/
 examples/opa/tmp/
 tests/runn/tmp/
 /tmp/
+.claude/.gate-status/
