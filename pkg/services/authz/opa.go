@@ -107,30 +107,14 @@ func withExtra(input map[string]any, p Principal) (map[string]any, error) {
 	return input, nil
 }
 
-func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (_ bool, rErr error) {
-	ctx = trace.StartSpan(ctx, "authz/OPADecider/Allow")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-
-	input := map[string]any{
+func (d *OPADecider) Allow(ctx context.Context, p Principal, t ToolRef) (bool, error) {
+	return d.decide(ctx, "authz/OPADecider/Allow", d.decisionPath.Call, p, map[string]any{
 		d.input.User:    p.UserID,
 		d.input.Groups:  p.Groups,
 		d.input.Server:  t.Server,
 		d.input.Service: t.serviceCode(),
 		d.input.Tool:    t.Name,
-	}
-	input, err := withExtra(input, p)
-	if err != nil {
-		return false, err
-	}
-
-	var out opaAllowResult
-	if err := d.post(ctx, d.decisionPath.Call, input, &out); err != nil {
-		return false, err
-	}
-	if out.Result == nil {
-		return false, fmt.Errorf("authz: OPA response missing result")
-	}
-	return *out.Result, nil
+	})
 }
 
 func (d *OPADecider) AllowedTools(
@@ -192,21 +176,30 @@ func (d *OPADecider) AllowedTools(
 
 // AllowCatalog reports whether p may read the unfiltered tool catalog
 // (GET /mcp/list?tools=true).
-func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (_ bool, rErr error) {
-	ctx = trace.StartSpan(ctx, "authz/OPADecider/AllowCatalog")
-	defer func() { trace.EndSpan(ctx, rErr) }()
-
-	input := map[string]any{
+func (d *OPADecider) AllowCatalog(ctx context.Context, p Principal) (bool, error) {
+	return d.decide(ctx, "authz/OPADecider/AllowCatalog", d.decisionPath.Catalog, p, map[string]any{
 		d.input.User:   p.UserID,
 		d.input.Groups: p.Groups,
-	}
+	})
+}
+
+// decide は Allow と AllowCatalog に共通する、真偽値を返す決定の問い合わせ。input に
+// p.Extra を足して path へ送り、OPA が返した result をそのまま返す。fromHeaders の衝突・
+// 通信や応答の異常・result の欠落はすべてエラーとし、そのとき許可（true）は返さない
+// （fail-closed）。spanName は呼び出し元ごとのスパン名で、post のスパンはその子になる。
+func (d *OPADecider) decide(
+	ctx context.Context, spanName, path string, p Principal, input map[string]any,
+) (_ bool, rErr error) {
+	ctx = trace.StartSpan(ctx, spanName)
+	defer func() { trace.EndSpan(ctx, rErr) }()
+
 	input, err := withExtra(input, p)
 	if err != nil {
 		return false, err
 	}
 
 	var out opaAllowResult
-	if err := d.post(ctx, d.decisionPath.Catalog, input, &out); err != nil {
+	if err := d.post(ctx, path, input, &out); err != nil {
 		return false, err
 	}
 	if out.Result == nil {
