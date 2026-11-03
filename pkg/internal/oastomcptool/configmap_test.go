@@ -7,7 +7,6 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 )
@@ -54,8 +53,8 @@ func TestParseConfigMapSpecPath_InvalidFormat(t *testing.T) {
 func TestFetchConfigMapSpecBytes_ReturnsDataKey(t *testing.T) {
 	resetConfigMapClientset(t)
 	SetConfigMapClientset(fake.NewClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-specs", Namespace: "default"},
-		Data:       map[string]string{"openapi.json": inlineOpenAPI3Spec},
+		Name: "my-specs", Namespace: "default",
+		Data: map[string]string{"openapi.json": inlineOpenAPI3Spec},
 	}))
 
 	got, err := fetchConfigMapSpecBytes(
@@ -80,8 +79,8 @@ func TestFetchConfigMapSpecBytes_ConfigMapNotFound(t *testing.T) {
 func TestFetchConfigMapSpecBytes_KeyNotFound(t *testing.T) {
 	resetConfigMapClientset(t)
 	SetConfigMapClientset(fake.NewClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-specs", Namespace: "default"},
-		Data:       map[string]string{"other-key": inlineOpenAPI3Spec},
+		Name: "my-specs", Namespace: "default",
+		Data: map[string]string{"other-key": inlineOpenAPI3Spec},
 	}))
 
 	_, err := fetchConfigMapSpecBytes(
@@ -104,8 +103,8 @@ func TestFetchConfigMapSpecBytes_InvalidSpecPath(t *testing.T) {
 func TestFetchSpecBytes_ConfigMapPrefix_DelegatesToConfigMapFetch(t *testing.T) {
 	resetConfigMapClientset(t)
 	SetConfigMapClientset(fake.NewClientset(&corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-specs", Namespace: "default"},
-		Data:       map[string]string{"openapi.json": inlineOpenAPI3Spec},
+		Name: "my-specs", Namespace: "default",
+		Data: map[string]string{"openapi.json": inlineOpenAPI3Spec},
 	}))
 
 	got, err := FetchSpecBytes(context.Background(), "configmap://default/my-specs/openapi.json")
