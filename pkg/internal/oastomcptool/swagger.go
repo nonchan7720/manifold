@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi2"
@@ -321,97 +322,61 @@ func extractParametersSwagger(
 
 // describeSchemaFieldsSwagger recursively builds a human-readable field summary from a
 // Swagger 2.x schema. $refs are resolved via spec.Definitions.
-func describeSchemaFieldsSwagger( //nolint: gocyclo
+func describeSchemaFieldsSwagger(schema *openapi2.Schema, spec *openapi2.T) string {
+	return describeSchemaFieldsSwaggerVisited(schema, spec, map[*openapi2.Schema]bool{})
+}
+
+// describeSchemaFieldsSwaggerVisited は describeSchemaFieldsSwagger の実体。visited は現在の
+// 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照する definitions（$ref の解決で
+// 同じポインタが返る）による無限再帰を防ぐ。再訪を検知した場合は空文字列を返す。
+func describeSchemaFieldsSwaggerVisited(
 	schema *openapi2.Schema,
 	spec *openapi2.T,
+	visited map[*openapi2.Schema]bool,
 ) string {
-	bodyProps := schema.Properties
-	if len(bodyProps) == 0 {
+	if schema == nil || visited[schema] {
 		return ""
 	}
+	visited[schema] = true
+	defer delete(visited, schema)
 
-	localRequired := map[string]bool{}
-	for _, r := range schema.Required {
-		localRequired[r] = true
+	return describeSchemaFields(swaggerFieldsView{schema: schema, spec: spec, visited: visited})
+}
+
+// swaggerFieldsView は Swagger 2.x のスキーマを schemaFieldsView として見せるアダプタ。
+// 子スキーマの $ref は spec.Definitions で解決する。
+type swaggerFieldsView struct {
+	schema  *openapi2.Schema
+	spec    *openapi2.T
+	visited map[*openapi2.Schema]bool
+}
+
+func (v swaggerFieldsView) propertyNames() []string {
+	return slices.Collect(maps.Keys(v.schema.Properties))
+}
+
+func (v swaggerFieldsView) required() []string { return v.schema.Required }
+
+func (v swaggerFieldsView) property(name string) (schemaFieldsView, bool) {
+	return v.child(v.schema.Properties[name])
+}
+
+func (v swaggerFieldsView) items() (schemaFieldsView, bool) { return v.child(v.schema.Items) }
+
+func (v swaggerFieldsView) child(ref *openapi2.SchemaRef) (schemaFieldsView, bool) {
+	child := resolveSwaggerSchemaRef(ref, v.spec)
+	if child == nil {
+		return nil, false
 	}
+	return swaggerFieldsView{schema: child, spec: v.spec, visited: v.visited}, true
+}
 
-	// Sort field names for deterministic output
-	fieldNames := make([]string, 0, len(bodyProps))
-	for name := range bodyProps {
-		fieldNames = append(fieldNames, name)
-	}
-	for i := 1; i < len(fieldNames); i++ {
-		for j := i; j > 0 && fieldNames[j] < fieldNames[j-1]; j-- {
-			fieldNames[j], fieldNames[j-1] = fieldNames[j-1], fieldNames[j]
-		}
-	}
+func (v swaggerFieldsView) schemaType() *openapi3.Types { return v.schema.Type }
 
-	parts := make([]string, 0, len(fieldNames))
-	for _, name := range fieldNames {
-		propRef := bodyProps[name]
-		prop := resolveSwaggerSchemaRef(propRef, spec)
-		if prop == nil {
-			continue
-		}
+func (v swaggerFieldsView) description() string { return v.schema.Description }
 
-		typ := schemaTypeStr(prop.Type)
-		if typ == "" {
-			if len(prop.Properties) > 0 {
-				typ = "object"
-			} else {
-				typ = "string"
-			}
-		}
-		meta := typ
-		if localRequired[name] {
-			meta += ", required"
-		}
-		fieldDesc := ""
-		if prop.Description != "" {
-			fieldDesc = ": " + prop.Description
-		}
-
-		if typ == "object" {
-			if nested := describeSchemaFieldsSwagger(prop, spec); nested != "" {
-				parts = append(
-					parts,
-					fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested),
-				)
-				continue
-			}
-		}
-
-		if typ == "array" && prop.Items != nil { //nolint: nestif
-			itemSchema := resolveSwaggerSchemaRef(prop.Items, spec)
-			if itemSchema != nil {
-				itemType := schemaTypeStr(itemSchema.Type)
-				if itemType == "" {
-					itemType = "object"
-				}
-				if itemType == "object" {
-					if nested := describeSchemaFieldsSwagger(itemSchema, spec); nested != "" {
-						arrayMeta := "array of object"
-						if localRequired[name] {
-							arrayMeta += ", required"
-						}
-						parts = append(
-							parts,
-							fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested),
-						)
-						continue
-					}
-				}
-				meta = "array of " + itemType
-				if localRequired[name] {
-					meta += ", required"
-				}
-			}
-		}
-
-		parts = append(parts, fmt.Sprintf("%s (%s)%s", name, meta, fieldDesc))
-	}
-
-	return strings.Join(parts, "; ")
+func (v swaggerFieldsView) describeNested() string {
+	return describeSchemaFieldsSwaggerVisited(v.schema, v.spec, v.visited)
 }
 
 // buildBodyDescriptionSwagger constructs a detailed description for a Swagger 2.x body parameter.

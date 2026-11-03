@@ -1322,3 +1322,26 @@ func (s swaggerSchemaRefForTest) ref() *openapi2.SchemaRef {
 		Properties: s.props,
 	}}
 }
+
+// --- describeSchemaFieldsSwagger ---
+
+func TestDescribeSchemaFieldsSwagger_SelfReferencingDefinition(t *testing.T) {
+	// 自己参照する definitions（Node.parent / Node.children が Node を指す）でも
+	// 無限再帰（stack overflow）にならず、再訪したところで打ち切って要約を返す。
+	ref := func() *openapi2.SchemaRef { return &openapi2.SchemaRef{Ref: "#/definitions/Node"} }
+	node := &openapi2.Schema{
+		Type: &openapi3.Types{openapi3.TypeObject},
+		Properties: openapi2.Schemas{
+			"name":   {Value: &openapi2.Schema{Type: &openapi3.Types{openapi3.TypeString}}},
+			"parent": ref(),
+			"children": {Value: &openapi2.Schema{
+				Type:  &openapi3.Types{openapi3.TypeArray},
+				Items: ref(),
+			}},
+		},
+	}
+	spec := &openapi2.T{Definitions: openapi2.Schemas{"Node": {Value: node}}}
+
+	got := describeSchemaFieldsSwagger(node, spec)
+	require.Equal(t, "children (array of object); name (string); parent (object)", got)
+}
