@@ -17,7 +17,7 @@
           {
             "type": "command",
             "timeout": 10,
-            "command": "command -v mise >/dev/null && mise exec -- sh -c 'command -v depgraph >/dev/null && depgraph hook prompt'; exit 0"
+            "command": "command -v mise >/dev/null && command -v depgraph >/dev/null && mise exec -- depgraph hook prompt; exit 0"
           }
         ]
       }
