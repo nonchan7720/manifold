@@ -25,7 +25,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/n-creativesystem/go-packages/lib/trace v1.3.0
 	github.com/netinternet/remoteaddr v0.2.2
-	github.com/oasdiff/oasdiff v1.34.1
+	github.com/oasdiff/oasdiff v1.35.0
 	github.com/oasdiff/yaml v0.1.3
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
