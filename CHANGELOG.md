@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.25.1](https://github.com/nonchan7720/manifold/compare/v1.25.0...v1.25.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* depgraph と modernize を導入し、検出された重複と不具合を直す ([#356](https://github.com/nonchan7720/manifold/issues/356)) ([db972c4](https://github.com/nonchan7720/manifold/commit/db972c455168068936d9acd734ef3f191364b907))
+* **deps:** update go patch dependencies ([#358](https://github.com/nonchan7720/manifold/issues/358)) ([66233e4](https://github.com/nonchan7720/manifold/commit/66233e4b55acc05ade1d4764020260097506683b))
+
 ## [1.25.0](https://github.com/nonchan7720/manifold/compare/v1.24.1...v1.25.0) (2026-11-03)
 
 
