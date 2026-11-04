@@ -1345,3 +1345,56 @@ func TestDescribeSchemaFieldsSwagger_SelfReferencingDefinition(t *testing.T) {
 	got := describeSchemaFieldsSwagger(node, spec)
 	require.Equal(t, "children (array of object); name (string); parent (object)", got)
 }
+
+func TestBuildInputSchemaSwagger_SelfReferencingBodyDefinition(t *testing.T) {
+	// 実際の取り込み経路（ParseSwaggerSpec → BuildInputSchemaSwagger）でも、自己参照する
+	// definitions の body が無限再帰にならず、フィールドの要約付きの description を返す。
+	raw := []byte(`{
+  "swagger": "2.0",
+  "info": {"title": "tree", "version": "1.0"},
+  "paths": {
+    "/nodes": {
+      "post": {
+        "operationId": "createNode",
+        "parameters": [
+          {"name": "body", "in": "body", "schema": {"$ref": "#/definitions/Node"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  },
+  "definitions": {
+    "Node": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "parent": {"$ref": "#/definitions/Node"},
+        "children": {"type": "array", "items": {"$ref": "#/definitions/Node"}}
+      }
+    }
+  }
+}`)
+	spec, err := ParseSwaggerSpec(t.Context(), raw)
+	require.NoError(t, err)
+	op := spec.Paths["/nodes"].Post
+	require.NotNil(t, op)
+
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	bodyProp, ok := props["body"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		"Request body. JSON object with fields: {children (array of object); name (string); parent (object)}",
+		bodyProp["description"],
+	)
+	bodyProps, ok := bodyProp["properties"].(map[string]any)
+	require.True(t, ok)
+	require.Len(t, bodyProps, 3)
+	for name, typ := range map[string]string{"name": "string", "parent": "object", "children": "array"} {
+		field, ok := bodyProps[name].(map[string]any)
+		require.True(t, ok, name)
+		require.Equal(t, typ, field["type"], name)
+	}
+}
