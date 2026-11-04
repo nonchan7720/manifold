@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "command -v mise >/dev/null && command -v depgraph >/dev/null && MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook prompt; exit 0"
+          }
+        ]
+      }
     ]
   }
 }

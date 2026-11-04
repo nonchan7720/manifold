@@ -6,48 +6,18 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
 )
 
-// defaultFileFetchMaxSize is used when FileFetchConfig.MaxSize is unset (<= 0).
-// 500 MiB (524288000 bytes) — mirrors config.DefaultFileFetchMaxSize.
-const defaultFileFetchMaxSize int64 = 524288000
-
-// FileFetchConfig controls SSRF-related behavior when oastomcptool fetches file
-// content from a URL supplied by a tool caller (e.g. {"file": "https://..."} or
-// {"file": {"url": "https://..."}}).
-//
-// This mirrors config.FileFetchConfig field-for-field. oastomcptool does not
-// import pkg/config directly: pkg/config pulls in viper/ozzo-validation and other
-// app-wiring dependencies that this low-level, independently-testable package has
-// no other reason to depend on, and importing it would invert the intended
-// layering (pkg/config is meant to sit above internal packages, configuring them,
-// not the other way around). The application copies values over once at startup
-// via SetFileFetchConfig, after loading config.
-type FileFetchConfig struct {
-	// AllowLocal, when true, allows connecting to private/loopback/link-local IPs
-	// and using the http:// scheme — intended only for local development/tests
-	// against a local stack (e.g. ministack). Defaults to false.
-	AllowLocal bool
-	// AllowedHosts, when non-empty, restricts URL downloads to these hosts only
-	// (exact match against the URL host, with or without port).
-	AllowedHosts []string
-	// MaxSize caps the number of bytes accepted for a single file value
-	// (URL download or base64/text content). <= 0 falls back to defaultFileFetchMaxSize.
-	MaxSize int64
-	// DeniedHosts lists hosts (hostname, or host:port) that URL downloads must never
-	// reach, checked before the request and on every redirect hop. Applied after
-	// AllowedHosts.
-	DeniedHosts []string
-	// DeniedCIDRs lists CIDR blocks that the dialer must never connect to, checked
-	// against the resolved IP of every connection. Entries must parse with
-	// net.ParseCIDR; SetFileFetchConfig returns an error otherwise.
-	DeniedCIDRs []string
-}
+// URL 由来のファイル取得（{"file": "https://..."} や {"file": {"url": "https://..."}}）の
+// SSRF 対策ポリシーは config.FileFetchConfig をそのまま使う。以前はこのパッケージに
+// フィールドが同一の FileFetchConfig を複製していたが、oastomcptool は pkg/internal/client
+// 経由で既に pkg/config に依存しているため、複製する理由がない。
 
 var (
 	fileFetchMu     sync.RWMutex
-	fileFetchConfig = FileFetchConfig{MaxSize: defaultFileFetchMaxSize}
+	fileFetchConfig = config.FileFetchConfig{}.WithDefaults()
 	// fileFetchClient is the client used by fetchFileFromURL when AllowLocal is
 	// false. It is (re)built by SetFileFetchConfig so DeniedCIDRs are compiled into
 	// its dialer once; see client.NewCallerURLClient for the dial policy.
@@ -56,15 +26,13 @@ var (
 
 // SetFileFetchConfig installs the file-fetch policy used by fetchFileFromURL and
 // writeMultipartFile, and builds the HTTP client that enforces it. Call once at
-// application startup, after loading config. A MaxSize <= 0 resets to the
-// built-in default (500 MiB). Slices are cloned before storing, so the caller's
+// application startup, after loading config. A MaxSize <= 0 resets to
+// config.DefaultFileFetchMaxSize (500 MiB). Slices are cloned before storing, so the caller's
 // slices can never be mutated later to bypass the lock (symmetric with
 // getFileFetchConfig, which also returns copies). An unparsable DeniedCIDRs entry
 // is returned as an error and leaves the previous policy in place.
-func SetFileFetchConfig(cfg FileFetchConfig) error {
-	if cfg.MaxSize <= 0 {
-		cfg.MaxSize = defaultFileFetchMaxSize
-	}
+func SetFileFetchConfig(cfg config.FileFetchConfig) error {
+	cfg = cfg.WithDefaults()
 	cfg.AllowedHosts = append([]string(nil), cfg.AllowedHosts...)
 	cfg.DeniedHosts = append([]string(nil), cfg.DeniedHosts...)
 	cfg.DeniedCIDRs = append([]string(nil), cfg.DeniedCIDRs...)
@@ -95,7 +63,7 @@ func getFileFetchClient() *http.Client {
 // getFileFetchConfig returns the currently active file-fetch policy. AllowedHosts
 // is returned as a copy so callers can never mutate the shared global slice's
 // backing array.
-func getFileFetchConfig() FileFetchConfig {
+func getFileFetchConfig() config.FileFetchConfig {
 	fileFetchMu.RLock()
 	defer fileFetchMu.RUnlock()
 	cfg := fileFetchConfig

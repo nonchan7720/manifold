@@ -66,9 +66,7 @@ func TestNewTracerProvider_HTTP_WithEndpointURL(t *testing.T) {
 		Trace: telemetry.Trace{
 			Enabled: true,
 			HTTP: &telemetry.HTTP{
-				Endpoint: telemetry.Endpoint{
-					EndpointURL: "http://localhost:4318",
-				},
+				EndpointURL: "http://localhost:4318",
 			},
 		},
 	}
@@ -138,9 +136,7 @@ func TestNewTracerProvider_GRPC_WithEndpointURL(t *testing.T) {
 		Trace: telemetry.Trace{
 			Enabled: true,
 			GRPC: &telemetry.GRPC{
-				Endpoint: telemetry.Endpoint{
-					EndpointURL: "http://localhost:4317",
-				},
+				EndpointURL: "http://localhost:4317",
 			},
 		},
 	}

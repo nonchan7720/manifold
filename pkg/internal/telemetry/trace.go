@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
@@ -86,48 +85,37 @@ func newPropagator() propagation.TextMapPropagator {
 	)
 }
 
+// traceHTTPOptions / traceGRPCOptions は共通設定を otlptracehttp / otlptracegrpc のオプションに変換する。
+var (
+	traceHTTPOptions = otlpOptionFuncs[otlptracehttp.Option]{
+		endpoint:    otlptracehttp.WithEndpoint,
+		endpointURL: otlptracehttp.WithEndpointURL,
+		gzip: func() otlptracehttp.Option {
+			return otlptracehttp.WithCompression(otlptracehttp.GzipCompression)
+		},
+		headers: otlptracehttp.WithHeaders,
+	}
+	traceGRPCOptions = otlpOptionFuncs[otlptracegrpc.Option]{
+		insecure:    otlptracegrpc.WithInsecure,
+		endpoint:    otlptracegrpc.WithEndpoint,
+		endpointURL: otlptracegrpc.WithEndpointURL,
+		gzip:        func() otlptracegrpc.Option { return otlptracegrpc.WithCompressor("gzip") },
+		headers:     otlptracegrpc.WithHeaders,
+	}
+)
+
 func newHTTPTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrace.Client, error) {
-	traceOpts := []otlptracehttp.Option{}
-	endpoint := opt.HTTP.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		traceOpts = append(traceOpts, otlptracehttp.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		traceOpts = append(traceOpts, otlptracehttp.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
+	opts, err := traceHTTPOptions.buildHTTP(opt.HTTP, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
-	if gzipCompression {
-		traceOpts = append(traceOpts, otlptracehttp.WithCompression(otlptracehttp.GzipCompression))
-	}
-	if len(endpoint.Headers) > 0 {
-		traceOpts = append(traceOpts, otlptracehttp.WithHeaders(endpoint.Headers))
-	}
-	traceClient := otlptracehttp.NewClient(traceOpts...)
-	return traceClient, nil
+	return otlptracehttp.NewClient(opts...), nil
 }
 
 func newGRPCTrace(_ context.Context, opt *Trace, gzipCompression bool) (otlptrace.Client, error) {
-	opts := make([]otlptracegrpc.Option, 0, 10)
-	grpc := opt.GRPC
-	if grpc.Insecure {
-		opts = append(opts, otlptracegrpc.WithInsecure())
+	opts, err := traceGRPCOptions.buildGRPC(opt.GRPC, gzipCompression)
+	if err != nil {
+		return nil, err
 	}
-	endpoint := grpc.Endpoint
-	switch {
-	case endpoint.Endpoint != "":
-		opts = append(opts, otlptracegrpc.WithEndpoint(endpoint.Endpoint))
-	case endpoint.EndpointURL != "":
-		opts = append(opts, otlptracegrpc.WithEndpointURL(endpoint.EndpointURL))
-	default:
-		return nil, errors.New("please specify the endpoint or endpoint URL")
-	}
-	if gzipCompression {
-		opts = append(opts, otlptracegrpc.WithCompressor("gzip"))
-	}
-	if len(endpoint.Headers) > 0 {
-		opts = append(opts, otlptracegrpc.WithHeaders(endpoint.Headers))
-	}
-	traceClient := otlptracegrpc.NewClient(opts...)
-	return traceClient, nil
+	return otlptracegrpc.NewClient(opts...), nil
 }

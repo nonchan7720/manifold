@@ -37,32 +37,60 @@ func newOpenAPICmd() *cobra.Command {
 	return cmd
 }
 
-func newOpenAPIToolsCmd() *cobra.Command {
-	var (
-		serverFilter string
-		toolFilter   string
-		jsonOutput   bool
-		fromSpec     bool
-	)
+// newOpenAPISubCmd は openapi 配下のサブコマンドに共通する組み立て（Use/Short/Long、
+// 全サブコマンド共通の --server フラグ、RunE）を行う。--server の値は serverFilter に、
+// サブコマンド固有のフラグは bindFlags で登録し、実行時は run を呼ぶ。
+func newOpenAPISubCmd(
+	use, short, long string,
+	serverFilter *string,
+	bindFlags func(cmd *cobra.Command),
+	run func(cmd *cobra.Command) error,
+) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "tools",
-		Short: "Show the MCP tools that would be generated for OpenAPI-mode servers",
-		Long: "Builds the same catalog the gateway builds at startup for every " +
-			"OpenAPI-mode server in the config, and prints it — without starting the gateway. " +
-			"A server with tools.file configured is read from that generated file (what the " +
-			"gateway would actually use); pass --from-spec to read the live spec instead.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOpenAPITools(cmd, serverFilter, toolFilter, jsonOutput, fromSpec)
+		Use:   use,
+		Short: short,
+		Long:  long,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return run(cmd)
 		},
 	}
-	cmd.Flags().StringVar(&serverFilter, "server", "", "restrict to a single server name")
-	cmd.Flags().StringVar(&toolFilter, "tool", "", "show full detail for tools with this name")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON (includes inputSchema)")
+	cmd.Flags().StringVar(serverFilter, "server", "", "restrict to a single server name")
+	bindFlags(cmd)
+	return cmd
+}
+
+// openAPIToolsOptions は openapi tools のフラグ値を保持する。
+type openAPIToolsOptions struct {
+	serverFilter string
+	toolFilter   string
+	jsonOutput   bool
+	fromSpec     bool
+}
+
+const openAPIToolsLong = "Builds the same catalog the gateway builds at startup for every " +
+	"OpenAPI-mode server in the config, and prints it — without starting the gateway. " +
+	"A server with tools.file configured is read from that generated file (what the " +
+	"gateway would actually use); pass --from-spec to read the live spec instead."
+
+func newOpenAPIToolsCmd() *cobra.Command {
+	var o openAPIToolsOptions
+	return newOpenAPISubCmd(
+		"tools", "Show the MCP tools that would be generated for OpenAPI-mode servers",
+		openAPIToolsLong, &o.serverFilter, o.bindFlags, o.run,
+	)
+}
+
+func (o *openAPIToolsOptions) bindFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&o.toolFilter, "tool", "", "show full detail for tools with this name")
+	cmd.Flags().BoolVar(&o.jsonOutput, "json", false, "output as JSON (includes inputSchema)")
 	cmd.Flags().BoolVar(
-		&fromSpec, "from-spec", false,
+		&o.fromSpec, "from-spec", false,
 		"read the live spec instead of tools.file, for servers that have one configured",
 	)
-	return cmd
+}
+
+func (o *openAPIToolsOptions) run(cmd *cobra.Command) error {
+	return runOpenAPITools(cmd, o.serverFilter, o.toolFilter, o.jsonOutput, o.fromSpec)
 }
 
 // runOpenAPITools builds and prints the tool catalog for every selected
@@ -305,39 +333,45 @@ var errSwagger2NotSupported = errors.New(
 // errSpecRequiredForGenerate marks a server with no spec configured.
 var errSpecRequiredForGenerate = errors.New("spec is required to generate the tools file")
 
+// openAPIGenerateOptions は openapi generate のフラグ値を保持する。
+type openAPIGenerateOptions struct {
+	serverFilter string
+	output       string
+	check        bool
+}
+
+const openAPIGenerateLong = "Builds the same catalog the gateway builds at startup, always from the live " +
+	"spec (an existing generated file is never read as input), and writes it to each " +
+	"server's tools.file — or to --output, which requires --server. With --check, " +
+	"nothing is written: the would-be catalog is compared against what's on disk and " +
+	"any drift is reported (exit non-zero), for CI, including an oasdiff " +
+	"breaking-change summary when the embedded spec changed."
+
 func newOpenAPIGenerateCmd() *cobra.Command {
-	var (
-		serverFilter string
-		output       string
-		check        bool
+	var o openAPIGenerateOptions
+	return newOpenAPISubCmd(
+		"generate", "Write the generated tools file for OpenAPI-mode servers",
+		openAPIGenerateLong, &o.serverFilter, o.bindFlags, o.run,
 	)
-	cmd := &cobra.Command{
-		Use:   "generate",
-		Short: "Write the generated tools file for OpenAPI-mode servers",
-		Long: "Builds the same catalog the gateway builds at startup, always from the live " +
-			"spec (an existing generated file is never read as input), and writes it to each " +
-			"server's tools.file — or to --output, which requires --server. With --check, " +
-			"nothing is written: the would-be catalog is compared against what's on disk and " +
-			"any drift is reported (exit non-zero), for CI, including an oasdiff " +
-			"breaking-change summary when the embedded spec changed.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if check {
-				return runOpenAPIGenerateCheck(cmd, serverFilter, output)
-			}
-			return runOpenAPIGenerate(cmd, serverFilter, output)
-		},
-	}
-	cmd.Flags().StringVar(&serverFilter, "server", "", "restrict to a single server name")
+}
+
+func (o *openAPIGenerateOptions) bindFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(
-		&output, "output", "o", "",
+		&o.output, "output", "o", "",
 		"output path (requires --server; default: the server's tools.file)",
 	)
 	cmd.Flags().BoolVar(
-		&check, "check", false,
+		&o.check, "check", false,
 		"check whether the generated tools file is up to date instead of writing it "+
 			"(exit non-zero on drift)",
 	)
-	return cmd
+}
+
+func (o *openAPIGenerateOptions) run(cmd *cobra.Command) error {
+	if o.check {
+		return runOpenAPIGenerateCheck(cmd, o.serverFilter, o.output)
+	}
+	return runOpenAPIGenerate(cmd, o.serverFilter, o.output)
 }
 
 // runOpenAPIGenerate builds each selected server's catalog from its live

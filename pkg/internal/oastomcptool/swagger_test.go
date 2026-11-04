@@ -11,6 +11,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 )
@@ -947,7 +948,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("swagger streamed file")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -1157,7 +1158,7 @@ func callSwaggerJSONBody(
 func swaggerFileServer(t *testing.T, content []byte) *httptest.Server {
 	t.Helper()
 	// テスト用のダウンロード先は httptest のループバックなので AllowLocal を有効化する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
 	}))
@@ -1320,4 +1321,80 @@ func (s swaggerSchemaRefForTest) ref() *openapi2.SchemaRef {
 		Type:       &openapi3.Types{"object"},
 		Properties: s.props,
 	}}
+}
+
+// --- describeSchemaFieldsSwagger ---
+
+func TestDescribeSchemaFieldsSwagger_SelfReferencingDefinition(t *testing.T) {
+	// 自己参照する definitions（Node.parent / Node.children が Node を指す）でも
+	// 無限再帰（stack overflow）にならず、再訪したところで打ち切って要約を返す。
+	ref := func() *openapi2.SchemaRef { return &openapi2.SchemaRef{Ref: "#/definitions/Node"} }
+	node := &openapi2.Schema{
+		Type: &openapi3.Types{openapi3.TypeObject},
+		Properties: openapi2.Schemas{
+			"name":   {Value: &openapi2.Schema{Type: &openapi3.Types{openapi3.TypeString}}},
+			"parent": ref(),
+			"children": {Value: &openapi2.Schema{
+				Type:  &openapi3.Types{openapi3.TypeArray},
+				Items: ref(),
+			}},
+		},
+	}
+	spec := &openapi2.T{Definitions: openapi2.Schemas{"Node": {Value: node}}}
+
+	got := describeSchemaFieldsSwagger(node, spec)
+	require.Equal(t, "children (array of object); name (string); parent (object)", got)
+}
+
+func TestBuildInputSchemaSwagger_SelfReferencingBodyDefinition(t *testing.T) {
+	// 実際の取り込み経路（ParseSwaggerSpec → BuildInputSchemaSwagger）でも、自己参照する
+	// definitions の body が無限再帰にならず、フィールドの要約付きの description を返す。
+	raw := []byte(`{
+  "swagger": "2.0",
+  "info": {"title": "tree", "version": "1.0"},
+  "paths": {
+    "/nodes": {
+      "post": {
+        "operationId": "createNode",
+        "parameters": [
+          {"name": "body", "in": "body", "schema": {"$ref": "#/definitions/Node"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  },
+  "definitions": {
+    "Node": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "parent": {"$ref": "#/definitions/Node"},
+        "children": {"type": "array", "items": {"$ref": "#/definitions/Node"}}
+      }
+    }
+  }
+}`)
+	spec, err := ParseSwaggerSpec(t.Context(), raw)
+	require.NoError(t, err)
+	op := spec.Paths["/nodes"].Post
+	require.NotNil(t, op)
+
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	props, ok := schema["properties"].(map[string]any)
+	require.True(t, ok)
+	bodyProp, ok := props["body"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		"Request body. JSON object with fields: {children (array of object); name (string); parent (object)}",
+		bodyProp["description"],
+	)
+	bodyProps, ok := bodyProp["properties"].(map[string]any)
+	require.True(t, ok)
+	require.Len(t, bodyProps, 3)
+	for name, typ := range map[string]string{"name": "string", "parent": "object", "children": "array"} {
+		field, ok := bodyProps[name].(map[string]any)
+		require.True(t, ok, name)
+		require.Equal(t, typ, field["type"], name)
+	}
 }

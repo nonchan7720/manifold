@@ -6,11 +6,15 @@ import (
 	"golang.org/x/oauth2"
 )
 
-type InMemoryRegistry struct {
+// InMemoryBaseTokenRegister は BaseTokenRegister のプロセス内メモリ実装。token exchange の
+// apiKey ごとに、交換済みトークンをキャッシュする oauth2.TokenSource を保持する。
+type InMemoryBaseTokenRegister struct {
 	sources sync.Map
 }
 
-func (r *InMemoryRegistry) Get(apiKey string) (oauth2.TokenSource, bool) {
+var _ BaseTokenRegister = (*InMemoryBaseTokenRegister)(nil)
+
+func (r *InMemoryBaseTokenRegister) Get(apiKey string) (oauth2.TokenSource, bool) {
 	v, ok := r.sources.Load(apiKey)
 	if !ok {
 		return nil, false
@@ -21,7 +25,7 @@ func (r *InMemoryRegistry) Get(apiKey string) (oauth2.TokenSource, bool) {
 	return nil, false
 }
 
-func (r *InMemoryRegistry) Set(apiKey string, ts oauth2.TokenSource) error {
+func (r *InMemoryBaseTokenRegister) Set(apiKey string, ts oauth2.TokenSource) error {
 	r.sources.Store(apiKey, ts)
 	return nil
 }
@@ -31,7 +35,7 @@ func (r *InMemoryRegistry) Set(apiKey string, ts oauth2.TokenSource) error {
 // 同一 apiKey に対して複数の goroutine が同時に初回アクセスした場合でも、最終的に
 // 全ての呼び出し元が同じ TokenSource インスタンスを共有することを保証する
 // （create が複数回呼ばれること自体はあり得るが、実際に保存・返却されるのは常に1つだけ）。
-func (r *InMemoryRegistry) GetOrCreate(
+func (r *InMemoryBaseTokenRegister) GetOrCreate(
 	apiKey string,
 	create func() oauth2.TokenSource,
 ) oauth2.TokenSource {

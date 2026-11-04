@@ -100,7 +100,7 @@ func createEnvtestNamespace(t *testing.T, cs kubernetes.Interface) string {
 	t.Helper()
 	name := fmt.Sprintf("mcpsrv-envtest-%d", time.Now().UnixNano())
 	_, err := cs.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -114,8 +114,8 @@ func createEnvtestConfigMap(
 ) {
 	t.Helper()
 	_, err := cs.CoreV1().ConfigMaps(namespace).Create(t.Context(), &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Data:       data,
+		Name: name, Namespace: namespace,
+		Data: data,
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 }
@@ -238,15 +238,15 @@ func TestMCPServer_Init_ConfigMapSpec_RBAC_ForbiddenUntilGranted(t *testing.T) {
 	require.Empty(t, listToolNames(t, srv), "no RBAC grant yet; the get must be forbidden")
 
 	_, err = cs.RbacV1().Roles(ns).Create(t.Context(), &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{Name: "configmap-reader", Namespace: ns},
+		Name: "configmap-reader", Namespace: ns,
 		Rules: []rbacv1.PolicyRule{
 			{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}},
 		},
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	_, err = cs.RbacV1().RoleBindings(ns).Create(t.Context(), &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "configmap-reader-binding", Namespace: ns},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "restricted-reader"}},
+		Name: "configmap-reader-binding", Namespace: ns,
+		Subjects: []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: "restricted-reader"}},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName, Kind: "Role", Name: "configmap-reader",
 		},

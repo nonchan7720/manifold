@@ -38,7 +38,7 @@ func httpClientRoundTripper(
 
 // newTokenExchangeRegistry は token exchange 用のトークンキャッシュ付きレジストリを作る。
 func newTokenExchangeRegistry(tokenExchange *config.TokenExchange) client.TokenSource {
-	return client.NewBaseTokenRegistry(tokenExchange.URL, &client.InMemoryRegistry{})
+	return client.NewBaseTokenRegistry(tokenExchange.URL, &client.InMemoryBaseTokenRegister{})
 }
 
 // newHTTPClientRoundTripper は共有可能な base（コネクションプール）と registry

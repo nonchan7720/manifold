@@ -49,6 +49,7 @@ linters:
     - usestdlibvars
     - whitespace
     - copyloopvar
+    - modernize
   disable:
     - nonamedreturns
   settings:

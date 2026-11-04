@@ -219,23 +219,22 @@ func (h *AuthHandler) OauthProtectedResource(
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/OauthProtectedResource")
 	defer func() { trace.EndSpan(ctx, nil) }()
 
-	baseURL := h.getBaseURL(r)
-	u, _ := url.Parse(baseURL)
-	mcpServerURL := u.JoinPath("/mcp", srv.Name)
-	authServerURL := u.JoinPath("/mcp", srv.Name)
-	metadata := map[string]any{
-		"authorization_servers": []string{
-			authServerURL.String(),
-		},
+	// ベース URL は外部から来る X-Forwarded-Proto と Host から組み立てるので、解析できない値も
+	// 来うる。そのまま u.JoinPath を呼ぶと nil で panic するため、400 で打ち切る。
+	u, err := url.Parse(h.getBaseURL(r))
+	if err != nil {
+		slog.WarnContext(ctx, "invalid base URL for protected resource metadata",
+			slog.String("server", srv.Name))
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	mcpServerURL := u.JoinPath("/mcp", srv.Name).String()
+	writeWellKnownMetadata(w, srv, map[string]any{
+		"authorization_servers":    []string{u.JoinPath("/mcp", srv.Name).String()},
 		"bearer_methods_supported": []string{"header"},
-		"resource":                 mcpServerURL.String(),
-		"resource_documentation":   mcpServerURL.String(),
-	}
-	if srv.OAuth2 != nil && len(srv.OAuth2.Scopes) > 0 {
-		metadata["scopes_supported"] = srv.OAuth2.Scopes
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(metadata)
+		"resource":                 mcpServerURL,
+		"resource_documentation":   mcpServerURL,
+	})
 }
 
 // MetadataEndpoint serves /.well-known/oauth-authorization-server
@@ -244,19 +243,23 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/MetadataEndpoint")
 	defer func() { trace.EndSpan(ctx, nil) }()
 
-	baseURL := h.getBaseURL(r)
-	// RFC 8414: issuer は authorization_servers で公開した URL と一致しなければならない。
-	// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
-	issuerURL := fmt.Sprintf("%s/mcp/%s", baseURL, srv.Name)
-	metadata := map[string]any{
-		"issuer":                 issuerURL,
-		"authorization_endpoint": fmt.Sprintf("%s/%s/auth/login", baseURL, srv.Name),
-		"token_endpoint":         fmt.Sprintf("%s/%s/auth/token", baseURL, srv.Name),
-		"registration_endpoint": fmt.Sprintf(
-			"%s/%s/auth/clients",
-			baseURL,
-			srv.Name,
-		),
+	metadata := authorizationServerMetadata(h.getBaseURL(r), srv.Name)
+	if h.cimd.Enabled {
+		metadata["client_id_metadata_document_supported"] = true
+	}
+	writeWellKnownMetadata(w, srv, metadata)
+}
+
+// authorizationServerMetadata は RFC 8414 の認可サーバーメタデータのうち、設定に依らない部分を返す。
+func authorizationServerMetadata(baseURL, srvName string) map[string]any {
+	serverBaseURL := fmt.Sprintf("%s/%s", baseURL, srvName)
+	return map[string]any{
+		// RFC 8414: issuer は authorization_servers で公開した URL と一致しなければならない。
+		// OauthProtectedResource が "http://host/mcp/{name}" を返すので issuer も同じにする。
+		"issuer":                           fmt.Sprintf("%s/mcp/%s", baseURL, srvName),
+		"authorization_endpoint":           serverBaseURL + "/auth/login",
+		"token_endpoint":                   serverBaseURL + "/auth/token",
+		"registration_endpoint":            serverBaseURL + "/auth/clients",
 		"response_types_supported":         []string{"code"},
 		"grant_types_supported":            []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported": []string{"S256"},
@@ -267,9 +270,11 @@ func (h *AuthHandler) MetadataEndpoint(w http.ResponseWriter, r *http.Request, s
 		},
 		"resource_indicators_supported": true,
 	}
-	if h.cimd.Enabled {
-		metadata["client_id_metadata_document_supported"] = true
-	}
+}
+
+// writeWellKnownMetadata は .well-known のメタデータ応答に共通する後処理を行う。
+// 上流 OAuth2 にスコープが設定されていれば scopes_supported を加え、JSON で書き出す。
+func writeWellKnownMetadata(w http.ResponseWriter, srv *config.Server, metadata map[string]any) {
 	if srv.OAuth2 != nil && len(srv.OAuth2.Scopes) > 0 {
 		metadata["scopes_supported"] = srv.OAuth2.Scopes
 	}
@@ -288,137 +293,95 @@ func (h *AuthHandler) RegisterClientEndpoint(
 	var err error
 	defer func() { trace.EndSpan(ctx, err) }()
 
-	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": errCode})
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	var req struct {
-		RedirectURIs            []string `json:"redirect_uris"`
-		GrantTypes              []string `json:"grant_types"`
-		ResponseTypes           []string `json:"response_types"`
-		ClientName              string   `json:"client_name"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	}
-	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "invalid_client_metadata")
+	var req dcrRequest
+	if req, err = decodeDCRRequest(w, r); err != nil {
 		return
 	}
-	if len(req.RedirectURIs) == 0 {
-		writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
-		return
-	}
-
-	// redirect_uri スキームを検証（https または http://localhost のみ許可）
-	for _, uri := range req.RedirectURIs {
-		if err = validateRedirectURI(uri); err != nil {
-			slog.WarnContext(
-				ctx,
-				"invalid redirect_uri in client registration",
-				slog.String("uri", util.SanitizeLog(uri)),
-			)
-			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
-			return
-		}
-	}
-
-	if len(req.GrantTypes) == 0 {
-		req.GrantTypes = []string{"authorization_code"}
-	}
-	if len(req.ResponseTypes) == 0 {
-		req.ResponseTypes = []string{"code"}
-	}
-	if req.TokenEndpointAuthMethod == "" {
-		req.TokenEndpointAuthMethod = "none"
-	}
-
-	clientID := generateRandomString(32)
-	reg := ClientRegistration{
-		ClientID:                clientID,
-		ClientIDIssuedAt:        time.Now().Unix(),
-		RedirectURIs:            req.RedirectURIs,
-		GrantTypes:              req.GrantTypes,
-		ResponseTypes:           req.ResponseTypes,
-		ClientName:              req.ClientName,
-		TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
-	}
-	storeReg := StoreClientRegistration{
-		ClientRegistration: reg,
-		MCPServerName:      srv.Name,
-		Source:             ClientSourceDCR,
-	}
-	regJSON, err := json.Marshal(storeReg)
-	if err != nil {
-		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
-		writeJSON(w, http.StatusInternalServerError, "server_error")
-		return
-	}
-	if err = h.store.Set(ctx, dcrClientKeyPrefix+clientID, regJSON, 90*24*time.Hour); err != nil {
-		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
-		writeJSON(w, http.StatusInternalServerError, "server_error")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(reg)
+	err = h.registerDCRClient(ctx, ctx, w, req, srv.Name)
 }
 
 var (
 	claudeCodeClientName = regexp.MustCompile(`Claude Code \(([^)]+)\)`)
 )
 
-// RegisterClientEndpoint POST /auth/clients リクエストを処理します（動的クライアント登録、RFC 7591）。
+// RegisterClientEndpointByClaudeCode POST /register リクエストを処理します（動的クライアント登録、RFC 7591）。
+// 登録を紐付ける MCP サーバーは client_name（"Claude Code (<MCP サーバー名>)"）から決める。
 func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ctx = trace.StartSpan(ctx, "httphandler/AuthHandler/RegisterClientEndpointByClaudeCode")
 	var err error
 	defer func() { trace.EndSpan(ctx, err) }()
 
-	writeJSON := func(w http.ResponseWriter, status int, errCode string) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": errCode})
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	var req struct {
-		RedirectURIs            []string `json:"redirect_uris"`
-		GrantTypes              []string `json:"grant_types"`
-		ResponseTypes           []string `json:"response_types"`
-		ClientName              string   `json:"client_name"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	}
-	if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "invalid_client_metadata")
+	var req dcrRequest
+	if req, err = decodeDCRRequest(w, r); err != nil {
 		return
 	}
-
-	match := claudeCodeClientName.FindStringSubmatch(req.ClientName)
-
 	var mcpName string
-	if len(match) > 1 {
+	if match := claudeCodeClientName.FindStringSubmatch(req.ClientName); len(match) > 1 {
 		mcpName = match[1]
 	}
 	if mcpName == "" {
-		writeJSON(w, http.StatusBadRequest, "invalid_client_name")
+		writeDCRError(w, http.StatusBadRequest, "invalid_client_name")
 		return
 	}
+	// このルートは wrapMCPServer を通らない。ストアへの書き込みは従来どおり
+	// このハンドラのスパンを含まない r.Context() で行う。
+	err = h.registerDCRClient(ctx, r.Context(), w, req, mcpName)
+}
+
+// dcrRequest は動的クライアント登録（RFC 7591）のリクエストボディ。
+type dcrRequest struct {
+	RedirectURIs            []string `json:"redirect_uris"`
+	GrantTypes              []string `json:"grant_types"`
+	ResponseTypes           []string `json:"response_types"`
+	ClientName              string   `json:"client_name"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+}
+
+// writeDCRError は動的クライアント登録の失敗応答（{"error": errCode}）を書き出す。
+func writeDCRError(w http.ResponseWriter, status int, errCode string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": errCode})
+}
+
+// decodeDCRRequest はボディを 1MB までに制限して DCR リクエストをデコードする。
+// 失敗したときは 400 invalid_client_metadata を書き込み、デコードのエラーを返す。
+func decodeDCRRequest(w http.ResponseWriter, r *http.Request) (dcrRequest, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req dcrRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeDCRError(w, http.StatusBadRequest, "invalid_client_metadata")
+		return dcrRequest{}, err
+	}
+	return req, nil
+}
+
+// registerDCRClient は redirect_uris を検証し、既定値を補ったうえでクライアントを mcpServerName に
+// 紐付けて登録し、201 で応答する。ctx はログ用、storeCtx はストアへの書き込み用のコンテキスト。
+// 失敗したときは応答を書き込んだうえで、呼び出し側のスパンに記録するエラーを返す
+// （redirect_uris が空のときは従来どおり nil を返す）。
+func (h *AuthHandler) registerDCRClient(
+	ctx, storeCtx context.Context,
+	w http.ResponseWriter,
+	req dcrRequest,
+	mcpServerName string,
+) error {
 	if len(req.RedirectURIs) == 0 {
-		writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
-		return
+		writeDCRError(w, http.StatusBadRequest, "invalid_redirect_uri")
+		return nil
 	}
 
 	// redirect_uri スキームを検証（https または http://localhost のみ許可）
 	for _, uri := range req.RedirectURIs {
-		if err = validateRedirectURI(uri); err != nil {
+		if err := validateRedirectURI(uri); err != nil {
 			slog.WarnContext(
 				ctx,
 				"invalid redirect_uri in client registration",
 				slog.String("uri", util.SanitizeLog(uri)),
 			)
-			writeJSON(w, http.StatusBadRequest, "invalid_redirect_uri")
-			return
+			writeDCRError(w, http.StatusBadRequest, "invalid_redirect_uri")
+			return err
 		}
 	}
 
@@ -444,29 +407,30 @@ func (h *AuthHandler) RegisterClientEndpointByClaudeCode(w http.ResponseWriter, 
 	}
 	storeReg := StoreClientRegistration{
 		ClientRegistration: reg,
-		MCPServerName:      mcpName,
+		MCPServerName:      mcpServerName,
 		Source:             ClientSourceDCR,
 	}
 	regJSON, err := json.Marshal(storeReg)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to marshal store registration", slog.Any("error", err))
-		writeJSON(w, http.StatusInternalServerError, "server_error")
-		return
+		writeDCRError(w, http.StatusInternalServerError, "server_error")
+		return err
 	}
 	if err = h.store.Set(
-		r.Context(),
+		storeCtx,
 		dcrClientKeyPrefix+clientID,
 		regJSON,
 		90*24*time.Hour,
 	); err != nil {
 		slog.ErrorContext(ctx, "failed to store client registration", slog.Any("error", err))
-		writeJSON(w, http.StatusInternalServerError, "server_error")
-		return
+		writeDCRError(w, http.StatusInternalServerError, "server_error")
+		return err
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(reg)
+	return nil
 }
 
 // resolveUpstreamClient は下流の client_id に割り当てられた上流 OAuth2 クライアントを返す。
@@ -1557,12 +1521,10 @@ func (h *AuthHandler) delSecretKeyed(ctx context.Context, prefix, secret string)
 // そのままログに出すと秘匿値が漏れる。RFC 7591 のエラー応答（error / error_description）と
 // 通信エラーはそのまま返す。
 func sanitizeDCRError(err error) error {
-	var regErr *oauthex.ClientRegistrationError
-	if errors.As(err, &regErr) {
+	if regErr, ok := errors.AsType[*oauthex.ClientRegistrationError](err); ok {
 		return regErr
 	}
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return fmt.Errorf("registration request failed: %w", urlErr)
 	}
 	// 応答の decode 失敗・必須フィールド欠落・想定外のステータスなど。本文を含み得るので

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -177,17 +178,9 @@ func sensitiveInformationBlocked(p *types.GuardrailSensitiveInformationPolicyAss
 	if p == nil {
 		return false
 	}
-	for _, e := range p.PiiEntities {
-		if e.Action == types.GuardrailSensitiveInformationPolicyActionBlocked {
-			return true
-		}
-	}
-	for _, e := range p.Regexes {
-		if e.Action == types.GuardrailSensitiveInformationPolicyActionBlocked {
-			return true
-		}
-	}
-	return false
+	const blocked = types.GuardrailSensitiveInformationPolicyActionBlocked
+	return anyEntryBlocked(p.PiiEntities, piiEntityAction, blocked) ||
+		anyEntryBlocked(p.Regexes, regexAction, blocked)
 }
 
 func contentBlocked(p *types.GuardrailContentPolicyAssessment) bool {
@@ -218,17 +211,9 @@ func wordBlocked(p *types.GuardrailWordPolicyAssessment) bool {
 	if p == nil {
 		return false
 	}
-	for _, w := range p.CustomWords {
-		if w.Action == types.GuardrailWordPolicyActionBlocked {
-			return true
-		}
-	}
-	for _, w := range p.ManagedWordLists {
-		if w.Action == types.GuardrailWordPolicyActionBlocked {
-			return true
-		}
-	}
-	return false
+	const blocked = types.GuardrailWordPolicyActionBlocked
+	return anyEntryBlocked(p.CustomWords, customWordAction, blocked) ||
+		anyEntryBlocked(p.ManagedWordLists, managedWordAction, blocked)
 }
 
 func contextualGroundingBlocked(p *types.GuardrailContextualGroundingPolicyAssessment) bool {
@@ -241,6 +226,31 @@ func contextualGroundingBlocked(p *types.GuardrailContextualGroundingPolicyAsses
 		}
 	}
 	return false
+}
+
+// anyEntryBlocked は entries のいずれかのアクションが blocked と等しいかを返す。Bedrock の
+// 評価結果はポリシー・項目ごとに要素型とアクション型が異なるため、要素からアクションを取り出す
+// action を受け取って 1 つの走査にまとめる。
+func anyEntryBlocked[E any, A comparable](entries []E, action func(E) A, blocked A) bool {
+	return slices.ContainsFunc(entries, func(e E) bool { return action(e) == blocked })
+}
+
+func piiEntityAction(
+	e types.GuardrailPiiEntityFilter,
+) types.GuardrailSensitiveInformationPolicyAction {
+	return e.Action
+}
+
+func regexAction(e types.GuardrailRegexFilter) types.GuardrailSensitiveInformationPolicyAction {
+	return e.Action
+}
+
+func customWordAction(w types.GuardrailCustomWord) types.GuardrailWordPolicyAction {
+	return w.Action
+}
+
+func managedWordAction(w types.GuardrailManagedWord) types.GuardrailWordPolicyAction {
+	return w.Action
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {

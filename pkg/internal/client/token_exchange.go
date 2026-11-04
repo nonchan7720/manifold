@@ -225,10 +225,7 @@ func (rt *tokenExchangeRoundTrip) RoundTrip(req *http.Request) (*http.Response, 
 			// クライアントには 503 を返し、既知であれば Retry-After を付与する。
 			resp := errorResponse(http.StatusServiceUnavailable, "token exchange rate limited")
 			if rlErr.retryAfter > 0 {
-				secs := int(rlErr.retryAfter.Round(time.Second) / time.Second)
-				if secs < 1 {
-					secs = 1
-				}
+				secs := max(int(rlErr.retryAfter.Round(time.Second)/time.Second), 1)
 				resp.Header.Set("Retry-After", strconv.Itoa(secs))
 			}
 			return resp, nil

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 	"github.com/stretchr/testify/require"
 )
@@ -1135,11 +1136,11 @@ func multipartOperation(schema *openapi3.Schema) *openapi3.Operation {
 // テスト終了時に既定値（ゼロ値 = AllowLocal:false, MaxSize:デフォルト）へ戻す。
 // パッケージレベル設定はテスト間でグローバルに共有されるため、他のテストを汚染しないよう
 // 必ず t.Cleanup で元に戻すこと。
-func setFileFetchConfigForTest(t *testing.T, cfg FileFetchConfig) {
+func setFileFetchConfigForTest(t *testing.T, cfg config.FileFetchConfig) {
 	t.Helper()
 	require.NoError(t, SetFileFetchConfig(cfg))
 	t.Cleanup(func() {
-		_ = SetFileFetchConfig(FileFetchConfig{})
+		_ = SetFileFetchConfig(config.FileFetchConfig{})
 	})
 }
 
@@ -2437,7 +2438,7 @@ func TestCreateToolFunction_Multipart_NestedBinaryField_Resolved(t *testing.T) {
 	// metadata.thumbnail は format: binary。writeMultipartValue はネストしたオブジェクトを
 	// ブラケット記法のフィールドへ展開するため、その位置の isFile も解決され、URL 文字列を渡すと
 	// ダウンロードされてファイルパートとして送信される。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("thumbnail-bytes")
 	var urlServerHit bool
 	urlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2945,7 +2946,7 @@ func TestCreateToolFunction_FormURLEncoded_FileFromURL_ObjectValue(t *testing.T)
 	t.Setenv("TEST", "true")
 	// urlencoded でも {url: "..."} は multipart と同じく fetchFileFromURL 経由で取得し、
 	// その中身のバイト列を値にする（URL 文字列がそのまま送られない）。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("urlencoded file body via url key")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -3009,7 +3010,7 @@ func TestCreateToolFunction_FormURLEncoded_FileRawURLString(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// ファイルフィールドに URL 文字列を直接渡した場合も、multipart の生文字列ヒューリスティック
 	// （isFileURL）と同じくダウンロードされた中身が値になる。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("urlencoded file body via raw url string")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -3081,7 +3082,7 @@ func TestCreateToolFunction_FormURLEncoded_FileArray_AddsMultipleValues(t *testi
 
 func TestCreateToolFunction_FormURLEncoded_FileFromURL_HTTPError(t *testing.T) {
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -3113,7 +3114,7 @@ func TestCreateToolFunction_Multipart_FileFromURL(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// 署名付きURLのようにURLが渡された場合はダウンロードしてストリーム書き込みする。
 	// テスト用のダウンロード先は httptest のループバック http サーバーなので AllowLocal を有効化する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("streamed file body")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
@@ -3164,7 +3165,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_NoContentTypeHeaderDetectsCont
 ) {
 	t.Setenv("TEST", "true")
 	// レスポンスに Content-Type ヘッダが無い場合は本文から推定する。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("%PDF-1.4 streamed file body")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "")
@@ -3208,7 +3209,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_NoContentTypeHeaderDetectsCont
 func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// オブジェクト形式で content にURLを渡した場合、filename / contentType の明示指定が優先される
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("object url content")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -3258,7 +3259,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_ObjectValueOverrides(t *testin
 
 func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
 	// ダウンロード先が4xx/5xxを返した場合はツールエラーになる
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -3290,7 +3291,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_HTTPError(t *testing.T) {
 
 func TestCreateToolFunction_Multipart_FileFromURL_AllowLocalFalse_RejectsHTTP(t *testing.T) {
 	// 既定（AllowLocal=false）では http:// URL（httptest のループバックサーバーも含む）を拒否する
-	setFileFetchConfigForTest(t, FileFetchConfig{})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{})
 
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("secret")) //nolint: errcheck
@@ -3323,7 +3324,7 @@ func TestCreateToolFunction_Multipart_FileFromURL_AllowLocalFalse_RejectsHTTP(t 
 func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP(t *testing.T) {
 	// https:// でもプライベート/ループバックIPへの接続は SafeHTTPClient の dialer が拒否する
 	// （スキームチェックとは独立した経路であることの確認）
-	setFileFetchConfigForTest(t, FileFetchConfig{})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{})
 
 	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("secret")) //nolint: errcheck
@@ -3341,7 +3342,7 @@ func TestFetchFileFromURL_AllowLocalFalse_RejectsPrivateIP_SkipSecureClient(t *t
 	// StrictHTTPClient の dialer がループバックへの https 接続を拒否することを確認する。
 	t.Setenv("SKIP_SECURE_CLIENT", "true")
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{})
 
 	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("secret")) //nolint: errcheck
@@ -3365,7 +3366,7 @@ func TestFetchFileFromURL_AllowedHosts_AllowsMatchingHost(t *testing.T) {
 
 	setFileFetchConfigForTest(
 		t,
-		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{fileSrvURL.Host}},
+		config.FileFetchConfig{AllowLocal: true, AllowedHosts: []string{fileSrvURL.Host}},
 	)
 
 	body, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
@@ -3381,7 +3382,7 @@ func TestFetchFileFromURL_AllowedHosts_DeniesNonMatchingHost(t *testing.T) {
 
 	setFileFetchConfigForTest(
 		t,
-		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{"example.com"}},
+		config.FileFetchConfig{AllowLocal: true, AllowedHosts: []string{"example.com"}},
 	)
 
 	_, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
@@ -3410,7 +3411,7 @@ func TestFetchFileFromURL_AllowedHosts_DeniesRedirectTarget(t *testing.T) {
 	// リダイレクト元のホストのみを許可し、リダイレクト先（targetSrv）は許可リストに含めない
 	setFileFetchConfigForTest(
 		t,
-		FileFetchConfig{AllowLocal: true, AllowedHosts: []string{redirectSrvURL.Host}},
+		config.FileFetchConfig{AllowLocal: true, AllowedHosts: []string{redirectSrvURL.Host}},
 	)
 
 	_, _, _, err = fetchFileFromURL(context.Background(), redirectSrv.URL+"/start")
@@ -3426,7 +3427,7 @@ func TestFetchFileFromURL_MaxSize_ContentLengthExceeded(t *testing.T) {
 	}))
 	defer fileSrv.Close()
 
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, MaxSize: 10})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true, MaxSize: 10})
 
 	_, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
 	require.Error(t, err)
@@ -3449,7 +3450,7 @@ func TestFetchFileFromURL_MaxSize_StreamingExceeded(t *testing.T) {
 	}))
 	defer fileSrv.Close()
 
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, MaxSize: 10})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true, MaxSize: 10})
 
 	body, _, _, err := fetchFileFromURL(context.Background(), fileSrv.URL+"/f")
 	// Content-Length 不明なのでヘッダー到達時点ではまだエラーにならない
@@ -3464,7 +3465,7 @@ func TestFetchFileFromURL_MaxSize_StreamingExceeded(t *testing.T) {
 func TestCreateToolFunction_Multipart_FileExplicitURLKey(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// {url: "..."} を明示指定すると fetchFileFromURL 経由で取得する
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("via explicit url key")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -3581,7 +3582,7 @@ func TestCreateToolFunction_Multipart_FileExplicitBase64Key_InvalidBase64Errors(
 }
 
 func TestCreateToolFunction_Multipart_FileExplicitBase64Key_MaxSizeExceeded(t *testing.T) {
-	setFileFetchConfigForTest(t, FileFetchConfig{MaxSize: 5})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{MaxSize: 5})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -3643,7 +3644,7 @@ func TestCreateToolFunction_Multipart_FileExplicitTextKey(t *testing.T) {
 
 func TestCreateToolFunction_Multipart_FileContentLegacy_MaxSizeExceeded(t *testing.T) {
 	// content キー（従来の生文字列ヒューリスティック）経路でもサイズ上限が強制される
-	setFileFetchConfigForTest(t, FileFetchConfig{MaxSize: 5})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{MaxSize: 5})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -3670,7 +3671,7 @@ func TestCreateToolFunction_Multipart_FileContentLegacy_MaxSizeExceeded(t *testi
 func TestCreateToolFunction_Multipart_FileExplicitKeyPriority_URLWinsOverBase64(t *testing.T) {
 	t.Setenv("TEST", "true")
 	// url / base64 / text / content が同時に指定された場合、url が最優先で使われ他は無視される
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	urlContent := []byte("from url")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(urlContent) //nolint: errcheck
@@ -4330,7 +4331,7 @@ func TestCreateToolFunction_JSONBody_FileObjectValueBase64(t *testing.T) {
 
 func TestCreateToolFunction_JSONBody_FileFromURLBareString(t *testing.T) {
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("streamed json file body")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -4366,7 +4367,7 @@ func TestCreateToolFunction_JSONBody_FileFromURLBareString(t *testing.T) {
 
 func TestCreateToolFunction_JSONBody_FileObjectValueURL(t *testing.T) {
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("json file via url key")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -4760,7 +4761,7 @@ func TestCreateToolFunction_JSONBody_ArrayOfBinary_EmptyElementsPassThrough(t *t
 
 func TestCreateToolFunction_JSONBody_FileFromURL_HTTPError(t *testing.T) {
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -4886,7 +4887,7 @@ func TestCreateToolFunction_JSONBody_SanitizedKeyRestored_WithoutBinary(t *testi
 
 func TestCreateToolFunction_JSONBody_MultipleSiblingBinaryFields(t *testing.T) {
 	t.Setenv("TEST", "true")
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true})
+	setFileFetchConfigForTest(t, config.FileFetchConfig{AllowLocal: true})
 	content := []byte("sibling file from url")
 	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint: errcheck
@@ -4935,7 +4936,7 @@ func TestCreateToolFunction_JSONBody_MultipleSiblingBinaryFields(t *testing.T) {
 }
 
 func TestCheckFileFetchURL_DeniedHosts(t *testing.T) {
-	cfg := FileFetchConfig{DeniedHosts: []string{"vault.internal", "Minio.Internal:9000"}}
+	cfg := config.FileFetchConfig{DeniedHosts: []string{"vault.internal", "Minio.Internal:9000"}}
 	for _, raw := range []string{
 		"https://vault.internal/secret", "https://VAULT.INTERNAL:8200/x", "https://minio.internal:9000/b/o",
 	} {
@@ -4950,7 +4951,7 @@ func TestCheckFileFetchURL_DeniedHosts(t *testing.T) {
 	require.NoError(t, checkFileFetchURL(cfg, u))
 
 	// AllowedHosts と併用した場合も DeniedHosts が優先して拒否する。
-	both := FileFetchConfig{
+	both := config.FileFetchConfig{
 		AllowedHosts: []string{"vault.internal"},
 		DeniedHosts:  []string{"vault.internal"},
 	}
@@ -4970,7 +4971,10 @@ func TestFetchFileFromURL_DeniedHosts_RejectsBeforeRequest(t *testing.T) {
 	u, err := url.Parse(fileSrv.URL)
 	require.NoError(t, err)
 	// AllowLocal=true（http とループバックを許可）でも DeniedHosts は効く。
-	setFileFetchConfigForTest(t, FileFetchConfig{AllowLocal: true, DeniedHosts: []string{u.Host}})
+	setFileFetchConfigForTest(
+		t,
+		config.FileFetchConfig{AllowLocal: true, DeniedHosts: []string{u.Host}},
+	)
 
 	_, _, _, err = fetchFileFromURL(context.Background(), fileSrv.URL+"/secret.txt")
 	require.Error(t, err)
@@ -4979,12 +4983,17 @@ func TestFetchFileFromURL_DeniedHosts_RejectsBeforeRequest(t *testing.T) {
 }
 
 func TestSetFileFetchConfig_InvalidDeniedCIDR(t *testing.T) {
-	err := SetFileFetchConfig(FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8", "not-a-cidr"}})
+	err := SetFileFetchConfig(
+		config.FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8", "not-a-cidr"}},
+	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not-a-cidr")
 	// 不正な設定は前のポリシーを置き換えない。
-	require.Equal(t, defaultFileFetchMaxSize, getFileFetchConfig().MaxSize)
-	t.Cleanup(func() { _ = SetFileFetchConfig(FileFetchConfig{}) })
-	require.NoError(t, SetFileFetchConfig(FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8"}}))
+	require.Equal(t, config.DefaultFileFetchMaxSize, getFileFetchConfig().MaxSize)
+	t.Cleanup(func() { _ = SetFileFetchConfig(config.FileFetchConfig{}) })
+	require.NoError(
+		t,
+		SetFileFetchConfig(config.FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8"}}),
+	)
 	require.Equal(t, []string{"10.0.0.0/8"}, getFileFetchConfig().DeniedCIDRs)
 }

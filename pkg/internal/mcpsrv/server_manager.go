@@ -558,7 +558,7 @@ func generateContent(
 	// 上流が octet-stream しか返さない場合に備え、実体から型を判定し直す。
 	// 判定できた型は振り分け（image/audio/その他）と resource_link の両方に使う。
 	contentType = storage.ResolveContentType(contentType, data)
-	baseType := strings.SplitN(contentType, ";", 2)[0]
+	baseType, _, _ := strings.Cut(contentType, ";")
 	baseType = strings.TrimSpace(baseType)
 	isEnabled := mediaService.Enabled()
 	switch {

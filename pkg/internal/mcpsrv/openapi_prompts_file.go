@@ -58,12 +58,10 @@ func newFilePromptSource(ctx context.Context, server, path string) (*filePromptS
 	}
 
 	ctx, s.cancel = context.WithCancel(context.WithoutCancel(ctx))
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		defer watcher.Close() //nolint: errcheck
 		s.watch(ctx, watcher)
-	}()
+	})
 	return s, nil
 }
 

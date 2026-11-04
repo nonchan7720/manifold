@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -893,9 +894,7 @@ type headerTransport struct{ header http.Header }
 
 func (rt headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
-	for k, vs := range rt.header {
-		req.Header[k] = vs
-	}
+	maps.Copy(req.Header, rt.header)
 	return http.DefaultTransport.RoundTrip(req)
 }
 

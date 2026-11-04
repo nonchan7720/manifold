@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -123,6 +124,25 @@ func TestOauthProtectedResource(t *testing.T) {
 	require.Contains(t, body, "resource")
 	require.Contains(t, body, "authorization_servers")
 	require.Contains(t, body, "scopes_supported")
+}
+
+func TestOauthProtectedResource_InvalidForwardedProto(t *testing.T) {
+	// X-Forwarded-Proto は外部から来る値。ベース URL として解析できない値でも panic せず 400 を返す。
+	h := &AuthHandler{}
+	srv := &config.Server{Name: "myserver"}
+
+	req := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/.well-known/oauth-protected-resource/mcp/myserver",
+		nil,
+	)
+	req.Host = "gateway.example.com"
+	req.Header.Set("X-Forwarded-Proto", "1http")
+	rw := httptest.NewRecorder()
+
+	require.NotPanics(t, func() { h.OauthProtectedResource(rw, req, srv) })
+	require.Equal(t, http.StatusBadRequest, rw.Code)
 }
 
 func TestOauthProtectedResource_NoOAuth2(t *testing.T) {
@@ -2166,11 +2186,9 @@ func TestClientAllowedForServer(t *testing.T) {
 func newBoundClientHandler(t *testing.T, source string) (*AuthHandler, *mockStore) {
 	t.Helper()
 	regJSON, err := json.Marshal(StoreClientRegistration{
-		ClientRegistration: ClientRegistration{
-			ClientID:     "client1",
-			ClientName:   "Client One",
-			RedirectURIs: []string{"https://app.example.com/callback"},
-		},
+		ClientID:      "client1",
+		ClientName:    "Client One",
+		RedirectURIs:  []string{"https://app.example.com/callback"},
 		MCPServerName: "server-a",
 		Source:        source,
 	})
@@ -2351,19 +2369,17 @@ func newDiscoverTestBackend(
 	t.Helper()
 	var baseURL string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, mp := range metaPaths {
-			if r.URL.Path == mp {
-				res := resource
-				if res == "" {
-					res = baseURL + mcpPath
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
-					"resource":              res,
-					"authorization_servers": []string{authURL},
-				})
-				return
+		if slices.Contains(metaPaths, r.URL.Path) {
+			res := resource
+			if res == "" {
+				res = baseURL + mcpPath
 			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{ //nolint: errcheck
+				"resource":              res,
+				"authorization_servers": []string{authURL},
+			})
+			return
 		}
 		if r.URL.Path == mcpPath {
 			if withResourceMetadata {

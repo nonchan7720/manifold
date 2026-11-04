@@ -118,6 +118,101 @@ func authzHandleToolCall(
 	return next(ctx, method, req)
 }
 
+// authzListSpec は authzHandleList が一覧系メソッドの結果を絞り込むための、
+// 結果の型 R と要素の型 T ごとの差分をまとめたもの。
+type authzListSpec[R mcp.Result, T any] struct {
+	// method はログに出すメソッド名。
+	method string
+	// items は結果から絞り込み対象の要素を取り出す。
+	items func(R) []T
+	// refName は要素を authz の判定に渡すときの名前を返す。
+	refName func(T) string
+	// withItems は結果の要素を filtered に置き換えた結果を返す。
+	withItems func(result R, filtered []T) R
+}
+
+// authzToolsListSpec は tools/list の結果をツール名で判定する。結果はその場で
+// 書き換える。
+var authzToolsListSpec = authzListSpec[*mcp.ListToolsResult, *mcp.Tool]{
+	method:  authzMethodToolsList,
+	items:   func(r *mcp.ListToolsResult) []*mcp.Tool { return r.Tools },
+	refName: func(t *mcp.Tool) string { return t.Name },
+	withItems: func(r *mcp.ListToolsResult, filtered []*mcp.Tool) *mcp.ListToolsResult {
+		r.Tools = filtered
+		return r
+	},
+}
+
+// authzPromptsListSpec は prompts/list の結果を、名前に authzPromptPrefix を
+// 付けてツールと同じ形で判定する。
+var authzPromptsListSpec = authzListSpec[*mcp.ListPromptsResult, *mcp.Prompt]{
+	method:  authzMethodPromptsList,
+	items:   func(r *mcp.ListPromptsResult) []*mcp.Prompt { return r.Prompts },
+	refName: func(prompt *mcp.Prompt) string { return authzPromptPrefix + prompt.Name },
+	withItems: func(r *mcp.ListPromptsResult, filtered []*mcp.Prompt) *mcp.ListPromptsResult {
+		// 結果はパススルーの取得元やバックエンドと共有している可能性があるため複製する。
+		copied := *r
+		copied.Prompts = filtered
+		return &copied
+	},
+}
+
+// authzHandleList は next で一覧を取得し、spec が取り出す要素を d.AllowedTools が
+// 許可したものに順序を保って絞る。結果が R でない場合や空の一覧では Decider を
+// 呼ばずにそのまま返す。Decider のエラーは固定の JSON-RPC エラーにする。
+func authzHandleList[R mcp.Result, T any](
+	ctx context.Context,
+	serverName, serviceCode string,
+	d authz.Decider,
+	p authz.Principal,
+	next mcp.MethodHandler,
+	method string,
+	req mcp.Request,
+	spec authzListSpec[R, T],
+) (mcp.Result, error) {
+	res, err := next(ctx, method, req)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := res.(R)
+	if !ok {
+		return res, nil
+	}
+	items := spec.items(result)
+	if len(items) == 0 {
+		return res, nil
+	}
+
+	refs := make([]authz.ToolRef, len(items))
+	for i, item := range items {
+		refs[i] = authz.ToolRef{Server: serverName, Service: serviceCode, Name: spec.refName(item)}
+	}
+	allowed, err := d.AllowedTools(ctx, p, refs)
+	if err != nil {
+		slog.ErrorContext(ctx, "authz: decider error on "+spec.method,
+			slog.String("server", serverName), slog.Any("error", err))
+		return nil, errToolNotAllowedByPolicy
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, t := range allowed {
+		allowedSet[t.Name] = struct{}{}
+	}
+	filtered := make([]T, 0, len(allowed))
+	for _, item := range items {
+		if _, ok := allowedSet[spec.refName(item)]; ok {
+			filtered = append(filtered, item)
+		}
+	}
+
+	slog.InfoContext(ctx, "authz decision",
+		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
+		slog.String("server", serverName), slog.String("service", serviceCode),
+		slog.String("method", spec.method),
+		slog.Int("allowed", len(filtered)), slog.Int("total", len(refs)))
+	return spec.withItems(result, filtered), nil
+}
+
 // authzHandleToolsList calls next to obtain the full tool list, then narrows
 // it to the subset d.AllowedTools reports, preserving order. An empty list
 // skips the Decider call entirely.
@@ -130,44 +225,17 @@ func authzHandleToolsList(
 	method string,
 	req mcp.Request,
 ) (mcp.Result, error) {
-	res, err := next(ctx, method, req)
-	if err != nil {
-		return nil, err
-	}
-	result, ok := res.(*mcp.ListToolsResult)
-	if !ok || len(result.Tools) == 0 {
-		return res, nil
-	}
-
-	refs := make([]authz.ToolRef, len(result.Tools))
-	for i, tool := range result.Tools {
-		refs[i] = authz.ToolRef{Server: serverName, Service: serviceCode, Name: tool.Name}
-	}
-	allowed, err := d.AllowedTools(ctx, p, refs)
-	if err != nil {
-		slog.ErrorContext(ctx, "authz: decider error on tools/list",
-			slog.String("server", serverName), slog.Any("error", err))
-		return nil, errToolNotAllowedByPolicy
-	}
-
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, t := range allowed {
-		allowedSet[t.Name] = struct{}{}
-	}
-	filtered := make([]*mcp.Tool, 0, len(allowed))
-	for _, tool := range result.Tools {
-		if _, ok := allowedSet[tool.Name]; ok {
-			filtered = append(filtered, tool)
-		}
-	}
-	result.Tools = filtered
-
-	slog.InfoContext(ctx, "authz decision",
-		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
-		slog.String("server", serverName), slog.String("service", serviceCode),
-		slog.String("method", authzMethodToolsList),
-		slog.Int("allowed", len(result.Tools)), slog.Int("total", len(refs)))
-	return result, nil
+	return authzHandleList(
+		ctx,
+		serverName,
+		serviceCode,
+		d,
+		p,
+		next,
+		method,
+		req,
+		authzToolsListSpec,
+	)
 }
 
 // authzHandlePromptsList は authzHandleToolsList と同じく、next の prompts/list の
@@ -183,48 +251,9 @@ func authzHandlePromptsList(
 	method string,
 	req mcp.Request,
 ) (mcp.Result, error) {
-	res, err := next(ctx, method, req)
-	if err != nil {
-		return nil, err
-	}
-	result, ok := res.(*mcp.ListPromptsResult)
-	if !ok || len(result.Prompts) == 0 {
-		return res, nil
-	}
-
-	refs := make([]authz.ToolRef, len(result.Prompts))
-	for i, prompt := range result.Prompts {
-		refs[i] = authz.ToolRef{
-			Server: serverName, Service: serviceCode, Name: authzPromptPrefix + prompt.Name,
-		}
-	}
-	allowed, err := d.AllowedTools(ctx, p, refs)
-	if err != nil {
-		slog.ErrorContext(ctx, "authz: decider error on prompts/list",
-			slog.String("server", serverName), slog.Any("error", err))
-		return nil, errToolNotAllowedByPolicy
-	}
-
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, t := range allowed {
-		allowedSet[t.Name] = struct{}{}
-	}
-	filtered := make([]*mcp.Prompt, 0, len(allowed))
-	for _, prompt := range result.Prompts {
-		if _, ok := allowedSet[authzPromptPrefix+prompt.Name]; ok {
-			filtered = append(filtered, prompt)
-		}
-	}
-	// 結果はパススルーの取得元やバックエンドと共有している可能性があるため複製する。
-	copied := *result
-	copied.Prompts = filtered
-
-	slog.InfoContext(ctx, "authz decision",
-		slog.String("user", p.UserID), slog.Any("groups", p.Groups),
-		slog.String("server", serverName), slog.String("service", serviceCode),
-		slog.String("method", authzMethodPromptsList),
-		slog.Int("allowed", len(filtered)), slog.Int("total", len(refs)))
-	return &copied, nil
+	return authzHandleList(
+		ctx, serverName, serviceCode, d, p, next, method, req, authzPromptsListSpec,
+	)
 }
 
 // NewAuthzMiddleware builds a mcp.Middleware enforcing d as the PEP for

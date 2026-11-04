@@ -212,7 +212,7 @@ func TestParseRetryAfter_HTTPDate(t *testing.T) {
 // --- baseTokenRegistry.Get: アトミックな get-or-create の利用 ---
 
 func TestBaseTokenRegistry_Get_ReturnsSameTokenSourceForSameKey(t *testing.T) {
-	source := &InMemoryRegistry{}
+	source := &InMemoryBaseTokenRegister{}
 	registry := NewBaseTokenRegistry("http://example.com/token", source)
 
 	baseRegistry, ok := registry.(*baseTokenRegistry)
@@ -224,7 +224,7 @@ func TestBaseTokenRegistry_Get_ReturnsSameTokenSourceForSameKey(t *testing.T) {
 }
 
 func TestBaseTokenRegistry_Get_ConcurrentSameKey_NoDuplication(t *testing.T) {
-	source := &InMemoryRegistry{}
+	source := &InMemoryBaseTokenRegister{}
 	registry := NewBaseTokenRegistry("http://example.com/token", source)
 	baseRegistry, ok := registry.(*baseTokenRegistry)
 	require.True(t, ok)
@@ -275,7 +275,7 @@ func decodeErrorBody(t *testing.T, resp *http.Response) string {
 }
 
 func TestTokenExchangeRoundTrip_EmptyContextToken_Returns401(t *testing.T) {
-	registry := NewBaseTokenRegistry("http://example.com/token", &InMemoryRegistry{})
+	registry := NewBaseTokenRegistry("http://example.com/token", &InMemoryBaseTokenRegister{})
 	rt := NewTokenExchangeRoundTrip(nil, registry)
 
 	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, ""))
@@ -292,7 +292,7 @@ func TestTokenExchangeRoundTrip_RateLimited_Returns503WithRetryAfter(t *testing.
 	}))
 	defer srv.Close()
 
-	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryBaseTokenRegister{})
 	rt := NewTokenExchangeRoundTrip(nil, registry)
 
 	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
@@ -309,7 +309,7 @@ func TestTokenExchangeRoundTrip_UpstreamServerError_Returns502(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryBaseTokenRegister{})
 	rt := NewTokenExchangeRoundTrip(nil, registry)
 
 	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
@@ -325,7 +325,7 @@ func TestTokenExchangeRoundTrip_ExchangeRejectsCredential_Returns401(t *testing.
 	}))
 	defer srv.Close()
 
-	registry := NewBaseTokenRegistry(srv.URL, &InMemoryRegistry{})
+	registry := NewBaseTokenRegistry(srv.URL, &InMemoryBaseTokenRegister{})
 	rt := NewTokenExchangeRoundTrip(nil, registry)
 
 	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))
@@ -341,7 +341,7 @@ func TestTokenExchangeRoundTrip_NetworkError_Returns502(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	registry := NewBaseTokenRegistry(url, &InMemoryRegistry{})
+	registry := NewBaseTokenRegistry(url, &InMemoryBaseTokenRegister{})
 	rt := NewTokenExchangeRoundTrip(nil, registry)
 
 	resp, err := rt.RoundTrip(newTokenExchangeRequest(t, "Bearer base-token"))

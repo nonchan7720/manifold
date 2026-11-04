@@ -1,5 +1,5 @@
 import { TabServerTransport } from "@mcp-b/transports";
-import { BrowserMcpServer, SERVER_MARKER_PROPERTY } from "@mcp-b/webmcp-ts-sdk";
+import { BrowserMcpServer, isBrowserMcpServer } from "@mcp-b/webmcp-ts-sdk";
 import type { TransportLike } from "../shared/types";
 import { createNativeModelContextBridge } from "./nativeModelContextBridge";
 import type { BrowserServerLike, NativeModelContextLike } from "./nativeModelContextBridge";
@@ -13,8 +13,8 @@ type NativeOption = NonNullable<ConstructorParameters<typeof BrowserMcpServer>[1
 // it without any protocol changes on the isolated-world side.
 const bridge = createNativeModelContextBridge({
   native: document.modelContext,
-  isAlreadyBridged: (native) =>
-    Boolean((native as Record<PropertyKey, unknown> | null)?.[SERVER_MARKER_PROPERTY]),
+  // SDK v6 はマーカーのプロパティ名を export しないので、判定関数を使う。
+  isAlreadyBridged: (native) => isBrowserMcpServer(native),
   createServer: (native: NativeModelContextLike) =>
     new BrowserMcpServer(
       { name: "manifold-native-webmcp-adapter", version: "0.1.0" },

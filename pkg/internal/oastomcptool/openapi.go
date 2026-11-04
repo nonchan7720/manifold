@@ -25,21 +25,13 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/n-creativesystem/go-packages/lib/trace"
+	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/api"
 	"github.com/nonchan7720/manifold/pkg/internal/client"
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
 type ToolFunc func(ctx context.Context, input map[string]any) (body []byte, contentType string, _ error)
-
-// MCPToolRegistry defines the interface for the global MCP tool registry
-type MCPToolRegistry interface {
-	RegisterTool(
-		name, description string,
-		input_schema map[string]any,
-		handler func(context.Context, map[string]any) (string, error),
-	)
-}
 
 func sanitize_path_parameter_value(param_value any, param_name string) (string, error) {
 	if param_value == nil {
@@ -811,7 +803,7 @@ func describe_schema_fields_openapi(schema *openapi3.Schema) string {
 // 再帰パス上にあるスキーマポインタの集合で、自己参照・相互参照スキーマ（kin-openapi の Loader は
 // $ref をポインタ循環として解決するため実際に発生しうる）による無限再帰を防ぐ。同じスキーマへの
 // 再訪を検知した場合は空文字列を返し、それ以上再帰しない。
-func describeSchemaFieldsOpenapiVisited( //nolint: gocyclo
+func describeSchemaFieldsOpenapiVisited(
 	schema *openapi3.Schema,
 	visited map[*openapi3.Schema]bool,
 ) string {
@@ -821,100 +813,150 @@ func describeSchemaFieldsOpenapiVisited( //nolint: gocyclo
 	visited[schema] = true
 	defer delete(visited, schema)
 
+	return describeSchemaFields(newOpenapiFieldsView(schema, visited))
+}
+
+// openapiFieldsView は OpenAPI 3.x のスキーマを schemaFieldsView として見せるアダプタ。
+// 子スキーマは allOf をマージしてから返し、再帰は visited を共有する
+// describeSchemaFieldsOpenapiVisited を通す。
+type openapiFieldsView struct {
+	schema  *openapi3.Schema
+	visited map[*openapi3.Schema]bool
+}
+
+// newOpenapiFieldsView は schema の allOf をマージしてからビューにする。
+func newOpenapiFieldsView(
+	schema *openapi3.Schema,
+	visited map[*openapi3.Schema]bool,
+) openapiFieldsView {
 	if len(schema.AllOf) > 0 {
 		schema = mergeAllOf(schema)
 	}
-	bodyProps := schema.Properties
-	if len(bodyProps) == 0 {
+	return openapiFieldsView{schema: schema, visited: visited}
+}
+
+func (v openapiFieldsView) propertyNames() []string {
+	return slices.Collect(maps.Keys(v.schema.Properties))
+}
+
+func (v openapiFieldsView) required() []string { return v.schema.Required }
+
+func (v openapiFieldsView) property(name string) (schemaFieldsView, bool) {
+	return v.child(v.schema.Properties[name])
+}
+
+func (v openapiFieldsView) items() (schemaFieldsView, bool) { return v.child(v.schema.Items) }
+
+func (v openapiFieldsView) child(ref *openapi3.SchemaRef) (schemaFieldsView, bool) {
+	if ref == nil || ref.Value == nil {
+		return nil, false
+	}
+	return newOpenapiFieldsView(ref.Value, v.visited), true
+}
+
+func (v openapiFieldsView) schemaType() *openapi3.Types { return v.schema.Type }
+
+func (v openapiFieldsView) description() string { return v.schema.Description }
+
+func (v openapiFieldsView) describeNested() string {
+	return describeSchemaFieldsOpenapiVisited(v.schema, v.visited)
+}
+
+// schemaFieldsView は describeSchemaFields が読むスキーマの中立なビュー。OpenAPI 3.x と
+// Swagger 2.x ではスキーマの型・$ref の解決方法・allOf の扱いが異なるため、その差を
+// アダプタ（openapiFieldsView / swaggerFieldsView）に閉じ込め、要約の組み立ては 1 つにする。
+type schemaFieldsView interface {
+	// propertyNames はプロパティ名を返す（順不同）。
+	propertyNames() []string
+	required() []string
+	// property は name のプロパティを解決済みのビューで返す。解決できなければ false。
+	property(name string) (schemaFieldsView, bool)
+	// items は配列要素のスキーマを解決済みのビューで返す。無い・解決できなければ false。
+	items() (schemaFieldsView, bool)
+	schemaType() *openapi3.Types
+	description() string
+	// describeNested はこのスキーマのフィールド要約を再帰的に作る。循環参照で再訪した
+	// スキーマなど、要約できない場合は空文字列を返す。
+	describeNested() string
+}
+
+// describeSchemaFields は schema のプロパティを名前順に並べ、"; " 区切りのフィールド要約を
+// 作る。プロパティが無ければ空文字列を返す。
+func describeSchemaFields(schema schemaFieldsView) string {
+	fieldNames := schema.propertyNames()
+	if len(fieldNames) == 0 {
 		return ""
 	}
 
 	localRequired := map[string]bool{}
-	for _, r := range schema.Required {
+	for _, r := range schema.required() {
 		localRequired[r] = true
 	}
 
 	// Sort field names for deterministic output
-	fieldNames := make([]string, 0, len(bodyProps))
-	for name := range bodyProps {
-		fieldNames = append(fieldNames, name)
-	}
-	for i := 1; i < len(fieldNames); i++ {
-		for j := i; j > 0 && fieldNames[j] < fieldNames[j-1]; j-- {
-			fieldNames[j], fieldNames[j-1] = fieldNames[j-1], fieldNames[j]
-		}
-	}
+	slices.Sort(fieldNames)
 
 	parts := make([]string, 0, len(fieldNames))
 	for _, name := range fieldNames {
-		propRef := bodyProps[name]
-		if propRef == nil || propRef.Value == nil {
+		prop, ok := schema.property(name)
+		if !ok {
 			continue
 		}
-		prop := propRef.Value
-		if len(prop.AllOf) > 0 {
-			prop = mergeAllOf(prop)
-		}
+		parts = append(parts, describeSchemaField(name, prop, localRequired[name]))
+	}
 
-		typ := schemaTypeStr(prop.Type)
-		if typ == "" {
-			if len(prop.Properties) > 0 {
-				typ = "object"
-			} else {
-				typ = "string"
-			}
-		}
-		meta := typ
-		if localRequired[name] {
-			meta += ", required"
-		}
-		fieldDesc := ""
-		if prop.Description != "" {
-			fieldDesc = ": " + prop.Description
-		}
+	return strings.Join(parts, "; ")
+}
 
-		if typ == "object" {
-			if nested := describeSchemaFieldsOpenapiVisited(prop, visited); nested != "" {
-				parts = append(
-					parts,
-					fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested),
-				)
-				continue
-			}
+// describeSchemaField は 1 つのプロパティの要約を作る。オブジェクトとオブジェクトの配列は、
+// 子の要約が得られればそれを入れ子で添える。
+func describeSchemaField(name string, prop schemaFieldsView, required bool) string {
+	typ := schemaTypeStr(prop.schemaType())
+	if typ == "" {
+		if len(prop.propertyNames()) > 0 {
+			typ = "object"
+		} else {
+			typ = "string"
 		}
+	}
+	meta := typ
+	if required {
+		meta += ", required"
+	}
+	fieldDesc := ""
+	if desc := prop.description(); desc != "" {
+		fieldDesc = ": " + desc
+	}
 
-		if typ == "array" && prop.Items != nil && prop.Items.Value != nil { //nolint: nestif
-			itemSchema := prop.Items.Value
-			if len(itemSchema.AllOf) > 0 {
-				itemSchema = mergeAllOf(itemSchema)
-			}
-			itemType := schemaTypeStr(itemSchema.Type)
+	if typ == "object" {
+		if nested := prop.describeNested(); nested != "" {
+			return fmt.Sprintf("%s (%s)%s -> {%s}", name, meta, fieldDesc, nested)
+		}
+	}
+
+	if typ == "array" { //nolint: nestif
+		if itemSchema, ok := prop.items(); ok {
+			itemType := schemaTypeStr(itemSchema.schemaType())
 			if itemType == "" {
 				itemType = "object"
 			}
 			if itemType == "object" {
-				if nested := describeSchemaFieldsOpenapiVisited(itemSchema, visited); nested != "" {
+				if nested := itemSchema.describeNested(); nested != "" {
 					arrayMeta := "array of object"
-					if localRequired[name] {
+					if required {
 						arrayMeta += ", required"
 					}
-					parts = append(
-						parts,
-						fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested),
-					)
-					continue
+					return fmt.Sprintf("%s (%s)%s -> [{%s}]", name, arrayMeta, fieldDesc, nested)
 				}
 			}
 			meta = "array of " + itemType
-			if localRequired[name] {
+			if required {
 				meta += ", required"
 			}
 		}
-
-		parts = append(parts, fmt.Sprintf("%s (%s)%s", name, meta, fieldDesc))
 	}
 
-	return strings.Join(parts, "; ")
+	return fmt.Sprintf("%s (%s)%s", name, meta, fieldDesc)
 }
 
 // build_body_description_openapi constructs a detailed description for an OpenAPI 3.x requestBody.
@@ -1118,10 +1160,10 @@ func decodeFileContent(v any, maxSize int64) ([]byte, error) {
 // fileFetchMaxRedirects は fetchFileFromURL がたどるリダイレクトの最大ホップ数。
 const fileFetchMaxRedirects = 10
 
-// checkFileFetchURL は FileFetchConfig に基づき URL のスキームと AllowedHosts / DeniedHosts を
+// checkFileFetchURL は config.FileFetchConfig に基づき URL のスキームと AllowedHosts / DeniedHosts を
 // 検証する。接続先 IP による拒否（ループバック等の常時遮断、プライベートレンジ、DeniedCIDRs）は
 // client.NewCallerURLClient の dialer が担うためここでは扱わない（isHostAllowed も参照）。
-func checkFileFetchURL(cfg FileFetchConfig, u *url.URL) error {
+func checkFileFetchURL(cfg config.FileFetchConfig, u *url.URL) error {
 	switch u.Scheme {
 	case "https":
 		// 常に許可

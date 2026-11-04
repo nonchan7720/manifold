@@ -658,16 +658,14 @@ func TestMCPServer_ToolCatalog_MCPBackendMode_IndependentSessions(t *testing.T) 
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
 	for range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			tools, err := s.ToolCatalog(context.Background(), "backend")
 			if err == nil && len(tools) != 1 {
 				err = fmt.Errorf("unexpected tool count: %d", len(tools))
 			}
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -753,8 +751,7 @@ func TestMCPBackendClient_EnsureConnected_WaiterHonorsContext(t *testing.T) {
 	bc, ok := s.BackendClient("backend")
 	require.True(t, ok)
 
-	leaderCtx, leaderCancel := context.WithCancel(context.Background())
-	defer leaderCancel()
+	leaderCtx := t.Context()
 	leaderErr := make(chan error, 1)
 	go func() { leaderErr <- bc.EnsureConnected(leaderCtx) }()
 	require.Eventually(t, func() bool { return requestCalls.Load() >= 1 },

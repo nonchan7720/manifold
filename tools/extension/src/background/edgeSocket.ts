@@ -6,6 +6,7 @@ import {
   buildPingFrame,
   parseIncomingFrame,
 } from "../shared/envelope";
+import type { OutgoingFrame } from "../shared/types";
 import type { AppSessionRegistry } from "./appSessionRegistry";
 import { computeReconnectDelayMs } from "../shared/backoff";
 
@@ -73,7 +74,7 @@ export function createEdgeConnection(deps: EdgeConnectionDeps): EdgeConnection {
     awaitingPong = false;
   }
 
-  function send(frame: object) {
+  function send(frame: OutgoingFrame) {
     if (socket && socket.readyState === WS_OPEN) {
       socket.send(JSON.stringify(frame));
     }
