@@ -9,7 +9,7 @@ golangci-lint = "2.15.0"
 setup-envtest = "0.25.2"
 runn = "1.11.1"
 # 依存グラフの解析（.depgraph.yml）。Claude Code のプラグイン（.claude/settings.json）と CI（depgraph:ci）が使う。
-"github:nonchan7720/depgraph" = "0.1.6"
+"github:nonchan7720/depgraph" = "0.1.7"
 
 [env]
 # depgraph の接続先（compose.yaml の neo4j。ローカル開発用の資格情報）
