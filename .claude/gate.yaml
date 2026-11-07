@@ -29,7 +29,7 @@ rules:
   # 設定は .depgraph.yml、Neo4j は compose.yaml の neo4j（`mise run neo4j`）。
   # 接続先（NEO4J_URI など）は mise.toml の [env] にあり hook には渡らないので、mise exec 経由で呼ぶ。
   # mise / depgraph が無いとき、Neo4j が動いていない・未スキャンのときは何もせず通る。
-  # depgraph は mise の管理外なので、mise exec より前に有無を確かめる。また mise exec は足りない mise 管理ツールを
+  # depgraph は mise で入れる（mise.toml）。未インストールなら mise which で先に抜ける。また mise exec は足りない mise 管理ツールを
   # 自動で入れようとし、その失敗で depgraph を呼ばずに落ちるので、MISE_EXEC_AUTO_INSTALL=0 で止める（[env] は読む）。
   # timeout は depgraph gate 自身の --timeout（60s、超えたら通す）より長くし、
   # gate 側の強制終了で失敗扱いにならないようにする。
@@ -37,12 +37,13 @@ rules:
     timeout: 90
     run:
       - name: depgraph
-        cmd: "command -v mise >/dev/null || exit 0; command -v depgraph >/dev/null || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph gate"
+        cmd: "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph gate"
 session_start:
   # 起動時に depgraph の Findings の要約を context に入れ、depgraph gate の基準（baseline）を記録する。
+  # これがあると depgraph プラグインの SessionStart hook は何もしない（二重に入れない）。プロンプトごとの差分はプラグインが入れる。
   - name: depgraph
     timeout: 10
-    cmd: "command -v mise >/dev/null || exit 0; command -v depgraph >/dev/null || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook session-start --format text"
+    cmd: "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook session-start --format text"
 consistency_checks:
   - name: all
     run:

@@ -8,6 +8,8 @@ go = "1.27.3"
 golangci-lint = "2.15.0"
 setup-envtest = "0.25.2"
 runn = "1.11.1"
+# 依存グラフの解析（.depgraph.yml）。Claude Code のプラグイン（.claude/settings.json）と CI（depgraph:ci）が使う。
+"github:nonchan7720/depgraph" = "0.1.5"
 
 [env]
 # depgraph の接続先（compose.yaml の neo4j。ローカル開発用の資格情報）
@@ -39,6 +41,11 @@ run = "depgraph scan --root ."
 description = "depgraph でファイルの変更を監視し、グラフと CLAUDE.md を更新し続ける（UI: http://127.0.0.1:27777）"
 depends = ["neo4j"]
 run = "depgraph watch --root ."
+
+[tasks."depgraph:ci"]
+description = "CI と同じ確認: スキャンして warn 以上の Findings があれば失敗する（CLAUDE.md は書き換えない）"
+depends = ["neo4j"]
+run = "scripts/depgraph-ci.sh"
 
 [tasks."depgraph:serve"]
 description = "depgraph のブラウザ UI を起動（http://127.0.0.1:27777）"

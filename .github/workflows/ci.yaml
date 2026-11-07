@@ -29,3 +29,20 @@ jobs:
       - name: Shutdown dependencies
         if: always()
         run: docker compose down
+
+  depgraph:
+    # 循環 import・層違反・重複・未使用コードなど、depgraph の error / warn を検出したら失敗する（設定は .depgraph.yml）。
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up tools
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - name: Run depgraph
+        run: mise run depgraph:ci
+      - name: Shutdown dependencies
+        if: always()
+        run: docker compose --profile depgraph down
