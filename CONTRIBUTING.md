@@ -47,7 +47,13 @@ CI runs both lint and tests on every pull request, so running them locally first
 
 ### Dependency graph (optional)
 
-[depgraph](https://github.com/nonchan7720/depgraph) checks the import graph (cycles, layer violations, duplicated or unused code) against [`.depgraph.yml`](.depgraph.yml). It is optional and not run in CI. With `depgraph` on your `PATH`:
+[depgraph](https://github.com/nonchan7720/depgraph) checks the import graph (cycles, layer violations, duplicated or unused code) against [`.depgraph.yml`](.depgraph.yml). It is installed by `mise install` (pinned in [`mise.toml`](mise.toml)), and CI fails a pull request with findings of severity `warn` or higher (the `depgraph` job of [`ci.yaml`](.github/workflows/ci.yaml)). Run the same check locally with:
+
+```bash
+mise run depgraph:ci
+```
+
+While you edit:
 
 ```bash
 # Neo4j for depgraph (compose.yaml's "depgraph" profile; `docker compose up -d` does not start it)
@@ -57,7 +63,7 @@ mise run neo4j
 mise run depgraph:watch
 ```
 
-`watch` also rewrites the `<!-- depgraph:start -->` section of `CLAUDE.md`. For Claude Code, [`.claude/gate.yaml`](.claude/gate.yaml) ([claude-hook-gate](https://github.com/nonchan7720/claude-hook-gate)) and [`.claude/settings.json`](.claude/settings.json) feed the findings to the agent and fail an edit that adds new ones. Without depgraph or a running Neo4j they do nothing.
+`watch` also rewrites the `<!-- depgraph:start -->` section of `CLAUDE.md`. For Claude Code, [`.claude/settings.json`](.claude/settings.json) adds what changed in the findings at every prompt (through `mise exec`, so the `[env]` of `mise.toml` applies) and enables the depgraph plugin for `/depgraph:setup` and `/depgraph:fix` (Claude Code asks you to trust the marketplace the first time; its hooks stay quiet because this repository runs them itself), and [`.claude/gate.yaml`](.claude/gate.yaml) ([claude-hook-gate](https://github.com/nonchan7720/claude-hook-gate)) adds the summary at session start and fails an edit that adds new findings. Without depgraph or a running Neo4j they do nothing.
 
 ## How to contribute
 

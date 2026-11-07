@@ -17,10 +17,22 @@
           {
             "type": "command",
             "timeout": 10,
-            "command": "command -v mise >/dev/null && command -v depgraph >/dev/null && MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook prompt; exit 0"
+            "command": "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook prompt; exit 0"
           }
         ]
       }
     ]
+  },
+  "extraKnownMarketplaces": {
+    "depgraph": {
+      "source": {
+        "source": "github",
+        "repo": "nonchan7720/depgraph",
+        "ref": "v0.1.7"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "depgraph@depgraph": true
   }
 }
