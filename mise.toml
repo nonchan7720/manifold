@@ -46,7 +46,8 @@ run = "depgraph watch --root ."
 description = "CI と同じ確認: スキャンして warn 以上の Findings があれば失敗する（CLAUDE.md は書き換えない）"
 depends = ["neo4j"]
 # Neo4j は compose.yaml の neo4j、接続先は [env]。external を指定して、depgraph が自前の Neo4j コンテナを起動しないようにする。
-run = 'depgraph scan --root . --neo4j-provider external --reset --claude-md "" --fail-on warn'
+# --reset は付けない。セッション中に実行すると、depgraph gate の基準（HookSession）まで消えるため（CI の Neo4j は毎回空）。
+run = 'depgraph scan --root . --neo4j-provider external --claude-md "" --fail-on warn'
 
 [tasks."depgraph:serve"]
 description = "depgraph のブラウザ UI を起動（http://127.0.0.1:27777）"

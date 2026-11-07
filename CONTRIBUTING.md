@@ -63,7 +63,7 @@ mise run neo4j
 mise run depgraph:watch
 ```
 
-`watch` also rewrites the `<!-- depgraph:start -->` section of `CLAUDE.md`. For Claude Code, [`.claude/settings.json`](.claude/settings.json) enables the depgraph plugin (it adds what changed in the findings at every prompt and provides `/depgraph:setup` and `/depgraph:fix`; Claude Code asks you to trust the marketplace the first time), and [`.claude/gate.yaml`](.claude/gate.yaml) ([claude-hook-gate](https://github.com/nonchan7720/claude-hook-gate)) adds the summary at session start and fails an edit that adds new findings. Without depgraph or a running Neo4j they do nothing.
+`watch` also rewrites the `<!-- depgraph:start -->` section of `CLAUDE.md`. For Claude Code, [`.claude/settings.json`](.claude/settings.json) adds what changed in the findings at every prompt (through `mise exec`, so the `[env]` of `mise.toml` applies) and enables the depgraph plugin for `/depgraph:setup` and `/depgraph:fix` (Claude Code asks you to trust the marketplace the first time; its hooks stay quiet because this repository runs them itself), and [`.claude/gate.yaml`](.claude/gate.yaml) ([claude-hook-gate](https://github.com/nonchan7720/claude-hook-gate)) adds the summary at session start and fails an edit that adds new findings. Without depgraph or a running Neo4j they do nothing.
 
 ## How to contribute
 

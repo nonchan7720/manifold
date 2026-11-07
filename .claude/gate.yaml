@@ -40,7 +40,7 @@ rules:
         cmd: "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph gate"
 session_start:
   # 起動時に depgraph の Findings の要約を context に入れ、depgraph gate の基準（baseline）を記録する。
-  # これがあると depgraph プラグインの SessionStart hook は何もしない（二重に入れない）。プロンプトごとの差分はプラグインが入れる。
+  # これがあると depgraph プラグインの SessionStart hook は何もしない（二重に入れない）。プロンプトごとの差分は .claude/settings.json の hook が入れる。
   - name: depgraph
     timeout: 10
     cmd: "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook session-start --format text"

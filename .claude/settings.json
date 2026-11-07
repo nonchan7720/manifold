@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook prompt; exit 0"
+          }
+        ]
+      }
     ]
   },
   "extraKnownMarketplaces": {
