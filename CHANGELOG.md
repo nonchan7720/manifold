@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.25.2](https://github.com/nonchan7720/manifold/compare/v1.25.1...v1.25.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies ([#365](https://github.com/nonchan7720/manifold/issues/365)) ([1e37a70](https://github.com/nonchan7720/manifold/commit/1e37a70d65426af4057748de1c3e8eda5d16c0ad))
+* **deps:** update go patch dependencies to v0.37.2 ([#360](https://github.com/nonchan7720/manifold/issues/360)) ([efd3cc6](https://github.com/nonchan7720/manifold/commit/efd3cc60cb72fd30cde1e462dc0be984c1f1f30a))
+* **deps:** update module github.com/go-ozzo/ozzo-validation/v4 to v4.5.0 ([#355](https://github.com/nonchan7720/manifold/issues/355)) ([6bd7fd8](https://github.com/nonchan7720/manifold/commit/6bd7fd8f71006f3c02a462ee070425f05eb10009))
+* **deps:** update module github.com/oasdiff/oasdiff to v1.35.0 ([#363](https://github.com/nonchan7720/manifold/issues/363)) ([d11e238](https://github.com/nonchan7720/manifold/commit/d11e238597b8d5290a401c9506226563f31233b9))
+
+
+### Miscellaneous
+
+* **deps:** update dependency @types/chrome to v0.3.7 ([#357](https://github.com/nonchan7720/manifold/issues/357)) ([1be7755](https://github.com/nonchan7720/manifold/commit/1be7755d67973e84558fa114dff9ce5964e0afb1))
+* **deps:** update jdx/mise-action action to v5.2.5 ([#368](https://github.com/nonchan7720/manifold/issues/368)) ([6807f6c](https://github.com/nonchan7720/manifold/commit/6807f6c15511442ef04abf08761ba9907de56213))
+
 ## [1.25.1](https://github.com/nonchan7720/manifold/compare/v1.25.0...v1.25.1) (2026-11-04)
 
 
