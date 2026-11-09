@@ -328,7 +328,7 @@ Run it in CI before regenerating, so a PR that pulls in a breaking upstream chan
   run: manifold openapi diff -c config --format markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
-With `>>` the step's exit status is still `manifold`'s, so the job fails on an `ERR`-level change while the report lands in the job summary. Swagger 2.x specs are skipped, as with `generate`.
+With `>>` the step's exit status is still `manifold`'s, so the job fails on an `ERR`-level change while the report lands in the job summary. Swagger 2.x specs are compared too: oasdiff only reads OpenAPI 3.x, so both sides are converted to OpenAPI 3.x for the comparison. The conversion is used only here (and in `generate --check`'s compatibility summary); the tools are still built from the Swagger 2.x document.
 
 ## Configuration
 
@@ -841,7 +841,7 @@ mcpServers:
 - `tools.exclude` is applied when the file is generated and again when the gateway rebuilds the catalog from it, so changing it also makes the file stale — regenerate after editing the list.
 - `tools.file` and a positive `specRefreshInterval` are mutually exclusive, and a server with `tools.file` is excluded from `gateway.specRefresh` — there is no live spec to refresh from.
 - `tools.file` must be a local path; a URL is rejected.
-- Phase 1 supports OpenAPI 3.x specs only. `tools.file` cannot be used with a Swagger 2.x `spec`.
+- Both OpenAPI 3.x and Swagger 2.x specs are supported. A Swagger 2.x spec is embedded as-is (`format: swagger2`), not converted to OpenAPI 3.x, and the gateway rebuilds the tools from it the same way it does from `spec`, so they are identical to the tools served without `tools.file`. As when reading `spec` directly, a Swagger 2.x `$ref` is resolved only within the document (`#/definitions/...`, `#/parameters/...`). A `format: swagger2` file needs 1.26.0 or later (see [Upgrading from 1.25.x or earlier](#upgrading-from-125x-or-earlier)).
 - The generated file embeds the full resolved spec, including any internal hostnames or example values it contains. Review it before committing to a public repository.
 
 #### `mcpServers.<name>.oauth2`
@@ -1223,6 +1223,15 @@ spec:
         limits:
           memory: 1Gi
 ```
+
+### Upgrading from 1.25.x or earlier
+
+From 1.26.0, `manifold openapi generate` also writes the generated tools file for a server whose `spec` is Swagger 2.x (`format: swagger2`); 1.25.x and earlier skipped such servers. Existing `format: openapi3` files are unchanged and need no regeneration. `openapi tools`, `openapi generate --check` and `openapi diff` no longer skip Swagger 2.x servers either.
+
+Older gateways cannot read a `format: swagger2` file: they fail at startup with `generated tools file: unsupported format "swagger2"`.
+
+- **During a rolling update**, add `tools.file` to a Swagger 2.x server only after every pod runs 1.26.0 or later. An older pod that receives that config fails to start.
+- **Rolling back** to 1.25.x or earlier: first remove `tools.file` from the Swagger 2.x servers. They then go back to reading `spec` at startup, which is how 1.25.x serves them.
 
 ### Upgrading from 1.24.x or earlier
 

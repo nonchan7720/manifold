@@ -328,7 +328,7 @@ CI では再生成の前に実行しておくと、破壊的な上流変更を�
   run: manifold openapi diff -c config --format markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
-`>>` でリダイレクトしてもステップの終了コードは `manifold` のものなので、`ERR` レベルの変更があればジョブは失敗し、レポートはジョブサマリーに残る。`generate` と同様、Swagger 2.x の spec はスキップされる。
+`>>` でリダイレクトしてもステップの終了コードは `manifold` のものなので、`ERR` レベルの変更があればジョブは失敗し、レポートはジョブサマリーに残る。Swagger 2.x の spec も比較できる。oasdiff は OpenAPI 3.x しか読めないため、比較のときだけ両側を OpenAPI 3.x に変換する。変換を使うのはここ（と `generate --check` の互換性サマリー）だけで、ツールは Swagger 2.x の文書から作る。
 
 ## 設定
 
@@ -841,7 +841,7 @@ mcpServers:
 - `tools.exclude` はファイル生成時と、ゲートウェイがファイルからカタログを再構築する時の両方で適用されるため、変更するとファイルは stale になる — リストを編集したら再生成すること
 - `tools.file` と正の値の `specRefreshInterval` は排他。`tools.file` を持つサーバーは `gateway.specRefresh` の対象からも除外される — 取り直す元の spec が無いため
 - `tools.file` はローカルパスのみ指定可能。URL は拒否される
-- Phase 1 では OpenAPI 3.x の spec のみ対応。`spec` が Swagger 2.x の場合、`tools.file` は使用できない
+- OpenAPI 3.x と Swagger 2.x の spec に対応する。Swagger 2.x の spec は OpenAPI 3.x に変換せず、そのまま埋め込む（`format: swagger2`）。ゲートウェイは `spec` を読むときと同じ方法でここからツールを作り直すので、`tools.file` を使わない場合と同じツールになる。`spec` を直接読む場合と同様、Swagger 2.x の `$ref` は文書内（`#/definitions/...`、`#/parameters/...`）だけを解決する。`format: swagger2` のファイルを読むには 1.26.0 以降が必要（[1.25.x 以前からのアップグレード](#125x-以前からのアップグレード)を参照）
 - 生成物ファイルには解決済みの spec がそのまま埋め込まれるため、内部ホスト名や spec 中の例示値も含まれる。公開リポジトリへコミットする前に内容を確認すること
 
 #### `mcpServers.<name>.oauth2`
@@ -1223,6 +1223,15 @@ spec:
         limits:
           memory: 1Gi
 ```
+
+### 1.25.x 以前からのアップグレード
+
+1.26.0 から、`manifold openapi generate` は `spec` が Swagger 2.x のサーバーにも生成物ファイルを書きます（`format: swagger2`）。1.25.x 以前はこうしたサーバーをスキップしていました。既存の `format: openapi3` のファイルは変わらないので、再生成は不要です。`openapi tools`、`openapi generate --check`、`openapi diff` も Swagger 2.x のサーバーをスキップしなくなります。
+
+旧バージョンのゲートウェイは `format: swagger2` のファイルを読めず、起動時に `generated tools file: unsupported format "swagger2"` で失敗します。
+
+- **ローリングアップデート中**: Swagger 2.x のサーバーに `tools.file` を追加するのは、すべての Pod が 1.26.0 以降になってからにしてください。その設定を受け取った旧バージョンの Pod は起動に失敗します。
+- **ロールバック**: 1.25.x 以前へ戻す前に、Swagger 2.x のサーバーから `tools.file` を外してください。外すと起動時に `spec` を読む動作に戻り、1.25.x でもそのまま動きます。
 
 ### 1.24.x 以前からのアップグレード
 
