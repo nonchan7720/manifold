@@ -35,7 +35,7 @@ flowchart TD
 ## 主な機能
 
 - **OpenAPI / Swagger → MCP 自動変換**: OpenAPI 3.x / Swagger 2.x 仕様から MCP ツールを自動生成
-- **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
+- **静的ツールカタログ**: ゲートウェイを起動する前に OpenAPI 仕様から生成される MCP ツールを確認でき（`manifold openapi tools`）、設定ファイルなしで単一の spec ファイルが読み込めるかを検証でき（`manifold openapi dry-run`）、起動時に spec を取得する代わりに、コミットして diff できる生成物ファイルから起動できる（`manifold openapi generate`、`mcpServers.<name>.tools.file`）
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ（ツールと prompts を中継）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
@@ -124,6 +124,9 @@ manifold openapi generate -c config --check
 
 # コミット済みファイルと最新の spec の間の破壊的変更を表示する（oasdiff）
 manifold openapi diff -c config
+
+# OpenAPI / Swagger のファイル 1 つが読み込めるか検証する（設定ファイル不要）
+manifold openapi dry-run ./specs/petstore.openapi.yaml
 ```
 
 `openapi tools` の出力例:
@@ -152,6 +155,30 @@ tools:
     inputSchema: { ... }
 spec: { ... }   # openapi3 ドキュメント（外部 $ref を内部化済み）
 ```
+
+#### 単一の spec ファイルの検証（`openapi dry-run`）
+
+`manifold openapi dry-run <file>` は、OpenAPI 3.x / Swagger 2.x のファイル 1 つを読み込めるかどうかを、設定ファイルなし・ゲートウェイを起動せずに検証します。ゲートウェイが起動時に行うのと同じ手順（spec の解析、`$ref` の解決、MCP ツールの組み立て、各ツールの MCP サーバーへの登録）を実行しますが、API へのリクエストは送りません。
+
+```bash
+manifold openapi dry-run ./specs/petstore.openapi.yaml
+```
+
+```text
+OK: ./specs/petstore.openapi.yaml
+  format:   OpenAPI 3.0.3 (from file name)
+  base URL: https://petstore.example.com/v1
+  tools:    2
+
+TOOL        OPERATION         DESCRIPTION
+addpet      POST /pet         Add a new pet to the store
+getpetbyid  GET /pet/{petId}  Find pet by ID
+```
+
+- **フォーマット**: `<name>.openapi.yaml` / `.openapi.yml` という名前のファイルは OpenAPI 3.x として、`<name>.swagger.yaml` / `.swagger.yml` は Swagger 2.x として読み込みます。それ以外のファイル名（`.json` を含む）は YAML/JSON として読み、トップレベルの `openapi: 3.x` または `swagger: 2.x` フィールドで判定します。ファイル名とバージョンフィールドが食い違う場合（`petstore.openapi.yaml` の中身が `swagger: "2.0"` など）はエラーです。
+- **結果**: 1 行目に `OK: <file>` または `NG: <file>` を出力します。ファイルを読めない・解析できない、対応するバージョンフィールドがない、選んだフォーマットとして読み込めない（解決できない `$ref`、Swagger の `swagger: 2.0` を `"2.0"` ではなく数値で書いている、など）、または MCP SDK が定義を受け付けずゲートウェイが登録をスキップするツールがある（`invalid:` に列挙）場合は、非ゼロで終了します。
+- **警告**: spec（`servers` / `host`）から絶対 URL の base URL を導出できない場合は、成功扱いのまま、`mcpServers.<name>.baseURL` の設定が必要である旨を標準エラーに警告します。operation が 1 つもない spec も、警告付きで成功扱いです。
+- 対象はローカルファイルのみで、設定ファイルに依存する設定（`baseURL`、`tools.exclude`、認証）は適用しません。設定済みのサーバーを確認するときは `manifold openapi tools -c config` を使ってください。
 
 #### バイナリのフィールドとレスポンス
 

@@ -34,6 +34,7 @@ func newOpenAPICmd() *cobra.Command {
 	cmd.AddCommand(newOpenAPIToolsCmd())
 	cmd.AddCommand(newOpenAPIGenerateCmd())
 	cmd.AddCommand(newOpenAPIDiffCmd())
+	cmd.AddCommand(newOpenAPIDryRunCmd())
 	return cmd
 }
 

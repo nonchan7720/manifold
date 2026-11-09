@@ -41,9 +41,22 @@ func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr e
 	if err != nil {
 		return nil, err
 	}
-	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
-
+	format := SpecFormatOpenAPI3
 	if isSwaggerVersionProbe(raw) {
+		format = SpecFormatSwagger2
+	}
+	return ParseSpecSource(ctx, raw, specPath, format)
+}
+
+// ParseSpecSource parses already-fetched raw as format. specPath is the
+// spec's location, used to resolve relative external $refs and to derive the
+// base URL.
+func ParseSpecSource(
+	ctx context.Context, raw []byte, specPath string, format SpecFormat,
+) (*SpecSource, error) {
+	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
+	switch format {
+	case SpecFormatSwagger2:
 		spec, err := ParseSwaggerSpec(ctx, raw)
 		if err != nil {
 			return nil, err
@@ -54,18 +67,20 @@ func LoadSpecSource(ctx context.Context, specPath string) (_ *SpecSource, rErr e
 			Hash:     hash,
 			Swagger:  spec,
 		}, nil
+	case SpecFormatOpenAPI3:
+		spec, err := LoadOpenAPI3SpecFromData(raw, specPath)
+		if err != nil {
+			return nil, err
+		}
+		return &SpecSource{
+			Format:   SpecFormatOpenAPI3,
+			SpecPath: specPath,
+			Hash:     hash,
+			OpenAPI:  spec,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported spec format: %q", format)
 	}
-
-	spec, err := LoadOpenAPI3SpecFromData(raw, specPath)
-	if err != nil {
-		return nil, err
-	}
-	return &SpecSource{
-		Format:   SpecFormatOpenAPI3,
-		SpecPath: specPath,
-		Hash:     hash,
-		OpenAPI:  spec,
-	}, nil
 }
 
 // isSwaggerVersionProbe reports whether raw has a non-empty top-level
