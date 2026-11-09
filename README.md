@@ -35,7 +35,7 @@ flowchart TD
 ## Features
 
 - **OpenAPI / Swagger → MCP conversion**: Automatically generates MCP tools from OpenAPI 3.x / Swagger 2.x specifications
-- **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
+- **Static tool catalog**: Inspect the MCP tools an OpenAPI spec would generate before starting the gateway (`manifold openapi tools`), check that a single spec file loads without a config file (`manifold openapi dry-run`), and start from a committed, diffable generated file instead of fetching the spec at boot (`manifold openapi generate`, `mcpServers.<name>.tools.file`)
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers, relaying their tools and prompts
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
@@ -124,6 +124,9 @@ manifold openapi generate -c config --check
 
 # Show breaking changes between the committed file and the live spec (oasdiff)
 manifold openapi diff -c config
+
+# Check that a single OpenAPI / Swagger file loads (no config file needed)
+manifold openapi dry-run ./specs/petstore.openapi.yaml
 ```
 
 `openapi tools` output:
@@ -152,6 +155,30 @@ tools:
     inputSchema: { ... }
 spec: { ... }   # openapi3 document, external $refs internalized
 ```
+
+#### Checking a single spec file (`openapi dry-run`)
+
+`manifold openapi dry-run <file>` checks whether one OpenAPI 3.x / Swagger 2.x file can be loaded, without a config file and without starting the gateway. It runs the same steps the gateway runs at startup — parse the spec, resolve `$ref`s, build the MCP tools and register each one on an MCP server — but sends no request to the API.
+
+```bash
+manifold openapi dry-run ./specs/petstore.openapi.yaml
+```
+
+```text
+OK: ./specs/petstore.openapi.yaml
+  format:   OpenAPI 3.0.3 (from file name)
+  base URL: https://petstore.example.com/v1
+  tools:    2
+
+TOOL        OPERATION         DESCRIPTION
+addpet      POST /pet         Add a new pet to the store
+getpetbyid  GET /pet/{petId}  Find pet by ID
+```
+
+- **Format**: a file named `<name>.openapi.yaml` / `.openapi.yml` is loaded as OpenAPI 3.x, and `<name>.swagger.yaml` / `.swagger.yml` as Swagger 2.x. Any other file name (including `.json`) is read as YAML/JSON and its top-level `openapi: 3.x` or `swagger: 2.x` field decides. A file whose name and version field disagree (e.g. `swagger: "2.0"` in `petstore.openapi.yaml`) is an error.
+- **Result**: the first line is `OK: <file>` or `NG: <file>`. It exits non-zero when the file cannot be read or parsed, has no supported version field, fails to load as the chosen format (e.g. an unresolvable `$ref`, or Swagger's `swagger: 2.0` written as a number instead of `"2.0"`), or contains a tool the gateway would skip because the MCP SDK rejects its definition (listed under `invalid:`).
+- **Warnings**: when no absolute base URL can be derived from the spec (`servers` / `host`), the command still succeeds but warns on stderr that `mcpServers.<name>.baseURL` must be set. A spec with no operations also succeeds with a warning.
+- Only a local file is accepted, and config-dependent settings (`baseURL`, `tools.exclude`, authentication) are not applied. To check a configured server, use `manifold openapi tools -c config`.
 
 #### Binary fields and responses
 
