@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi2"
+	"github.com/getkin/kin-openapi/openapi2conv"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/goccy/go-yaml"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -46,7 +48,11 @@ type GeneratedCatalog struct {
 }
 
 // NewGeneratedCatalog builds a GeneratedCatalog from an already-loaded
-// OpenAPI 3.x source, internalizing its external $refs in the process.
+// OpenAPI 3.x or Swagger 2.x source. An OpenAPI 3.x source has its external
+// $refs internalized in the process.
+//
+// Swagger 2.x の文書は変換せず、そのまま埋め込む。ゲートウェイは起動時にこの文書から
+// Swagger 用の経路でツールを作り直すので、spec から直接起動したときと同じツールになる。
 func NewGeneratedCatalog(
 	ctx context.Context,
 	source *SpecSource,
@@ -57,23 +63,9 @@ func NewGeneratedCatalog(
 	ctx = trace.StartSpan(ctx, "oastomcptool/NewGeneratedCatalog")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	if source.Format != SpecFormatOpenAPI3 || source.OpenAPI == nil {
-		return nil, fmt.Errorf(
-			"generated tools file: unsupported spec format %q (Phase 1 supports openapi3 only)",
-			source.Format,
-		)
-	}
-
-	// Mutates the doc in place; fine here since the caller doesn't reuse source.
-	source.OpenAPI.InternalizeRefs(ctx, nil)
-
-	raw, err := json.Marshal(source.OpenAPI)
+	specMap, err := generatedSpecSection(ctx, source)
 	if err != nil {
-		return nil, fmt.Errorf("marshal internalized spec: %w", err)
-	}
-	var specMap map[string]any
-	if err := json.Unmarshal(raw, &specMap); err != nil {
-		return nil, fmt.Errorf("decode internalized spec: %w", err)
+		return nil, err
 	}
 
 	return &GeneratedCatalog{
@@ -88,6 +80,37 @@ func NewGeneratedCatalog(
 		Tools:  tools,
 		Spec:   specMap,
 	}, nil
+}
+
+// generatedSpecSection は source の文書を、生成ファイルの "spec" 節に入れる形
+// （JSON と同じ構造の map）に変換する。
+func generatedSpecSection(ctx context.Context, source *SpecSource) (map[string]any, error) {
+	var doc any
+	switch {
+	case source.Format == SpecFormatOpenAPI3 && source.OpenAPI != nil:
+		// Mutates the doc in place; fine here since the caller doesn't reuse source.
+		source.OpenAPI.InternalizeRefs(ctx, nil)
+		doc = source.OpenAPI
+	case source.Format == SpecFormatSwagger2 && source.Swagger != nil:
+		// Swagger 2.x の $ref は文書内（#/definitions/... と #/parameters/...）しか
+		// 解決しないので、内部化は要らない。
+		doc = source.Swagger
+	default:
+		return nil, fmt.Errorf(
+			"generated tools file: unsupported spec format %q (want %q or %q)",
+			source.Format, SpecFormatOpenAPI3, SpecFormatSwagger2,
+		)
+	}
+
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("marshal spec: %w", err)
+	}
+	var specMap map[string]any
+	if err := json.Unmarshal(raw, &specMap); err != nil {
+		return nil, fmt.Errorf("decode spec: %w", err)
+	}
+	return specMap, nil
 }
 
 // WriteGeneratedCatalog encodes g as YAML (2-space indent) to w.
@@ -114,10 +137,10 @@ func ReadGeneratedCatalog(r io.Reader) (*GeneratedCatalog, error) {
 			g.Version, GeneratedVersion,
 		)
 	}
-	if g.Format != SpecFormatOpenAPI3 {
+	if g.Format != SpecFormatOpenAPI3 && g.Format != SpecFormatSwagger2 {
 		return nil, fmt.Errorf(
-			"generated tools file: unsupported format %q (this build supports %q)",
-			g.Format, SpecFormatOpenAPI3,
+			"generated tools file: unsupported format %q (this build supports %q and %q)",
+			g.Format, SpecFormatOpenAPI3, SpecFormatSwagger2,
 		)
 	}
 	return &g, nil
@@ -144,22 +167,46 @@ func LoadGeneratedSpecSource(
 		return nil, nil, err
 	}
 
-	doc, err := LoadGeneratedSpec(g)
+	source := &SpecSource{
+		Format:   g.Format,
+		SpecPath: g.Source.Spec,
+		Hash:     hash,
+	}
+	// g.Format は ReadGeneratedCatalog で検証済み。
+	switch g.Format {
+	case SpecFormatSwagger2:
+		source.Swagger, err = loadGeneratedSwaggerSpec(ctx, g)
+	case SpecFormatOpenAPI3:
+		source.OpenAPI, err = loadGeneratedOpenAPI3Spec(g)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-
-	return &SpecSource{
-		Format:   SpecFormatOpenAPI3,
-		SpecPath: g.Source.Spec,
-		Hash:     hash,
-		OpenAPI:  doc,
-	}, g, nil
+	return source, g, nil
 }
 
-// LoadGeneratedSpec loads g's "spec" section as an OpenAPI 3.x document.
+// LoadGeneratedSpec loads g's "spec" section as an OpenAPI 3.x document, for
+// diffing with oasdiff. A Swagger 2.x section is converted to OpenAPI 3.x
+// first; the gateway itself never serves tools from this converted form.
 // External $refs are disallowed, so this never reaches the network.
-func LoadGeneratedSpec(g *GeneratedCatalog) (*openapi3.T, error) {
+func LoadGeneratedSpec(ctx context.Context, g *GeneratedCatalog) (*openapi3.T, error) {
+	if g.Format != SpecFormatSwagger2 {
+		return loadGeneratedOpenAPI3Spec(g)
+	}
+	spec, err := loadGeneratedSwaggerSpec(ctx, g)
+	if err != nil {
+		return nil, err
+	}
+	// ToV3 の既定の Loader は外部 $ref を許可しないので、ネットワークには出ない。
+	doc, err := openapi2conv.ToV3(spec)
+	if err != nil {
+		return nil, fmt.Errorf("convert generated swagger2 spec section to openapi3: %w", err)
+	}
+	return doc, nil
+}
+
+// loadGeneratedOpenAPI3Spec は g の "spec" 節を OpenAPI 3.x の文書として読む。
+func loadGeneratedOpenAPI3Spec(g *GeneratedCatalog) (*openapi3.T, error) {
 	specJSON, err := json.Marshal(g.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal generated spec section: %w", err)
@@ -172,4 +219,18 @@ func LoadGeneratedSpec(g *GeneratedCatalog) (*openapi3.T, error) {
 		return nil, fmt.Errorf("load generated spec section: %w", err)
 	}
 	return doc, nil
+}
+
+// loadGeneratedSwaggerSpec は g の "spec" 節を Swagger 2.x の文書として読む。
+// Swagger 2.x の経路は外部 $ref を辿らないので、ネットワークには出ない。
+func loadGeneratedSwaggerSpec(ctx context.Context, g *GeneratedCatalog) (*openapi2.T, error) {
+	specJSON, err := json.Marshal(g.Spec)
+	if err != nil {
+		return nil, fmt.Errorf("marshal generated spec section: %w", err)
+	}
+	spec, err := ParseSwaggerSpec(ctx, specJSON)
+	if err != nil {
+		return nil, fmt.Errorf("load generated spec section: %w", err)
+	}
+	return spec, nil
 }

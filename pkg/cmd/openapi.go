@@ -164,7 +164,7 @@ func selectOpenAPIServers(cfg *config.Config, serverFilter string) ([]string, er
 
 // buildCatalogs builds each named server's catalog from tools.file, or from
 // the live spec when fromSpec is set or no tools.file is configured,
-// skipping Swagger 2.x specs and joining any per-server errors.
+// joining any per-server errors.
 func buildCatalogs(
 	ctx context.Context, cfg *config.Config, names []string, stderr io.Writer, fromSpec bool,
 ) (map[string][]mcpsrv.ToolDefinition, error) {
@@ -200,15 +200,6 @@ func buildCatalogs(
 			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
 			continue
 		}
-		if source.Format == oastomcptool.SpecFormatSwagger2 {
-			fmt.Fprintf(
-				stderr,
-				"server %q: Swagger 2.x is not supported by \"openapi tools\", skipping\n",
-				name,
-			)
-			continue
-		}
-
 		registry, err := mcpsrv.BuildCatalog(
 			ctx, &http.Client{}, source, srv.BaseURL, srv.ExtraHeaders,
 			mcpsrv.WithToolsConfig(srv.Tools),
@@ -326,11 +317,6 @@ func sanitizeDescription(desc string) string {
 	return string(runes[:maxDescriptionRunes]) + "…"
 }
 
-// errSwagger2NotSupported marks a Swagger 2.x spec passed to generate.
-var errSwagger2NotSupported = errors.New(
-	`generate does not support Swagger 2.x specs (Phase 1 is OpenAPI 3.x only)`,
-)
-
 // errSpecRequiredForGenerate marks a server with no spec configured.
 var errSpecRequiredForGenerate = errors.New("spec is required to generate the tools file")
 
@@ -406,15 +392,12 @@ func runOpenAPIGenerate(cmd *cobra.Command, serverFilter, output string) error {
 		}
 
 		n, err := generateOne(ctx, srv, outPath)
-		switch {
-		case errors.Is(err, errSwagger2NotSupported):
-			fmt.Fprintf(stderr, "server %q: %v, skipping\n", name, err)
-		case err != nil:
+		if err != nil {
 			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
 			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
-		default:
-			fmt.Fprintf(stdout, "server %q: wrote %s (%d tools)\n", name, outPath, n)
+			continue
 		}
+		fmt.Fprintf(stdout, "server %q: wrote %s (%d tools)\n", name, outPath, n)
 	}
 	return errors.Join(errs...)
 }
@@ -436,21 +419,13 @@ func resolveGenerateOutput(
 	return "", true, nil
 }
 
-// loadGenerateSource fetches and loads srv.Spec, returning
-// errSpecRequiredForGenerate if unset or errSwagger2NotSupported for a
-// Swagger 2.x document.
+// loadGenerateSource fetches and loads srv.Spec (OpenAPI 3.x or Swagger
+// 2.x), returning errSpecRequiredForGenerate if unset.
 func loadGenerateSource(ctx context.Context, srv *config.Server) (*oastomcptool.SpecSource, error) {
 	if srv.Spec == "" {
 		return nil, errSpecRequiredForGenerate
 	}
-	source, err := oastomcptool.LoadSpecSource(ctx, srv.Spec)
-	if err != nil {
-		return nil, err
-	}
-	if source.Format == oastomcptool.SpecFormatSwagger2 {
-		return nil, errSwagger2NotSupported
-	}
-	return source, nil
+	return oastomcptool.LoadSpecSource(ctx, srv.Spec)
 }
 
 // buildGeneratedCatalog loads srv's live spec and builds the would-be
@@ -587,7 +562,7 @@ func checkOne(
 	drift.EmbeddedSpecChanged = !sameSpec
 	if drift.EmbeddedSpecChanged {
 		// Best-effort: a failure here is reported, never turned into an error.
-		drift.APIChanges, drift.APIChangesErr = breakingChanges(current, next)
+		drift.APIChanges, drift.APIChangesErr = breakingChanges(ctx, current, next)
 	}
 
 	return drift, nil
@@ -626,8 +601,6 @@ func runOpenAPIGenerateCheck(cmd *cobra.Command, serverFilter, output string) er
 
 		drift, err := checkOne(ctx, srv, outPath)
 		switch {
-		case errors.Is(err, errSwagger2NotSupported):
-			fmt.Fprintf(stderr, "server %q: %v, skipping\n", name, err)
 		case err != nil:
 			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
 			errs = append(errs, fmt.Errorf("server %q: %w", name, err))

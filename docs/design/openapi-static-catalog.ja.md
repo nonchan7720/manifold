@@ -38,6 +38,7 @@ typed な Go 構造体が欲しい人には oapi-codegen と MCP SDK を直接�
 - ツール名の変更・除外・description 上書き（overrides）。生成物を「手で編集する」形にしたくなる要望が出るはずだが、Phase 1 では生成物は機械生成のみとし、編集は config 側の overrides として別途設計する（「後続: overrides」節）
 - Go コード生成、typed struct、ライブラリとしての組み込み（Phase 2）
 - **Swagger 2.x**。Phase 1 は OpenAPI 3.x のみ対応する。Swagger 2.x のサーバーに `tools.file` を指定した場合は `Init` で明示的なエラーにし、`openapi tools` / `openapi generate` は対象外として警告を出してスキップする。Swagger 2.x 側は現状の `LoadSwaggerSpec` が外部 `$ref` を解決していないなど前提が異なるため、要望が出てから別途設計する
+  - **後続で対応済み**: 生成物に Swagger 2.x の文書をそのまま埋め込む（`format: swagger2`）。詳細は判断事項 6 を参照
 
 ## 設計方針
 
@@ -151,7 +152,7 @@ spec:
 | --- | --- |
 | `version` | 形式のバージョン。ローダーは未知の版を拒否する |
 | `source` | 生成元の記録。`sha256` は `--check` の早期判定に使う |
-| `format` | Phase 1 では `openapi3` のみ。ローダーは他の値を拒否する。将来 Swagger 2.x を足すときの拡張点として残す |
+| `format` | `openapi3` または `swagger2`（`swagger2` は後続で追加）。ローダーは他の値を拒否する |
 | `spec` | **ランタイムが実際に使う正本**。外部 `$ref` を内部化した状態で保存する |
 | `tools` | `spec` から導出したツール一覧。**人が読むためのセクション**であり、ローダーは起動時に `spec` から再計算した結果と突き合わせ、不一致なら「生成物が古い」としてエラーにする |
 
@@ -228,7 +229,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 - **結合**
   - spec URL が到達不能（httptest サーバー停止）な状態で `tools.file` から `Init` が成功し、`tools/list` と `tools/call` がバックエンド（httptest）に対して動くこと
   - `openapi tools --json` の出力と、起動したゲートウェイの `tools/list` の結果が一致すること
-  - Swagger 2.x の spec を持つサーバーに `tools.file` を指定すると `Init` が明示的なエラーで失敗し、`openapi generate` が警告してスキップすること
+  - ~~Swagger 2.x の spec を持つサーバーに `tools.file` を指定すると `Init` が明示的なエラーで失敗し、`openapi generate` が警告してスキップすること~~（Swagger 2.x への対応で廃止。代わりに、生成したファイルから起動したときのツールが spec 直読みと一致することを確かめる）
   - `specRefresh` を有効にした config で `tools.file` サーバーの refresh goroutine が起動しないこと
 
 ## 判断事項と懸念
@@ -239,6 +240,7 @@ generated 実装は生成物の `spec` を JSON に変換してから `openapi3.
 4. **`InternalizeRefs` の命名**: 別ドキュメントに同名スキーマがある場合の衝突解決はライブラリ依存。フィクスチャで確認し、問題があれば `RefNameResolver` を差し替える
 5. **秘匿情報**: spec には内部ホスト名や、稀に例として書かれたトークン様の値が含まれることがある。生成物を公開リポジトリに置く際の注意としてドキュメントに明記する
 6. **Swagger 2.x**: Phase 1 では非対応。`format` フィールドを残しているので、対応するときは生成物形式を変えずに `swagger2` を足せる
+   - **後続で対応済み**: `format: swagger2` を追加し、Swagger 2.x の文書を変換せずそのまま埋め込む。起動時は spec 直読みと同じ Swagger 用の経路（`mcpsrv.swagger`）でツールを作り直すため、`tools.file` の有無でツールが変わらない。生成時に `openapi2conv` で OpenAPI 3.x へ変換する案は、`tools.file` の有無で入力スキーマやファイル入力の扱いが変わるため退けた。変換を使うのは oasdiff にかける比較（`openapi diff` と `generate --check` の互換性サマリー）だけ。Swagger 2.x の `$ref` は文書内しか解決しないので、内部化は行わない
 7. **コマンド名**: `generate` は Phase 2 の Go コード生成と名前が重なる。Phase 2 では `generate --lang go` のようにフラグで分けるか、`codegen` を別コマンドにする。Phase 1 の時点では `generate` = YAML 生成物のみ
 8. **YAML の表現**: description に複数行文字列や `#` が含まれるとき、エンコーダのクォート・ブロックスカラー選択が diff を不安定にすることがある。golden テストで代表的な spec（Petstore と、複数行 description を含む自前フィクスチャ）の出力を固定し、yaml.v3 のバージョン更新時に差分が出ないことを確認する
 

@@ -119,16 +119,13 @@ func runOpenAPIDiff(cmd *cobra.Command, serverFilter, failOn, format string, byT
 		}
 
 		result, err := diffOne(ctx, srv, file)
-		switch {
-		case errors.Is(err, errSwagger2NotSupported):
-			fmt.Fprintf(stderr, "server %q: %v, skipping\n", name, err)
-		case err != nil:
+		if err != nil {
 			fmt.Fprintf(stderr, "server %q: %v\n", name, err)
 			errs = append(errs, fmt.Errorf("server %q: %w", name, err))
-		default:
-			result.Name = name
-			results = append(results, result)
+			continue
 		}
+		result.Name = name
+		results = append(results, result)
 	}
 
 	if err := writeDiff(cmd.OutOrStdout(), results, format, byTool); err != nil {
@@ -189,7 +186,7 @@ func diffOne(ctx context.Context, srv *config.Server, path string) (serverDiff, 
 		return serverDiff{}, err
 	}
 
-	changes, err := breakingChanges(current, next)
+	changes, err := breakingChanges(ctx, current, next)
 	if err != nil {
 		return serverDiff{}, err
 	}
@@ -228,15 +225,17 @@ func catalogDiff(current, next []oastomcptool.GeneratedTool) (oasbreaking.Catalo
 }
 
 // breakingChanges runs oasdiff over the embedded specs of current (base)
-// and next (revision), naming the affected MCP tool on each change.
+// and next (revision), naming the affected MCP tool on each change. A
+// Swagger 2.x side is converted to OpenAPI 3.x first, since oasdiff reads
+// only OpenAPI 3.x.
 func breakingChanges(
-	current, next *oastomcptool.GeneratedCatalog,
+	ctx context.Context, current, next *oastomcptool.GeneratedCatalog,
 ) ([]oasbreaking.Change, error) {
-	base, err := oastomcptool.LoadGeneratedSpec(current)
+	base, err := oastomcptool.LoadGeneratedSpec(ctx, current)
 	if err != nil {
 		return nil, fmt.Errorf("base: %w", err)
 	}
-	revision, err := oastomcptool.LoadGeneratedSpec(next)
+	revision, err := oastomcptool.LoadGeneratedSpec(ctx, next)
 	if err != nil {
 		return nil, fmt.Errorf("revision: %w", err)
 	}

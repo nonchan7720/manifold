@@ -96,6 +96,26 @@ func TestOpenAPIDiff_OperationRemoved_NamesRemovedTool(t *testing.T) {
 	require.Contains(t, stdout, "api-path-removed-without-deprecation")
 }
 
+func TestOpenAPIDiff_Swagger2_RequiredParamAdded_FailsOnErr(t *testing.T) {
+	specPath, _ := setupSwagger2Server(t)
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+
+	stdout, _, err := execOpenAPITools(t, "diff")
+	require.NoError(t, err)
+	require.Equal(t, "legacy: no API changes\n", stdout)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(swagger2SpecJSONParamRequired), 0o600))
+
+	stdout, _, err = execOpenAPITools(t, "diff")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "changes at or above error level found in 1 server(s)")
+	require.Contains(t, stdout, "legacy: 1 breaking change (1 error, 0 warnings)")
+	require.Contains(
+		t, stdout, "  error    GET /legacy (getlegacy)  new-required-request-parameter: ",
+	)
+}
+
 func TestOpenAPIDiff_FailOnNone_DoesNotFail(t *testing.T) {
 	specPath, _ := setupCheckServer(t)
 	require.NoError(t, os.WriteFile(specPath, []byte(petstoreSpecJSONParamRequired), 0o600))

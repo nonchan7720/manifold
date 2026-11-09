@@ -73,6 +73,24 @@ const swagger2SpecJSON = `{
   }
 }`
 
+// swagger2SpecJSONParamRequired is swagger2SpecJSON with a new required
+// "verbose" query parameter on getLegacy.
+const swagger2SpecJSONParamRequired = `{
+  "swagger": "2.0",
+  "info": {"title": "Legacy", "version": "1.0.0"},
+  "paths": {
+    "/legacy": {
+      "get": {
+        "operationId": "getLegacy",
+        "parameters": [
+          {"name": "verbose", "in": "query", "required": true, "type": "boolean"}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`
+
 // petstoreSpecJSONInfoDescriptionChanged is petstoreSpecJSON with only
 // info.description added, so the derived tool list is identical.
 const petstoreSpecJSONInfoDescriptionChanged = `{
@@ -496,7 +514,7 @@ func TestOpenAPITools_ServerFlag_Restricts(t *testing.T) {
 	require.NotContains(t, stdout, "other")
 }
 
-func TestOpenAPITools_Swagger2Skipped(t *testing.T) {
+func TestOpenAPITools_Swagger2(t *testing.T) {
 	path := writeSpecFile(t, "legacy.json", swagger2SpecJSON)
 	withGlobalConfig(t, &config.Config{
 		MCPServer: config.Servers{
@@ -505,12 +523,10 @@ func TestOpenAPITools_Swagger2Skipped(t *testing.T) {
 	})
 
 	stdout, stderr, err := execOpenAPITools(t, "tools")
-	require.NoError(t, err, "a skipped swagger2 server must not fail the command")
-	require.Contains(
-		t, stderr,
-		`server "legacy": Swagger 2.x is not supported by "openapi tools", skipping`,
-	)
-	require.NotContains(t, stdout, "legacy")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, "legacy")
+	require.Contains(t, stdout, "getlegacy")
 }
 
 func TestOpenAPITools_LoadFailure_OtherServersStillPrint(t *testing.T) {
@@ -634,9 +650,12 @@ func TestOpenAPIGenerate_AllServers_SkipsServerWithoutToolsFile(t *testing.T) {
 	require.NoError(t, err, "withfile's generated file should have been written")
 }
 
-func TestOpenAPIGenerate_Swagger2Skipped(t *testing.T) {
-	specPath := writeSpecFile(t, "legacy.json", swagger2SpecJSON)
-	outPath := filepath.Join(t.TempDir(), "generated", "legacy.yaml")
+// setupSwagger2Server configures a "legacy" server on swagger2SpecJSON with
+// tools.file, without generating it.
+func setupSwagger2Server(t *testing.T) (specPath, outPath string) {
+	t.Helper()
+	specPath = writeSpecFile(t, "legacy.json", swagger2SpecJSON)
+	outPath = filepath.Join(t.TempDir(), "generated", "legacy.yaml")
 	withGlobalConfig(t, &config.Config{
 		MCPServer: config.Servers{
 			"legacy": &config.Server{
@@ -645,15 +664,27 @@ func TestOpenAPIGenerate_Swagger2Skipped(t *testing.T) {
 			},
 		},
 	})
+	return specPath, outPath
+}
+
+func TestOpenAPIGenerate_Swagger2(t *testing.T) {
+	_, outPath := setupSwagger2Server(t)
 
 	stdout, stderr, err := execOpenAPITools(t, "generate")
-	require.NoError(t, err, "a skipped swagger2 server must not fail the command")
-	require.Contains(t, stderr, `server "legacy"`)
-	require.Contains(t, stderr, "does not support Swagger 2.x")
-	require.NotContains(t, stdout, "legacy")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, `server "legacy": wrote `+outPath+" (1 tools)")
 
-	_, err = os.Stat(outPath)
-	require.True(t, os.IsNotExist(err), "no file should have been written for a swagger2 server")
+	raw, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), "format: swagger2")
+	require.Contains(t, string(raw), `swagger: "2.0"`)
+
+	// openapi tools reads the generated file back, as the gateway would.
+	stdout, stderr, err = execOpenAPITools(t, "tools")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, "getlegacy")
 }
 
 func TestOpenAPIGenerate_DeterministicExceptFetchedAt(t *testing.T) {
@@ -1116,26 +1147,38 @@ func TestOpenAPIGenerateCheck_MultipleServers_OneUpToDateOneDrifts(t *testing.T)
 	require.Contains(t, stdout, "+ added: deletepet (DELETE /pet/{petId})")
 }
 
-func TestOpenAPIGenerateCheck_Swagger2Skipped(t *testing.T) {
-	path := writeSpecFile(t, "legacy.json", swagger2SpecJSON)
-	outPath := filepath.Join(t.TempDir(), "legacy.yaml")
-	withGlobalConfig(t, &config.Config{
-		MCPServer: config.Servers{
-			"legacy": &config.Server{
-				Spec: path, BaseURL: "http://example.local",
-				Tools: &config.ToolsConfig{File: outPath},
-			},
-		},
-	})
+func TestOpenAPIGenerateCheck_Swagger2_UpToDate(t *testing.T) {
+	_, outPath := setupSwagger2Server(t)
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
 
 	stdout, stderr, err := execOpenAPITools(t, "generate", "--check")
-	require.NoError(t, err, "a skipped swagger2 server must not fail the command")
-	require.Contains(t, stderr, `server "legacy"`)
-	require.Contains(t, stderr, "does not support Swagger 2.x")
-	require.NotContains(t, stdout, "legacy")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+	require.Contains(t, stdout, fmt.Sprintf(`server "legacy": up to date (%s)`, outPath))
+}
 
-	_, statErr := os.Stat(outPath)
-	require.True(
-		t, os.IsNotExist(statErr), "no file should have been touched for a swagger2 server",
+func TestOpenAPIGenerateCheck_Swagger2_ShowsBreakingChanges(t *testing.T) {
+	specPath, outPath := setupSwagger2Server(t)
+	_, _, err := execOpenAPITools(t, "generate")
+	require.NoError(t, err)
+	before, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(specPath, []byte(swagger2SpecJSONParamRequired), 0o600))
+
+	stdout, _, err := execOpenAPITools(t, "generate", "--check")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "drift detected in 1 server(s)")
+	require.Contains(t, stdout, "  embedded spec differs from what the live spec produces")
+	require.Contains(t, stdout, "  compatibility: 1 breaking change (1 error, 0 warnings)")
+	require.Contains(
+		t, stdout,
+		"    error    GET /legacy (getlegacy)  new-required-request-parameter: ",
 	)
+	require.Contains(t, stdout, "~ changed: getlegacy (inputSchema)")
+
+	after, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "--check must never write")
 }

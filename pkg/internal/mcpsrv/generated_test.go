@@ -670,3 +670,179 @@ func TestVerifyServedTools(t *testing.T) {
 	err = verifyServedTools(registry, &oastomcptool.GeneratedCatalog{Tools: missing})
 	require.ErrorContains(t, err, `"getwidget" missing from generated file`)
 }
+
+// swagger2EdgeSpec exercises the parts of a Swagger 2.x document that are
+// easiest to lose in the generated file's JSON → YAML → JSON round trip:
+// a boolean "required" on a property schema (dropped by normalization),
+// numeric defaults / enums, vendor extensions, type: file form parameters,
+// a shared #/parameters/ ref, allOf over #/definitions/ and a binary
+// response.
+const swagger2EdgeSpec = `{
+  "swagger": "2.0",
+  "info": {"title": "Legacy API", "version": "1.0.0"},
+  "host": "legacy.example.com",
+  "basePath": "/v1",
+  "schemes": ["https"],
+  "x-api-owner": "team-legacy",
+  "parameters": {
+    "Limit": {"name": "limit", "in": "query", "type": "integer", "default": 10, "maximum": 100}
+  },
+  "definitions": {
+    "Base": {
+      "type": "object",
+      "properties": {"id": {"type": "integer", "format": "int64", "required": true}}
+    },
+    "Item": {
+      "allOf": [
+        {"$ref": "#/definitions/Base"},
+        {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {"type": "string"},
+            "ratio": {"type": "number", "default": 1.5},
+            "level": {"type": "integer", "enum": [1, 2, 3]}
+          }
+        }
+      ]
+    }
+  },
+  "paths": {
+    "/items": {
+      "get": {
+        "operationId": "listItems",
+        "summary": "List items",
+        "parameters": [{"$ref": "#/parameters/Limit"}],
+        "x-mcp": {"annotations": {"title": "List all items", "idempotentHint": true}},
+        "responses": {"200": {"description": "ok", "schema": {"type": "array", "items": {"$ref": "#/definitions/Item"}}}}
+      },
+      "post": {
+        "operationId": "createItem",
+        "parameters": [{"name": "body", "in": "body", "required": true, "schema": {"$ref": "#/definitions/Item"}}],
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/items/{id}/image": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "type": "integer"}],
+      "post": {
+        "operationId": "uploadImage",
+        "consumes": ["multipart/form-data"],
+        "parameters": [
+          {"name": "file", "in": "formData", "required": true, "type": "file"},
+          {"name": "caption", "in": "formData", "type": "string"}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      },
+      "get": {
+        "operationId": "downloadImage",
+        "produces": ["image/png"],
+        "responses": {"200": {"description": "ok", "schema": {"type": "file"}}}
+      }
+    }
+  }
+}`
+
+// writeGeneratedCatalogFile builds the generated tools file for the spec at
+// specPath (as "manifold openapi generate" does) and writes it to a temp
+// file, returning its path.
+func writeGeneratedCatalogFile(t *testing.T, specPath string) string {
+	t.Helper()
+	source, err := oastomcptool.LoadSpecSource(t.Context(), specPath)
+	require.NoError(t, err)
+	registry, err := BuildCatalog(t.Context(), &http.Client{}, source, "", nil)
+	require.NoError(t, err)
+	g, err := oastomcptool.NewGeneratedCatalog(
+		t.Context(), source, GeneratedTools(registry.Definitions()), "manifold test", time.Now(),
+	)
+	require.NoError(t, err)
+
+	genPath := filepath.Join(t.TempDir(), "generated.yaml")
+	f, err := os.Create(genPath)
+	require.NoError(t, err)
+	require.NoError(t, oastomcptool.WriteGeneratedCatalog(f, g))
+	require.NoError(t, f.Close())
+	return genPath
+}
+
+// TestGeneratedToolsFile_Swagger2_ServesSameToolsAsSpec pins that a tools.file
+// generated from a Swagger 2.x spec passes the startup check and serves
+// exactly the tools (and base URL) the gateway builds from the spec itself.
+func TestGeneratedToolsFile_Swagger2_ServesSameToolsAsSpec(t *testing.T) {
+	edgePath := filepath.Join(t.TempDir(), "swagger.json")
+	require.NoError(t, os.WriteFile(edgePath, []byte(swagger2EdgeSpec), 0o600))
+
+	for name, specPath := range map[string]string{
+		"petstore fixture": "fixtures/petstore_swagger.json",
+		"edge cases":       edgePath,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fromSpec, err := RegisterOpenAPI(t.Context(), specPath, "", nil)
+			require.NoError(t, err)
+
+			genPath := writeGeneratedCatalogFile(t, specPath)
+			raw, err := os.ReadFile(genPath)
+			require.NoError(t, err)
+			require.Contains(t, string(raw), "format: swagger2")
+
+			fromFile, err := RegisterOpenAPI(
+				t.Context(), "unused", "", nil, WithGeneratedToolsFile(genPath),
+			)
+			require.NoError(t, err, "a freshly generated swagger2 file must pass the startup check")
+
+			require.Equal(t, fromSpec.BaseURL(), fromFile.BaseURL())
+			// handler 以外（annotations・_meta・binaryFields・summary など）がすべて一致する。
+			require.Equal(t, comparableTools(fromSpec), comparableTools(fromFile))
+		})
+	}
+
+	// edge cases の x-mcp.annotations が生成ファイル経由でも効いている。
+	genPath := writeGeneratedCatalogFile(t, edgePath)
+	fromFile, err := RegisterOpenAPI(
+		t.Context(),
+		"unused",
+		"",
+		nil,
+		WithGeneratedToolsFile(genPath),
+	)
+	require.NoError(t, err)
+	tool := findTool(t, fromFile, "listitems")
+	require.NotNil(t, tool)
+	require.NotNil(t, tool.tool.Annotations)
+	require.Equal(t, "List all items", tool.tool.Annotations.Title)
+	require.True(t, tool.tool.Annotations.IdempotentHint)
+	require.Equal(t, "https://legacy.example.com/v1", fromFile.BaseURL())
+}
+
+// comparableTools returns r's tools with the handler (a func, which never
+// compares equal) cleared.
+func comparableTools(r *MCPToolRegistry) []Tool {
+	tools := r.ListTools()
+	for i := range tools {
+		tools[i].handler = nil
+	}
+	return tools
+}
+
+// TestGeneratedToolsFile_Swagger2_StaleDetected pins that editing the tools
+// section of a swagger2 file is caught at startup, as for openapi3.
+func TestGeneratedToolsFile_Swagger2_StaleDetected(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "swagger.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(swagger2EdgeSpec), 0o600))
+	genPath := writeGeneratedCatalogFile(t, specPath)
+
+	raw, err := os.ReadFile(genPath)
+	require.NoError(t, err)
+	edited := bytes.Replace(
+		raw,
+		[]byte("description: List items"),
+		[]byte("description: edited"),
+		1,
+	)
+	require.NotEqual(t, raw, edited)
+	require.NoError(t, os.WriteFile(genPath, edited, 0o600))
+
+	_, err = RegisterOpenAPI(t.Context(), "unused", "", nil, WithGeneratedToolsFile(genPath))
+	require.Error(t, err)
+	require.ErrorContains(t, err, "generated tools are stale")
+	require.ErrorContains(t, err, `"listitems"`)
+}
