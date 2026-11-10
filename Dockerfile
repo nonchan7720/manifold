@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
   ./main.go \
   && chmod +x /bin/manifold
 
-FROM gcr.io/distroless/static:nonroot@sha256:d62067879de890a1def9da0e7766b7d20810a5e5555cef8506b752437d7a3e88
+FROM gcr.io/distroless/static:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 # SKIP_SECURE_CLIENT=true: in-cluster destinations (ClusterIP etc.) are normal for this image,
 # so the private-range (RFC1918 etc.) block is relaxed for operator-configured upstream URLs and
 # for tool-caller file URLs. Loopback/link-local (cloud metadata)/multicast stay blocked for
