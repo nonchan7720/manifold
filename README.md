@@ -1273,6 +1273,7 @@ Older gateways cannot read a `format: swagger2` file: they fail at startup with 
 - **`in: formData` arrays** are sent according to `collectionFormat`. Previously the Go representation (`[a b]`) was sent as a single value.
 - **Binary responses**: an operation whose 2xx response schema is `type: file` (or `format: binary`) is marked `binaryResponse: true` and handled as binary, as in OpenAPI 3.x.
 - **Request bodies on GET / DELETE** are sent when the spec defines one and a value is passed. Previously the value was dropped on GET / DELETE (this changes for OpenAPI 3.x as well).
+- **Responses with status 400 or above**: when the upstream API returns 400 or above, the response body (or the HTTP status text when it is empty) and its `Content-Type` are returned as the tool result as-is. Previously Swagger 2.x tools alone returned it as a tool error (`isError: true`). A client that relied on `isError` to detect failures must inspect the result content instead.
 
 ### Upgrading from 1.24.x or earlier
 

@@ -557,9 +557,26 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 		nil,
 		false,
 	)
-	_, _, err := fn(context.Background(), map[string]any{})
-	// Swaggerのツールは400以上をエラーとして返す
-	require.Error(t, err)
+	// OpenAPI 3.x と同じく、400以上のステータスはエラーにならず、レスポンスボディをそのまま返す
+	result, _, err := fn(context.Background(), map[string]any{})
+	require.NoError(t, err)
+	require.Equal(t, "bad request", string(result))
+}
+
+func TestCreateToolFunctionSwagger_HTTPError_EmptyBodyUsesStatusText(t *testing.T) {
+	t.Setenv("TEST", "true")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/resource", "get", &openapi2.Operation{}, nil, &openapi2.T{},
+		srv.URL, nil, false,
+	)
+	result, _, err := fn(context.Background(), map[string]any{})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusText(http.StatusNotFound), string(result))
 }
 
 func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
@@ -1952,7 +1969,9 @@ func TestCreateToolFunctionSwagger_BinaryResponseIsBase64Encoded(t *testing.T) {
 	require.Equal(t, "image/png", contentType)
 	require.Equal(t, base64.URLEncoding.EncodeToString(payload), string(body))
 
-	// エラー応答は base64 化せず、従来どおりエラーとして返す。
-	_, _, err = fn(context.Background(), map[string]any{"fail": "1"})
-	require.ErrorContains(t, err, "not found")
+	// エラー応答は base64 化せず、生のまま返す。
+	body, contentType, err = fn(context.Background(), map[string]any{"fail": "1"})
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.JSONEq(t, `{"error":"not found"}`, string(body))
 }

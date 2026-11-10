@@ -775,13 +775,12 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		if err != nil {
 			return nil, "", fmt.Errorf("error reading response: %w", err)
 		}
-		// 400 以上はエラーとして返す。OpenAPI 3.x（CreateToolFunction）は応答ボディをそのまま
-		// 返すが、Swagger 2.x は従来からエラーにしており、既存の利用者の挙動を変えないため揃えない。
+		// 400 以上でも Go のエラーにはせず、OpenAPI 3.x（CreateToolFunction）と同じく上流の
+		// 応答ボディと Content-Type をそのまま返す。
 		if response.StatusCode >= 400 {
 			if len(respBody) == 0 {
 				respBody = []byte(http.StatusText(response.StatusCode))
 			}
-			return nil, "", fmt.Errorf("%s", respBody)
 		}
 		contentType := response.Header.Get("Content-Type")
 		// バイナリ応答でも、エラーやテキスト系の応答は生のまま返す

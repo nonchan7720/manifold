@@ -1273,6 +1273,7 @@ spec:
 - **`in: formData` の配列**: `collectionFormat` に従って送ります。これまでは Go の表記（`[a b]`）がそのまま 1 つの値として送られていました。
 - **バイナリのレスポンス**: 2xx のレスポンスのスキーマが `type: file`（または `format: binary`）の operation は `binaryResponse: true` になり、OpenAPI 3.x と同じくバイナリとして扱います。
 - **GET / DELETE のリクエストボディ**: spec がボディを定義していて値が渡されれば送ります。これまでは GET / DELETE では渡された値を捨てていました（OpenAPI 3.x も同様に変わります）。
+- **400 以上のレスポンス**: 上流 API が 400 以上を返したとき、レスポンスボディ（空なら HTTP ステータスの文言）と `Content-Type` をそのままツールの結果として返します。これまで Swagger 2.x のツールだけはツールのエラー（`isError: true`）として返していました。`isError` で失敗を判定していたクライアントは、結果の内容で判定してください。
 
 ### 1.24.x 以前からのアップグレード
 
