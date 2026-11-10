@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.26.0](https://github.com/nonchan7720/manifold/compare/v1.25.1...v1.26.0) (2026-11-10)
+
+
+### Features
+
+* **cmd:** OpenAPI / Swagger ファイルの読み込みを検証する openapi dry-run を追加 ([#374](https://github.com/nonchan7720/manifold/issues/374)) ([f64874e](https://github.com/nonchan7720/manifold/commit/f64874eb36858f4704bbb4ec61ba2452e931d855))
+* openapi generate で Swagger 2.x の spec から tools.file を生成できるようにする ([#375](https://github.com/nonchan7720/manifold/issues/375)) ([c28fb8c](https://github.com/nonchan7720/manifold/commit/c28fb8c9ac6181dcf04c1983d69a6fe0a8bc93ad))
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies ([#365](https://github.com/nonchan7720/manifold/issues/365)) ([1e37a70](https://github.com/nonchan7720/manifold/commit/1e37a70d65426af4057748de1c3e8eda5d16c0ad))
+* **deps:** update go patch dependencies to v0.37.2 ([#360](https://github.com/nonchan7720/manifold/issues/360)) ([efd3cc6](https://github.com/nonchan7720/manifold/commit/efd3cc60cb72fd30cde1e462dc0be984c1f1f30a))
+* **deps:** update module github.com/go-ozzo/ozzo-validation/v4 to v4.5.0 ([#355](https://github.com/nonchan7720/manifold/issues/355)) ([6bd7fd8](https://github.com/nonchan7720/manifold/commit/6bd7fd8f71006f3c02a462ee070425f05eb10009))
+* **deps:** update module github.com/micahparks/keyfunc/v3 to v3.9.1 ([#372](https://github.com/nonchan7720/manifold/issues/372)) ([b4c1298](https://github.com/nonchan7720/manifold/commit/b4c1298405d3ed34458657080c21e60341f2423b))
+* **deps:** update module github.com/oasdiff/oasdiff to v1.35.0 ([#363](https://github.com/nonchan7720/manifold/issues/363)) ([d11e238](https://github.com/nonchan7720/manifold/commit/d11e238597b8d5290a401c9506226563f31233b9))
+* **deps:** update module golang.org/x/sync to v0.25.0 ([#377](https://github.com/nonchan7720/manifold/issues/377)) ([ec821b0](https://github.com/nonchan7720/manifold/commit/ec821b06bc8bc3eb850ba7356ed120706424e019))
+* **openapi:** [] を含む名前のサニタイズと GET/DELETE のボディ送信に対応し、Swagger を OpenAPI に揃える ([#378](https://github.com/nonchan7720/manifold/issues/378)) ([8471cf0](https://github.com/nonchan7720/manifold/commit/8471cf0fb4e1d3d8b19d45ee7db20fe121959d05))
+
+
+### Miscellaneous
+
+* **deps:** lock file maintenance ([#370](https://github.com/nonchan7720/manifold/issues/370)) ([be13a85](https://github.com/nonchan7720/manifold/commit/be13a85820a21d5ec48997158be681269ab5dd5b))
+* **deps:** lock file maintenance ([#371](https://github.com/nonchan7720/manifold/issues/371)) ([f651227](https://github.com/nonchan7720/manifold/commit/f65122757819af9a1113a2d30d19f5fffb6a43a4))
+* **deps:** update dependency @types/chrome to v0.3.7 ([#357](https://github.com/nonchan7720/manifold/issues/357)) ([1be7755](https://github.com/nonchan7720/manifold/commit/1be7755d67973e84558fa114dff9ce5964e0afb1))
+* **deps:** update dependency vitest to v5.1.0 ([#376](https://github.com/nonchan7720/manifold/issues/376)) ([5a774dd](https://github.com/nonchan7720/manifold/commit/5a774dd4fa68f7c2c9001f06d309d109fdbeff71))
+* **deps:** update gcr.io/distroless/static:nonroot docker digest to 25ac8f0 ([#364](https://github.com/nonchan7720/manifold/issues/364)) ([405e92f](https://github.com/nonchan7720/manifold/commit/405e92f021356a066916e48e6a02a1e41bff82ad))
+* **deps:** update golang:1.27.3-bookworm docker digest to d9b6a1b ([#362](https://github.com/nonchan7720/manifold/issues/362)) ([39e840a](https://github.com/nonchan7720/manifold/commit/39e840afc7a9fffb822e798e00c1fefe9a6ec7ff))
+* **deps:** update grafana/otel-lgtm docker tag to v0.39.0 ([#366](https://github.com/nonchan7720/manifold/issues/366)) ([55dd0bf](https://github.com/nonchan7720/manifold/commit/55dd0bf8beab5fe63756c520cfaba4ce4ce2ed08))
+* **deps:** update jdx/mise-action action to v5.2.5 ([#368](https://github.com/nonchan7720/manifold/issues/368)) ([6807f6c](https://github.com/nonchan7720/manifold/commit/6807f6c15511442ef04abf08761ba9907de56213))
+* **deps:** update jdx/mise-action action to v5.2.6 ([#369](https://github.com/nonchan7720/manifold/issues/369)) ([77e3766](https://github.com/nonchan7720/manifold/commit/77e37667876f24dca1293ff0b04a04b3beadb3f7))
+
 ## [1.25.1](https://github.com/nonchan7720/manifold/compare/v1.25.0...v1.25.1) (2026-11-04)
 
 
