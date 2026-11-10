@@ -10,6 +10,9 @@ import (
 	"github.com/nonchan7720/manifold/pkg/internal/contexts"
 )
 
+// DoRequestWithBody sends body (when non-nil) regardless of httpMethod: some APIs take a
+// request body on GET / DELETE, so whether to send one is the caller's decision.
+//
 // DoRequestWithBody accepts an io.Reader for the request body instead of a
 // fully-buffered []byte, so large payloads (e.g. a multipart body streamed
 // from an io.Pipe) do not need to be materialized in memory before sending.
@@ -26,7 +29,6 @@ func DoRequestWithBody(
 	ctx context.Context,
 	client *http.Client,
 	finalURL, httpMethod string,
-	withBody bool,
 	body io.Reader,
 	bodyContentType string,
 	effective_headers map[string]string,
@@ -34,20 +36,16 @@ func DoRequestWithBody(
 	ctx = trace.StartSpan(ctx, "api/DoRequest")
 	defer func() { trace.EndSpan(ctx, rErr) }()
 
-	var bodyReader io.Reader
-	if withBody && body != nil {
-		bodyReader = body
-	}
 	req, reqErr := http.NewRequestWithContext(
 		ctx,
 		strings.ToUpper(httpMethod),
 		finalURL,
-		bodyReader,
+		body,
 	)
 	if reqErr != nil {
 		return nil, reqErr
 	}
-	if withBody && body != nil && bodyContentType != "" {
+	if body != nil && bodyContentType != "" {
 		req.Header.Set("Content-Type", bodyContentType)
 	}
 	for k, v := range effective_headers {

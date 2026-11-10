@@ -215,6 +215,9 @@ type extractParameter struct {
 	bodyFormParam formParameter
 	isMultipart   bool
 	paramNameMap  map[string]string // sanitized name -> original OpenAPI name
+	// collectionFormats は Swagger 2.x の in: formData 配列の collectionFormat
+	// （sanitized name -> csv / ssv / tsv / pipes / multi）。OpenAPI 3.x では使わない。
+	collectionFormats map[string]string
 }
 
 // sanitizeParamName converts an OpenAPI parameter/property name into one that is
@@ -1845,7 +1848,32 @@ func normalizeJSONBody(
 	}
 }
 
+// isSupportedMethod は、ツールとして実行できる HTTP メソッド（小文字）かどうかを返す。
+func isSupportedMethod(method string) bool {
+	switch method {
+	case "get", "post", "put", "delete", "patch":
+		return true
+	default:
+		return false
+	}
+}
+
+// methodAlwaysSendsBody は、送る値が 1 つも無くても（空の）ボディを送るメソッド（小文字）か
+// どうかを返す。GET / DELETE は、spec がボディを定義していて、かつ呼び出し側が実際に値を
+// 渡したときだけボディを送る（値が無いのに Content-Type だけ付いたリクエストにしないため）。
+func methodAlwaysSendsBody(method string) bool {
+	switch method {
+	case "post", "put", "patch":
+		return true
+	default:
+		return false
+	}
+}
+
 // CreateToolFunction creates a tool function for an OpenAPI 3.x operation.
+//
+// リクエストボディは、spec が定義していて呼び出し側が値を渡していれば、メソッドに関係なく
+// 送る（GET / DELETE にボディを取る API があるため）。
 func CreateToolFunction( //nolint: gocyclo
 	client *http.Client,
 	path string,
@@ -1963,8 +1991,10 @@ func CreateToolFunction( //nolint: gocyclo
 						)
 					}
 				}
-				bodyReader = strings.NewReader(formValues.Encode())
-				bodyContentType = "application/x-www-form-urlencoded"
+				if len(formValues) > 0 || methodAlwaysSendsBody(original_method) {
+					bodyReader = strings.NewReader(formValues.Encode())
+					bodyContentType = "application/x-www-form-urlencoded"
+				}
 			}
 		} else if len(extractParameter.bodyParams) > 0 {
 			isEmpty := func(v any) bool {
@@ -2029,67 +2059,18 @@ func CreateToolFunction( //nolint: gocyclo
 			}
 		}
 
-		var response *http.Response
-		switch original_method {
-		case "get":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"get",
-				false,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "post":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"post",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "put":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"put",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "delete":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"delete",
-				false,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "patch":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"patch",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		default:
+		if !isSupportedMethod(original_method) {
 			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
-
+		response, err := api.DoRequestWithBody(
+			ctx,
+			client,
+			finalURL,
+			original_method,
+			bodyReader,
+			bodyContentType,
+			effective_headers,
+		)
 		if err != nil {
 			return nil, "", fmt.Errorf("error making request: %w", err)
 		}

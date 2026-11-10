@@ -180,6 +180,12 @@ getpetbyid  GET /pet/{petId}  Find pet by ID
 - **Warnings**: when no absolute base URL can be derived from the spec (`servers` / `host`), the command still succeeds but warns on stderr that `mcpServers.<name>.baseURL` must be set. A spec with no operations also succeeds with a warning.
 - Only a local file is accepted, and config-dependent settings (`baseURL`, `tools.exclude`, authentication) are not applied. To check a configured server, use `manifold openapi tools -c config`.
 
+#### Parameter names and request bodies
+
+- **Names containing `[` or `]`**: MCP input schema property names cannot contain `[` or `]` (a name that does not match `^[a-zA-Z0-9_.-]{1,64}$` can make a client reject the whole tool list), so parameter names and request body property names are exposed with `[` replaced by `_` and `]` removed (`ids[]` → `ids_`, `filter[status]` → `filter_status`). The original name is restored when the request is sent upstream. This applies to both OpenAPI 3.x and Swagger 2.x: path / query / form parameters and JSON body properties, including nested objects.
+- **Request bodies on GET / DELETE**: when the spec defines a request body (`requestBody` in OpenAPI 3.x, `in: body` / `in: formData` in Swagger 2.x), it appears in the input schema regardless of the method and is sent when the caller passes a value. On GET / DELETE, no body and no `Content-Type` are sent when no value is passed.
+- **Swagger 2.x `in: formData` arrays** are sent according to `collectionFormat`: the default `csv` joins values as `a,b`, `ssv` with a space, `tsv` with a tab, `pipes` with `|`, and `multi` repeats the field once per element.
+
 #### Binary fields and responses
 
 A `format: binary` property in a `multipart/form-data`, `application/x-www-form-urlencoded` or `application/json` request body (for Swagger 2, `type: file` form parameters and `format: binary` fields inside an `in: body` schema, including nested objects, arrays, `$ref` and `allOf`) is not exposed as a plain string. It becomes a `oneOf` that accepts either a string (base64 content or a URL to fetch the file from) or an object naming the source explicitly (`url` / `base64` / `text` / `content`, plus optional `filename` and `contentType`), and carries `_meta.manifold.file: true` so clients can recognize it as a file input. An operation whose success response is binary (e.g. `image/png`, `application/octet-stream`) is marked `binaryResponse: true`; at runtime such responses are handled as binary content and, when `storage` is configured, returned as resource links (see [`storage`](#storage)). Only a successful (2xx) response whose actual `Content-Type` is not textual is treated as binary: error responses, 3xx responses and text/JSON/XML/YAML bodies (including `+json` / `+xml` types) are returned as-is even for a `binaryResponse: true` tool. From a spec with one upload and one download operation:
@@ -1259,6 +1265,15 @@ Older gateways cannot read a `format: swagger2` file: they fail at startup with 
 
 - **During a rolling update**, add `tools.file` to a Swagger 2.x server only after every pod runs 1.26.0 or later. An older pod that receives that config fails to start.
 - **Rolling back** to 1.25.x or earlier: first remove `tools.file` from the Swagger 2.x servers. They then go back to reading `spec` at startup, which is how 1.25.x serves them.
+
+1.26.0 also brings tools built from a Swagger 2.x spec in line with OpenAPI 3.x. No config change is needed, but the input schema and some behavior of Swagger 2.x tools change.
+
+- **Names containing `[` or `]`**: parameter names and request body property names are exposed converted, e.g. `ids[]` → `ids_` (see [Parameter names and request bodies](#parameter-names-and-request-bodies)). They used to be exposed as-is, which made clients that validate property names fail to list the tools at all. A client that called such a tool with the original names must now use the new ones. Keys inside a JSON body are still sent upstream unchanged when passed under their original name.
+- **Input schema**: `in: body` properties and `in: formData` parameters are now expanded with nested objects, array `items`, `enum` and `required`. Previously only the type and description were emitted.
+- **`in: formData` arrays** are sent according to `collectionFormat`. Previously the Go representation (`[a b]`) was sent as a single value.
+- **Binary responses**: an operation whose 2xx response schema is `type: file` (or `format: binary`) is marked `binaryResponse: true` and handled as binary, as in OpenAPI 3.x.
+- **Request bodies on GET / DELETE** are sent when the spec defines one and a value is passed. Previously the value was dropped on GET / DELETE (this changes for OpenAPI 3.x as well).
+- **Responses with status 400 or above**: when the upstream API returns 400 or above, the response body (or the HTTP status text when it is empty) and its `Content-Type` are returned as the tool result as-is. Previously Swagger 2.x tools alone returned it as a tool error (`isError: true`). A client that relied on `isError` to detect failures must inspect the result content instead.
 
 ### Upgrading from 1.24.x or earlier
 

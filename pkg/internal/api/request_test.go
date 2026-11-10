@@ -27,7 +27,6 @@ func TestDoRequest_GET(t *testing.T) {
 		&http.Client{},
 		server.URL+"/test",
 		"get",
-		false,
 		nil,
 		"",
 		map[string]string{"X-Api-Key": "secret"},
@@ -60,7 +59,6 @@ func TestDoRequest_POST_WithBody(t *testing.T) {
 		&http.Client{},
 		server.URL+"/create",
 		"post",
-		true,
 		bytes.NewReader(bodyBytes),
 		"application/json",
 		nil,
@@ -81,13 +79,12 @@ func TestDoRequest_POST_NoBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// withBody=trueでもbodyがnilならbodyなし
+	// body が nil なら Content-Type も付けない
 	resp, err := DoRequestWithBody(
 		context.Background(),
 		&http.Client{},
 		server.URL+"/post",
 		"post",
-		true,
 		nil,
 		"application/json",
 		nil,
@@ -109,7 +106,6 @@ func TestDoRequest_PUT(t *testing.T) {
 		&http.Client{},
 		server.URL+"/update",
 		"put",
-		true,
 		bytes.NewReader([]byte(`{"val":1}`)),
 		"application/json",
 		nil,
@@ -131,7 +127,6 @@ func TestDoRequest_DELETE(t *testing.T) {
 		&http.Client{},
 		server.URL+"/delete/1",
 		"delete",
-		false,
 		nil,
 		"",
 		nil,
@@ -153,7 +148,6 @@ func TestDoRequest_PATCH(t *testing.T) {
 		&http.Client{},
 		server.URL+"/patch/1",
 		"patch",
-		true,
 		bytes.NewReader([]byte(`{"name":"updated"}`)),
 		"application/json",
 		nil,
@@ -175,7 +169,7 @@ func TestDoRequest_WithContextHeaders(t *testing.T) {
 		"X-Tenant-Id": {"tenant-xyz"},
 	})
 
-	resp, err := DoRequestWithBody(ctx, &http.Client{}, server.URL, "get", false, nil, "", nil)
+	resp, err := DoRequestWithBody(ctx, &http.Client{}, server.URL, "get", nil, "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -189,7 +183,6 @@ func TestDoRequest_InvalidURL(t *testing.T) {
 		&http.Client{},
 		"://invalid-url",
 		"get",
-		false,
 		nil,
 		"",
 		nil,
@@ -198,4 +191,34 @@ func TestDoRequest_InvalidURL(t *testing.T) {
 		resp.Body.Close()
 	}
 	require.Error(t, err)
+}
+
+// GET でも body を渡せばそのまま送る（GET に body を取る API のため）。
+func TestDoRequest_GET_WithBody(t *testing.T) {
+	var receivedContentType string
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		receivedContentType = r.Header.Get("Content-Type")
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	bodyBytes := []byte(`{"query":"x"}`)
+	resp, err := DoRequestWithBody(
+		context.Background(),
+		&http.Client{},
+		server.URL+"/search",
+		"get",
+		bytes.NewReader(bodyBytes),
+		"application/json",
+		nil,
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "application/json", receivedContentType)
+	require.Equal(t, bodyBytes, receivedBody)
 }
