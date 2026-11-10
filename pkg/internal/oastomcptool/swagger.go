@@ -3,6 +3,7 @@ package oastomcptool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi2"
@@ -222,16 +224,89 @@ func schemaContainsBinary(schema *openapi3.Schema, visited map[*openapi3.Schema]
 }
 
 // swaggerBodyV3Schema は in: body パラメータのスキーマを openapi3.Schema へ変換して返す。
-// format: binary を含まない場合は nil を返す（従来の出力・挙動を変えないため）。
+// スキーマが無い（解決できない）場合は nil を返す。
 func swaggerBodyV3Schema(p *openapi2.Parameter, spec *openapi2.T) *openapi3.Schema {
 	if p == nil || p.Schema == nil {
 		return nil
 	}
-	conv := swaggerSchemaToV3(p.Schema, spec, map[*openapi2.Schema]*openapi3.Schema{})
-	if !schemaContainsBinary(conv, map[*openapi3.Schema]bool{}) {
-		return nil
+	return swaggerSchemaToV3(p.Schema, spec, map[*openapi2.Schema]*openapi3.Schema{})
+}
+
+// swaggerFormDataV3Schema は in: formData パラメータ（type / format / enum / items をパラメータ
+// 自身が持つ）を openapi3.Schema へ変換する。OpenAPI 3 のフォームプロパティと同じ
+// buildFormPropertySchema / newFormParameter に渡すための橋渡し。type: file は OpenAPI 3 の
+// ファイル入力（type: string, format: binary）として表す。
+func swaggerFormDataV3Schema(p *openapi2.Parameter, spec *openapi2.T) *openapi3.Schema {
+	schema := &openapi3.Schema{
+		Type:        p.Type,
+		Format:      p.Format,
+		Description: p.Description,
+		Enum:        p.Enum,
+		Extensions:  p.Extensions,
 	}
-	return conv
+	if p.Type != nil && p.Type.Is("file") {
+		schema.Type = &openapi3.Types{"string"}
+		schema.Format = "binary"
+	}
+	if p.Items != nil {
+		items := swaggerSchemaToV3(p.Items, spec, map[*openapi2.Schema]*openapi3.Schema{})
+		if items != nil {
+			schema.Items = &openapi3.SchemaRef{Value: items}
+		}
+	}
+	return schema
+}
+
+// swaggerCollectionValues は、in: formData の配列値を collectionFormat に従って、同じフィールド名で
+// 送る値の列へ変換する。"multi" は要素ごとに 1 フィールド（name=a&name=b）、それ以外は区切り
+// 文字で連結した 1 つの値（既定の csv なら name=a,b）。配列でない値はそのまま 1 件で返す。
+func swaggerCollectionValues(value any, collectionFormat string) []any {
+	items, ok := value.([]any)
+	if !ok {
+		return []any{value}
+	}
+	if collectionFormat == "multi" {
+		return items
+	}
+	sep := ","
+	switch collectionFormat {
+	case "ssv":
+		sep = " "
+	case "tsv":
+		sep = "\t"
+	case "pipes":
+		sep = "|"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if isEmptyFormValue(item) {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%v", item))
+	}
+	return []any{strings.Join(parts, sep)}
+}
+
+// ResponseIsBinarySwagger は ResponseIsBinary の Swagger 2.x 版。2xx レスポンスのスキーマが
+// ボディ全体として binary（type: file、format: binary、またはその配列）かどうかを返す。
+func ResponseIsBinarySwagger(operation *openapi2.Operation, spec *openapi2.T) bool {
+	if operation == nil || operation.Responses == nil {
+		return false
+	}
+	for status, resp := range operation.Responses.Map() {
+		code, err := strconv.Atoi(status)
+		if err != nil || code < 200 || code > 299 || resp == nil || resp.Schema == nil {
+			continue
+		}
+		schema := swaggerSchemaToV3(resp.Schema, spec, map[*openapi2.Schema]*openapi3.Schema{})
+		if schema == nil {
+			continue
+		}
+		if (schema.Type != nil && schema.Type.Is("file")) || schemaIsBinary(schema) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeSwaggerParams merges path-level and operation-level parameters.
@@ -271,52 +346,67 @@ func mergeSwaggerParams(
 
 // extractParametersSwagger extracts parameter names from a Swagger 2.x operation.
 // Path-level parameters are merged with operation-level (operation wins on conflict).
+//
+// 名前は OpenAPI 3.x（extractParameters）と同じく sanitizeParamName を通した MCP 入力スキーマ上の
+// 名前で持ち、上流へ送るときの元の名前は paramNameMap / formParameter.originalName から引く。
 func extractParametersSwagger(
 	operation *openapi2.Operation,
 	pathItemParams []*openapi2.Parameter,
 	spec *openapi2.T,
 ) extractParameter {
 	var (
-		pathParams  = []string{}
-		queryParams = []string{}
-		bodyParams  = []string{}
-		formParams  = formParameters{}
-		isMultipart = false
+		pathParams   = []string{}
+		queryParams  = []string{}
+		bodyParams   = []string{}
+		formParams   = formParameters{}
+		isMultipart  = false
+		paramNameMap = map[string]string{}
+		// sanitize 後の formData 名 -> collectionFormat（未指定は既定の csv）
+		collectionFormats = map[string]string{}
 
 		bodyFormParam formParameter
 	)
 
 	merged := mergeSwaggerParams(operation, pathItemParams, spec)
 	for _, p := range merged {
+		name := sanitizeParamName(p.Name)
 		switch p.In {
 		case "path":
-			pathParams = append(pathParams, p.Name)
+			pathParams = append(pathParams, name)
+			paramNameMap[name] = p.Name
 		case "query":
-			queryParams = append(queryParams, p.Name)
+			queryParams = append(queryParams, name)
+			paramNameMap[name] = p.Name
 		case "body":
-			bodyParams = append(bodyParams, p.Name)
-			// format: binary を含む場合のみ、実行時に JSON ボディの binary 値を解決するための
-			// formParameter ツリーを構築する（OpenAPI 3 の bodyFormParam と同じ形）。
+			bodyParams = append(bodyParams, name)
+			// 実行時に JSON ボディを解決（binary 値の読み込み・サニタイズ済みプロパティ名の
+			// 復元）するための formParameter ツリー。OpenAPI 3 の bodyFormParam と同じ形。
 			if conv := swaggerBodyV3Schema(p, spec); conv != nil {
 				bodyFormParam = newFormParameter(conv)
 			}
 		case "formData":
-			isFile := p.Type != nil && p.Type.Is("file")
-			formParams[p.Name] = formParameter{isFile: isFile}
+			param := newFormParameter(swaggerFormDataV3Schema(p, spec))
+			param.originalName = p.Name
+			formParams[name] = param
+			if p.CollectionFormat != "" {
+				collectionFormats[name] = p.CollectionFormat
+			}
 			// type: file requires multipart/form-data
-			if isFile {
+			if param.isFile {
 				isMultipart = true
 			}
 		}
 	}
 	return extractParameter{
-		pathParams:  pathParams,
-		queryParams: queryParams,
-		bodyParams:  bodyParams,
-		formParams:  formParams,
-		isMultipart: isMultipart,
+		pathParams:   pathParams,
+		queryParams:  queryParams,
+		bodyParams:   bodyParams,
+		formParams:   formParams,
+		isMultipart:  isMultipart,
+		paramNameMap: paramNameMap,
 
-		bodyFormParam: bodyFormParam,
+		bodyFormParam:     bodyFormParam,
+		collectionFormats: collectionFormats,
 	}
 }
 
@@ -406,6 +496,9 @@ func BuildInputSchemaSwagger(
 
 	merged := mergeSwaggerParams(operation, pathItemParams, spec)
 	for _, p := range merged {
+		// MCP の入力スキーマのプロパティ名に "[" "]" は使えないので、OpenAPI 3.x と同じく
+		// sanitizeParamName を通す（"ids[]" -> "ids_"）。元の名前への復元は実行時に行う。
+		name := sanitizeParamName(p.Name)
 		if in := p.In; in == "body" { //nolint: nestif
 			// Body parameter: "schema" holds the full object definition.
 			var bodySchema *openapi2.Schema
@@ -415,73 +508,57 @@ func BuildInputSchemaSwagger(
 			bodyProps := map[string]any{}
 			desc := p.Description
 			if bodySchema != nil {
-				for propName, propRef := range bodySchema.Properties {
-					prop := resolveSwaggerSchemaRef(propRef, spec)
-					if prop == nil {
-						continue
-					}
-					propType := schemaTypeStr(prop.Type)
-					if propType == "" {
-						propType = "string"
-					}
-					bodyProps[propName] = map[string]any{
-						"type":        propType,
-						"description": prop.Description,
-					}
-				}
-				// format: binary を含むプロパティ（ネスト・配列・$ref・allOf 含む）は
-				// OpenAPI 3 の JSON ボディと同じ binaryFieldMCPSchema ベースのスキーマで上書きする。
+				// プロパティは OpenAPI 3 の JSON ボディと同じ buildFormPropertySchema で組み立てる
+				// （ネストした object / array の items / enum / format: binary / $ref / allOf）。
+				bodyRequired := []string{}
 				if conv := swaggerBodyV3Schema(p, spec); conv != nil {
-					merged := conv
 					if len(conv.AllOf) > 0 {
-						merged = mergeAllOf(conv)
+						conv = mergeAllOf(conv)
 					}
-					for propName, propRef := range merged.Properties {
-						if propRef == nil ||
-							!schemaContainsBinary(propRef.Value, map[*openapi3.Schema]bool{}) {
+					for propName, propRef := range conv.Properties {
+						if propRef == nil || propRef.Value == nil {
 							continue
 						}
-						delete(bodyProps, propName)
 						bodyProps[sanitizeParamName(propName)] = buildFormPropertySchema(
 							propRef.Value,
 						)
+						if slices.Contains(conv.Required, propName) {
+							bodyRequired = append(bodyRequired, sanitizeParamName(propName))
+						}
 					}
+					// map 走査順は不定なので、出力を安定させるためソートする。
+					slices.Sort(bodyRequired)
 				}
-				properties[p.Name] = map[string]any{
+				properties[name] = map[string]any{
 					"type":        "object",
 					"description": buildBodyDescriptionSwagger(desc, bodySchema, spec),
 					"properties":  bodyProps,
+					"required":    bodyRequired,
 				}
 			} else {
-				properties[p.Name] = map[string]any{
+				properties[name] = map[string]any{
 					"type":        "object",
 					"description": desc,
 					"properties":  bodyProps,
 				}
 			}
-		} else if p.In == "formData" && p.Type != nil && p.Type.Is("file") {
-			// formData の type: file は openapi.go の buildFormPropertySchema と同じヘルパー
-			// （binaryFieldMCPSchema: oneOf [string, {url/base64/text/content,...}] +
-			// _meta.manifold.file + URL/base64 の案内文）に揃える。
-			properties[p.Name] = binaryFieldMCPSchema(p.Description, map[string]any{
-				"manifold": map[string]any{
-					"file":          true,
-					"fileInputHint": fileInputHint,
-				},
-			})
+		} else if p.In == "formData" {
+			// formData は OpenAPI 3 のフォームプロパティと同じ buildFormPropertySchema で組み立てる
+			// （type: file は binaryFieldMCPSchema、配列は items、enum も反映される）。
+			properties[name] = buildFormPropertySchema(swaggerFormDataV3Schema(p, spec))
 		} else {
 			// Non-body: "type" is directly on the parameter.
 			paramType := schemaTypeStr(p.Type)
 			if paramType == "" {
 				paramType = "string"
 			}
-			properties[p.Name] = map[string]any{
+			properties[name] = map[string]any{
 				"type":        paramType,
 				"description": p.Description,
 			}
 		}
 		if p.Required {
-			required = append(required, p.Name)
+			required = append(required, name)
 		}
 	}
 
@@ -502,6 +579,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 	spec *openapi2.T,
 	base_url string,
 	headers map[string]string,
+	isBinaryResponse bool,
 ) ToolFunc {
 	if headers == nil {
 		headers = map[string]string{}
@@ -523,12 +601,13 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		for _, param_name := range extractParameter.pathParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				safe_value, err := sanitize_path_parameter_value(param_value, param_name)
+				original_name := extractParameter.paramNameMap[param_name]
+				safe_value, err := sanitize_path_parameter_value(param_value, original_name)
 				if err != nil {
 					return nil, "", fmt.Errorf("invalid path parameter: %w", err)
 				}
-				_url = strings.ReplaceAll(_url, "{"+param_name+"}", safe_value)
-				_url = strings.ReplaceAll(_url, "{{"+param_name+"}}", safe_value)
+				_url = strings.ReplaceAll(_url, "{"+original_name+"}", safe_value)
+				_url = strings.ReplaceAll(_url, "{{"+original_name+"}}", safe_value)
 			}
 		}
 
@@ -536,7 +615,7 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		for _, param_name := range extractParameter.queryParams {
 			param_value := input[param_name]
 			if param_value != nil && param_value != "" {
-				params[param_name] = param_value
+				params[extractParameter.paramNameMap[param_name]] = param_value
 			}
 		}
 
@@ -566,12 +645,23 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 						if s, ok := v.(string); ok && s == "" {
 							continue
 						}
-						if err := writeMultipartValue(ctx, mw, param_name, v, param); err != nil {
-							return fmt.Errorf(
-								"error writing multipart field %s: %w",
-								param_name,
-								err,
+						field_name := param.originalName
+						values := []any{v}
+						if !param.isFile {
+							values = swaggerCollectionValues(
+								v, extractParameter.collectionFormats[param_name],
 							)
+						}
+						for _, fv := range values {
+							if err := writeMultipartValue(
+								ctx, mw, field_name, fv, param,
+							); err != nil {
+								return fmt.Errorf(
+									"error writing multipart field %s: %w",
+									field_name,
+									err,
+								)
+							}
 						}
 					}
 					return nil
@@ -583,13 +673,24 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 				bodyContentType = ct
 			} else {
 				formValues := url.Values{}
-				for param_name := range extractParameter.formParams {
-					if v := input[param_name]; v != nil && fmt.Sprintf("%v", v) != "" {
-						formValues.Set(param_name, fmt.Sprintf("%v", v))
+				for param_name, param := range extractParameter.formParams {
+					v := input[param_name]
+					if isEmptyFormValue(v) {
+						continue
+					}
+					for _, fv := range swaggerCollectionValues(
+						v, extractParameter.collectionFormats[param_name],
+					) {
+						if isEmptyFormValue(fv) {
+							continue
+						}
+						formValues.Add(param.originalName, fmt.Sprintf("%v", fv))
 					}
 				}
-				bodyReader = strings.NewReader(formValues.Encode())
-				bodyContentType = "application/x-www-form-urlencoded"
+				if len(formValues) > 0 || methodAlwaysSendsBody(original_method) {
+					bodyReader = strings.NewReader(formValues.Encode())
+					bodyContentType = "application/x-www-form-urlencoded"
+				}
 			}
 		} else if len(extractParameter.bodyParams) > 0 {
 			isEmpty := func(v any) bool {
@@ -653,67 +754,18 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 			}
 		}
 
-		var response *http.Response
-		switch original_method {
-		case "get":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"get",
-				false,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "post":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"post",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "put":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"put",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "delete":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"delete",
-				false,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		case "patch":
-			response, err = api.DoRequestWithBody(
-				ctx,
-				client,
-				finalURL,
-				"patch",
-				true,
-				bodyReader,
-				bodyContentType,
-				effective_headers,
-			)
-		default:
+		if !isSupportedMethod(original_method) {
 			return nil, "", fmt.Errorf("unsupported HTTP method: %s", original_method)
 		}
-
+		response, err := api.DoRequestWithBody(
+			ctx,
+			client,
+			finalURL,
+			original_method,
+			bodyReader,
+			bodyContentType,
+			effective_headers,
+		)
 		if err != nil {
 			return nil, "", fmt.Errorf("error making request: %w", err)
 		}
@@ -723,14 +775,20 @@ func CreateToolFunctionSwagger( //nolint: gocyclo
 		if err != nil {
 			return nil, "", fmt.Errorf("error reading response: %w", err)
 		}
-		// 400 以上はエラーとして返す
+		// 400 以上はエラーとして返す。OpenAPI 3.x（CreateToolFunction）は応答ボディをそのまま
+		// 返すが、Swagger 2.x は従来からエラーにしており、既存の利用者の挙動を変えないため揃えない。
 		if response.StatusCode >= 400 {
 			if len(respBody) == 0 {
 				respBody = []byte(http.StatusText(response.StatusCode))
 			}
 			return nil, "", fmt.Errorf("%s", respBody)
 		}
-		return respBody, response.Header.Get("Content-Type"), nil
+		contentType := response.Header.Get("Content-Type")
+		// バイナリ応答でも、エラーやテキスト系の応答は生のまま返す
+		if shouldBase64EncodeResponse(isBinaryResponse, response.StatusCode, contentType) {
+			return []byte(base64.URLEncoding.EncodeToString(respBody)), contentType, nil
+		}
+		return respBody, contentType, nil
 	}
 
 	return tool_function

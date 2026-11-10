@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi2"
@@ -408,6 +411,7 @@ func TestCreateToolFunctionSwagger_GET(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{"petId": "99"})
 	require.NoError(t, err)
@@ -445,6 +449,7 @@ func TestCreateToolFunctionSwagger_POST_Body(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "Buddy"},
@@ -470,7 +475,17 @@ func TestCreateToolFunctionSwagger_WithQueryParam(t *testing.T) {
 	}
 	spec := &openapi2.T{}
 
-	fn := CreateToolFunctionSwagger(http.DefaultClient, "/pets", "get", op, nil, spec, srv.URL, nil)
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient,
+		"/pets",
+		"get",
+		op,
+		nil,
+		spec,
+		srv.URL,
+		nil,
+		false,
+	)
 	result, _, err := fn(context.Background(), map[string]any{"status": "sold"})
 	require.NoError(t, err)
 	require.Equal(t, "sold", capturedQuery)
@@ -490,6 +505,7 @@ func TestCreateToolFunctionSwagger_UnsupportedMethod(t *testing.T) {
 		spec,
 		"http://example.com",
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{})
 	require.Error(t, err)
@@ -513,6 +529,7 @@ func TestCreateToolFunctionSwagger_InvalidPathParam(t *testing.T) {
 		spec,
 		"http://example.com",
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{"id": "../evil"})
 	require.Error(t, err)
@@ -538,6 +555,7 @@ func TestCreateToolFunctionSwagger_HTTPError(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{})
 	// Swaggerのツールは400以上をエラーとして返す
@@ -568,6 +586,7 @@ func TestCreateToolFunctionSwagger_AuthOverrideFromContext(t *testing.T) {
 		map[string]string{
 			"Authorization": "Bearer static",
 		},
+		false,
 	)
 
 	ctx := contexts.ToRequestAuthHeader(context.Background(), "override")
@@ -597,6 +616,7 @@ func TestCreateToolFunctionSwagger_DELETE(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
@@ -634,6 +654,7 @@ func TestCreateToolFunctionSwagger_PATCH(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{
 		"body": map[string]any{"name": "updated"},
@@ -936,6 +957,7 @@ func TestCreateToolFunctionSwagger_MultipartFileBase64(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": base64.StdEncoding.EncodeToString(content),
@@ -991,6 +1013,7 @@ func TestCreateToolFunctionSwagger_MultipartFileFromURL(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload": fileSrv.URL + "/files/report.pdf?sig=abc123",
@@ -1031,6 +1054,7 @@ func TestCreateToolFunctionSwagger_MultipartWithNonFileField(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{
 		"upload":  base64.StdEncoding.EncodeToString([]byte("data")),
@@ -1061,6 +1085,7 @@ func TestCreateToolFunctionSwagger_PUT(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{})
 	require.NoError(t, err)
@@ -1093,6 +1118,7 @@ func TestCreateToolFunctionSwagger_FormData(t *testing.T) {
 		spec,
 		srv.URL,
 		nil,
+		false,
 	)
 	result, _, err := fn(context.Background(), map[string]any{
 		"username": "alice",
@@ -1150,6 +1176,7 @@ func callSwaggerJSONBody(
 		spec,
 		baseURL,
 		nil,
+		false,
 	)
 	_, _, err := fn(context.Background(), map[string]any{"body": body})
 	return err
@@ -1307,8 +1334,12 @@ func TestBuildInputSchemaSwagger_BodyBinaryProperties(t *testing.T) {
 	data := att["properties"].(map[string]any)["data"].(map[string]any)
 	require.True(t, isFileMeta(data))
 
-	// 非 binary は従来どおりフラットな {type, description}
-	require.Equal(t, map[string]any{"type": "string", "description": ""}, props["name"])
+	// 非 binary も OpenAPI 3 の JSON ボディと同じ形（_meta 付き）になる
+	require.Equal(
+		t,
+		map[string]any{"type": "string", "description": "", "_meta": map[string]any{}},
+		props["name"],
+	)
 }
 
 // swaggerSchemaRefForTest は object スキーマの SchemaRef を組み立てる小さなヘルパー。
@@ -1397,4 +1428,531 @@ func TestBuildInputSchemaSwagger_SelfReferencingBodyDefinition(t *testing.T) {
 		require.True(t, ok, name)
 		require.Equal(t, typ, field["type"], name)
 	}
+}
+
+// --- "[" "]" を含む名前のサニタイズ（OpenAPI 3.x の query パラメータと同じ規則） ---
+
+// mcpPropertyNamePattern は MCP クライアント（Anthropic API など）が input schema の
+// プロパティ名に課すパターン。
+var mcpPropertyNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+func swaggerBracketOperation() *openapi2.Operation {
+	str := &openapi3.Types{"string"}
+	return &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "id[]", In: "path", Required: true, Type: str},
+			{Name: "tag[]", In: "query", Type: str},
+			{Name: "filter[status]", In: "query", Required: true, Type: str},
+			{
+				Name:     "payload[]",
+				In:       "body",
+				Required: true,
+				Schema: &openapi2.SchemaRef{
+					Value: &openapi2.Schema{
+						Type: &openapi3.Types{"object"},
+						Properties: map[string]*openapi2.SchemaRef{
+							"ids[]": {Value: &openapi2.Schema{
+								Type:  &openapi3.Types{"array"},
+								Items: &openapi2.SchemaRef{Value: &openapi2.Schema{Type: str}},
+							}},
+							"name": {Value: &openapi2.Schema{Type: str}},
+							"nested": {Value: &openapi2.Schema{
+								Type: &openapi3.Types{"object"},
+								Properties: map[string]*openapi2.SchemaRef{
+									"opt[key]": {Value: &openapi2.Schema{Type: str}},
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestBuildInputSchemaSwagger_BracketNamesSanitized(t *testing.T) {
+	schema := BuildInputSchemaSwagger(swaggerBracketOperation(), nil, &openapi2.T{})
+
+	props := schema["properties"].(map[string]any)
+	for name := range props {
+		require.Regexp(t, mcpPropertyNamePattern, name)
+	}
+	require.Contains(t, props, "id_")
+	require.Contains(t, props, "tag_")
+	require.Contains(t, props, "filter_status")
+	require.Contains(t, props, "payload_")
+	require.ElementsMatch(t, []string{"id_", "filter_status", "payload_"}, schema["required"])
+
+	bodyProps := props["payload_"].(map[string]any)["properties"].(map[string]any)
+	for name := range bodyProps {
+		require.Regexp(t, mcpPropertyNamePattern, name)
+	}
+	require.Contains(t, bodyProps, "ids_")
+	require.Contains(t, bodyProps, "name")
+	require.Contains(t, bodyProps, "nested")
+	require.Equal(t, "array", bodyProps["ids_"].(map[string]any)["type"])
+}
+
+func TestBuildInputSchemaSwagger_FormDataBracketNamesSanitized(t *testing.T) {
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "ids[]", In: "formData", Required: true, Type: &openapi3.Types{"string"}},
+			{Name: "files[]", In: "formData", Type: &openapi3.Types{"file"}},
+		},
+	}
+	schema := BuildInputSchemaSwagger(op, nil, &openapi2.T{})
+
+	props := schema["properties"].(map[string]any)
+	require.Len(t, props, 2)
+	require.Contains(t, props, "ids_")
+	require.Contains(t, props, "files_")
+	require.Equal(t, []string{"ids_"}, schema["required"])
+}
+
+func TestCreateToolFunctionSwagger_BracketNamesRestored(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotPath string
+	var gotQuery url.Values
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.Query()
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient,
+		"/items/{id[]}",
+		"post",
+		swaggerBracketOperation(),
+		nil,
+		&openapi2.T{},
+		srv.URL,
+		nil,
+		false,
+	)
+	_, _, err := fn(context.Background(), map[string]any{
+		"id_":           "42",
+		"tag_":          "a",
+		"filter_status": "open",
+		"payload_": map[string]any{
+			"ids_": []any{"1", "2"},
+			"name": "x",
+			// ネストしたプロパティはスキーマに展開されないので、呼び出し側は説明文にある
+			// 元の名前で渡す。サニタイズ後の名前で渡された場合も元の名前へ戻す。
+			"nested": map[string]any{"opt_key": "v"},
+		},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "/items/42", gotPath)
+	require.Equal(t, url.Values{"tag[]": {"a"}, "filter[status]": {"open"}}, gotQuery)
+	require.Equal(t, map[string]any{
+		"ids[]":  []any{"1", "2"},
+		"name":   "x",
+		"nested": map[string]any{"opt[key]": "v"},
+	}, gotBody)
+}
+
+// スキーマ上の名前ではなく元の名前（"ids[]"）で渡された body のキーは、そのまま上流へ送る。
+func TestCreateToolFunctionSwagger_BodyOriginalBracketKeyPassesThrough(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient,
+		"/items/{id[]}",
+		"post",
+		swaggerBracketOperation(),
+		nil,
+		&openapi2.T{},
+		srv.URL,
+		nil,
+		false,
+	)
+	_, _, err := fn(context.Background(), map[string]any{
+		"id_":      "42",
+		"payload_": map[string]any{"ids[]": []any{"1"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"ids[]": []any{"1"}}, gotBody)
+}
+
+func TestCreateToolFunctionSwagger_FormDataBracketNamesRestored(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		gotForm = r.PostForm
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "ids[]", In: "formData", Type: &openapi3.Types{"string"}},
+			{Name: "name", In: "formData", Type: &openapi3.Types{"string"}},
+		},
+	}
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/items", "post", op, nil, &openapi2.T{}, srv.URL, nil, false,
+	)
+	_, _, err := fn(context.Background(), map[string]any{"ids_": "1", "name": "x"})
+	require.NoError(t, err)
+	require.Equal(t, url.Values{"ids[]": {"1"}, "name": {"x"}}, gotForm)
+}
+
+func TestCreateToolFunctionSwagger_MultipartBracketNameRestored(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotFields []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(1<<20))
+		for name := range r.MultipartForm.File {
+			gotFields = append(gotFields, name)
+		}
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "files[]", In: "formData", Type: &openapi3.Types{"file"}},
+		},
+	}
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/upload", "post", op, nil, &openapi2.T{}, srv.URL, nil, false,
+	)
+	_, _, err := fn(context.Background(), map[string]any{
+		"files_": base64.StdEncoding.EncodeToString([]byte("hello")),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"files[]"}, gotFields)
+}
+
+// --- GET / DELETE のリクエストボディ ---
+
+func TestCreateToolFunctionSwagger_BodyOnGETAndDELETE(t *testing.T) {
+	t.Setenv("TEST", "true")
+	for _, method := range []string{"get", "delete"} {
+		t.Run(method, func(t *testing.T) {
+			var gotMethod, gotContentType string
+			var gotBody []byte
+			srv := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotMethod = r.Method
+					gotContentType = r.Header.Get("Content-Type")
+					gotBody, _ = io.ReadAll(r.Body)
+					w.Write([]byte(`{}`)) //nolint: errcheck
+				}),
+			)
+			defer srv.Close()
+
+			op := &openapi2.Operation{
+				Parameters: []*openapi2.Parameter{
+					{Name: "q", In: "query"},
+					{Name: "body", In: "body", Schema: &openapi2.SchemaRef{
+						Value: &openapi2.Schema{},
+					}},
+				},
+			}
+			fn := CreateToolFunctionSwagger(
+				http.DefaultClient, "/search", method, op, nil, &openapi2.T{}, srv.URL, nil, false,
+			)
+
+			_, _, err := fn(context.Background(), map[string]any{
+				"q":    "x",
+				"body": map[string]any{"filter": "open"},
+			})
+			require.NoError(t, err)
+			require.Equal(t, strings.ToUpper(method), gotMethod)
+			require.Equal(t, "application/json", gotContentType)
+			require.JSONEq(t, `{"filter":"open"}`, string(gotBody))
+
+			// body を渡さなければ、ボディも Content-Type も送らない。
+			_, _, err = fn(context.Background(), map[string]any{"q": "x"})
+			require.NoError(t, err)
+			require.Empty(t, gotContentType)
+			require.Empty(t, gotBody)
+		})
+	}
+}
+
+func TestCreateToolFunctionSwagger_FormDataOnGET(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotContentType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{{Name: "name", In: "formData"}},
+	}
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/search", "get", op, nil, &openapi2.T{}, srv.URL, nil, false,
+	)
+
+	_, _, err := fn(context.Background(), map[string]any{"name": "x"})
+	require.NoError(t, err)
+	require.Equal(t, "application/x-www-form-urlencoded", gotContentType)
+	require.Equal(t, "name=x", string(gotBody))
+
+	// 値が 1 つも無い GET では、空のフォームボディ（と Content-Type）を付けない。
+	_, _, err = fn(context.Background(), map[string]any{})
+	require.NoError(t, err)
+	require.Empty(t, gotContentType)
+	require.Empty(t, gotBody)
+}
+
+// --- OpenAPI 3.x と揃えた挙動 ---
+
+// JSON ボディのプロパティは OpenAPI 3.x と同じく、ネストした object・配列の items・enum・
+// required まで input schema に展開する。
+func TestBuildInputSchemaSwagger_BodyRichSchemaMatchesOpenAPI(t *testing.T) {
+	str := &openapi3.Types{"string"}
+	spec := &openapi2.T{
+		Definitions: map[string]*openapi2.SchemaRef{
+			"Owner": {Value: &openapi2.Schema{
+				Type:     &openapi3.Types{"object"},
+				Required: []string{"email"},
+				Properties: map[string]*openapi2.SchemaRef{
+					"email":   {Value: &openapi2.Schema{Type: str}},
+					"roles[]": {Value: &openapi2.Schema{Type: str}},
+				},
+			}},
+		},
+	}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{{
+			Name: "body",
+			In:   "body",
+			Schema: &openapi2.SchemaRef{Value: &openapi2.Schema{
+				Type:     &openapi3.Types{"object"},
+				Required: []string{"name", "tags[]"},
+				Properties: map[string]*openapi2.SchemaRef{
+					"name":   {Value: &openapi2.Schema{Type: str}},
+					"status": {Value: &openapi2.Schema{Type: str, Enum: []any{"open", "closed"}}},
+					"tags[]": {Value: &openapi2.Schema{
+						Type:  &openapi3.Types{"array"},
+						Items: &openapi2.SchemaRef{Value: &openapi2.Schema{Type: str}},
+					}},
+					"owner": {Ref: "#/definitions/Owner"},
+				},
+			}},
+		}},
+	}
+
+	schema := BuildInputSchemaSwagger(op, nil, spec)
+	body := schema["properties"].(map[string]any)["body"].(map[string]any)
+	require.Equal(t, []string{"name", "tags_"}, body["required"])
+
+	props := body["properties"].(map[string]any)
+	require.Equal(t, []any{"open", "closed"}, props["status"].(map[string]any)["enum"])
+
+	tags := props["tags_"].(map[string]any)
+	require.Equal(t, "array", tags["type"])
+	require.Equal(t, "string", tags["items"].(map[string]any)["type"])
+
+	owner := props["owner"].(map[string]any)
+	require.Equal(t, "object", owner["type"])
+	require.Equal(t, []string{"email"}, owner["required"])
+	ownerProps := owner["properties"].(map[string]any)
+	require.Contains(t, ownerProps, "email")
+	require.Contains(t, ownerProps, "roles_")
+}
+
+func TestBuildInputSchemaSwagger_FormDataArrayAndEnum(t *testing.T) {
+	str := &openapi3.Types{"string"}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{
+				Name:  "tags",
+				In:    "formData",
+				Type:  &openapi3.Types{"array"},
+				Items: &openapi2.SchemaRef{Value: &openapi2.Schema{Type: str}},
+			},
+			{Name: "status", In: "formData", Type: str, Enum: []any{"open", "closed"}},
+		},
+	}
+	props := BuildInputSchemaSwagger(op, nil, &openapi2.T{})["properties"].(map[string]any)
+
+	tags := props["tags"].(map[string]any)
+	require.Equal(t, "array", tags["type"])
+	require.Equal(t, "string", tags["items"].(map[string]any)["type"])
+	require.Equal(t, []any{"open", "closed"}, props["status"].(map[string]any)["enum"])
+}
+
+func TestCreateToolFunctionSwagger_FormDataArrayCollectionFormat(t *testing.T) {
+	t.Setenv("TEST", "true")
+	tests := []struct {
+		collectionFormat string
+		want             []string
+	}{
+		{"", []string{"a,b"}},
+		{"csv", []string{"a,b"}},
+		{"ssv", []string{"a b"}},
+		{"tsv", []string{"a\tb"}},
+		{"pipes", []string{"a|b"}},
+		{"multi", []string{"a", "b"}},
+	}
+	for _, tt := range tests {
+		t.Run("format="+tt.collectionFormat, func(t *testing.T) {
+			var gotForm url.Values
+			srv := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					require.NoError(t, r.ParseForm())
+					gotForm = r.PostForm
+					w.Write([]byte(`{}`)) //nolint: errcheck
+				}),
+			)
+			defer srv.Close()
+
+			op := &openapi2.Operation{
+				Parameters: []*openapi2.Parameter{{
+					Name:             "tags[]",
+					In:               "formData",
+					Type:             &openapi3.Types{"array"},
+					CollectionFormat: tt.collectionFormat,
+					Items: &openapi2.SchemaRef{
+						Value: &openapi2.Schema{Type: &openapi3.Types{"string"}},
+					},
+				}},
+			}
+			fn := CreateToolFunctionSwagger(
+				http.DefaultClient, "/items", "post", op, nil, &openapi2.T{}, srv.URL, nil, false,
+			)
+			_, _, err := fn(context.Background(), map[string]any{"tags_": []any{"a", "b"}})
+			require.NoError(t, err)
+			require.Equal(t, url.Values{"tags[]": tt.want}, gotForm)
+		})
+	}
+}
+
+func TestCreateToolFunctionSwagger_MultipartArrayCollectionFormat(t *testing.T) {
+	t.Setenv("TEST", "true")
+	var gotValues map[string][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseMultipartForm(1<<20))
+		gotValues = r.MultipartForm.Value
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	strItems := &openapi2.SchemaRef{Value: &openapi2.Schema{Type: &openapi3.Types{"string"}}}
+	op := &openapi2.Operation{
+		Parameters: []*openapi2.Parameter{
+			{Name: "file", In: "formData", Type: &openapi3.Types{"file"}},
+			{Name: "csv", In: "formData", Type: &openapi3.Types{"array"}, Items: strItems},
+			{
+				Name:             "multi",
+				In:               "formData",
+				Type:             &openapi3.Types{"array"},
+				Items:            strItems,
+				CollectionFormat: "multi",
+			},
+		},
+	}
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/upload", "post", op, nil, &openapi2.T{}, srv.URL, nil, false,
+	)
+	_, _, err := fn(context.Background(), map[string]any{
+		"file":  base64.StdEncoding.EncodeToString([]byte("hello")),
+		"csv":   []any{"a", "b"},
+		"multi": []any{"c", "d"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{"csv": {"a,b"}, "multi": {"c", "d"}}, gotValues)
+}
+
+func swaggerResponses(status string, schema *openapi2.SchemaRef) *openapi2.Responses {
+	responses := openapi2.NewResponsesWithCapacity(1)
+	responses.Set(status, &openapi2.Response{Schema: schema})
+	return responses
+}
+
+func TestResponseIsBinarySwagger(t *testing.T) {
+	fileSchema := &openapi2.SchemaRef{Value: &openapi2.Schema{Type: &openapi3.Types{"file"}}}
+	binarySchema := &openapi2.SchemaRef{
+		Value: &openapi2.Schema{Type: &openapi3.Types{"string"}, Format: "binary"},
+	}
+	objectSchema := &openapi2.SchemaRef{Value: &openapi2.Schema{Type: &openapi3.Types{"object"}}}
+	spec := &openapi2.T{Definitions: map[string]*openapi2.SchemaRef{"Blob": binarySchema}}
+
+	tests := []struct {
+		name string
+		op   *openapi2.Operation
+		want bool
+	}{
+		{"nil operation", nil, false},
+		{"no responses", &openapi2.Operation{}, false},
+		{"type file", &openapi2.Operation{Responses: swaggerResponses("200", fileSchema)}, true},
+		{
+			"format binary",
+			&openapi2.Operation{Responses: swaggerResponses("201", binarySchema)},
+			true,
+		},
+		{
+			"ref to binary",
+			&openapi2.Operation{Responses: swaggerResponses(
+				"200", &openapi2.SchemaRef{Ref: "#/definitions/Blob"},
+			)},
+			true,
+		},
+		{
+			"json object",
+			&openapi2.Operation{Responses: swaggerResponses("200", objectSchema)},
+			false,
+		},
+		{
+			"binary only on error status",
+			&openapi2.Operation{Responses: swaggerResponses("500", fileSchema)},
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ResponseIsBinarySwagger(tt.op, spec))
+		})
+	}
+}
+
+func TestCreateToolFunctionSwagger_BinaryResponseIsBase64Encoded(t *testing.T) {
+	t.Setenv("TEST", "true")
+	payload := []byte{0x89, 'P', 'N', 'G', 0x00, 0xff}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fail") != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"not found"}`)) //nolint: errcheck
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(payload) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi2.Operation{Parameters: []*openapi2.Parameter{{Name: "fail", In: "query"}}}
+	fn := CreateToolFunctionSwagger(
+		http.DefaultClient, "/image", "get", op, nil, &openapi2.T{}, srv.URL, nil, true,
+	)
+
+	body, contentType, err := fn(context.Background(), map[string]any{})
+	require.NoError(t, err)
+	require.Equal(t, "image/png", contentType)
+	require.Equal(t, base64.URLEncoding.EncodeToString(payload), string(body))
+
+	// エラー応答は base64 化せず、従来どおりエラーとして返す。
+	_, _, err = fn(context.Background(), map[string]any{"fail": "1"})
+	require.ErrorContains(t, err, "not found")
 }

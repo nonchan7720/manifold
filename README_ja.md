@@ -180,6 +180,12 @@ getpetbyid  GET /pet/{petId}  Find pet by ID
 - **警告**: spec（`servers` / `host`）から絶対 URL の base URL を導出できない場合は、成功扱いのまま、`mcpServers.<name>.baseURL` の設定が必要である旨を標準エラーに警告します。operation が 1 つもない spec も、警告付きで成功扱いです。
 - 対象はローカルファイルのみで、設定ファイルに依存する設定（`baseURL`、`tools.exclude`、認証）は適用しません。設定済みのサーバーを確認するときは `manifold openapi tools -c config` を使ってください。
 
+#### パラメータ名とリクエストボディ
+
+- **`[` `]` を含む名前**: MCP の input schema のプロパティ名には `[` と `]` を使えないため（`^[a-zA-Z0-9_.-]{1,64}$` に合わない名前があると、クライアントがツール一覧ごと拒否することがある）、パラメータ名とリクエストボディのプロパティ名は `[` を `_` に置き換え、`]` を取り除いて公開します（`ids[]` → `ids_`、`filter[status]` → `filter_status`）。上流 API へ送るときは元の名前に戻します。OpenAPI 3.x・Swagger 2.x のどちらでも、path / query / form のパラメータと、JSON ボディのプロパティ（ネストした object を含む）が対象です。
+- **GET / DELETE のリクエストボディ**: spec がリクエストボディ（OpenAPI 3.x の `requestBody`、Swagger 2.x の `in: body` / `in: formData`）を定義していれば、メソッドに関係なく input schema に載り、呼び出し側が値を渡したときに送信します。GET / DELETE で値が渡されなければ、ボディも `Content-Type` も送りません。
+- **Swagger 2.x の `in: formData` の配列**: `collectionFormat` に従って送ります。既定の `csv` は `a,b`、`ssv` は空白、`tsv` はタブ、`pipes` は `|` で連結し、`multi` は同じ名前のフィールドを要素ごとに繰り返します。
+
 #### バイナリのフィールドとレスポンス
 
 `multipart/form-data`・`application/x-www-form-urlencoded`・`application/json` のリクエストボディ内で `format: binary` のプロパティ（Swagger 2 では `type: file` の form パラメータと、`in: body` スキーマ内の `format: binary` のフィールド。ネストした object・配列・`$ref`・`allOf` を含む）は、単なる文字列としては公開されない。文字列（base64 の内容、またはファイルを取得する URL）か、入力元を明示するオブジェクト（`url` / `base64` / `text` / `content` のいずれか 1 つと、任意の `filename` / `contentType`）を受け付ける `oneOf` になり、クライアントがファイル入力と判別できるよう `_meta.manifold.file: true` が付く。成功レスポンスがバイナリ（`image/png` や `application/octet-stream` など）の operation は `binaryResponse: true` になり、実行時のレスポンスはバイナリとして扱われ、`storage` を設定していれば resource link として返される（[`storage`](#storage) 参照）。バイナリとして扱うのは、成功（2xx）かつ実際の `Content-Type` がテキスト系でないレスポンスだけで、`binaryResponse: true` のツールでもエラーレスポンス・3xx・テキスト/JSON/XML/YAML（`+json` / `+xml` を含む）のボディはそのまま返す。アップロード 1 つとダウンロード 1 つを持つ spec から生成した例:
@@ -1259,6 +1265,14 @@ spec:
 
 - **ローリングアップデート中**: Swagger 2.x のサーバーに `tools.file` を追加するのは、すべての Pod が 1.26.0 以降になってからにしてください。その設定を受け取った旧バージョンの Pod は起動に失敗します。
 - **ロールバック**: 1.25.x 以前へ戻す前に、Swagger 2.x のサーバーから `tools.file` を外してください。外すと起動時に `spec` を読む動作に戻り、1.25.x でもそのまま動きます。
+
+1.26.0 では、Swagger 2.x の spec から作るツールを OpenAPI 3.x と同じ規則に揃えました。設定の変更は不要ですが、Swagger 2.x のツールの input schema と一部の挙動が変わります。
+
+- **`[` `]` を含む名前**: パラメータ名とリクエストボディのプロパティ名を `ids[]` → `ids_` のように変換して公開します（[パラメータ名とリクエストボディ](#パラメータ名とリクエストボディ) 参照）。これまでは元の名前のまま公開していたため、プロパティ名を検証するクライアントではツール一覧の取得自体が失敗していました。該当するツールを元の名前で呼び出していたクライアントは、新しい名前で呼び出す必要があります。JSON ボディの中のキーは、元の名前のまま渡しても上流へそのまま送ります。
+- **input schema**: `in: body` のプロパティと `in: formData` のパラメータが、ネストした object、配列の `items`、`enum`、`required` まで展開されます。これまでは型と説明だけでした。
+- **`in: formData` の配列**: `collectionFormat` に従って送ります。これまでは Go の表記（`[a b]`）がそのまま 1 つの値として送られていました。
+- **バイナリのレスポンス**: 2xx のレスポンスのスキーマが `type: file`（または `format: binary`）の operation は `binaryResponse: true` になり、OpenAPI 3.x と同じくバイナリとして扱います。
+- **GET / DELETE のリクエストボディ**: spec がボディを定義していて値が渡されれば送ります。これまでは GET / DELETE では渡された値を捨てていました（OpenAPI 3.x も同様に変わります）。
 
 ### 1.24.x 以前からのアップグレード
 

@@ -244,6 +244,7 @@ func swagger(
 				pathItem.Parameters,
 				spec,
 			)
+			isBinaryResponse := oastomcptool.ResponseIsBinarySwagger(operation, spec)
 			toolFunc := oastomcptool.CreateToolFunctionSwagger(
 				client,
 				path,
@@ -253,21 +254,35 @@ func swagger(
 				spec,
 				baseUrl,
 				headers,
+				isBinaryResponse,
 			)
 
 			annotations := parseAnnotationsExtensionOrWarn(ctx, operation.Extensions, method, path)
 
+			// ボディ全体が binary の応答の扱いは openapi() と揃える。
+			opts := make([]RegisterToolOptions, 0, 10)
+			opts = append(opts,
+				WithRegisterToolOperation(method, path),
+				WithRegisterToolAnnotationsExtension(annotations),
+				WithRegisterToolDocs(operation.Summary, operation.Description),
+			)
+			if isBinaryResponse {
+				opts = append(opts, WithRegisterToolMeta(map[string]any{
+					"manifold": map[string]any{
+						"binaryResponse": true,
+					},
+				}))
+			} else {
+				opts = append(opts, WithRegisterToolBinaryFields(
+					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
+				))
+			}
 			register.RegisterTool(
 				baseToolName,
 				description,
 				inputSchema,
 				ToolFunc(toolFunc),
-				WithRegisterToolOperation(method, path),
-				WithRegisterToolAnnotationsExtension(annotations),
-				WithRegisterToolDocs(operation.Summary, operation.Description),
-				WithRegisterToolBinaryFields(
-					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
-				),
+				opts...,
 			)
 		}
 	}

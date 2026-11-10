@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -4996,4 +4997,99 @@ func TestSetFileFetchConfig_InvalidDeniedCIDR(t *testing.T) {
 		SetFileFetchConfig(config.FileFetchConfig{DeniedCIDRs: []string{"10.0.0.0/8"}}),
 	)
 	require.Equal(t, []string{"10.0.0.0/8"}, getFileFetchConfig().DeniedCIDRs)
+}
+
+// --- GET / DELETE のリクエストボディ ---
+
+func TestCreateToolFunction_JSONBodyOnGETAndDELETE(t *testing.T) {
+	for _, method := range []string{"get", "delete"} {
+		t.Run(method, func(t *testing.T) {
+			var gotMethod, gotContentType string
+			var gotBody []byte
+			srv := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotMethod = r.Method
+					gotContentType = r.Header.Get("Content-Type")
+					gotBody, _ = io.ReadAll(r.Body)
+					w.Write([]byte(`{}`)) //nolint: errcheck
+				}),
+			)
+			defer srv.Close()
+
+			op := &openapi3.Operation{
+				RequestBody: &openapi3.RequestBodyRef{Value: &openapi3.RequestBody{
+					Content: openapi3.Content{
+						"application/json": &openapi3.MediaType{
+							Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+								Properties: openapi3.Schemas{
+									"ids[]": &openapi3.SchemaRef{Value: &openapi3.Schema{
+										Type: &openapi3.Types{"array"},
+									}},
+								},
+							}},
+						},
+					},
+				}},
+			}
+
+			// spec が定義したボディは、GET / DELETE でも input schema に載る。
+			schema := BuildInputSchema(op)
+			require.Contains(t, schema["properties"], "body")
+
+			fn := CreateToolFunction(http.DefaultClient, "/search", method, op, srv.URL, nil, false)
+			_, _, err := fn(context.Background(), map[string]any{
+				"body": map[string]any{"ids_": []any{"1", "2"}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, strings.ToUpper(method), gotMethod)
+			require.Equal(t, "application/json", gotContentType)
+			require.JSONEq(t, `{"ids[]":["1","2"]}`, string(gotBody))
+
+			// body を渡さなければ、ボディも Content-Type も送らない。
+			_, _, err = fn(context.Background(), map[string]any{})
+			require.NoError(t, err)
+			require.Empty(t, gotContentType)
+			require.Empty(t, gotBody)
+		})
+	}
+}
+
+func TestCreateToolFunction_FormURLEncodedOnGET(t *testing.T) {
+	var gotContentType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{}`)) //nolint: errcheck
+	}))
+	defer srv.Close()
+
+	op := &openapi3.Operation{
+		RequestBody: &openapi3.RequestBodyRef{Value: &openapi3.RequestBody{
+			Content: openapi3.Content{
+				"application/x-www-form-urlencoded": &openapi3.MediaType{
+					Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+						Properties: openapi3.Schemas{
+							"name": &openapi3.SchemaRef{Value: &openapi3.Schema{
+								Type: &openapi3.Types{"string"},
+							}},
+						},
+					}},
+				},
+			},
+		}},
+	}
+	fn := CreateToolFunction(http.DefaultClient, "/search", "get", op, srv.URL, nil, false)
+
+	_, _, err := fn(context.Background(), map[string]any{"name": "x"})
+	require.NoError(t, err)
+	require.Equal(t, "application/x-www-form-urlencoded", gotContentType)
+	require.Equal(t, "name=x", string(gotBody))
+
+	// 値が 1 つも無い GET では、空のフォームボディ（と Content-Type）を付けない。
+	_, _, err = fn(context.Background(), map[string]any{})
+	require.NoError(t, err)
+	require.Empty(t, gotContentType)
+	require.Empty(t, gotBody)
 }
