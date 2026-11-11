@@ -139,7 +139,8 @@ func parseFileFlags(args []string) (fileOptions, error) {
 			"guardrail (0: do not split)")
 	fs.IntVar(&opts.chunkOverlapChars, "chunk-overlap-chars", 200,
 		"with --chunk-chars, how many characters neighbouring pieces share, so that a phrase "+
-			"cut at a boundary is still whole in one piece; must be smaller than --chunk-chars")
+			"cut at a boundary is still whole in one piece: set it to the longest phrase the "+
+			"downstream guardrail has to catch; must be positive and smaller than --chunk-chars")
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
@@ -207,9 +208,16 @@ func (o fileOptions) validate() error {
 	if o.chunkChars < 0 || o.chunkOverlapChars < 0 {
 		return errors.New("--chunk-chars and --chunk-overlap-chars must not be negative")
 	}
-	// 重なりが断片より小さくないと、分割が進まない。
-	if o.chunkChars > 0 && o.chunkOverlapChars >= o.chunkChars {
-		return errors.New("--chunk-overlap-chars must be smaller than --chunk-chars")
+	if o.chunkChars > 0 {
+		// 重なりが無いと、境界で切れた語句は必ずどの断片にも全体が入らず、下流が
+		// 検出できない。重なりが断片より小さくないと、分割が進まない。
+		if o.chunkOverlapChars == 0 {
+			return errors.New("--chunk-overlap-chars must be positive when --chunk-chars is set: " +
+				"set it to the longest phrase the downstream guardrail has to catch")
+		}
+		if o.chunkOverlapChars >= o.chunkChars {
+			return errors.New("--chunk-overlap-chars must be smaller than --chunk-chars")
+		}
 	}
 	if o.fetchMaxBytes <= 0 {
 		return errors.New("--fetch-max-bytes must be positive")

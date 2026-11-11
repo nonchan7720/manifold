@@ -413,22 +413,24 @@ func (e *Extractor) Supports(mimeType string) bool {
 // rawContentType は、種類 mimeType のファイルをバイナリの本文で送るときの
 // Content-Type を返す。spec がその種類を受け付けなければ ok は false。
 //
-// spec に同じ種類があればそれを使う。無ければ、ワイルドカード（image/*、*/*）か
-// application/octet-stream が受け付けるので、ファイルの種類をそのまま Content-Type に
-// する（種類で処理を分けるサービスのため）。
+// spec が宣言した種類で送る。同じ種類があればそれを、ワイルドカード（image/*、*/*）が
+// 受け付けるならファイルの種類を、application/octet-stream だけが受け付けるなら
+// application/octet-stream を使う。
 func (e *Extractor) rawContentType(mimeType string) (_ string, ok bool) {
 	if slices.Contains(e.rawTypes, mimeType) {
 		return mimeType, true
 	}
 	for _, rawType := range e.rawTypes {
-		if rawType == "application/octet-stream" {
+		if !strings.Contains(rawType, "*") {
+			continue
+		}
+		if matched, err := path.Match(rawType, mimeType); err == nil && matched {
 			return mimeType, true
 		}
-		if strings.Contains(rawType, "*") {
-			if matched, err := path.Match(rawType, mimeType); err == nil && matched {
-				return mimeType, true
-			}
-		}
+	}
+	const octetStream = "application/octet-stream"
+	if slices.Contains(e.rawTypes, octetStream) {
+		return octetStream, true
 	}
 	return "", false
 }

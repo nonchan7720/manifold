@@ -116,8 +116,9 @@ func TestExtractor_RawBodyAndTextResponse(t *testing.T) {
 	require.Equal(t, "/tika/ja jp", got.path)
 	require.Equal(t, "mode=fast", got.query)
 	require.Equal(t, []byte("%PDF"), got.body)
-	// application/octet-stream の本文は、ファイルの種類を Content-Type にする。
-	require.Equal(t, "application/pdf", got.header.Get("Content-Type"))
+	// spec が application/octet-stream だけを宣言しているので、その種類で送る。
+	// ファイルの種類は、パラメータの {mime_type} で別に渡せる。
+	require.Equal(t, "application/octet-stream", got.header.Get("Content-Type"))
 	require.Equal(t, "application/pdf", got.header.Get("X-Source-Type"))
 	require.Equal(t, "Bearer token", got.header.Get("Authorization"))
 	require.Equal(t, "text/plain", got.header.Get("Accept"))
@@ -420,7 +421,8 @@ func TestExtractor_RawBodyMatchesFileType(t *testing.T) {
 	require.ErrorContains(t, err, `does not accept "image/tiff"`)
 }
 
-// ワイルドカードの本文は、ファイルの種類を Content-Type にする。
+// ワイルドカードの本文は、ファイルの種類を Content-Type にする。octet-stream と併記
+// されていても、ファイルの種類を受け付けるワイルドカードを優先する。
 func TestExtractor_RawBodyWildcard(t *testing.T) {
 	const spec = `
 openapi: 3.0.3
@@ -432,6 +434,8 @@ paths:
       requestBody:
         content:
           image/*:
+            schema: {type: string, format: binary}
+          application/octet-stream:
             schema: {type: string, format: binary}
       responses:
         "200":
@@ -446,11 +450,17 @@ paths:
 		MIMETypes: []string{"*/*"},
 	}, srv.Client())
 	require.NoError(t, err)
-	require.True(t, e.Supports("image/tiff"))
-	require.False(t, e.Supports("application/pdf"))
 	_, err = e.Extract(t.Context(), extract.SourceFile{MIMEType: "image/tiff", Data: []byte("x")})
 	require.NoError(t, err)
 	require.Equal(t, "image/tiff", got.header.Get("Content-Type"))
+
+	// ワイルドカードに合わない種類は、octet-stream として送る。
+	_, err = e.Extract(
+		t.Context(),
+		extract.SourceFile{MIMEType: "application/pdf", Data: []byte("x")},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "application/octet-stream", got.header.Get("Content-Type"))
 }
 
 // JSON の本文は、spec の種類（vendor の +json も）をそのまま Content-Type にする。

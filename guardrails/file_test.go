@@ -56,6 +56,9 @@ func TestParseFileFlags(t *testing.T) {
 		{name: "overlap not smaller than chunk", args: []string{
 			downstream, "--chunk-chars", "100", "--chunk-overlap-chars", "100",
 		}, wantErr: "--chunk-overlap-chars must be smaller than --chunk-chars"},
+		{name: "chunking without overlap", args: []string{
+			downstream, "--chunk-chars", "100", "--chunk-overlap-chars", "0",
+		}, wantErr: "--chunk-overlap-chars must be positive when --chunk-chars is set"},
 		{name: "bad fetch size", args: []string{downstream, "--fetch-max-bytes", "0"},
 			wantErr: "--fetch-max-bytes must be positive"},
 		{name: "stray argument", args: []string{downstream, "extra"}, wantErr: "unexpected argument"},
