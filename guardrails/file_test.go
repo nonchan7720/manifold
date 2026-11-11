@@ -53,9 +53,10 @@ func TestParseFileFlags(t *testing.T) {
 		}, wantErr: "AZURE_OPENAI_API_KEY is required"},
 		{name: "openapi without spec", args: []string{downstream, "--extractor", "openapi"},
 			wantErr: "--openapi-spec and --openapi-operation are required"},
-		{name: "overlap not smaller than chunk", args: []string{
-			downstream, "--chunk-chars", "100", "--chunk-overlap-chars", "100",
-		}, wantErr: "--chunk-overlap-chars must be smaller than --chunk-chars"},
+		// 重なりが断片の半分を超えると、分割後の合計が何倍にも膨らむ。
+		{name: "overlap over half of chunk", args: []string{
+			downstream, "--chunk-chars", "201", "--chunk-overlap-chars", "200",
+		}, wantErr: "--chunk-overlap-chars must be at most half of --chunk-chars"},
 		{name: "chunking without overlap", args: []string{
 			downstream, "--chunk-chars", "100", "--chunk-overlap-chars", "0",
 		}, wantErr: "--chunk-overlap-chars must be positive when --chunk-chars is set"},

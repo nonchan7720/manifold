@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"mime"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -128,4 +129,22 @@ func MatchMIME(patterns []string, mimeType string) bool {
 		}
 	}
 	return false
+}
+
+// RequestFailure は HTTP の呼び出しの失敗 err を、失敗の種類（"timed out"・
+// "canceled"・"request failed"）にする。
+//
+// err の文言はエラーやログに使わない。*url.Error は呼び出した URL を含み、URL には
+// 認証用のクエリ（API キーや署名付きのトークン）が入りうるため。
+func RequestFailure(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	}
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+		return "timed out"
+	}
+	return "request failed"
 }

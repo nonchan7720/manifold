@@ -500,3 +500,51 @@ paths:
 	require.Equal(t, "application/vnd.ocr+json", got.header.Get("Content-Type"))
 	require.JSONEq(t, `{"content":"JVBERg=="}`, string(got.body))
 }
+
+// 書き起こしが済んだことを表す 200 / 201 以外は、成功として扱わない。202（受け付けた
+// だけ）や 204（本文なし）を通すと、書き起こされていないファイルが「テキスト無し」になる。
+func TestExtractor_RejectsIncompleteStatuses(t *testing.T) {
+	file := extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")}
+	for _, status := range []int{http.StatusAccepted, http.StatusNoContent, http.StatusPartialContent} {
+		srv, _ := ocrServer(t, status, "text/plain", "")
+		e, err := New(Config{
+			SpecPath: writeSpec(t, rawSpec), OperationID: "extractText", ServerURL: srv.URL,
+			Params: map[string]string{"lang": "ja"}, MIMETypes: []string{"application/pdf"},
+		}, srv.Client())
+		require.NoError(t, err)
+		_, err = e.Extract(t.Context(), file)
+		require.ErrorContainsf(t, err, "returned status", "status %d", status)
+	}
+
+	// 200 で本文が空なのは、テキストの無いファイルという正常な結果。
+	srv, _ := ocrServer(t, http.StatusOK, "text/plain", "")
+	e, err := New(Config{
+		SpecPath: writeSpec(t, rawSpec), OperationID: "extractText", ServerURL: srv.URL,
+		Params: map[string]string{"lang": "ja"}, MIMETypes: []string{"application/pdf"},
+	}, srv.Client())
+	require.NoError(t, err)
+	text, err := e.Extract(t.Context(), file)
+	require.NoError(t, err)
+	require.Empty(t, text)
+}
+
+// サービスの URL（query パラメータの API キーなど）を、呼び出しの失敗のエラーに残さない。
+func TestExtractor_CallErrorOmitsURL(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	serverURL := closed.URL
+	closed.Close()
+
+	e, err := New(Config{
+		SpecPath: writeSpec(t, rawSpec), OperationID: "extractText", ServerURL: serverURL,
+		Params:    map[string]string{"lang": "ja", "mode": "api-key-secret"},
+		MIMETypes: []string{"application/pdf"},
+	}, http.DefaultClient)
+	require.NoError(t, err)
+	_, err = e.Extract(
+		t.Context(),
+		extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")},
+	)
+	require.ErrorContains(t, err, "openapi: call: request failed")
+	require.NotContains(t, err.Error(), "secret")
+	require.NotContains(t, err.Error(), serverURL)
+}

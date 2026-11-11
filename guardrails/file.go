@@ -140,7 +140,7 @@ func parseFileFlags(args []string) (fileOptions, error) {
 	fs.IntVar(&opts.chunkOverlapChars, "chunk-overlap-chars", 200,
 		"with --chunk-chars, how many characters neighbouring pieces share, so that a phrase "+
 			"cut at a boundary is still whole in one piece: set it to the longest phrase the "+
-			"downstream guardrail has to catch; must be positive and smaller than --chunk-chars")
+			"downstream guardrail has to catch; must be positive and at most half of --chunk-chars")
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
@@ -215,8 +215,10 @@ func (o fileOptions) validate() error {
 			return errors.New("--chunk-overlap-chars must be positive when --chunk-chars is set: " +
 				"set it to the longest phrase the downstream guardrail has to catch")
 		}
-		if o.chunkOverlapChars >= o.chunkChars {
-			return errors.New("--chunk-overlap-chars must be smaller than --chunk-chars")
+		// 重なりが断片の半分を超えると、断片が少しずつしか進まず、分割後の合計が
+		// 元のテキストの何倍にも膨らむ（小さいファイルでメモリを使い切る）。
+		if o.chunkOverlapChars > o.chunkChars/2 {
+			return errors.New("--chunk-overlap-chars must be at most half of --chunk-chars")
 		}
 	}
 	if o.fetchMaxBytes <= 0 {
