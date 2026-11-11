@@ -97,8 +97,12 @@ type Extractor struct {
 	fields     map[string]string
 	jsonFields map[string]bool // true: 値を JSON としてそのまま入れる（数値・真偽値など）
 
-	jsonResponse bool
-	textPath     []string
+	// successStatus は spec が成功として宣言した HTTP ステータス（200 か 201）。
+	// テキストの読み方（jsonResponse・textPath）はこのステータスの応答定義から決めるので、
+	// それ以外のステータスの応答は読まない。
+	successStatus int
+	jsonResponse  bool
+	textPath      []string
 
 	mimeTypes  []string
 	httpClient *http.Client
@@ -333,8 +337,13 @@ func uniqueStringProperty(schema *openapi3.Schema, format string) (string, error
 
 // setResponse は成功レスポンスからテキストの読み方を決める。
 func (e *Extractor) setResponse(op *openapi3.Operation, textPath string) error {
+	status, resp, err := successResponse(op)
+	if err != nil {
+		return err
+	}
+	e.successStatus = status
 	var content openapi3.Content
-	if resp := successResponse(op); resp != nil {
+	if resp != nil {
 		content = resp.Content
 	}
 	var jsonSchema *openapi3.Schema
@@ -378,24 +387,44 @@ func (e *Extractor) setResponse(op *openapi3.Operation, textPath string) error {
 	return nil
 }
 
-func successResponse(op *openapi3.Operation) *openapi3.Response {
+// successResponse は、書き起こしの結果を返す応答の定義と、その HTTP ステータスを返す。
+// 200 を優先し、無ければ 201 を使う。ステータスを特定しない定義（2XX・default）しか
+// 無い場合は 200 として扱う。202（受け付けただけ）や 204（本文なし）しか宣言しない
+// operation は、書き起こしの結果を同期で返さないので、起動時にエラーにする。
+func successResponse(op *openapi3.Operation) (int, *openapi3.Response, error) {
 	if op.Responses == nil {
+		return http.StatusOK, nil, nil
+	}
+	value := func(code string) *openapi3.Response {
+		if ref := op.Responses.Value(code); ref != nil {
+			return ref.Value
+		}
 		return nil
 	}
-	codes := make([]string, 0, op.Responses.Len())
-	for code := range op.Responses.Map() {
-		if strings.HasPrefix(code, "2") {
-			codes = append(codes, code)
+	declared := op.Responses.Map()
+	candidates := []struct {
+		code   string
+		status int
+	}{
+		{"200", http.StatusOK},
+		{"201", http.StatusCreated},
+		{"2XX", http.StatusOK},
+		{"2xx", http.StatusOK},
+	}
+	for _, c := range candidates {
+		if _, ok := declared[c.code]; ok {
+			return c.status, value(c.code), nil
 		}
 	}
-	sort.Strings(codes)
-	if len(codes) == 0 {
-		codes = append(codes, "default")
+	for code := range declared {
+		if strings.HasPrefix(code, "2") {
+			return 0, nil, fmt.Errorf(
+				"openapi: the operation declares neither a 200 nor a 201 response; " +
+					"use an operation that returns the text synchronously",
+			)
+		}
 	}
-	if ref := op.Responses.Value(codes[0]); ref != nil {
-		return ref.Value
-	}
-	return nil
+	return http.StatusOK, value("default"), nil
 }
 
 func (e *Extractor) Supports(mimeType string) bool {
@@ -486,10 +515,12 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 	if err != nil {
 		return "", fmt.Errorf("openapi: read response: %s", extract.RequestFailure(err))
 	}
-	// 書き起こしが済んだことを表す 200 / 201 だけを受け付ける。202（受け付けただけ）や
-	// 204（本文なし）を成功として扱うと、書き起こされていないファイルが「テキスト無し」
-	// として通る。応答の本文はファイルの内容を含みうるので、エラー文には出さない。
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	// spec が成功として宣言したステータス（200 か 201）だけを受け付ける。202（受け付けた
+	// だけ）や 204（本文なし）を成功として扱うと、書き起こされていないファイルが
+	// 「テキスト無し」として通る。宣言と違う成功ステータス（200 を宣言した operation の
+	// 201 など）は本文の形式が違いうるので、同じ読み方では読まない。応答の本文は
+	// ファイルの内容を含みうるので、エラー文には出さない。
+	if resp.StatusCode != e.successStatus {
 		return "", fmt.Errorf("openapi: returned status %d", resp.StatusCode)
 	}
 	if len(raw) > maxResponseSize {

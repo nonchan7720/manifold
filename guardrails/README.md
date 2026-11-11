@@ -25,7 +25,7 @@ caller (Manifold / LiteLLM) ──▶ manifold-guardrail file ──▶ text gua
 
 ```bash
 manifold-guardrail file \
-  --port 8091 \
+  --host 127.0.0.1 --port 8091 \
   --downstream-url http://localhost:8090/beta/litellm_basic_guardrail_api \
   --extractor bedrock \
   --model <Bedrock model ID or inference profile>
@@ -33,7 +33,7 @@ manifold-guardrail file \
 
 The endpoint is `POST /beta/litellm_basic_guardrail_api`, with `GET /healthz` for probes. `manifold-guardrail file -h` lists the flags.
 
-The endpoint has no authentication. Run it where only the caller (Manifold or LiteLLM) can reach it, for example as a sidecar in the same Pod. It trusts the caller to assemble the request correctly (that `texts` covers the text of `structured_messages`, and so on).
+The endpoint has no authentication, so run it where only the caller (Manifold or LiteLLM) can reach it. By default it listens on every interface, and putting it in the same Pod as the caller does not by itself keep other Pods out. As a sidecar, pass `--host 127.0.0.1` so that only containers in the same Pod can connect (an `httpGet` probe cannot reach a loopback listener; use an `exec` probe or none). When it runs as its own Pod or host, restrict the callers with a NetworkPolicy or a firewall. It trusts the caller to assemble the request correctly (that `texts` covers the text of `structured_messages`, and so on).
 
 ## Where files are read from
 
@@ -135,7 +135,7 @@ args:
   - Binary (`application/octet-stream`, `application/pdf`, `*/*`, ...): the file is the body. The Content-Type is the one the spec declares: the type of the file when the spec has it, the type of the file when a wildcard (`image/*`, ...) accepts it, and `application/octet-stream` when that is all the spec has. A file of a type the spec does not accept is not handled.
   - `multipart/form-data`: the file goes in the `type: string, format: binary` property.
   - `application/json`: the file goes, base64-encoded, in the `type: string, format: byte` property.
-- **Response**: `text/plain` is read whole; for `application/json` the string property is the text. Only `200` and `201` count as success. `202` (merely accepted) and `204` are failures, because the transcription is not done. For a service that answers asynchronously, use an operation that returns the result synchronously.
+- **Response**: `text/plain` is read whole; for `application/json` the string property is the text. The success status is the one the spec declares: `200`, or `201` when the operation declares no `200`. Any other status is a failure, including `202` (merely accepted) and `204`, because the transcription is not done, and a `201` from an operation that declares `200`, because its body may have another shape. An operation that declares neither `200` nor `201` is rejected at startup. For a service that answers asynchronously, use an operation that returns the result synchronously.
 - **When the spec does not settle it**: name the property the file goes in with `--openapi-file-field`, and where the text is with `--openapi-text-path`, which is dot-separated with `*` for every element of an array (for example `pages.*.text`). Starting without them when they are needed is an error.
 - **Parameters**: the parameters of the operation (path / query / header) and the other properties of the body are given with `--openapi-param name=value`. `{mime_type}` in a value is replaced by the type of the file. A required one without a value is an error at startup.
 - **Server**: the first of the spec's `servers`. Use `--openapi-server` when it has variables or to point somewhere else.

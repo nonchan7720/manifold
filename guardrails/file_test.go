@@ -19,6 +19,7 @@ func TestParseFileFlags(t *testing.T) {
 		"--openapi-param", "lang=ja", "--openapi-param", "type={mime_type}",
 	})
 	require.NoError(t, err)
+	require.Empty(t, opts.host)
 	require.Equal(t, 8091, opts.port)
 	require.Equal(t, keyValues{"X-Api-Key": "a=b"}, opts.downstreamHeaders)
 	require.Equal(t, keyValues{"lang": "ja", "type": "{mime_type}"}, opts.openapiParams)

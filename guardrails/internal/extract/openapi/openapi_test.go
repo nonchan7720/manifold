@@ -548,3 +548,100 @@ func TestExtractor_CallErrorOmitsURL(t *testing.T) {
 	require.NotContains(t, err.Error(), "secret")
 	require.NotContains(t, err.Error(), serverURL)
 }
+
+// 200 と 201 で本文の形式が違う operation（200 は JSON、201 は text/plain）。
+const mixedStatusSpec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /ocr:
+    post:
+      operationId: ocr
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text: {type: string}
+        "201":
+          description: job
+          content:
+            text/plain:
+              schema: {type: string}
+        "202":
+          description: accepted
+`
+
+// テキストの読み方は 200 の応答定義から決めるので、宣言と違う成功ステータス（201）の
+// 本文は、同じ読み方では読まずにエラーにする。
+func TestExtractor_RejectsUndeclaredSuccessStatus(t *testing.T) {
+	file := extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")}
+	newExtractor := func(srv *httptest.Server) *Extractor {
+		e, err := New(Config{
+			SpecPath: writeSpec(t, mixedStatusSpec), OperationID: "ocr", ServerURL: srv.URL,
+			MIMETypes: []string{"application/pdf"},
+		}, srv.Client())
+		require.NoError(t, err)
+		return e
+	}
+
+	srv, _ := ocrServer(t, http.StatusCreated, "text/plain", "job-1")
+	_, err := newExtractor(srv).Extract(t.Context(), file)
+	require.ErrorContains(t, err, "returned status 201")
+
+	srv, _ = ocrServer(t, http.StatusOK, "application/json", `{"text":"transcribed"}`)
+	text, err := newExtractor(srv).Extract(t.Context(), file)
+	require.NoError(t, err)
+	require.Equal(t, "transcribed", text)
+}
+
+// 201 だけを宣言する operation は、201 の応答を読み、200 は読まない。
+func TestExtractor_Declared201Only(t *testing.T) {
+	file := extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")}
+	srv, _ := ocrServer(t, http.StatusOK, "application/json", `{"text":"transcribed"}`)
+	e, err := New(Config{
+		SpecPath: writeSpec(t, jsonSpec), OperationID: "transcribe", ServerURL: srv.URL,
+		Params:    map[string]string{"mimeType": "{mime_type}"},
+		MIMETypes: []string{"application/pdf"},
+	}, srv.Client())
+	require.NoError(t, err)
+	_, err = e.Extract(t.Context(), file)
+	require.ErrorContains(t, err, "returned status 200")
+}
+
+// 202 や 204 しか宣言しない operation は、結果を同期で返さないので起動時にエラーにする。
+func TestNew_RejectsAsyncOnlyOperation(t *testing.T) {
+	const asyncSpec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /jobs:
+    post:
+      operationId: createJob
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "202":
+          description: accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+`
+	_, err := New(Config{
+		SpecPath: writeSpec(t, asyncSpec), OperationID: "createJob",
+		ServerURL: "https://ocr.example.com", MIMETypes: []string{"application/pdf"},
+	}, http.DefaultClient)
+	require.ErrorContains(t, err, "neither a 200 nor a 201 response")
+}
