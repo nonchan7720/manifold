@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -75,6 +76,10 @@ type Result struct {
 	Texts []string
 	// BlockedReason は Action が ActionBlocked のときの理由。
 	BlockedReason string
+	// FilesRewritten は、Action が ActionIntervened のときに、ガードレールが
+	// ファイル（画像）の書き換えを返したかどうか。ファイルは書き換えられないので、
+	// 呼び出し側は元のファイルを通さずに拒否する。
+	FilesRewritten bool
 }
 
 // Guardrail はテキストを検査・マスキングするガードレール。
@@ -108,6 +113,9 @@ type apiResponse struct {
 	Action        Action   `json:"action"`
 	BlockedReason string   `json:"blocked_reason,omitempty"`
 	Texts         []string `json:"texts,omitempty"`
+	// Images は書き換え後の画像。Generic Guardrail API は画像の書き換えも返せるが、
+	// Manifold はファイルを書き換えないので、書き換えの有無だけを見る。
+	Images []string `json:"images,omitempty"`
 }
 
 // HTTPGuardrail は Generic Guardrail API を HTTP で呼ぶ Guardrail。
@@ -200,7 +208,11 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 				len(out.Texts), len(req.Texts),
 			)
 		}
-		return Result{Action: ActionIntervened, Texts: out.Texts}, nil
+		// 送った画像と同じものを返しただけなら、書き換えではない。
+		filesRewritten := len(out.Images) > 0 && !slices.Equal(out.Images, images)
+		return Result{
+			Action: ActionIntervened, Texts: out.Texts, FilesRewritten: filesRewritten,
+		}, nil
 	case ActionBlocked:
 		return Result{Action: ActionBlocked, BlockedReason: out.BlockedReason}, nil
 	default:
@@ -221,6 +233,7 @@ func splitFiles(files []File) (images []string, rest []apiFile) {
 	return images, rest
 }
 
+// isImageMIME は mimeType が画像（image/*）かを返す。
 func isImageMIME(mimeType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/")
 }

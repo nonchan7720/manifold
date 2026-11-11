@@ -75,6 +75,8 @@ func NewGuardrailMiddleware(
 	}
 }
 
+// guardrailToolsCall checks a tools/call: with opts.PreCall the arguments
+// before the backend is called, with opts.PostCall the result after it.
 func guardrailToolsCall(
 	ctx context.Context,
 	g guardrail.Guardrail,
@@ -212,6 +214,8 @@ type guardrailResponseInput struct {
 	files   []guardrail.File
 }
 
+// addText adds a text to check. rewrite stores the rewritten text when the
+// guardrail rewrites it.
 func (in *guardrailResponseInput) addText(text string, rewrite func(text string) error) {
 	in.texts = append(in.texts, text)
 	in.rewrite = append(in.rewrite, rewrite)
@@ -238,8 +242,9 @@ func (in *guardrailResponseInput) addResource(
 }
 
 // check sends in to the guardrail and writes rewritten texts back. It reports
-// whether anything was rewritten. A BLOCKED decision, a guardrail failure and
-// files over opts.MaxFileBytes all return the error to answer the caller with.
+// whether anything was rewritten. A BLOCKED decision, a guardrail failure,
+// files over opts.MaxFileBytes and a guardrail that would rewrite a file all
+// return the error to answer the caller with.
 func (in *guardrailResponseInput) check(
 	ctx context.Context, g guardrail.Guardrail, gp map[string]any, opts GuardrailOptions,
 ) (changed bool, _ error) {
@@ -273,6 +278,15 @@ func (in *guardrailResponseInput) check(
 		logGuardrailDecision(ctx, gp, guardrail.InputTypeResponse, res)
 		return false, guardrailBlockedError(res.BlockedReason)
 	case guardrail.ActionIntervened:
+		if res.FilesRewritten {
+			// The guardrail wants a file changed (an image masked, ...), which
+			// cannot be done here. Passing the original on would ignore its
+			// decision, so the result does not go through.
+			logGuardrailDecision(ctx, gp, guardrail.InputTypeResponse, res)
+			return false, guardrailBlockedError(
+				"the guardrail would rewrite a file, which cannot be rewritten",
+			)
+		}
 		for i, rewrite := range in.rewrite {
 			if err := rewrite(res.Texts[i]); err != nil {
 				slog.ErrorContext(ctx, "guardrail rewrote a result into invalid content",
