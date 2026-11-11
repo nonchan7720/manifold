@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.2](https://github.com/nonchan7720/manifold/compare/v1.26.1...v1.26.2) (2026-11-11)
+
+
+### Miscellaneous
+
+* release 1.26.2 ([19e3413](https://github.com/nonchan7720/manifold/commit/19e3413218c93c990e30d5bb02e12eb8ff9a38f5))
+
 ## [1.26.1](https://github.com/nonchan7720/manifold/compare/v1.26.0...v1.26.1) (2026-11-11)
 
 
