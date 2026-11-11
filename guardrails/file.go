@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +63,7 @@ func (kv keyValues) Set(s string) error {
 
 // fileOptions は manifold-guardrail file の設定。
 type fileOptions struct {
+	host              string
 	port              int
 	downstreamURL     string
 	downstreamHeaders keyValues
@@ -107,6 +110,9 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		openapiParams:     keyValues{},
 	}
 	fs := flag.NewFlagSet("manifold-guardrail file", flag.ContinueOnError)
+	fs.StringVar(&opts.host, "host", "",
+		"listening address; empty listens on every interface. The endpoint has no "+
+			"authentication, so set 127.0.0.1 when only a caller in the same Pod or host calls it")
 	fs.IntVar(&opts.port, "port", 8091, "listening port")
 	fs.StringVar(&opts.downstreamURL, "downstream-url", os.Getenv("FILE_GUARDRAIL_DOWNSTREAM_URL"),
 		"Generic Guardrail API endpoint of the text guardrail that checks the transcribed text "+
@@ -374,7 +380,7 @@ func runFile(ctx context.Context, args []string) error {
 		w.WriteHeader(http.StatusOK)
 	})
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", opts.port),
+		Addr:              net.JoinHostPort(opts.host, strconv.Itoa(opts.port)),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       time.Minute,
@@ -386,7 +392,8 @@ func runFile(ctx context.Context, args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.InfoContext(ctx, "file guardrail listening",
-			slog.Int("port", opts.port), slog.String("extractor", opts.extractor))
+			slog.String("host", opts.host), slog.Int("port", opts.port),
+			slog.String("extractor", opts.extractor))
 		errCh <- srv.ListenAndServe()
 	}()
 	select {

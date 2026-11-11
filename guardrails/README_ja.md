@@ -33,7 +33,7 @@ manifold-guardrail version
 
 ```bash
 manifold-guardrail file \
-  --port 8091 \
+  --host 127.0.0.1 --port 8091 \
   --downstream-url http://localhost:8090/beta/litellm_basic_guardrail_api \
   --extractor bedrock \
   --model <Bedrock のモデル ID か推論プロファイル>
@@ -41,7 +41,7 @@ manifold-guardrail file \
 
 エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。フラグの一覧は `manifold-guardrail file -h` で見られます。
 
-エンドポイントに認証はありません。呼び出し側（Manifold や LiteLLM）と同じ Pod のサイドカーとして動かすなど、呼び出し側からだけ到達できるようにしてください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
+エンドポイントに認証は無いので、呼び出し側（Manifold や LiteLLM）からだけ到達できるようにしてください。既定ではすべてのインターフェースで待ち受けるので、呼び出し側と同じ Pod に置くだけでは、他の Pod からの接続を防げません。サイドカーとして動かすときは `--host 127.0.0.1` を指定すると、同じ Pod のコンテナからだけ接続できます（ループバックで待ち受けると `httpGet` のプローブは届かないので、`exec` のプローブを使うか、プローブを置かないでください）。別の Pod やホストで動かすときは、NetworkPolicy やファイアウォールで呼び出し元を制限してください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
 
 ## リクエストのどこからファイルを読むか
 
@@ -143,7 +143,7 @@ args:
   - バイナリ（`application/octet-stream`、`application/pdf`、`*/*` など）: ファイルをそのまま本文にします。Content-Type は spec が宣言した種類です。ファイルと同じ種類があればそれを、ワイルドカード（`image/*` など）が受け付けるならファイルの種類を、`application/octet-stream` だけなら `application/octet-stream` を送ります。spec が受け付けない種類のファイルは扱いません。
   - `multipart/form-data`: `type: string, format: binary` のプロパティにファイルを入れます。
   - `application/json`: `type: string, format: byte` のプロパティに base64 で入れます。
-- **レスポンス**: `text/plain` なら本文全体を、`application/json` なら文字列のプロパティをテキストとして読みます。成功として扱うのは `200` と `201` だけです。`202`（受け付けただけ）や `204` は、書き起こしが済んでいないので失敗にします。非同期で結果を返すサービスには、同期で結果を返す operation を使ってください。
+- **レスポンス**: `text/plain` なら本文全体を、`application/json` なら文字列のプロパティをテキストとして読みます。成功として扱うステータスは、spec が宣言したものです（`200`。`200` の宣言が無ければ `201`）。それ以外はすべて失敗にします。`202`（受け付けただけ）や `204` は書き起こしが済んでいないため、`200` を宣言した operation が返す `201` は本文の形式が違いうるためです。`200` も `201` も宣言しない operation は、起動時にエラーにします。非同期で結果を返すサービスには、同期で結果を返す operation を使ってください。
 - **spec から一意に決まらないとき**: ファイルを入れるプロパティは `--openapi-file-field`、テキストの場所は `--openapi-text-path` で指定します。`--openapi-text-path` は `.` 区切りで、`*` は配列の全要素です（例: `pages.*.text`）。決まらないまま起動するとエラーになります。
 - **パラメータ**: operation のパラメータ（path / query / header）と本文のほかのプロパティは、`--openapi-param name=value` で渡します。値の中の `{mime_type}` はファイルの種類に置き換えます。必須のものに値が無いと起動時にエラーになります。
 - **サーバー**: spec の `servers` の先頭を使います。変数を含む場合や別の URL に向ける場合は `--openapi-server` で指定します。
