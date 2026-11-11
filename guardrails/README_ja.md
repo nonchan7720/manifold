@@ -33,6 +33,8 @@ manifold-guardrail file \
 
 エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。フラグの一覧は `manifold-guardrail file -h` で見られます。
 
+エンドポイントに認証はありません。呼び出し側（Manifold や LiteLLM）と同じ Pod のサイドカーとして動かすなど、呼び出し側からだけ到達できるようにしてください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
+
 ## リクエストのどこからファイルを読むか
 
 | 場所 | 中身 | 送り元 |

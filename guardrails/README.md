@@ -33,6 +33,8 @@ manifold-guardrail file \
 
 The endpoint is `POST /beta/litellm_basic_guardrail_api`, with `GET /healthz` for probes. `manifold-guardrail file -h` lists the flags.
 
+The endpoint has no authentication. Run it where only the caller (Manifold or LiteLLM) can reach it, for example as a sidecar in the same Pod. It trusts the caller to assemble the request correctly (that `texts` covers the text of `structured_messages`, and so on).
+
 ## Where files are read from
 
 | Where | Content | Sent by |
