@@ -207,25 +207,12 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 	if err != nil {
 		return apiResponse{}, err
 	}
-	var fileTexts []string
-	pieces := 0
-	for _, res := range results {
-		if res.blocked != "" {
-			return apiResponse{Action: actionBlocked, BlockedReason: res.blocked}, nil
-		}
-		if res.text == "" {
-			continue
-		}
-		// 断片を作る前に数を確かめる。小さい断片に分ける設定だと、小さいファイルからでも
-		// 数百万件の断片ができ、メモリと下流へのリクエストが膨らむ。
-		pieces += chunkCount(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)
-		if pieces > h.cfg.MaxChunks {
-			return apiResponse{
-				Action:        actionBlocked,
-				BlockedReason: "the text of the files is too long for the guardrail check",
-			}, nil
-		}
-		fileTexts = append(fileTexts, chunk(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
+	fileTexts, blocked, err := h.checkOnlyTexts(req, texts, results)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	if blocked != "" {
+		return apiResponse{Action: actionBlocked, BlockedReason: blocked}, nil
 	}
 
 	// 元のリクエストと、ファイルから起こしたテキストを、並行して下流へ送る。
@@ -262,6 +249,43 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 		}, nil
 	}
 	return original, nil
+}
+
+// checkOnlyTexts は、通すか拒否するかだけを見るテキストを、下流へ送る断片にして返す。
+// ファイルから起こしたもの（results）と、texts を付けずに送られてきたメッセージの
+// テキスト。blocked が空でなければ、下流へ送らずに拒否する理由。
+func (h *Handler) checkOnlyTexts(
+	req map[string]json.RawMessage, texts []string, results []extracted,
+) (pieces []string, blocked string, _ error) {
+	var sources []string
+	for _, res := range results {
+		if res.blocked != "" {
+			return nil, res.blocked, nil
+		}
+		if res.text != "" {
+			sources = append(sources, res.text)
+		}
+	}
+	if raw, ok := req[keyStructuredMessages]; ok && len(texts) == 0 {
+		// texts があれば、呼び出し側（LiteLLM など）がメッセージのテキストをそこに入れて
+		// いるので、取り出さない（同じテキストを2回検査しない）。
+		messageTexts, err := structuredMessageTexts(raw)
+		if err != nil {
+			return nil, "", err
+		}
+		sources = append(sources, messageTexts...)
+	}
+	count := 0
+	for _, text := range sources {
+		// 断片を作る前に数を確かめる。小さい断片に分ける設定だと、小さいファイルからでも
+		// 数百万件の断片ができ、メモリと下流へのリクエストが膨らむ。
+		count += chunkCount(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)
+		if count > h.cfg.MaxChunks {
+			return nil, "the text of the files is too long for the guardrail check", nil
+		}
+		pieces = append(pieces, chunk(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
+	}
+	return pieces, "", nil
 }
 
 // extractAll は files を並行してテキストに起こす。結果は files と同じ順序。

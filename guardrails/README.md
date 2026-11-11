@@ -99,7 +99,7 @@ Point the `api_base` of LiteLLM's `generic_guardrail_api` at it. How LiteLLM beh
 
 ## How a request is handled
 
-1. The original request is sent downstream as it came (without `images` / `files`) and the decision is returned as is. What the downstream guardrail rewrites (masked `texts`, and `tools`, `tool_calls`, `structured_messages`, ...) goes back to the caller unchanged. A request without text is still sent when it has tool calls (`tool_calls`) or messages (`structured_messages`).
+1. The original request is sent downstream as it came (without `images` / `files`) and the decision is returned as is. What the downstream guardrail rewrites (masked `texts`, and `tools`, `tool_calls`, `structured_messages`, ...) goes back to the caller unchanged. A request without text is still sent when it has tool calls (`tool_calls`) or messages (`structured_messages`). When a request has no `texts`, the text inside its messages is taken out and checked like the text of a file (pass or block only), so that it does not go unchecked through a downstream guardrail that looks at `texts` alone.
 2. Each file is transcribed. Text files (`text/*`, JSON, XML, YAML, SVG, ... that are valid UTF-8) are used as text directly. Everything else goes through `--extractor`.
 3. The transcribed text is sent downstream in a call of its own. Its `input_type` is `request` by default: the content of a file is untrusted input from outside, and prompt-injection filters often apply to the input side only (change it with `--extracted-input-type`).
 4. A downstream rejection returns `BLOCKED`. When the downstream guardrail would rewrite the transcribed text (mask PII, ...), the file itself cannot be rewritten, so that is `BLOCKED` by default too (`--allow-intervened` lets it through).
