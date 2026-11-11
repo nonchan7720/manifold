@@ -106,9 +106,13 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 	var files []inputFile
 	for _, message := range messages {
 		// content は文字列か、パートの配列。文字列（や null）にファイルは無い。
+		if !strings.HasPrefix(strings.TrimSpace(string(message.Content)), "[") {
+			continue
+		}
+		// 配列なのに読めないものを無視すると、その中のファイルが未検査で通る。
 		var parts []messagePart
 		if json.Unmarshal(message.Content, &parts) != nil {
-			continue
+			return nil, &badRequestError{"the content of a message must be an array of parts"}
 		}
 		for _, part := range parts {
 			if part.Type != "file" && part.Type != "input_file" {

@@ -84,6 +84,12 @@ func TestAzureExtractor_Failures(t *testing.T) {
 		{name: "content filter", status: http.StatusOK, wantErr: "incomplete",
 			body: `{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}`},
 		{name: "failed", status: http.StatusOK, wantErr: `"failed"`, body: `{"status":"failed"}`},
+		// completed でも、拒否や空の出力は「テキスト無し」として通さない。
+		{name: "refusal", status: http.StatusOK, wantErr: "refused to transcribe",
+			body: `{"status":"completed","output":[{"type":"message","content":[
+				{"type":"refusal","refusal":"I cannot help with that"}]}]}`},
+		{name: "empty output", status: http.StatusOK, wantErr: "no transcription",
+			body: `{"status":"completed","output":[]}`},
 		{name: "invalid json", status: http.StatusOK, wantErr: "decode response", body: `not json`},
 		// 応答の本文はファイルの内容を含みうるので、エラー文には出さない。
 		{name: "http error", status: http.StatusBadRequest, wantErr: "status 400",

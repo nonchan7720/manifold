@@ -79,5 +79,5 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 		// SAFETY・RECITATION など。
 		return "", fmt.Errorf("google: generate content finished with %q", reason)
 	}
-	return extract.CleanOutput(resp.Text()), nil
+	return extract.Transcript(resp.Text())
 }

@@ -55,13 +55,21 @@ Do not summarize, translate, explain or add commentary. Output only the transcri
 // UserPrompt はファイルに添える利用者側のメッセージ。
 const UserPrompt = "Transcribe the attached file."
 
-// CleanOutput は LLM の出力から NoTextMarker を取り除く。
-func CleanOutput(text string) string {
-	text = strings.TrimSpace(text)
-	if text == NoTextMarker {
-		return ""
+// ErrNoTranscript は、LLM が書き起こしも NoTextMarker も返さなかったことを表す。
+var ErrNoTranscript = errors.New("extract: the model returned no transcription")
+
+// Transcript は LLM の出力を書き起こしのテキストにする。NoTextMarker は「テキストの
+// 無いファイル」で、空文字列を返す。何も出力されなかった場合は、書き起こせたのか
+// 分からないので ErrNoTranscript を返す（未検査のファイルを通さないため）。
+func Transcript(output string) (string, error) {
+	output = strings.TrimSpace(output)
+	switch output {
+	case "":
+		return "", ErrNoTranscript
+	case NoTextMarker:
+		return "", nil
 	}
-	return text
+	return output, nil
 }
 
 // NormalizeMIME は送り元が申告した種類 declared を、パラメータを除いた小文字の

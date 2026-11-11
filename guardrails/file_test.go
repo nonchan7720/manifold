@@ -53,6 +53,9 @@ func TestParseFileFlags(t *testing.T) {
 		}, wantErr: "AZURE_OPENAI_API_KEY is required"},
 		{name: "openapi without spec", args: []string{downstream, "--extractor", "openapi"},
 			wantErr: "--openapi-spec and --openapi-operation are required"},
+		{name: "overlap not smaller than chunk", args: []string{
+			downstream, "--chunk-chars", "100", "--chunk-overlap-chars", "100",
+		}, wantErr: "--chunk-overlap-chars must be smaller than --chunk-chars"},
 		{name: "bad fetch size", args: []string{downstream, "--fetch-max-bytes", "0"},
 			wantErr: "--fetch-max-bytes must be positive"},
 		{name: "stray argument", args: []string{downstream, "extra"}, wantErr: "unexpected argument"},

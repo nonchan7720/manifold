@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -86,7 +87,10 @@ type Extractor struct {
 	params  []param
 	headers map[string]string
 
-	body        bodyKind
+	body bodyKind
+	// rawTypes は本文がバイナリのときに spec が受け付ける種類（小文字。
+	// "application/pdf"、"image/*"、"application/octet-stream" など）。
+	rawTypes    []string
 	contentType string
 	fileField   string
 	// fields は本文のファイル以外のプロパティ。JSON では jsonFields を使う。
@@ -214,7 +218,8 @@ func classifyBody(contentType string) bodyKind {
 }
 
 // setRequestBody は requestBody の content から本文の形を選ぶ。バイナリ、
-// multipart、JSON の順に優先し、同じ形が複数あれば名前順で最初のものを使う。
+// multipart、JSON の順に優先する。multipart と JSON は、同じ形が複数あれば名前順で
+// 最初のものを使う。バイナリは、ファイルの種類に合うものを呼び出しのたびに選ぶ。
 func (e *Extractor) setRequestBody(op *openapi3.Operation, cfg Config) error {
 	if op.RequestBody == nil || op.RequestBody.Value == nil ||
 		len(op.RequestBody.Value.Content) == 0 {
@@ -238,6 +243,18 @@ func (e *Extractor) setRequestBody(op *openapi3.Operation, cfg Config) error {
 	e.contentType = names[0]
 	e.body = classifyBody(e.contentType)
 	if e.body == bodyRaw {
+		// バイナリの本文は、ファイルの種類に合うものを呼び出しのたびに選ぶので、
+		// spec が受け付ける種類をすべて持っておく。
+		for _, name := range names {
+			if classifyBody(name) != bodyRaw {
+				continue
+			}
+			mediaType, _, err := mime.ParseMediaType(name)
+			if err != nil {
+				mediaType = strings.ToLower(strings.TrimSpace(name))
+			}
+			e.rawTypes = append(e.rawTypes, mediaType)
+		}
 		return nil
 	}
 
@@ -382,7 +399,38 @@ func successResponse(op *openapi3.Operation) *openapi3.Response {
 }
 
 func (e *Extractor) Supports(mimeType string) bool {
-	return extract.MatchMIME(e.mimeTypes, mimeType)
+	if !extract.MatchMIME(e.mimeTypes, mimeType) {
+		return false
+	}
+	if e.body != bodyRaw {
+		return true
+	}
+	// バイナリの本文は、spec がその種類を受け付けるときだけ送れる。
+	_, ok := e.rawContentType(mimeType)
+	return ok
+}
+
+// rawContentType は、種類 mimeType のファイルをバイナリの本文で送るときの
+// Content-Type を返す。spec がその種類を受け付けなければ ok は false。
+//
+// spec に同じ種類があればそれを使う。無ければ、ワイルドカード（image/*、*/*）か
+// application/octet-stream が受け付けるので、ファイルの種類をそのまま Content-Type に
+// する（種類で処理を分けるサービスのため）。
+func (e *Extractor) rawContentType(mimeType string) (_ string, ok bool) {
+	if slices.Contains(e.rawTypes, mimeType) {
+		return mimeType, true
+	}
+	for _, rawType := range e.rawTypes {
+		if rawType == "application/octet-stream" {
+			return mimeType, true
+		}
+		if strings.Contains(rawType, "*") {
+			if matched, err := path.Match(rawType, mimeType); err == nil && matched {
+				return mimeType, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, error) {
@@ -497,15 +545,14 @@ func (e *Extractor) buildBody(
 		if err != nil {
 			return nil, "", fmt.Errorf("openapi: build JSON body: %w", err)
 		}
-		return bytes.NewReader(raw), "application/json", nil
+		// application/vnd.example+json のような種類だけを受け付ける spec もあるので、
+		// spec の種類をそのまま使う。
+		return bytes.NewReader(raw), e.contentType, nil
 	case bodyRaw:
 	}
-	// spec の種類が具体的（application/pdf など）ならそれを、ワイルドカードや
-	// application/octet-stream ならファイルの種類を Content-Type にする。
-	contentType := f.MIMEType
-	if mediaType, _, err := mime.ParseMediaType(e.contentType); err == nil &&
-		mediaType != "application/octet-stream" && !strings.Contains(mediaType, "*") {
-		contentType = mediaType
+	contentType, ok := e.rawContentType(f.MIMEType)
+	if !ok {
+		return nil, "", fmt.Errorf("openapi: the operation does not accept %q", f.MIMEType)
 	}
 	return bytes.NewReader(f.Data), contentType, nil
 }

@@ -160,10 +160,15 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 	var b strings.Builder
 	for _, item := range out.Output {
 		for _, c := range item.Content {
-			if c.Type == "output_text" {
+			switch c.Type {
+			case "output_text":
 				b.WriteString(c.Text)
+			case "refusal":
+				// status が completed でも、モデルが書き起こしを拒否することがある。
+				// 書き起こしが得られていないので、テキスト無しとしては扱わない。
+				return "", fmt.Errorf("azure: the model refused to transcribe the file")
 			}
 		}
 	}
-	return extract.CleanOutput(b.String()), nil
+	return extract.Transcript(b.String())
 }

@@ -531,3 +531,95 @@ func TestHandler_UnreadableFiles(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status)
 	}
 }
+
+// 下流が texts 以外（tools・structured_messages など）も書き換えたら、呼び出し側が
+// 適用できるように、そのまま返す。
+func TestHandler_PassesThroughDownstreamRewrites(t *testing.T) {
+	rewrite := func([]string) (int, string) {
+		return http.StatusOK, `{"action":"GUARDRAIL_INTERVENED","texts":["masked"],` +
+			`"tools":[{"type":"function","function":{"name":"safe"}}],` +
+			`"structured_messages":[{"role":"user","content":"masked"}]}`
+	}
+	srv, _ := newTestHandler(t, Config{}, rewrite)
+	status, res, raw := post(t, srv, map[string]any{
+		"texts": []string{"original"}, "input_type": "request",
+		"tools": []any{map[string]any{"type": "function"}},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, apiResponse{Action: actionIntervened, Texts: []string{"masked"}}, res)
+	require.JSONEq(t, `{"action":"GUARDRAIL_INTERVENED","texts":["masked"],
+		"tools":[{"type":"function","function":{"name":"safe"}}],
+		"structured_messages":[{"role":"user","content":"masked"}]}`, raw)
+}
+
+// テキストが無くても、ツール呼び出しがあれば下流へ送る（下流がそれを検査する）。
+func TestHandler_ForwardsToolCallsWithoutTexts(t *testing.T) {
+	blocked := func([]string) (int, string) {
+		return http.StatusOK, `{"action":"BLOCKED","blocked_reason":"dangerous tool call"}`
+	}
+	srv, d := newTestHandler(t, Config{}, blocked)
+	status, res, _ := post(t, srv, map[string]any{
+		"texts": []string{}, "input_type": "response",
+		"tool_calls": []any{map[string]any{"id": "call_1", "type": "function"}},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, apiResponse{Action: actionBlocked, BlockedReason: "dangerous tool call"}, res)
+	require.Len(t, d.bodies, 1)
+	require.Contains(t, d.bodies[0], keyToolCalls)
+
+	// 空の tool_calls だけなら、検査するものが無いので下流を呼ばない。
+	_, res, _ = post(t, srv, map[string]any{"texts": []string{}, "tool_calls": []any{}})
+	require.Equal(t, actionNone, res.Action)
+	require.Len(t, d.bodies, 1)
+}
+
+// 分割した断片は重ねる。境界で切れた語句も、どれかの断片に全体が入る。
+func TestHandler_ChunksOverlap(t *testing.T) {
+	require.Equal(t, []string{"abcdef", "efghij"}, chunk("abcdefghij", 6, 2))
+	require.Equal(t, []string{"abcd", "cdef", "efg"}, chunk("abcdefg", 4, 2))
+	require.Equal(t, []string{"abcdefghij"}, chunk("abcdefghij", 10, 2))
+	require.Equal(t, []string{"abcd", "efgh", "ij"}, chunk("abcdefghij", 4, 0))
+
+	// "secret" は重ねなければ "…sec" と "ret…" に分かれて、下流が検出できない。
+	e := &fakeExtractor{
+		fn: func(extract.SourceFile) (string, error) { return "xxxxxsecretxxxxx", nil },
+	}
+	for _, tc := range []struct {
+		overlap int
+		want    string
+	}{
+		{overlap: 0, want: actionNone},
+		{overlap: 6, want: actionBlocked},
+	} {
+		srv, _ := newTestHandler(t, Config{Extractor: e, ChunkChars: 8, ChunkOverlap: tc.overlap},
+			blockOn("secret"))
+		_, res, _ := post(t, srv, map[string]any{"files": []any{pdf("%PDF")}})
+		require.Equalf(t, tc.want, res.Action, "overlap %d", tc.overlap)
+	}
+}
+
+// content が配列なのに読めないメッセージは 400。無視すると、その中のファイルが
+// 未検査で通る。
+func TestHandler_MalformedMessageContent(t *testing.T) {
+	srv, d := newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}}, none)
+	status, _, _ := post(t, srv, map[string]any{
+		"texts": []string{"hello"},
+		"structured_messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "file", "file": map[string]any{"file_data": 123}},
+			map[string]any{"type": "file", "file": map[string]any{"file_data": "JVBERg=="}},
+		}}},
+	})
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Empty(t, d.bodies)
+
+	// 文字列と null の content にファイルは無い。
+	status, res, _ := post(t, srv, map[string]any{
+		"texts": []string{"hello"},
+		"structured_messages": []any{
+			map[string]any{"role": "system", "content": "be brief"},
+			map[string]any{"role": "assistant", "content": nil},
+		},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionNone, res.Action)
+}

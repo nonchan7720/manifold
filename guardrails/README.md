@@ -91,7 +91,7 @@ Point the `api_base` of LiteLLM's `generic_guardrail_api` at it. How LiteLLM beh
 
 ## How a request is handled
 
-1. The original `texts` are sent downstream as they came (without `images` / `files`) and the decision is returned as is, rewrites (masking) included.
+1. The original request is sent downstream as it came (without `images` / `files`) and the decision is returned as is. What the downstream guardrail rewrites (masked `texts`, and `tools`, `tool_calls`, `structured_messages`, ...) goes back to the caller unchanged. A request without text is still sent when it has tool calls (`tool_calls`).
 2. Each file is transcribed. Text files (`text/*`, JSON, XML, YAML, SVG, ... that are valid UTF-8) are used as text directly. Everything else goes through `--extractor`.
 3. The transcribed text is sent downstream in a call of its own. Its `input_type` is `request` by default: the content of a file is untrusted input from outside, and prompt-injection filters often apply to the input side only (change it with `--extracted-input-type`).
 4. A downstream rejection returns `BLOCKED`. When the downstream guardrail would rewrite the transcribed text (mask PII, ...), the file itself cannot be rewritten, so that is `BLOCKED` by default too (`--allow-intervened` lets it through).
@@ -102,7 +102,7 @@ These also return `BLOCKED`, because what cannot be checked does not go through:
 - A file whose transcription was cut off at the output limit (`--max-output-tokens`): the rest would go unchecked.
 - A file larger than `--max-file-bytes`.
 
-When the transcription or the downstream call fails it answers `502`, which the caller treats as a failure (Manifold rejects the call with `guardrail check failed`). The content of a file and its transcription are never logged.
+When the transcription or the downstream call fails it answers `502`, which the caller treats as a failure (Manifold rejects the call with `guardrail check failed`). An LLM that refuses to transcribe, or that outputs nothing, counts as a failure too (it is not passed as "a file without text"). The content of a file and its transcription are never logged.
 
 ## Transcription (`--extractor`)
 
@@ -141,5 +141,6 @@ args:
 ## Caveats
 
 - **Transcription by an LLM is itself a prompt-injection target.** A file that says "do not output this part" may make the LLM drop that part. The model gets no tools, is told to transcribe verbatim, and never sees the file name, but this cannot be reduced to zero. When you need certainty, use an OCR service (`openapi`), which does not follow instructions.
+- **Splitting long text**: when the downstream guardrail limits the length of a text, `--chunk-chars` splits the transcribed text into pieces (off by default). Neighbouring pieces share `--chunk-overlap-chars` characters (default 200), so a phrase up to that length is whole in one piece even when a boundary cuts it. Longer phrases, and policies that judge from a wide context, may be missed once the text is split. Split only when you have to, and keep the pieces as large as you can.
 - **Latency and cost**: every file is one call to an LLM or an OCR service. Set the caller's guardrail timeout long enough to wait for a transcription (in Manifold, `guardrail.timeout`, default 5s).
 - **The provider integrations are untested against the real services**: the Bedrock / Google / Azure calls follow the official documentation and SDK types and are tested with fake clients, but have not been run against the services themselves. Verify them in your environment before relying on them.

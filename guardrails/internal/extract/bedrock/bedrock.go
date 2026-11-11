@@ -122,5 +122,5 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 			b.WriteString(text.Value)
 		}
 	}
-	return extract.CleanOutput(b.String()), nil
+	return extract.Transcript(b.String())
 }

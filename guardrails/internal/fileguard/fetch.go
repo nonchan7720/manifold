@@ -20,6 +20,12 @@ const maxFetchRedirects = 5
 // errFetchTooLarge は、取得したファイルが上限を超えたことを表す。
 var errFetchTooLarge = errors.New("fetch: the file exceeds the size limit")
 
+// リダイレクトを止めた理由。
+var (
+	errFetchTooManyRedirects = errors.New("too many redirects")
+	errFetchRedirectDenied   = errors.New("redirected to a host that is not allowed")
+)
+
 // allowedHost は URL の取得を許可するホスト1件。
 type allowedHost struct {
 	// name は小文字のホスト名。wildcard なら、そのサブドメインすべて（"example.com"
@@ -59,10 +65,10 @@ func NewFetcher(hosts []string, maxBytes int64, timeout time.Duration) (*Fetcher
 		Timeout: timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {
-				return errors.New("fetch: too many redirects")
+				return errFetchTooManyRedirects
 			}
 			if !f.Allowed(req.URL) {
-				return errors.New("fetch: redirected to a host that is not allowed")
+				return errFetchRedirectDenied
 			}
 			return nil
 		},
@@ -147,11 +153,7 @@ func (f *Fetcher) Fetch(
 	}
 	resp, err := f.httpClient.Do(req)
 	if err != nil {
-		// *url.Error は URL を含むので、原因だけを残す。
-		if urlErr, ok := errors.AsType[*url.Error](err); ok {
-			err = urlErr.Err
-		}
-		return extract.SourceFile{}, true, fmt.Errorf("fetch: %s: %w", u.Hostname(), err)
+		return extract.SourceFile{}, true, fetchFailure(u.Hostname(), err)
 	}
 	defer resp.Body.Close() //nolint: errcheck
 	if resp.StatusCode != http.StatusOK {
@@ -161,7 +163,7 @@ func (f *Fetcher) Fetch(
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, f.maxBytes+1))
 	if err != nil {
-		return extract.SourceFile{}, true, fmt.Errorf("fetch: %s: read: %w", u.Hostname(), err)
+		return extract.SourceFile{}, true, fetchFailure(u.Hostname(), err)
 	}
 	if int64(len(data)) > f.maxBytes {
 		return extract.SourceFile{}, true, errFetchTooLarge
@@ -169,4 +171,28 @@ func (f *Fetcher) Fetch(
 	return extract.SourceFile{
 		MIMEType: extract.NormalizeMIME(resp.Header.Get("Content-Type"), data), Data: data,
 	}, true, nil
+}
+
+// fetchFailure は取得の失敗 err を、ホスト名と失敗の種類だけのエラーにする。
+//
+// err の文言はそのまま使わない。*url.Error は URL を含み、リダイレクト先の解析に
+// 失敗したときは内側のエラーにも Location の値（署名付きのトークンを含みうる）が
+// 入るため。
+func fetchFailure(host string, err error) error {
+	kind := "request failed"
+	switch {
+	case errors.Is(err, errFetchRedirectDenied):
+		kind = errFetchRedirectDenied.Error()
+	case errors.Is(err, errFetchTooManyRedirects):
+		kind = errFetchTooManyRedirects.Error()
+	case errors.Is(err, context.Canceled):
+		kind = "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		kind = "timed out"
+	default:
+		if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+			kind = "timed out"
+		}
+	}
+	return fmt.Errorf("fetch: %s: %s", host, kind)
 }

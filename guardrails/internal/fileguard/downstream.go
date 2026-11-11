@@ -74,7 +74,16 @@ func (d *Downstream) Apply(
 				len(out.Texts), texts,
 			)
 		}
-		return apiResponse{Action: actionIntervened, Texts: out.Texts}, nil
+		// texts 以外の書き換え（tools・tool_calls・structured_messages など）は、
+		// 呼び出し側が適用できるように中身を見ずに引き継ぐ。
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rawResp, &fields); err != nil {
+			return apiResponse{}, fmt.Errorf("downstream: decode response: %w", err)
+		}
+		delete(fields, keyAction)
+		delete(fields, keyBlockedReason)
+		delete(fields, keyTexts)
+		return apiResponse{Action: actionIntervened, Texts: out.Texts, passthrough: fields}, nil
 	case actionBlocked:
 		return apiResponse{Action: actionBlocked, BlockedReason: out.BlockedReason}, nil
 	default:

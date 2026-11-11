@@ -71,6 +71,10 @@ func fileServer(t *testing.T, maxBytes int64) (*httptest.Server, *Fetcher) {
 			http.Redirect(w, r, "/a.pdf", http.StatusFound)
 		case "/redirect-out":
 			http.Redirect(w, r, other.URL+"/a.pdf", http.StatusFound)
+		case "/bad-redirect":
+			// 解析できない Location。Go はこの値をエラーの文言に含める。
+			w.Header().Set("Location", "/a%zz.pdf?X-Signature=secret")
+			w.WriteHeader(http.StatusFound)
 		case "/big":
 			_, _ = w.Write([]byte(strings.Repeat("x", 2048)))
 		default:
@@ -116,6 +120,8 @@ func TestFetcher_Fetch(t *testing.T) {
 		{name: "redirect to another host", path: "/redirect-out?X-Signature=secret",
 			wantErr: "redirected to a host that is not allowed"},
 		{name: "not found", path: "/missing?X-Signature=secret", wantErr: "returned status 404"},
+		// リダイレクト先の解析に失敗したときの内側のエラーにも、URL を残さない。
+		{name: "malformed redirect", path: "/bad-redirect", wantErr: "request failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, ok, err := f.Fetch(t.Context(), srv.URL+tc.path)

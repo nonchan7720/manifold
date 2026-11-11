@@ -46,7 +46,16 @@ func TestMatchMIME(t *testing.T) {
 	require.False(t, MatchMIME(nil, "application/pdf"))
 }
 
-func TestCleanOutput(t *testing.T) {
-	require.Empty(t, CleanOutput("  "+NoTextMarker+"\n"))
-	require.Equal(t, "hello", CleanOutput(" hello\n"))
+func TestTranscript(t *testing.T) {
+	got, err := Transcript("  " + NoTextMarker + "\n")
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	got, err = Transcript(" hello\n")
+	require.NoError(t, err)
+	require.Equal(t, "hello", got)
+
+	// 何も出力されなかったら、テキスト無しとしては扱わない。
+	_, err = Transcript(" \n")
+	require.ErrorIs(t, err, ErrNoTranscript)
 }

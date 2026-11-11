@@ -53,6 +53,12 @@ const (
 	keyStructuredMessages = "structured_messages"
 )
 
+// レスポンスの JSON のキー（texts はリクエストと同じ keyTexts）。
+const (
+	keyAction        = "action"
+	keyBlockedReason = "blocked_reason"
+)
+
 // Config は Handler の設定。
 type Config struct {
 	// Extractor はテキストとして読めないファイルを起こす。
@@ -81,6 +87,9 @@ type Config struct {
 	// ChunkChars は起こしたテキストを下流へ送るときの分割の大きさ（文字数）。
 	// 0 なら分割しない。
 	ChunkChars int
+	// ChunkOverlap は隣り合う断片を重ねる文字数。境界で切れた語句を下流が検出
+	// できるようにする。ChunkChars より小さいこと。
+	ChunkOverlap int
 }
 
 // Handler は Generic Guardrail API を受ける http.Handler。
@@ -108,6 +117,26 @@ type apiResponse struct {
 	Action        string   `json:"action"`
 	BlockedReason string   `json:"blocked_reason,omitempty"`
 	Texts         []string `json:"texts,omitempty"`
+	// passthrough は、下流が GUARDRAIL_INTERVENED で返した texts 以外のフィールド
+	// （書き換えた tools・tool_calls・structured_messages など）。呼び出し側が適用
+	// できるように、中身を見ずにそのまま返す。
+	passthrough map[string]json.RawMessage
+}
+
+// MarshalJSON は passthrough のフィールドを加えて JSON にする。
+func (r apiResponse) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, len(r.passthrough)+3)
+	for k, v := range r.passthrough {
+		out[k] = v
+	}
+	out[keyAction] = r.Action
+	if r.BlockedReason != "" {
+		out[keyBlockedReason] = r.BlockedReason
+	}
+	if len(r.Texts) > 0 {
+		out[keyTexts] = r.Texts
+	}
+	return json.Marshal(out)
 }
 
 // extracted はファイル1件を起こした結果。blocked が空でなければ拒否の理由。
@@ -170,15 +199,16 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 			return apiResponse{Action: actionBlocked, BlockedReason: res.blocked}, nil
 		}
 		if res.text != "" {
-			fileTexts = append(fileTexts, chunk(res.text, h.cfg.ChunkChars)...)
+			fileTexts = append(fileTexts, chunk(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
 		}
 	}
 
-	// 元の texts と、ファイルから起こしたテキストを、並行して下流へ送る。
+	// 元のリクエストと、ファイルから起こしたテキストを、並行して下流へ送る。
 	var original, fromFiles apiResponse
 	original.Action, fromFiles.Action = actionNone, actionNone
 	eg, egCtx := errgroup.WithContext(ctx)
-	if len(texts) > 0 {
+	// テキストが無くても、ツール呼び出しがあれば下流はそれを検査するので送る。
+	if len(texts) > 0 || hasItems(req[keyToolCalls]) {
 		eg.Go(func() (err error) {
 			original, err = h.cfg.Downstream.Apply(egCtx, originalRequest(req), len(texts))
 			return err
@@ -316,16 +346,33 @@ func printable(s string) string {
 }
 
 // chunk は text を最大 size 文字ずつに分ける。size が 0 以下なら分けない。
-func chunk(text string, size int) []string {
+//
+// 隣り合う断片は overlap 文字ずつ重ねる。境界で切れた語句は、どの断片にも全体が
+// 入らないと下流が検出できないためで、overlap 文字までの語句は必ずどれかの断片に
+// 全体が入る。overlap は size より小さいこと（Config の検証で保証する）。
+func chunk(text string, size, overlap int) []string {
 	runes := []rune(text)
 	if size <= 0 || len(runes) <= size {
 		return []string{text}
 	}
-	out := make([]string, 0, len(runes)/size+1)
-	for start := 0; start < len(runes); start += size {
-		out = append(out, string(runes[start:min(start+size, len(runes))]))
+	step := size - max(overlap, 0)
+	if step <= 0 {
+		step = size
 	}
-	return out
+	out := make([]string, 0, len(runes)/step+1)
+	for start := 0; ; start += step {
+		end := min(start+size, len(runes))
+		out = append(out, string(runes[start:end]))
+		if end == len(runes) {
+			return out
+		}
+	}
+}
+
+// hasItems は raw が要素のある JSON の配列かを返す。
+func hasItems(raw json.RawMessage) bool {
+	var items []json.RawMessage
+	return json.Unmarshal(raw, &items) == nil && len(items) > 0
 }
 
 // originalRequest は req から images と files を除いた、下流へそのまま送る本文。

@@ -75,6 +75,7 @@ type fileOptions struct {
 	allowIntervened    bool
 	extractedInputType string
 	chunkChars         int
+	chunkOverlapChars  int
 
 	fetchAllowedHosts stringList
 	fetchMaxBytes     int64
@@ -136,6 +137,9 @@ func parseFileFlags(args []string) (fileOptions, error) {
 	fs.IntVar(&opts.chunkChars, "chunk-chars", 0,
 		"split the transcribed text into pieces of this many characters for the downstream "+
 			"guardrail (0: do not split)")
+	fs.IntVar(&opts.chunkOverlapChars, "chunk-overlap-chars", 200,
+		"with --chunk-chars, how many characters neighbouring pieces share, so that a phrase "+
+			"cut at a boundary is still whole in one piece; must be smaller than --chunk-chars")
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
@@ -199,6 +203,13 @@ func (o fileOptions) validate() error {
 	}
 	if o.maxOutputTokens <= 0 {
 		return errors.New("--max-output-tokens must be positive")
+	}
+	if o.chunkChars < 0 || o.chunkOverlapChars < 0 {
+		return errors.New("--chunk-chars and --chunk-overlap-chars must not be negative")
+	}
+	// 重なりが断片より小さくないと、分割が進まない。
+	if o.chunkChars > 0 && o.chunkOverlapChars >= o.chunkChars {
+		return errors.New("--chunk-overlap-chars must be smaller than --chunk-chars")
 	}
 	if o.fetchMaxBytes <= 0 {
 		return errors.New("--fetch-max-bytes must be positive")
@@ -331,6 +342,7 @@ func runFile(ctx context.Context, args []string) error {
 		AllowIntervened:    opts.allowIntervened,
 		ExtractedInputType: inputType,
 		ChunkChars:         opts.chunkChars,
+		ChunkOverlap:       opts.chunkOverlapChars,
 	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

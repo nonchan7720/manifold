@@ -375,3 +375,118 @@ paths:
 	}, http.DefaultClient)
 	require.NoError(t, err)
 }
+
+// spec がバイナリの本文を種類ごとに定義しているときは、ファイルの種類に合うものを選ぶ。
+// spec が受け付けない種類は扱わない。
+const multiRawSpec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /ocr:
+    post:
+      operationId: ocr
+      requestBody:
+        content:
+          application/pdf:
+            schema: {type: string, format: binary}
+          image/png:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: text
+          content:
+            text/plain:
+              schema: {type: string}
+`
+
+func TestExtractor_RawBodyMatchesFileType(t *testing.T) {
+	srv, got := ocrServer(t, http.StatusOK, "text/plain", "text")
+	e, err := New(Config{
+		SpecPath: writeSpec(t, multiRawSpec), OperationID: "ocr", ServerURL: srv.URL,
+		MIMETypes: []string{"application/pdf", "image/*"},
+	}, srv.Client())
+	require.NoError(t, err)
+
+	for _, mimeType := range []string{"image/png", "application/pdf"} {
+		require.True(t, e.Supports(mimeType))
+		_, err := e.Extract(t.Context(), extract.SourceFile{MIMEType: mimeType, Data: []byte("x")})
+		require.NoError(t, err)
+		require.Equal(t, mimeType, got.header.Get("Content-Type"))
+	}
+
+	// --openapi-mime-types には一致しても、spec に無い種類は送らない。
+	require.False(t, e.Supports("image/tiff"))
+	_, err = e.Extract(t.Context(), extract.SourceFile{MIMEType: "image/tiff", Data: []byte("x")})
+	require.ErrorContains(t, err, `does not accept "image/tiff"`)
+}
+
+// ワイルドカードの本文は、ファイルの種類を Content-Type にする。
+func TestExtractor_RawBodyWildcard(t *testing.T) {
+	const spec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /ocr:
+    post:
+      operationId: ocr
+      requestBody:
+        content:
+          image/*:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: text
+          content:
+            text/plain:
+              schema: {type: string}
+`
+	srv, got := ocrServer(t, http.StatusOK, "text/plain", "text")
+	e, err := New(Config{
+		SpecPath: writeSpec(t, spec), OperationID: "ocr", ServerURL: srv.URL,
+		MIMETypes: []string{"*/*"},
+	}, srv.Client())
+	require.NoError(t, err)
+	require.True(t, e.Supports("image/tiff"))
+	require.False(t, e.Supports("application/pdf"))
+	_, err = e.Extract(t.Context(), extract.SourceFile{MIMEType: "image/tiff", Data: []byte("x")})
+	require.NoError(t, err)
+	require.Equal(t, "image/tiff", got.header.Get("Content-Type"))
+}
+
+// JSON の本文は、spec の種類（vendor の +json も）をそのまま Content-Type にする。
+func TestExtractor_JSONBodyKeepsVendorMediaType(t *testing.T) {
+	const spec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /ocr:
+    post:
+      operationId: ocr
+      requestBody:
+        content:
+          application/vnd.ocr+json:
+            schema:
+              type: object
+              properties:
+                content: {type: string, format: byte}
+      responses:
+        "200":
+          description: text
+          content:
+            text/plain:
+              schema: {type: string}
+`
+	srv, got := ocrServer(t, http.StatusOK, "text/plain", "text")
+	e, err := New(Config{
+		SpecPath: writeSpec(t, spec), OperationID: "ocr", ServerURL: srv.URL,
+		MIMETypes: []string{"application/pdf"},
+	}, srv.Client())
+	require.NoError(t, err)
+	_, err = e.Extract(
+		t.Context(),
+		extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "application/vnd.ocr+json", got.header.Get("Content-Type"))
+	require.JSONEq(t, `{"content":"JVBERg=="}`, string(got.body))
+}
