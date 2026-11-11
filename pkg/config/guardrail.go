@@ -15,12 +15,41 @@ const (
 	GuardrailModePreCall = "pre_call"
 	// GuardrailModePostCall は tools/call の結果を呼び出し元へ返す前に検査する。
 	GuardrailModePostCall = "post_call"
+	// GuardrailModeResourceRead は resources/read の結果を呼び出し元へ返す前に検査する。
+	// mode に明示したときだけ有効（未設定の既定には含めない）。
+	GuardrailModeResourceRead = "resource_read"
 )
 
 // DefaultGuardrailTimeout は guardrail.timeout の既定値。
 const DefaultGuardrailTimeout = 5 * time.Second
 
-// GuardrailConfig は tools/call に掛けるガードレール（guardrail）。
+// DefaultGuardrailFilesMaxBytes は guardrail.files.maxBytes の既定値。ガードレールへの
+// リクエストは base64 で 4/3 倍になるので、同梱のサイドカーが受け付ける本文（16MiB）に
+// 収まる大きさにしている。
+const DefaultGuardrailFilesMaxBytes = 8 << 20
+
+// GuardrailFilesConfig は結果に含まれるファイル（画像・音声・リソースの blob）の
+// 検査（guardrail.files）。
+type GuardrailFilesConfig struct {
+	// Enabled が true なら、検査する結果のファイルをガードレールへ送る。
+	// false（既定）ならファイルは検査せずに通す。
+	Enabled bool `mapstructure:"enabled"`
+	// MaxBytes は1回の呼び出しで送るファイルの合計バイト数の上限
+	// （既定 8MiB）。超えた呼び出しは検査できないので拒否する。
+	MaxBytes int64 `mapstructure:"maxBytes"`
+}
+
+// MaxBytesOrDefault returns MaxBytes, falling back to
+// DefaultGuardrailFilesMaxBytes.
+func (c GuardrailFilesConfig) MaxBytesOrDefault() int64 {
+	if c.MaxBytes <= 0 {
+		return DefaultGuardrailFilesMaxBytes
+	}
+	return c.MaxBytes
+}
+
+// GuardrailConfig は tools/call（mode に resource_read があれば resources/read にも）に
+// 掛けるガードレール（guardrail）。
 // インターフェースは LiteLLM の Generic Guardrail API
 // （https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api）に固定し、
 // authz の OPA と同じく呼び出しのたびに URL へ POST する。ガードレールの API には
@@ -36,9 +65,11 @@ type GuardrailConfig struct {
 	Headers map[string]string `mapstructure:"headers"`
 	// Timeout は1回の呼び出しのタイムアウト（既定 5s）。
 	Timeout time.Duration `mapstructure:"timeout"`
-	// Mode はガードレールを掛けるタイミング（pre_call / post_call）。
-	// 未設定なら両方。
+	// Mode はガードレールを掛けるタイミング（pre_call / post_call /
+	// resource_read）。未設定なら pre_call と post_call。
 	Mode []string `mapstructure:"mode"`
+	// Files は結果に含まれるファイルの検査。
+	Files GuardrailFilesConfig `mapstructure:"files"`
 }
 
 // TimeoutOrDefault returns Timeout, falling back to DefaultGuardrailTimeout.
@@ -59,6 +90,12 @@ func (c GuardrailConfig) PostCall() bool {
 	return len(c.Mode) == 0 || slices.Contains(c.Mode, GuardrailModePostCall)
 }
 
+// ResourceRead reports whether the guardrail checks resources/read results.
+// Unlike pre_call / post_call it is off unless listed in Mode.
+func (c GuardrailConfig) ResourceRead() bool {
+	return slices.Contains(c.Mode, GuardrailModeResourceRead)
+}
+
 func (c GuardrailConfig) ValidateWithContext(ctx context.Context) error {
 	if !c.Enabled {
 		return nil
@@ -76,7 +113,15 @@ func (c GuardrailConfig) ValidateWithContext(ctx context.Context) error {
 		})),
 		validation.Field(&c.Timeout, validation.Min(time.Duration(0))),
 		validation.Field(&c.Mode,
-			validation.Each(validation.In(GuardrailModePreCall, GuardrailModePostCall)),
+			validation.Each(validation.In(
+				GuardrailModePreCall, GuardrailModePostCall, GuardrailModeResourceRead,
+			)),
 		),
+		validation.Field(&c.Files, validation.By(func(value any) error {
+			if f, _ := value.(GuardrailFilesConfig); f.MaxBytes < 0 {
+				return fmt.Errorf("maxBytes: must be no less than 0")
+			}
+			return nil
+		})),
 	)
 }

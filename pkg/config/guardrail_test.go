@@ -29,6 +29,13 @@ func TestGuardrailConfig_Validate(t *testing.T) {
 			wantErr: "must be a valid value"},
 		{name: "negative timeout", cfg: GuardrailConfig{Enabled: true, URL: url, Timeout: -time.Second},
 			wantErr: "must be no less than 0"},
+		{name: "resource_read with files", cfg: GuardrailConfig{
+			Enabled: true, URL: url, Mode: []string{GuardrailModeResourceRead},
+			Files: GuardrailFilesConfig{Enabled: true, MaxBytes: 1024},
+		}},
+		{name: "negative files.maxBytes", cfg: GuardrailConfig{
+			Enabled: true, URL: url, Files: GuardrailFilesConfig{MaxBytes: -1},
+		}, wantErr: "maxBytes: must be no less than 0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.ValidateWithContext(t.Context())
@@ -53,4 +60,14 @@ func TestGuardrailConfig_Mode(t *testing.T) {
 	require.False(t, post.PreCall())
 	require.True(t, post.PostCall())
 	require.Equal(t, DefaultGuardrailTimeout, both.TimeoutOrDefault())
+
+	// resource_read は明示したときだけ有効で、未設定の既定には含めない。
+	require.False(t, both.ResourceRead())
+	read := GuardrailConfig{Mode: []string{GuardrailModePostCall, GuardrailModeResourceRead}}
+	require.False(t, read.PreCall())
+	require.True(t, read.PostCall())
+	require.True(t, read.ResourceRead())
+
+	require.EqualValues(t, DefaultGuardrailFilesMaxBytes, both.Files.MaxBytesOrDefault())
+	require.EqualValues(t, 1024, GuardrailFilesConfig{MaxBytes: 1024}.MaxBytesOrDefault())
 }

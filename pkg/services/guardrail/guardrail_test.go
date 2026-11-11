@@ -117,3 +117,41 @@ func TestHTTPGuardrail_Responses(t *testing.T) {
 		})
 	}
 }
+
+// 画像は仕様にある images（base64）で、それ以外のファイルは Manifold の拡張の files で送る。
+func TestHTTPGuardrail_Files(t *testing.T) {
+	var got map[string]any
+	g := newGuardrailStub(t, http.StatusOK, `{"action":"NONE"}`, &got, nil)
+	res, err := g.Apply(t.Context(), Request{
+		Files: []File{
+			{MIMEType: "image/png", Data: []byte("img")},
+			{URI: "file:///doc.pdf", MIMEType: "application/pdf", Data: []byte("%PDF")},
+			{Data: []byte("raw")},
+		},
+		InputType: InputTypeResponse,
+	})
+	require.NoError(t, err)
+	require.Equal(t, ActionNone, res.Action)
+
+	// ファイルだけの検査でも、仕様上必須の texts は [] で送る。
+	require.Equal(t, []any{}, got["texts"])
+	require.Equal(t, []any{"aW1n"}, got["images"])
+	require.Equal(t, []any{
+		map[string]any{
+			"uri":       "file:///doc.pdf",
+			"mime_type": "application/pdf",
+			"data":      "JVBERg==",
+		},
+		map[string]any{"data": "cmF3"},
+	}, got["files"])
+}
+
+// ファイルが無ければ、images / files のキーは送らない（従来のリクエストと同じ）。
+func TestHTTPGuardrail_NoFiles(t *testing.T) {
+	var got map[string]any
+	g := newGuardrailStub(t, http.StatusOK, `{"action":"NONE"}`, &got, nil)
+	_, err := g.Apply(t.Context(), Request{Texts: []string{"x"}, InputType: InputTypeRequest})
+	require.NoError(t, err)
+	require.NotContains(t, got, "images")
+	require.NotContains(t, got, "files")
+}

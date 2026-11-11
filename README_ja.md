@@ -700,7 +700,7 @@ audit:
 
 ### ガードレール（`guardrail`）
 
-ガードレールは、authz と同じくゲートウェイを通る `tools/call` を検査します。引数はバックエンドへ送る前（`pre_call`）、結果のテキストは呼び出し元へ返す前（`post_call`）に検査します。ガードレールの API には標準化された仕様が無いため、Manifold は [LiteLLM の Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api) の形で呼び出します。LiteLLM 向けに作られたガードレールのサービスはそのまま使え、AWS Bedrock Guardrails は同梱のサイドカー（後述）を挟んで使います。
+ガードレールは、authz と同じくゲートウェイを通る `tools/call` を検査します。引数はバックエンドへ送る前（`pre_call`）、結果のテキストは呼び出し元へ返す前（`post_call`）に検査します。`mode` に `resource_read` を指定すると、`resources/read` の結果も検査します。ガードレールの API には標準化された仕様が無いため、Manifold は [LiteLLM の Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api) の形で呼び出します。LiteLLM 向けに作られたガードレールのサービスはそのまま使え、AWS Bedrock Guardrails は同梱のサイドカー（後述）を挟んで使います。
 
 ```yaml
 guardrail:
@@ -709,17 +709,22 @@ guardrail:
   headers:                    # 省略可。ガードレールの API キー等
     X-Api-Key: ${GUARDRAIL_API_KEY}
   timeout: 5s                 # 1回の呼び出しのタイムアウト（デフォルト 5s）
-  mode: [pre_call, post_call] # デフォルトは両方
+  mode: [pre_call, post_call] # デフォルトはこの2つ。resource_read は明示したときだけ
+  files:                      # 省略可。結果に含まれるファイルも検査する
+    enabled: true             # デフォルト false（ファイルは検査せずに通す）
+    maxBytes: 8388608         # 1回の呼び出しで送るファイルの合計の上限（デフォルト 8MiB）
 ```
 
-Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を POST し、`additional_provider_specific_params` に `server`・`service`・`tool` を渡します。
+Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を POST し、`additional_provider_specific_params` に `server`・`service`・`method`（`tools/call` または `resources/read`）と、`tools/call` では `tool`、`resources/read` では `uri` を渡します。
 
 - **`pre_call`** は引数を1つの JSON テキストとして送ります。`GUARDRAIL_INTERVENED` なら、書き換えた引数（JSON のオブジェクトである必要があります）でバックエンドを呼びます。
-- **`post_call`** は結果の `text` の Content をすべて、続けて `structuredContent` があれば JSON として送ります。`GUARDRAIL_INTERVENED` なら書き換えたものを返します。それ以外の Content（画像・リソースリンク等）は検査せずに通します。
+- **`post_call`** は結果の `text` の Content と埋め込みリソース（`resource`）のテキストをすべて、続けて `structuredContent` があれば JSON として送ります。`GUARDRAIL_INTERVENED` なら書き換えたものを返します。画像・音声・埋め込みリソースの blob は、`files.enabled` が `true` のときだけ送ります（下記）。リソースリンクの先は取得しません。呼び出し元がそれを `resources/read` で読むときに `resource_read` で検査します。
+- **`resource_read`** は `resources/read` の結果の各 content のテキストを送ります（`input_type` は `response`）。`GUARDRAIL_INTERVENED` なら書き換えたものを返します。blob の扱いは `post_call` と同じです。`mode` に明示したときだけ有効で、`mode` を省略したときの既定には含まれません。
+- **`files`**: `files.enabled` が `true` なら、検査する結果に含まれるファイルもガードレールへ送ります。画像（`image/*`）は Generic Guardrail API の `images`（base64）で、それ以外は `files`（`[{"uri": ..., "mime_type": ..., "data": <base64>}]`）で送ります。`files` は LiteLLM の仕様に無い Manifold の拡張フィールドなので、これを読まないガードレールはそのファイルを検査しません（未知のフィールドを拒否するガードレールでは呼び出しが失敗し、fail closed になります）。ガードレールはファイルを書き換えられないので、判定は通すか `BLOCKED` かだけです。ファイルの合計が `files.maxBytes` を超える結果は検査できないため、ガードレールを呼ばずに `blocked by guardrail: files exceed the size limit of the guardrail check` で拒否します。
 - **`BLOCKED`** は `blocked by guardrail: <blocked_reason>` で呼び出しを拒否します。`pre_call` ではバックエンドを呼びません。
 - **fail closed**: ガードレールの呼び出しの失敗・200 以外・不正な応答は、`guardrail check failed` で呼び出しを拒否します。理由は呼び出し元に返さず、ログに出します。
 
-ガードレールは同期的に呼ぶため、その応答時間がそのまま `tools/call` の遅延に加わります。必要な側だけに `mode` で絞ってください。ガードレールは authz の内側で動き（拒否された呼び出しは送りません）、reverse（WebMCP）を含む全サーバーに掛かります。監査ログには、呼び出し元が送ったままの引数が（[`audit.redact`](#秘密情報を伏せるauditredact) で伏せた上で）記録されます。
+ガードレールは同期的に呼ぶため、その応答時間がそのまま `tools/call`（と `resources/read`）の遅延に加わります。必要な側だけに `mode` で絞ってください。ガードレールは authz の内側で動き（拒否された呼び出しは送りません）、reverse（WebMCP）を含む全サーバーに掛かります。監査ログには、呼び出し元が送ったままの引数が（[`audit.redact`](#秘密情報を伏せるauditredact) で伏せた上で）記録されます。
 
 #### AWS Bedrock Guardrails のサイドカー（`manifold guardrail bedrock`）
 
@@ -737,6 +742,8 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 ```
 
 テキストは1件ずつ `ApplyGuardrail` に送るので（`input_type: request` は source `INPUT`、`response` は `OUTPUT`）、応答の `texts` はリクエストと 1 対 1 で対応します。機密情報フィルタが `ANONYMIZE` したテキストはマスキングして返し（`GUARDRAIL_INTERVENED`）、いずれかのポリシーが `BLOCKED` した場合（または Bedrock が書き換え後のテキストを返さずに介入した場合）は、リクエスト全体を Bedrock の `actionReason` 付きで `BLOCKED` にします。Bedrock のエラーは `502` を返し、ゲートウェイは `guardrail check failed` として扱います。`GET /healthz` はプローブ用に `200` を返します。
+
+このサイドカーが検査するのは `texts` だけです。`images` と `files` はまだ見ないので、`files.enabled` を `true` にしても、サイドカー経由ではファイルは検査されずに通ります。
 
 ### 設定リファレンス
 
@@ -1099,7 +1106,9 @@ storage:
 | `url`     | string            | Generic Guardrail API のエンドポイント（有効時は**必須**。絶対 http(s) URL） |
 | `headers` | map[string]string | ガードレールへのリクエストに付けるヘッダー |
 | `timeout` | duration          | ガードレールの1回の呼び出しのタイムアウト（デフォルト `5s`） |
-| `mode`    | []string          | `pre_call` と `post_call` のどちらか、または両方（デフォルト: 両方） |
+| `mode`    | []string          | `pre_call`・`post_call`・`resource_read` の組み合わせ（デフォルト: `pre_call` と `post_call`） |
+| `files.enabled`  | bool       | 検査する結果に含まれるファイル（画像・音声・リソースの blob）もガードレールへ送る（デフォルト: `false`） |
+| `files.maxBytes` | int        | 1回の呼び出しで送るファイルの合計バイト数の上限。超えた呼び出しは拒否する（デフォルト: `8388608`） |
 
 #### `fileFetch`
 
@@ -1258,6 +1267,15 @@ spec:
         limits:
           memory: 1Gi
 ```
+
+### 1.26.x 以前からのアップグレード
+
+1.27.0 から、ガードレールの `post_call` は、結果に含まれる埋め込みリソース（`resource`）のテキストも検査します。1.26.x 以前は `text` の Content と `structuredContent` だけを検査し、埋め込みリソースは検査せずに通していました。設定の変更は不要ですが、`post_call` が有効な環境では次の点が変わります。
+
+- 埋め込みリソースのテキストを返すツールでは、ガードレールへ送る `texts` の件数が増えます。これまで通っていた結果が、書き換えられたり `BLOCKED` になったりすることがあります。
+- `additional_provider_specific_params` に `method`（`tools/call`）が加わります。既存の `server`・`service`・`tool` は変わりません。
+
+`resources/read` の検査（`mode` の `resource_read`）とファイルの検査（`files.enabled`）は、設定したときだけ有効になります。どちらも 1.26.x 以前は知らない設定です。`mode` に `resource_read` を書いた設定は旧バージョンでは検証エラーで起動できないため、ローリングアップデートではすべての Pod が 1.27.0 以降になってから追加し、ロールバックの前に外してください。`files` は旧バージョンでは無視されます。
 
 ### 1.25.x 以前からのアップグレード
 

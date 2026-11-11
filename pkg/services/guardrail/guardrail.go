@@ -7,10 +7,12 @@ package guardrail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -41,10 +43,22 @@ const (
 // maxResponseSize はガードレールの応答の最大バイト数。
 const maxResponseSize = 16 << 20
 
+// File は検査するファイル（画像・音声・リソースの blob）。
+type File struct {
+	// URI はファイルの出どころ（リソースの URI）。無ければ空。
+	URI string
+	// MIMEType は送り元が申告した種類。無ければ空。
+	MIMEType string
+	Data     []byte
+}
+
 // Request はガードレールに渡すテキストと文脈。
 type Request struct {
 	// Texts は検査するテキスト。結果の Texts はこれと 1 対 1 で対応する。
-	Texts     []string
+	Texts []string
+	// Files は検査するファイル。ガードレールはファイルを書き換えられないので、
+	// 判定は通すか拒否するかだけになる。
+	Files     []File
 	InputType InputType
 	// TraceID は呼び出しを関連付ける ID（litellm_trace_id）。
 	TraceID string
@@ -68,8 +82,21 @@ type Guardrail interface {
 	Apply(ctx context.Context, req Request) (Result, error)
 }
 
+// apiFile は apiRequest.Files の1件。Data は JSON では base64 になる。フィールドの
+// 並びと型は File と同じにしておく（splitFiles が型変換で詰め替える）。
+type apiFile struct {
+	URI      string `json:"uri,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     []byte `json:"data"`
+}
+
+// apiRequest は Generic Guardrail API のリクエスト。Files は LiteLLM の仕様に無い
+// Manifold の拡張で、画像以外のファイルを運ぶ（画像は仕様にある Images で送る）。
 type apiRequest struct {
-	Texts          []string       `json:"texts"`
+	Texts []string `json:"texts"`
+	// Images は画像（base64）。
+	Images         []string       `json:"images,omitempty"`
+	Files          []apiFile      `json:"files,omitempty"`
 	InputType      InputType      `json:"input_type"`
 	CallID         string         `json:"litellm_call_id"`
 	TraceID        string         `json:"litellm_trace_id"`
@@ -115,8 +142,16 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 	if traceID == "" {
 		traceID = uuid.NewString()
 	}
+	images, files := splitFiles(req.Files)
+	// texts は仕様上必須なので、ファイルだけの検査でも null ではなく [] を送る。
+	texts := req.Texts
+	if texts == nil {
+		texts = []string{}
+	}
 	body, err := json.Marshal(apiRequest{
-		Texts:          req.Texts,
+		Texts:          texts,
+		Images:         images,
+		Files:          files,
 		InputType:      req.InputType,
 		CallID:         uuid.NewString(),
 		TraceID:        traceID,
@@ -171,4 +206,21 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 	default:
 		return Result{}, fmt.Errorf("guardrail: unknown action %q", out.Action)
 	}
+}
+
+// splitFiles は files を Generic Guardrail API の images（image/* の base64）と、
+// それ以外を運ぶ files に分ける。
+func splitFiles(files []File) (images []string, rest []apiFile) {
+	for _, f := range files {
+		if isImageMIME(f.MIMEType) {
+			images = append(images, base64.StdEncoding.EncodeToString(f.Data))
+			continue
+		}
+		rest = append(rest, apiFile(f))
+	}
+	return images, rest
+}
+
+func isImageMIME(mimeType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/")
 }
