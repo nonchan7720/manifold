@@ -1070,6 +1070,8 @@ Stores content included in OpenAPI/Swagger tool responses (images, binaries, etc
 | `s3.bucket`    | string | S3 bucket name (required when `type: s3`)                                                  |
 | `s3.keyPrefix` | string | S3 object key prefix (required when `type: s3`)                                            |
 
+Stored objects get a file extension chosen from their content type (for example `<uuid>.pdf`); when the upstream API only reports `application/octet-stream`, the type is detected from the bytes. The extension appears in the object key, the download URL, and the resource link name, so AI agents can pick the right tool to read the downloaded file. Content whose type cannot be determined is stored without an extension. Objects stored by earlier versions (no extension) remain downloadable.
+
 ```yaml
 storage:
   type: s3
