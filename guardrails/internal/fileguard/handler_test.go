@@ -677,3 +677,58 @@ func TestDownstream_ErrorOmitsURL(t *testing.T) {
 	require.NotContains(t, err.Error(), "secret")
 	require.NotContains(t, err.Error(), closed.URL)
 }
+
+// 断片の数には上限がある。小さい断片に分ける設定で、小さいファイルから大量の断片が
+// できるのを防ぐ。上限を超えたら、断片を作る前に拒否する。
+func TestHandler_LimitsChunks(t *testing.T) {
+	for _, tc := range []struct {
+		text          string
+		size, overlap int
+	}{
+		{text: "abcdefghij", size: 6, overlap: 2},
+		{text: "abcdefg", size: 4, overlap: 2},
+		{text: "abcdefghij", size: 10, overlap: 2},
+		{text: "abcdefghij", size: 4, overlap: 0},
+		{text: "abcdefghij", size: 2, overlap: 1},
+		{text: "あいうえおかきくけこ", size: 3, overlap: 1},
+		{text: "", size: 4, overlap: 2},
+		{text: "abc", size: 0, overlap: 0},
+	} {
+		require.Lenf(
+			t,
+			chunk(tc.text, tc.size, tc.overlap),
+			chunkCount(tc.text, tc.size, tc.overlap),
+			"%q size %d overlap %d",
+			tc.text,
+			tc.size,
+			tc.overlap,
+		)
+	}
+
+	e := &fakeExtractor{fn: func(extract.SourceFile) (string, error) {
+		return strings.Repeat("x", 100), nil
+	}}
+	// 2 文字ずつ（重なり 1）だと 99 個の断片になる。
+	srv, d := newTestHandler(
+		t,
+		Config{Extractor: e, ChunkChars: 2, ChunkOverlap: 1, MaxChunks: 50},
+		none,
+	)
+	status, res, _ := post(t, srv, map[string]any{"files": []any{pdf("%PDF")}})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.Contains(t, res.BlockedReason, "too long for the guardrail check")
+	require.Empty(t, d.bodies)
+
+	// 上限以内なら送る。上限は1リクエストのファイル全体で数える。
+	srv, d = newTestHandler(
+		t,
+		Config{Extractor: e, ChunkChars: 2, ChunkOverlap: 1, MaxChunks: 99},
+		none,
+	)
+	_, res, _ = post(t, srv, map[string]any{"files": []any{pdf("%PDF")}})
+	require.Equal(t, actionNone, res.Action)
+	require.Len(t, d.texts(t, 0), 99)
+	_, res, _ = post(t, srv, map[string]any{"files": []any{pdf("%PDF"), pdf("%PDF")}})
+	require.Equal(t, actionBlocked, res.Action)
+}

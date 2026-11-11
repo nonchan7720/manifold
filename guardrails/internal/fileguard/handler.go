@@ -24,10 +24,14 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/nonchan7720/manifold/guardrails/internal/extract"
 	"golang.org/x/sync/errgroup"
 )
+
+// DefaultMaxChunks は Config.MaxChunks の既定値。
+const DefaultMaxChunks = 1000
 
 // APIPath は Generic Guardrail API のエンドポイントのパス。
 const APIPath = "/beta/litellm_basic_guardrail_api"
@@ -87,6 +91,10 @@ type Config struct {
 	// ChunkChars は起こしたテキストを下流へ送るときの分割の大きさ（文字数）。
 	// 0 なら分割しない。
 	ChunkChars int
+	// MaxChunks は、1リクエストでファイルから起こしたテキストを下流へ送るときの
+	// 断片の数の上限（分割しないときは、テキストのあるファイルの数）。超えた
+	// リクエストは拒否する。0 以下なら DefaultMaxChunks。
+	MaxChunks int
 	// ChunkOverlap は隣り合う断片を重ねる文字数。境界で切れた語句を下流が検出
 	// できるようにする。ChunkChars の半分まで（超える分は切り詰める）。
 	ChunkOverlap int
@@ -105,6 +113,9 @@ func NewHandler(cfg Config) *Handler {
 	// 重なりは断片の半分まで。それより大きいと断片が1文字ずつしか進まず、分割後の
 	// 合計が元のテキストの何倍にも膨らむ（半分までなら2倍以下に収まる）。
 	cfg.ChunkOverlap = min(max(cfg.ChunkOverlap, 0), cfg.ChunkChars/2)
+	if cfg.MaxChunks <= 0 {
+		cfg.MaxChunks = DefaultMaxChunks
+	}
 	return &Handler{cfg: cfg}
 }
 
@@ -197,13 +208,24 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 		return apiResponse{}, err
 	}
 	var fileTexts []string
+	pieces := 0
 	for _, res := range results {
 		if res.blocked != "" {
 			return apiResponse{Action: actionBlocked, BlockedReason: res.blocked}, nil
 		}
-		if res.text != "" {
-			fileTexts = append(fileTexts, chunk(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
+		if res.text == "" {
+			continue
 		}
+		// 断片を作る前に数を確かめる。小さい断片に分ける設定だと、小さいファイルからでも
+		// 数百万件の断片ができ、メモリと下流へのリクエストが膨らむ。
+		pieces += chunkCount(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)
+		if pieces > h.cfg.MaxChunks {
+			return apiResponse{
+				Action:        actionBlocked,
+				BlockedReason: "the text of the files is too long for the guardrail check",
+			}, nil
+		}
+		fileTexts = append(fileTexts, chunk(res.text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
 	}
 
 	// 元のリクエストと、ファイルから起こしたテキストを、並行して下流へ送る。
@@ -368,6 +390,17 @@ func chunk(text string, size, overlap int) []string {
 			return out
 		}
 	}
+}
+
+// chunkCount は chunk(text, size, overlap) が返す断片の数を、断片を作らずに返す。
+func chunkCount(text string, size, overlap int) int {
+	n := utf8.RuneCountInString(text)
+	if size <= 0 || n <= size {
+		return 1
+	}
+	step := size - min(max(overlap, 0), size/2)
+	// 最初の断片のあと、残りの n-size 文字を step 文字ずつ進む。
+	return 1 + (n-size+step-1)/step
 }
 
 // hasItems は raw が要素のある JSON の配列かを返す。
