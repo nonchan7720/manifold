@@ -54,7 +54,10 @@ func (u *s3Service) SaveContent(
 	data []byte,
 	contentType string,
 ) (_ string, _ string, rErr error) {
-	id := uuid.Must(uuid.NewV7()).String()
+	// ID に拡張子を付ける。ID はオブジェクトキーとダウンロード URL の末尾、resource_link の
+	// name にそのまま使われるので、受け手が拡張子からファイル種別を判断できるようになる。
+	// DownloadContent は ID をそのままキーにするため、拡張子の無い既存オブジェクトも読める。
+	id := uuid.Must(uuid.NewV7()).String() + extensionFor(contentType, data)
 
 	bucket := aws.String(u.bucket)
 	key := aws.String(fmt.Sprintf("%s/%s", u.keyPrefix, id))
