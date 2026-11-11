@@ -76,6 +76,7 @@ type fileOptions struct {
 	extractedInputType string
 	chunkChars         int
 	chunkOverlapChars  int
+	maxChunks          int
 
 	fetchAllowedHosts stringList
 	fetchMaxBytes     int64
@@ -141,6 +142,9 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		"with --chunk-chars, how many characters neighbouring pieces share, so that a phrase "+
 			"cut at a boundary is still whole in one piece: set it to the longest phrase the "+
 			"downstream guardrail has to catch; must be positive and at most half of --chunk-chars")
+	fs.IntVar(&opts.maxChunks, "max-chunks", fileguard.DefaultMaxChunks,
+		"limit on the pieces of transcribed text one request sends downstream; a request "+
+			"over it is blocked")
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
@@ -205,21 +209,8 @@ func (o fileOptions) validate() error {
 	if o.maxOutputTokens <= 0 {
 		return errors.New("--max-output-tokens must be positive")
 	}
-	if o.chunkChars < 0 || o.chunkOverlapChars < 0 {
-		return errors.New("--chunk-chars and --chunk-overlap-chars must not be negative")
-	}
-	if o.chunkChars > 0 {
-		// 重なりが無いと、境界で切れた語句は必ずどの断片にも全体が入らず、下流が
-		// 検出できない。重なりが断片より小さくないと、分割が進まない。
-		if o.chunkOverlapChars == 0 {
-			return errors.New("--chunk-overlap-chars must be positive when --chunk-chars is set: " +
-				"set it to the longest phrase the downstream guardrail has to catch")
-		}
-		// 重なりが断片の半分を超えると、断片が少しずつしか進まず、分割後の合計が
-		// 元のテキストの何倍にも膨らむ（小さいファイルでメモリを使い切る）。
-		if o.chunkOverlapChars > o.chunkChars/2 {
-			return errors.New("--chunk-overlap-chars must be at most half of --chunk-chars")
-		}
+	if err := o.validateChunking(); err != nil {
+		return err
 	}
 	if o.fetchMaxBytes <= 0 {
 		return errors.New("--fetch-max-bytes must be positive")
@@ -243,6 +234,30 @@ func (o fileOptions) validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown --extractor %q", o.extractor)
+	}
+	return nil
+}
+
+// validateChunking は、起こしたテキストの分割（--chunk-chars など）の設定を検証する。
+func (o fileOptions) validateChunking() error {
+	if o.chunkChars < 0 || o.chunkOverlapChars < 0 {
+		return errors.New("--chunk-chars and --chunk-overlap-chars must not be negative")
+	}
+	if o.chunkChars > 0 {
+		// 重なりが無いと、境界で切れた語句は必ずどの断片にも全体が入らず、下流が
+		// 検出できない。重なりが断片より小さくないと、分割が進まない。
+		if o.chunkOverlapChars == 0 {
+			return errors.New("--chunk-overlap-chars must be positive when --chunk-chars is set: " +
+				"set it to the longest phrase the downstream guardrail has to catch")
+		}
+		// 重なりが断片の半分を超えると、断片が少しずつしか進まず、分割後の合計が
+		// 元のテキストの何倍にも膨らむ（小さいファイルでメモリを使い切る）。
+		if o.chunkOverlapChars > o.chunkChars/2 {
+			return errors.New("--chunk-overlap-chars must be at most half of --chunk-chars")
+		}
+	}
+	if o.maxChunks <= 0 {
+		return errors.New("--max-chunks must be positive")
 	}
 	return nil
 }
@@ -353,6 +368,7 @@ func runFile(ctx context.Context, args []string) error {
 		ExtractedInputType: inputType,
 		ChunkChars:         opts.chunkChars,
 		ChunkOverlap:       opts.chunkOverlapChars,
+		MaxChunks:          opts.maxChunks,
 	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
