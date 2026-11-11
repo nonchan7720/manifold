@@ -83,6 +83,7 @@ func requestFiles(req map[string]json.RawMessage) ([]inputFile, error) {
 // （type: input_file、直下に file_data / file_url / file_id）の両方を読む。
 type messagePart struct {
 	Type     string       `json:"type"`
+	Text     string       `json:"text"`
 	File     *messageFile `json:"file"`
 	FileData string       `json:"file_data"`
 	FileURL  string       `json:"file_url"`
@@ -165,4 +166,50 @@ func decodeInline(s string) (extract.SourceFile, error) {
 		return extract.SourceFile{}, err
 	}
 	return extract.SourceFile{MIMEType: extract.NormalizeMIME(declared, data), Data: data}, nil
+}
+
+// structuredMessageTexts は structured_messages の content にあるテキストを返す。
+// content が文字列ならその文字列、パートの配列なら text / input_text / output_text の
+// パートのテキスト。
+//
+// 呼び出し側が texts を付けずにメッセージだけを送ってきたときに使う。texts だけを
+// 検査する下流（同梱の Bedrock サイドカーなど）は、メッセージを転送しても中のテキストを
+// 検査しないので、取り出して texts として送る。
+func structuredMessageTexts(raw json.RawMessage) ([]string, error) {
+	var messages []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return nil, &badRequestError{"structured_messages must be an array of messages"}
+	}
+	var texts []string
+	for _, message := range messages {
+		content := strings.TrimSpace(string(message.Content))
+		switch {
+		case strings.HasPrefix(content, `"`):
+			var text string
+			if json.Unmarshal(message.Content, &text) != nil {
+				return nil, &badRequestError{
+					"the content of a message must be a string or an array of parts",
+				}
+			}
+			if text != "" {
+				texts = append(texts, text)
+			}
+		case strings.HasPrefix(content, "["):
+			var parts []messagePart
+			if json.Unmarshal(message.Content, &parts) != nil {
+				return nil, &badRequestError{"the content of a message must be an array of parts"}
+			}
+			for _, part := range parts {
+				switch part.Type {
+				case "text", "input_text", "output_text":
+					if part.Text != "" {
+						texts = append(texts, part.Text)
+					}
+				}
+			}
+		}
+	}
+	return texts, nil
 }
