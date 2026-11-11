@@ -1,6 +1,10 @@
 package extract
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -58,4 +62,16 @@ func TestTranscript(t *testing.T) {
 	// 何も出力されなかったら、テキスト無しとしては扱わない。
 	_, err = Transcript(" \n")
 	require.ErrorIs(t, err, ErrNoTranscript)
+}
+
+// 通信の失敗は種類だけにして、URL（認証用のクエリを含みうる）を残さない。
+func TestRequestFailure(t *testing.T) {
+	wrap := func(err error) error {
+		return &url.Error{Op: "Post", URL: "https://ocr.example.com/v1?api_key=secret", Err: err}
+	}
+	require.Equal(t, "timed out", RequestFailure(wrap(context.DeadlineExceeded)))
+	require.Equal(t, "canceled", RequestFailure(fmt.Errorf("x: %w", wrap(context.Canceled))))
+	got := RequestFailure(wrap(errors.New("dial tcp: connection refused")))
+	require.Equal(t, "request failed", got)
+	require.NotContains(t, got, "secret")
 }

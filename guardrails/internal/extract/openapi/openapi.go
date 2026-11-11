@@ -478,15 +478,18 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("openapi: call: %w", err)
+		// URL は認証用のクエリを含みうるので、エラー文には出さない。
+		return "", fmt.Errorf("openapi: call: %s", extract.RequestFailure(err))
 	}
 	defer resp.Body.Close() //nolint: errcheck
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return "", fmt.Errorf("openapi: read response: %w", err)
+		return "", fmt.Errorf("openapi: read response: %s", extract.RequestFailure(err))
 	}
-	// 応答の本文はファイルの内容を含みうるので、エラー文には出さない。
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	// 書き起こしが済んだことを表す 200 / 201 だけを受け付ける。202（受け付けただけ）や
+	// 204（本文なし）を成功として扱うと、書き起こされていないファイルが「テキスト無し」
+	// として通る。応答の本文はファイルの内容を含みうるので、エラー文には出さない。
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("openapi: returned status %d", resp.StatusCode)
 	}
 	if len(raw) > maxResponseSize {

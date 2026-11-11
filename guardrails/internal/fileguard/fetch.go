@@ -179,20 +179,12 @@ func (f *Fetcher) Fetch(
 // 失敗したときは内側のエラーにも Location の値（署名付きのトークンを含みうる）が
 // 入るため。
 func fetchFailure(host string, err error) error {
-	kind := "request failed"
+	kind := extract.RequestFailure(err)
 	switch {
 	case errors.Is(err, errFetchRedirectDenied):
 		kind = errFetchRedirectDenied.Error()
 	case errors.Is(err, errFetchTooManyRedirects):
 		kind = errFetchTooManyRedirects.Error()
-	case errors.Is(err, context.Canceled):
-		kind = "canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		kind = "timed out"
-	default:
-		if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
-			kind = "timed out"
-		}
 	}
 	return fmt.Errorf("fetch: %s: %s", host, kind)
 }

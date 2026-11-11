@@ -88,7 +88,7 @@ type Config struct {
 	// 0 なら分割しない。
 	ChunkChars int
 	// ChunkOverlap は隣り合う断片を重ねる文字数。境界で切れた語句を下流が検出
-	// できるようにする。ChunkChars より小さいこと。
+	// できるようにする。ChunkChars の半分まで（超える分は切り詰める）。
 	ChunkOverlap int
 }
 
@@ -102,6 +102,9 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 1
 	}
+	// 重なりは断片の半分まで。それより大きいと断片が1文字ずつしか進まず、分割後の
+	// 合計が元のテキストの何倍にも膨らむ（半分までなら2倍以下に収まる）。
+	cfg.ChunkOverlap = min(max(cfg.ChunkOverlap, 0), cfg.ChunkChars/2)
 	return &Handler{cfg: cfg}
 }
 
@@ -207,8 +210,8 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 	var original, fromFiles apiResponse
 	original.Action, fromFiles.Action = actionNone, actionNone
 	eg, egCtx := errgroup.WithContext(ctx)
-	// テキストが無くても、ツール呼び出しがあれば下流はそれを検査するので送る。
-	if len(texts) > 0 || hasItems(req[keyToolCalls]) {
+	// テキストが無くても、ツール呼び出しやメッセージがあれば下流はそれを検査するので送る。
+	if len(texts) > 0 || hasItems(req[keyToolCalls]) || hasItems(req[keyStructuredMessages]) {
 		eg.Go(func() (err error) {
 			original, err = h.cfg.Downstream.Apply(egCtx, originalRequest(req), len(texts))
 			return err
@@ -349,16 +352,14 @@ func printable(s string) string {
 //
 // 隣り合う断片は overlap 文字ずつ重ねる。境界で切れた語句は、どの断片にも全体が
 // 入らないと下流が検出できないためで、overlap 文字までの語句は必ずどれかの断片に
-// 全体が入る。overlap は size より小さいこと（Config の検証で保証する）。
+// 全体が入る。overlap は size の半分まで（それを超える分は切り詰める）なので、
+// 分割後の合計は元のテキストの2倍以下に収まる。
 func chunk(text string, size, overlap int) []string {
 	runes := []rune(text)
 	if size <= 0 || len(runes) <= size {
 		return []string{text}
 	}
-	step := size - max(overlap, 0)
-	if step <= 0 {
-		step = size
-	}
+	step := size - min(max(overlap, 0), size/2)
 	out := make([]string, 0, len(runes)/step+1)
 	for start := 0; ; start += step {
 		end := min(start+size, len(runes))

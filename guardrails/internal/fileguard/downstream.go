@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/nonchan7720/manifold/guardrails/internal/extract"
 )
 
 // maxDownstreamResponseSize は下流のガードレールの応答の最大バイト数。
@@ -45,7 +47,8 @@ func (d *Downstream) Apply(
 	}
 	resp, err := d.httpClient.Do(httpReq)
 	if err != nil {
-		return apiResponse{}, fmt.Errorf("downstream: call: %w", err)
+		// URL は認証用のクエリを含みうるので、エラー文には出さない。
+		return apiResponse{}, fmt.Errorf("downstream: call: %s", extract.RequestFailure(err))
 	}
 	defer resp.Body.Close() //nolint: errcheck
 	if resp.StatusCode != http.StatusOK {
@@ -53,7 +56,10 @@ func (d *Downstream) Apply(
 	}
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, maxDownstreamResponseSize+1))
 	if err != nil {
-		return apiResponse{}, fmt.Errorf("downstream: read response: %w", err)
+		return apiResponse{}, fmt.Errorf(
+			"downstream: read response: %s",
+			extract.RequestFailure(err),
+		)
 	}
 	if len(rawResp) > maxDownstreamResponseSize {
 		return apiResponse{}, fmt.Errorf(

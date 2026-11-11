@@ -127,12 +127,12 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("azure: call: %w", err)
+		return "", fmt.Errorf("azure: call: %s", extract.RequestFailure(err))
 	}
 	defer resp.Body.Close() //nolint: errcheck
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
-		return "", fmt.Errorf("azure: read response: %w", err)
+		return "", fmt.Errorf("azure: read response: %s", extract.RequestFailure(err))
 	}
 	// 応答の本文はファイルの内容を含みうるので、エラー文には出さない。
 	if resp.StatusCode != http.StatusOK {
