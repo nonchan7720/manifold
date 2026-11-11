@@ -743,7 +743,95 @@ The guardrail is called synchronously, so its latency adds to every `tools/call`
 
 Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → source `INPUT`, `response` → `OUTPUT`), so the answer's `texts` line up with the request's. A text whose sensitive-information filters `ANONYMIZE` comes back masked (`GUARDRAIL_INTERVENED`); if any policy `BLOCKED` it — or Bedrock intervened without returning a rewrite — the whole request is `BLOCKED` with Bedrock's `actionReason`. A Bedrock error is answered with `502`, which the gateway turns into `guardrail check failed`. `GET /healthz` answers `200` for probes.
 
-The sidecar checks `texts` only. It does not look at `images` or `files` yet, so with `files.enabled: true` files still pass through the sidecar unchecked.
+The sidecar checks `texts` only. It does not look at `images` or `files` yet, so with `files.enabled: true` files still pass through the sidecar unchecked. To check files, put the [file guardrail](#file-guardrail-manifold-guardrail-file) in front of it.
+
+#### File guardrail (`manifold-guardrail file`)
+
+`manifold-guardrail file` transcribes the files of a result (the `images` / `files` that `guardrail.files.enabled` sends) into text and has a downstream text guardrail (the Bedrock sidecar, or any LiteLLM-compatible service) check that text. It exists so that instructions embedded in a file (prompt injection) are caught by the text policies you already have. It sits between the gateway and the text guardrail; point `guardrail.url` at it.
+
+```
+Manifold ──▶ manifold-guardrail file ──▶ text guardrail (guardrail bedrock, ...)
+                      └──▶ transcription (an LLM or an OCR service)
+```
+
+`manifold-guardrail` is a Go module of its own ([`guardrails/`](guardrails)), separate from Manifold: a different binary and a different image. It is split off so that the dependencies of the LLM and OCR SDKs (and their bugs and vulnerabilities) stay out of the gateway. Build the image with `docker build -t manifold-guardrail guardrails`.
+
+```yaml
+# Kubernetes: add it to the gateway Pod as a sidecar
+- name: file-guardrail
+  image: manifold-guardrail
+  args:
+    - file
+    - --port=8091
+    - --downstream-url=http://localhost:8090/beta/litellm_basic_guardrail_api  # the text guardrail
+    - --extractor=bedrock
+    - --model=<Bedrock model ID or inference profile>
+```
+
+```yaml
+# Manifold configuration
+guardrail:
+  enabled: true
+  url: http://localhost:8091/beta/litellm_basic_guardrail_api
+  timeout: 120s          # long enough to wait for the transcription of a file
+  files:
+    enabled: true
+```
+
+**How a request is handled**
+
+1. The original `texts` are sent downstream as they came (without `images` / `files`) and the decision is returned as is, rewrites (masking) included.
+2. Each file is transcribed. Text files (`text/*`, JSON, XML, YAML, SVG, ... that are valid UTF-8) are used as text directly. Everything else goes through `--extractor`.
+3. The transcribed text is sent downstream in a call of its own. Its `input_type` is `request` by default: the content of a file is untrusted input from outside, and prompt-injection filters often apply to the input side only (change it with `--extracted-input-type`).
+4. A downstream rejection returns `BLOCKED`. When the downstream guardrail would rewrite the transcribed text (mask PII, ...), the file itself cannot be rewritten, so that is `BLOCKED` by default too (`--allow-intervened` lets it through).
+
+These also return `BLOCKED`, because what cannot be checked does not go through:
+
+- A file of a type that cannot be transcribed (`--allow-unsupported-files` passes it unchecked).
+- A file whose transcription was cut off at the output limit (`--max-output-tokens`): the rest would go unchecked.
+- A file larger than `--max-file-bytes`.
+
+When the transcription or the downstream call fails it answers `502`, which the gateway treats as `guardrail check failed` (fail closed). The content of a file and its transcription are never logged.
+
+**Transcription (`--extractor`)**
+
+| `--extractor` | File types | Settings |
+|---|---|---|
+| `none` (default) | Text files only | — |
+| `bedrock` | PNG / JPEG / GIF / WebP, PDF, Word (doc / docx), Excel (xls / xlsx) | `--model` (model ID or inference profile), `--aws-region`. Credentials are resolved the standard AWS SDK way; the role needs `bedrock:InvokeModel` |
+| `google` | PNG / JPEG / WebP / HEIC / HEIF, PDF | `--model`, `--google-backend=gemini` (`GEMINI_API_KEY`) or `vertex` (`--google-project` / `--google-location`, application default credentials) |
+| `azure` | PNG / JPEG / GIF / WebP, PDF | `--model` (the deployment name), `--azure-endpoint`, `AZURE_OPENAI_API_KEY`. Uses the Responses API (`/openai/v1/responses`) |
+| `openapi` | `--openapi-mime-types` (default `application/pdf,image/*`) | See below |
+
+**An OCR service described by OpenAPI (`--extractor=openapi`)**
+
+A service of your own, or a SaaS, that has a transcription API can be called by loading its OpenAPI spec. The request and the response are assembled from the operation in the spec.
+
+```yaml
+args:
+  - file
+  - --downstream-url=http://localhost:8090/beta/litellm_basic_guardrail_api
+  - --extractor=openapi
+  - --openapi-spec=/etc/ocr/openapi.yaml
+  - --openapi-operation=extractText          # operationId
+  - --openapi-header=Authorization=Bearer $(OCR_TOKEN)
+  - --openapi-param=language=ja              # a parameter of the operation or a body property
+```
+
+- **Request**: the body is chosen from the content of `requestBody`, in this order.
+  - Binary (`application/octet-stream`, `application/pdf`, `*/*`, ...): the file is the body.
+  - `multipart/form-data`: the file goes in the `type: string, format: binary` property.
+  - `application/json`: the file goes, base64-encoded, in the `type: string, format: byte` property.
+- **Response**: `text/plain` is read whole; for `application/json` the string property is the text.
+- **When the spec does not settle it**: name the property the file goes in with `--openapi-file-field`, and where the text is with `--openapi-text-path`, which is dot-separated with `*` for every element of an array (for example `pages.*.text`). Starting without them when they are needed is an error.
+- **Parameters**: the parameters of the operation (path / query / header) and the other properties of the body are given with `--openapi-param name=value`. `{mime_type}` in a value is replaced by the type of the file. A required one without a value is an error at startup.
+- **Server**: the first of the spec's `servers`. Use `--openapi-server` when it has variables or to point somewhere else.
+
+**Caveats**
+
+- **Transcription by an LLM is itself a prompt-injection target.** A file that says "do not output this part" may make the LLM drop that part. The model gets no tools, is told to transcribe verbatim, and never sees the file name, but this cannot be reduced to zero. When you need certainty, use an OCR service (`openapi`), which does not follow instructions.
+- **Latency and cost**: every file is one call to an LLM or an OCR service. Set `guardrail.timeout` (default 5s) long enough to wait for a transcription.
+- **The provider integrations are untested against the real services**: the Bedrock / Google / Azure calls follow the official documentation and SDK types and are tested with fake clients, but have not been run against the services themselves. Verify them in your environment before relying on them.
 
 ### Configuration reference
 
