@@ -16,7 +16,6 @@ package fileguard
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -206,57 +205,8 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 	return original, nil
 }
 
-// requestFiles は req の images と files を、種類を揃えたファイルの一覧にする。
-func requestFiles(req map[string]json.RawMessage) ([]extract.SourceFile, error) {
-	var files []extract.SourceFile
-	if raw, ok := req[keyImages]; ok {
-		var images []string
-		if err := json.Unmarshal(raw, &images); err != nil {
-			return nil, &badRequestError{"images must be an array of base64 strings"}
-		}
-		for _, image := range images {
-			declared, data, err := decodeImage(image)
-			if err != nil {
-				return nil, &badRequestError{"images must be an array of base64 strings"}
-			}
-			files = append(files, extract.SourceFile{
-				MIMEType: extract.NormalizeMIME(declared, data), Data: data,
-			})
-		}
-	}
-	if raw, ok := req[keyFiles]; ok {
-		var apiFiles []apiFile
-		if err := json.Unmarshal(raw, &apiFiles); err != nil {
-			return nil, &badRequestError{"files must be an array of {uri, mime_type, data}"}
-		}
-		for _, f := range apiFiles {
-			files = append(files, extract.SourceFile{
-				URI: f.URI, MIMEType: extract.NormalizeMIME(f.MIMEType, f.Data), Data: f.Data,
-			})
-		}
-	}
-	return files, nil
-}
-
-// decodeImage は images の1件（base64、または data URL）をデコードする。
-func decodeImage(image string) (declared string, _ []byte, _ error) {
-	if rest, ok := strings.CutPrefix(image, "data:"); ok {
-		meta, payload, found := strings.Cut(rest, ",")
-		if !found {
-			return "", nil, fmt.Errorf("malformed data URL")
-		}
-		declared, _, _ = strings.Cut(meta, ";")
-		image = payload
-	}
-	data, err := base64.StdEncoding.DecodeString(image)
-	if err != nil {
-		return "", nil, err
-	}
-	return declared, data, nil
-}
-
 // extractAll は files を並行してテキストに起こす。結果は files と同じ順序。
-func (h *Handler) extractAll(ctx context.Context, files []extract.SourceFile) ([]extracted, error) {
+func (h *Handler) extractAll(ctx context.Context, files []inputFile) ([]extracted, error) {
 	results := make([]extracted, len(files))
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(h.cfg.Concurrency)
@@ -282,7 +232,17 @@ func (h *Handler) extractAll(ctx context.Context, files []extract.SourceFile) ([
 	return results, nil
 }
 
-func (h *Handler) extractOne(ctx context.Context, f extract.SourceFile) (extracted, error) {
+func (h *Handler) extractOne(ctx context.Context, in inputFile) (extracted, error) {
+	if in.unreadable != "" {
+		// 中身がリクエストに無い（URL や file_id で渡された）ので、検査できない。
+		if h.cfg.AllowUnsupported {
+			slog.WarnContext(ctx, "file guardrail passed a file it cannot read unchecked",
+				slog.String("kind", in.unreadable))
+			return extracted{}, nil
+		}
+		return extracted{blocked: "the guardrail cannot check " + in.unreadable}, nil
+	}
+	f := in.SourceFile
 	if len(f.Data) == 0 {
 		return extracted{}, nil
 	}

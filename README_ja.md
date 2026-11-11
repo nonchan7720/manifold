@@ -747,29 +747,14 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 
 #### ファイル用ガードレール（`manifold-guardrail file`）
 
-`manifold-guardrail file` は、結果に含まれるファイル（`guardrail.files.enabled` で送られる `images` / `files`）の中身をテキストに起こし、そのテキストを下流のテキスト用ガードレール（Bedrock サイドカーや LiteLLM 互換のサービス）で検査します。ファイルに埋め込まれた指示（プロンプトインジェクション）を、既存のテキスト用のポリシーで検出するためのものです。ゲートウェイとテキスト用ガードレールの間に置き、`guardrail.url` をこれに向けます。
+結果に含まれるファイル（`guardrail.files.enabled` で送られる `images` / `files`）の中身を検査するには、[`manifold-guardrail file`](guardrails/README_ja.md) をゲートウェイとテキスト用ガードレールの間に置きます。ファイルをテキストに起こし（LLM、または OpenAPI で記述された OCR サービス）、そのテキストを下流のテキスト用ガードレールで検査するので、ファイルに埋め込まれた指示（プロンプトインジェクション）を既存のテキスト用のポリシーで検出できます。
 
 ```
 Manifold ──▶ manifold-guardrail file ──▶ テキスト用ガードレール（guardrail bedrock など）
                       └──▶ 書き起こし（LLM または OCR サービス）
 ```
 
-`manifold-guardrail` は Manifold 本体とは別の Go モジュール（[`guardrails/`](guardrails)）で、別のバイナリ・別のイメージです。LLM や OCR の SDK の依存（とその不具合・脆弱性）を本体に持ち込まないために分けています。イメージは `docker build -t manifold-guardrail guardrails` で作ります。
-
 ```yaml
-# Kubernetes: ゲートウェイの Pod にサイドカーとして追加する
-- name: file-guardrail
-  image: manifold-guardrail
-  args:
-    - file
-    - --port=8091
-    - --downstream-url=http://localhost:8090/beta/litellm_basic_guardrail_api  # テキスト用ガードレール
-    - --extractor=bedrock
-    - --model=<Bedrock のモデル ID か推論プロファイル>
-```
-
-```yaml
-# Manifold の設定
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
@@ -778,60 +763,7 @@ guardrail:
     enabled: true
 ```
 
-**処理の流れ**
-
-1. 元の `texts` は、リクエストをそのまま（`images` / `files` を除いて）下流へ送り、判定をそのまま返します。書き換え（マスキング）も呼び出し元へ返ります。
-2. ファイルは1件ずつテキストに起こします。テキストのファイル（`text/*`、JSON、XML、YAML、SVG など。UTF-8 として正しいもの）は、そのままテキストとして扱います。それ以外は `--extractor` で起こします。
-3. 起こしたテキストは、元の `texts` とは別の呼び出しで下流へ送ります。`input_type` は既定で `request` です。ファイルの中身は外から来た信頼できない入力で、プロンプトインジェクションのフィルタは入力側にしか効かないことが多いためです（`--extracted-input-type` で変更できます）。
-4. 下流が拒否したら `BLOCKED` を返します。起こしたテキストに下流が書き換え（PII のマスキング等）を返した場合も、ファイル自体は書き換えられないので既定で `BLOCKED` にします（`--allow-intervened` で通せます）。
-
-次の場合も `BLOCKED` を返します（どれも「検査できないものは通さない」ためです）。
-
-- 起こせない種類のファイル（`--allow-unsupported-files` で、検査せずに通せます）。
-- 書き起こしが出力の上限（`--max-output-tokens`）で途中で切れたファイル。残りが未検査になるためです。
-- `--max-file-bytes` を超えるファイル。
-
-書き起こしや下流の呼び出しが失敗したときは `502` を返し、ゲートウェイは `guardrail check failed` として扱います（fail closed）。ファイルの中身と起こしたテキストはログに出しません。
-
-**書き起こしの方法（`--extractor`）**
-
-| `--extractor` | 対応する種類 | 設定 |
-|---|---|---|
-| `none`（既定） | テキストのファイルのみ | — |
-| `bedrock` | PNG / JPEG / GIF / WebP、PDF、Word（doc / docx）、Excel（xls / xlsx） | `--model`（モデル ID か推論プロファイル）、`--aws-region`。認証情報は AWS SDK の既定の解決順。ロールに `bedrock:InvokeModel` が必要 |
-| `google` | PNG / JPEG / WebP / HEIC / HEIF、PDF | `--model`、`--google-backend=gemini`（`GEMINI_API_KEY`）または `vertex`（`--google-project` / `--google-location`、アプリケーションの既定の認証情報） |
-| `azure` | PNG / JPEG / GIF / WebP、PDF | `--model`（デプロイ名）、`--azure-endpoint`、`AZURE_OPENAI_API_KEY`。Responses API（`/openai/v1/responses`）を使います |
-| `openapi` | `--openapi-mime-types`（既定 `application/pdf,image/*`） | 下記 |
-
-**OpenAPI で記述された OCR サービス（`--extractor=openapi`）**
-
-文字起こしの API を持つ自前のサービスや SaaS は、その OpenAPI の spec を読み込ませて呼び出せます。リクエストとレスポンスは spec の operation から組み立てます。
-
-```yaml
-args:
-  - file
-  - --downstream-url=http://localhost:8090/beta/litellm_basic_guardrail_api
-  - --extractor=openapi
-  - --openapi-spec=/etc/ocr/openapi.yaml
-  - --openapi-operation=extractText          # operationId
-  - --openapi-header=Authorization=Bearer $(OCR_TOKEN)
-  - --openapi-param=language=ja              # operation のパラメータや本文のプロパティ
-```
-
-- **リクエスト**: `requestBody` の content から、次の順で本文の形を選びます。
-  - バイナリ（`application/octet-stream`、`application/pdf`、`*/*` など）: ファイルをそのまま本文にします。
-  - `multipart/form-data`: `type: string, format: binary` のプロパティにファイルを入れます。
-  - `application/json`: `type: string, format: byte` のプロパティに base64 で入れます。
-- **レスポンス**: `text/plain` なら本文全体を、`application/json` なら文字列のプロパティをテキストとして読みます。
-- **spec から一意に決まらないとき**: ファイルを入れるプロパティは `--openapi-file-field`、テキストの場所は `--openapi-text-path` で指定します。`--openapi-text-path` は `.` 区切りで、`*` は配列の全要素です（例: `pages.*.text`）。決まらないまま起動するとエラーになります。
-- **パラメータ**: operation のパラメータ（path / query / header）と本文のほかのプロパティは、`--openapi-param name=value` で渡します。値の中の `{mime_type}` はファイルの種類に置き換えます。必須のものに値が無いと起動時にエラーになります。
-- **サーバー**: spec の `servers` の先頭を使います。変数を含む場合や別の URL に向ける場合は `--openapi-server` で指定します。
-
-**注意**
-
-- **LLM による書き起こしは、それ自体がプロンプトインジェクションの対象です**。ファイルに「この部分は出力するな」と書かれていると、LLM が従ってその部分を落とす可能性があります。ツールを持たせない、逐語で書き起こすよう指示する、ファイル名をモデルに渡さない、といった対策はしていますが、ゼロにはできません。確実さが要るなら、指示に従うことの無い OCR サービス（`openapi`）を使ってください。
-- **遅延と費用**: ファイル1件ごとに LLM か OCR を呼びます。`guardrail.timeout`（既定 5s）は書き起こしを待てる長さにしてください。
-- **各プロバイダとの結合は未検証です**: Bedrock / Google / Azure の呼び出しは、それぞれの公式ドキュメントと SDK の型に合わせて実装し、偽のクライアントでテストしていますが、実際のサービスに対しては動かしていません。導入時に実機で確認してください。
+`manifold-guardrail` は Manifold 本体とは別の Go モジュール（[`guardrails/`](guardrails)）で、別のバイナリ・別のイメージです。LLM や OCR の SDK の依存を本体に持ち込まないために分けており、バージョンも本体とは独立しています（現在は実験的な 0.x）。LiteLLM のガードレールとしても単体で使えます。書き起こしの方法、フラグ、注意点は [`guardrails/README_ja.md`](guardrails/README_ja.md) を参照してください。
 
 ### 設定リファレンス
 
