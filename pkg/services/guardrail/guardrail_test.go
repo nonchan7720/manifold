@@ -155,3 +155,33 @@ func TestHTTPGuardrail_NoFiles(t *testing.T) {
 	require.NotContains(t, got, "images")
 	require.NotContains(t, got, "files")
 }
+
+// ガードレールが画像の書き換えを返したら FilesRewritten を立てる。送った画像を
+// そのまま返しただけなら、書き換えではない。
+func TestHTTPGuardrail_FilesRewritten(t *testing.T) {
+	req := Request{
+		Texts:     []string{"hello"},
+		Files:     []File{{MIMEType: "image/png", Data: []byte("img")}},
+		InputType: InputTypeResponse,
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "rewritten image", want: true,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hello"],"images":["bWFza2Vk"]}`},
+		{name: "echoed image", want: false,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hi"],"images":["aW1n"]}`},
+		{name: "no images", want: false,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hi"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGuardrailStub(t, http.StatusOK, tc.body, nil, nil)
+			res, err := g.Apply(t.Context(), req)
+			require.NoError(t, err)
+			require.Equal(t, ActionIntervened, res.Action)
+			require.Equal(t, tc.want, res.FilesRewritten)
+		})
+	}
+}

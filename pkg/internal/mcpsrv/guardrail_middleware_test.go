@@ -272,6 +272,24 @@ func TestGuardrailMiddleware_PostCallFiles(t *testing.T) {
 	}, g.requests[0].Files)
 }
 
+// ガードレールがファイルの書き換え（画像のマスキング等）を返したら、元のファイルを
+// 通さずに拒否する。ファイルは書き換えられず、通すと判定を無視することになる。
+func TestGuardrailMiddleware_FilesRewrittenIsBlocked(t *testing.T) {
+	g := &fakeGuardrail{fn: func(req guardrail.Request) (guardrail.Result, error) {
+		return guardrail.Result{
+			Action: guardrail.ActionIntervened, Texts: req.Texts, FilesRewritten: true,
+		}, nil
+	}}
+	cs := fileResultTestServer(t, g,
+		GuardrailOptions{PostCall: true, Files: true, MaxFileBytes: 1024}, nil)
+
+	_, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "files"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked by guardrail")
+	require.Contains(t, err.Error(), "cannot be rewritten")
+	require.Len(t, g.requests, 1)
+}
+
 // ファイルの合計が上限を超える結果は検査できないので、ガードレールを呼ばずに拒否する。
 func TestGuardrailMiddleware_FilesOverLimit(t *testing.T) {
 	g := &fakeGuardrail{fn: maskEmail}

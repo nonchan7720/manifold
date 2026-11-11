@@ -117,8 +117,9 @@ func (c GuardrailConfig) ValidateWithContext(ctx context.Context) error {
 				GuardrailModePreCall, GuardrailModePostCall, GuardrailModeResourceRead,
 			)),
 		),
+		// ファイルの検査が無効なら maxBytes は使わないので、検証しない。
 		validation.Field(&c.Files, validation.By(func(value any) error {
-			if f, _ := value.(GuardrailFilesConfig); f.MaxBytes < 0 {
+			if f, _ := value.(GuardrailFilesConfig); f.Enabled && f.MaxBytes < 0 {
 				return fmt.Errorf("maxBytes: must be no less than 0")
 			}
 			return nil

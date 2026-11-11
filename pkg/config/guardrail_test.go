@@ -34,8 +34,11 @@ func TestGuardrailConfig_Validate(t *testing.T) {
 			Files: GuardrailFilesConfig{Enabled: true, MaxBytes: 1024},
 		}},
 		{name: "negative files.maxBytes", cfg: GuardrailConfig{
-			Enabled: true, URL: url, Files: GuardrailFilesConfig{MaxBytes: -1},
+			Enabled: true, URL: url, Files: GuardrailFilesConfig{Enabled: true, MaxBytes: -1},
 		}, wantErr: "maxBytes: must be no less than 0"},
+		{name: "files.maxBytes is ignored while files are disabled", cfg: GuardrailConfig{
+			Enabled: true, URL: url, Files: GuardrailFilesConfig{MaxBytes: -1},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.ValidateWithContext(t.Context())
