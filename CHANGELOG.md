@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1](https://github.com/nonchan7720/manifold/compare/v1.22.0...v1.22.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **storage:** 保存するオブジェクトの ID に拡張子を付ける（v1.22 へのバックポート） ([#385](https://github.com/nonchan7720/manifold/issues/385)) ([fa3aec2](https://github.com/nonchan7720/manifold/commit/fa3aec2534e73fbb6533e915f9fdc3ce0822748f))
+
 ## [1.22.0](https://github.com/nonchan7720/manifold/compare/v1.21.0...v1.22.0) (2026-10-12)
 
 
