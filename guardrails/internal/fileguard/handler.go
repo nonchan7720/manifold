@@ -65,7 +65,11 @@ type Config struct {
 	Concurrency int
 	// MaxFileBytes はファイル1件の最大バイト数。超えたファイルは拒否する。
 	MaxFileBytes int
-	// AllowUnsupported が true なら、起こせない種類のファイルを検査せずに通す。
+	// Fetcher は、URL で渡されたファイルを許可したホストから取得する。nil なら
+	// URL のファイルは取得しない（検査できないファイルとして扱う）。
+	Fetcher *Fetcher
+	// AllowUnsupported が true なら、起こせない種類のファイルと、中身を取得できない
+	// ファイル（許可していないホストの URL、file_id）を検査せずに通す。
 	// false（既定）なら拒否する。
 	AllowUnsupported bool
 	// AllowIntervened が true なら、起こしたテキストに下流が書き換えを返しても通す。
@@ -233,8 +237,19 @@ func (h *Handler) extractAll(ctx context.Context, files []inputFile) ([]extracte
 }
 
 func (h *Handler) extractOne(ctx context.Context, in inputFile) (extracted, error) {
+	if in.remoteURL != "" {
+		fetched, allowed, err := h.cfg.Fetcher.Fetch(ctx, in.remoteURL)
+		switch {
+		case errors.Is(err, errFetchTooLarge):
+			return extracted{blocked: "a file exceeds the size limit of the guardrail check"}, nil
+		case err != nil:
+			return extracted{}, err
+		case allowed:
+			in = inputFile{SourceFile: fetched}
+		}
+	}
 	if in.unreadable != "" {
-		// 中身がリクエストに無い（URL や file_id で渡された）ので、検査できない。
+		// 中身を取得できない（許可していないホストの URL、file_id）ので、検査できない。
 		if h.cfg.AllowUnsupported {
 			slog.WarnContext(ctx, "file guardrail passed a file it cannot read unchecked",
 				slog.String("kind", in.unreadable))

@@ -15,6 +15,9 @@ type inputFile struct {
 	// unreadable が空でなければ、中身がリクエストに無いファイル（URL や file_id で
 	// 渡されたもの）で、その説明。拒否の理由に使う。
 	unreadable string
+	// remoteURL は URL で渡されたファイルの URL。許可したホストなら取得して検査する
+	// （Config.Fetcher）。
+	remoteURL string
 }
 
 // 中身がリクエストに無いファイルの説明。
@@ -33,8 +36,9 @@ const (
 //     ここの content にしか入らない。画像（image_url）は images にも入るので、
 //     ここからは取らない。
 //
-// URL や file_id で渡されたファイルは取りに行かない（呼び出し側が指定した URL を
-// 取得すると SSRF の入口になる）。中身を検査できないファイルとして扱う。
+// URL で渡されたファイルは、許可したホスト（Config.Fetcher）からだけ取得する
+// （呼び出し側が指定した URL を取得すると SSRF の入口になる）。それ以外の URL と
+// file_id で渡されたファイルは、中身を検査できないファイルとして扱う。
 func requestFiles(req map[string]json.RawMessage) ([]inputFile, error) {
 	var files []inputFile
 	if raw, ok := req[keyImages]; ok {
@@ -44,7 +48,7 @@ func requestFiles(req map[string]json.RawMessage) ([]inputFile, error) {
 		}
 		for _, image := range images {
 			if isRemoteURL(image) {
-				files = append(files, inputFile{unreadable: unreadableImageURL})
+				files = append(files, inputFile{unreadable: unreadableImageURL, remoteURL: image})
 				continue
 			}
 			f, err := decodeInline(image)
@@ -122,7 +126,11 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 				}
 				files = append(files, inputFile{SourceFile: f})
 			case file.FileData != "" || file.FileURL != "":
-				files = append(files, inputFile{unreadable: unreadableFileURL})
+				remote := file.FileURL
+				if file.FileData != "" {
+					remote = file.FileData
+				}
+				files = append(files, inputFile{unreadable: unreadableFileURL, remoteURL: remote})
 			default:
 				files = append(files, inputFile{unreadable: unreadableFileID})
 			}

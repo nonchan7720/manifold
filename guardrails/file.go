@@ -31,6 +31,20 @@ const (
 	extractorOpenAPI = "openapi"
 )
 
+// stringList は値を繰り返し（またはカンマ区切りで）受け取るフラグ。
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(s string) error {
+	for value := range strings.SplitSeq(s, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			*l = append(*l, value)
+		}
+	}
+	return nil
+}
+
 // keyValues は "name=value" を繰り返し受け取るフラグ。
 type keyValues map[string]string
 
@@ -61,6 +75,10 @@ type fileOptions struct {
 	allowIntervened    bool
 	extractedInputType string
 	chunkChars         int
+
+	fetchAllowedHosts stringList
+	fetchMaxBytes     int64
+	fetchTimeout      time.Duration
 
 	awsRegion string
 
@@ -119,6 +137,15 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		"split the transcribed text into pieces of this many characters for the downstream "+
 			"guardrail (0: do not split)")
 
+	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
+		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
+			"files.example.com, *.example.com or minio.internal:9000 (repeatable or "+
+			"comma-separated); URLs of other hosts are never fetched")
+	fs.Int64Var(&opts.fetchMaxBytes, "fetch-max-bytes", 20<<20,
+		"size limit of a file fetched from a URL; larger files are blocked")
+	fs.DurationVar(&opts.fetchTimeout, "fetch-timeout", 30*time.Second,
+		"timeout of fetching one file from a URL")
+
 	fs.StringVar(&opts.awsRegion, "aws-region", "",
 		"bedrock: AWS region (default: resolved by the AWS SDK, e.g. AWS_REGION)")
 
@@ -172,6 +199,9 @@ func (o fileOptions) validate() error {
 	}
 	if o.maxOutputTokens <= 0 {
 		return errors.New("--max-output-tokens must be positive")
+	}
+	if o.fetchMaxBytes <= 0 {
+		return errors.New("--fetch-max-bytes must be positive")
 	}
 	switch o.extractor {
 	case extractorNone:
@@ -270,6 +300,16 @@ func runFile(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// 許可したホストが無ければ、URL のファイルは取得しない。
+	var fetcher *fileguard.Fetcher
+	if len(opts.fetchAllowedHosts) > 0 {
+		fetcher, err = fileguard.NewFetcher(
+			opts.fetchAllowedHosts, opts.fetchMaxBytes, opts.fetchTimeout,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	inputType := opts.extractedInputType
 	if inputType == "inherit" {
 		inputType = ""
@@ -278,6 +318,7 @@ func runFile(ctx context.Context, args []string) error {
 	mux := http.NewServeMux()
 	mux.Handle("POST "+fileguard.APIPath, fileguard.NewHandler(fileguard.Config{
 		Extractor: extractor,
+		Fetcher:   fetcher,
 		Downstream: fileguard.NewDownstream(
 			opts.downstreamURL,
 			opts.downstreamHeaders,

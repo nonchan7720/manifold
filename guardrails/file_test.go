@@ -23,6 +23,16 @@ func TestParseFileFlags(t *testing.T) {
 	require.Equal(t, keyValues{"X-Api-Key": "a=b"}, opts.downstreamHeaders)
 	require.Equal(t, keyValues{"lang": "ja", "type": "{mime_type}"}, opts.openapiParams)
 	require.Equal(t, "request", opts.extractedInputType)
+	require.Empty(t, opts.fetchAllowedHosts)
+
+	opts, err = parseFileFlags([]string{
+		downstream, "--fetch-allowed-host", "files.example.com, *.cdn.example.com",
+		"--fetch-allowed-host", "minio.internal:9000",
+	})
+	require.NoError(t, err)
+	require.Equal(t,
+		stringList{"files.example.com", "*.cdn.example.com", "minio.internal:9000"},
+		opts.fetchAllowedHosts)
 
 	for _, tc := range []struct {
 		name    string
@@ -43,6 +53,8 @@ func TestParseFileFlags(t *testing.T) {
 		}, wantErr: "AZURE_OPENAI_API_KEY is required"},
 		{name: "openapi without spec", args: []string{downstream, "--extractor", "openapi"},
 			wantErr: "--openapi-spec and --openapi-operation are required"},
+		{name: "bad fetch size", args: []string{downstream, "--fetch-max-bytes", "0"},
+			wantErr: "--fetch-max-bytes must be positive"},
 		{name: "stray argument", args: []string{downstream, "extra"}, wantErr: "unexpected argument"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

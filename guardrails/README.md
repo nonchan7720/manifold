@@ -43,7 +43,29 @@ The endpoint is `POST /beta/litellm_basic_guardrail_api`, with `GET /healthz` fo
 
 The type (MIME type) is the declared one when there is one, and is otherwise decided from the first bytes.
 
-**Files given by URL or `file_id` are not fetched.** Fetching a URL the caller chose would be an SSRF entry point. They count as files whose content cannot be checked and are `BLOCKED` by default (`--allow-unsupported-files` lets them through). That covers http(s) URLs in `images`, `file_url` and `file_id`.
+### Files given by URL
+
+A file given by URL (an http(s) URL in `images`, a `file_url`) is fetched and checked **only when its host is allowed with `--fetch-allowed-host`**. Fetching whatever URL the caller chose would be an SSRF entry point.
+
+```bash
+manifold-guardrail file ... \
+  --fetch-allowed-host files.example.com \
+  --fetch-allowed-host '*.cdn.example.com' \
+  --fetch-allowed-host minio.internal:9000
+```
+
+- `files.example.com`: that host name only, on the default port (443 for https, 80 for http).
+- `*.cdn.example.com`: every subdomain, but not `cdn.example.com` itself.
+- `minio.internal:9000`: any other port has to be named.
+
+How fetching behaves:
+
+- URLs of other hosts and files given by `file_id` are not fetched. They count as files whose content cannot be checked and are `BLOCKED` by default (`--allow-unsupported-files` lets them through).
+- A redirect is followed only when its target is an allowed host too.
+- A file larger than `--fetch-max-bytes` (default 20MiB) is `BLOCKED`; a failed fetch (timeout, a status other than 200) answers `502`. `--fetch-timeout` defaults to 30s.
+- What address an allowed host resolves to is not checked (so that hosts such as in-cluster storage can be allowed). Allow only hosts you trust, name resolution included.
+- URLs are never logged or put in error messages (they may carry signed tokens). Only the host name is.
+- **What was checked is not necessarily what the model reads later.** A server that can answer each fetch differently can get past the check. Allow only trusted hosts whose content cannot be swapped.
 
 ## With Manifold
 
@@ -62,7 +84,7 @@ guardrail:
 
 Point the `api_base` of LiteLLM's `generic_guardrail_api` at it. How LiteLLM behaves (established by reading LiteLLM's source, not by running it):
 
-- **Images**: the `image_url` of a message goes into `images` as it was sent. A `data:` URL can be checked; an http(s) URL cannot, as described above.
+- **Images**: the `image_url` of a message goes into `images` as it was sent. A `data:` URL is checked as is; an http(s) URL is fetched and checked only when its host is allowed with `--fetch-allowed-host`.
 - **PDFs and other files**: they are only in `structured_messages`. Configure LiteLLM to pass the messages as sent (`forward_messages_as_sent: true`).
 - **Messages without text**: LiteLLM does not call the guardrail for a request that has neither text nor tool calls, so a message that is only an image or a PDF is not checked.
 - **The response side (`input_type: response`)**: no images or files are sent.

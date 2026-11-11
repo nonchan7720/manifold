@@ -43,7 +43,29 @@ manifold-guardrail file \
 
 種類（MIME タイプ）は、申告があればそれを、無ければ中身の先頭から決めます。
 
-**URL や `file_id` で渡されたファイルは取りに行きません。** 呼び出し側が指定した URL を取得すると SSRF の入口になるためです。中身を検査できないファイルとして、既定で `BLOCKED` にします（`--allow-unsupported-files` で通せます）。該当するのは、`images` の http(s) の URL、`file_url`、`file_id` です。
+### URL で渡されたファイル
+
+URL で渡されたファイル（`images` の http(s) の URL、`file_url`）は、**`--fetch-allowed-host` で許可したホストからだけ取得して検査します**。呼び出し側が指定した URL を無条件に取得すると SSRF の入口になるためです。
+
+```bash
+manifold-guardrail file ... \
+  --fetch-allowed-host files.example.com \
+  --fetch-allowed-host '*.cdn.example.com' \
+  --fetch-allowed-host minio.internal:9000
+```
+
+- `files.example.com`: そのホスト名だけ。ポートは既定のもの（https は 443、http は 80）に限ります。
+- `*.cdn.example.com`: サブドメインすべて。`cdn.example.com` 自身は含みません。
+- `minio.internal:9000`: 既定以外のポートは明示します。
+
+取得の挙動は次のとおりです。
+
+- 許可していないホストの URL と、`file_id` で渡されたファイルは取得しません。中身を検査できないファイルとして、既定で `BLOCKED` にします（`--allow-unsupported-files` で通せます）。
+- リダイレクトは、行き先も許可したホストのときだけたどります。
+- `--fetch-max-bytes`（既定 20MiB）を超えるファイルは `BLOCKED`、取得の失敗（タイムアウト、200 以外）は `502` です。`--fetch-timeout` の既定は 30s です。
+- 許可したホストがどのアドレスに解決されるかは確かめません（クラスタ内のストレージなどを許可できるようにするためです）。名前解決も含めて信頼できるホストだけを許可してください。
+- URL はログとエラー文に出しません（署名付きのトークンを含みうるため）。ホスト名だけを出します。
+- **検査した中身と、あとでモデルが読む中身が同じとは限りません。** 取得のたびに違う内容を返せるサーバーなら、検査をすり抜けられます。内容を差し替えられない、信頼できるホストだけを許可してください。
 
 ## Manifold で使う
 
@@ -62,7 +84,7 @@ guardrail:
 
 LiteLLM の `generic_guardrail_api` の `api_base` をこれに向けます。LiteLLM 側の挙動（以下は LiteLLM のソースを読んで確認したもので、実機では未検証です）:
 
-- **画像**: メッセージの `image_url` を `images` にそのまま入れます。`data:` URL なら検査できますが、http(s) の URL は上記のとおり検査できません。
+- **画像**: メッセージの `image_url` を `images` にそのまま入れます。`data:` URL ならそのまま検査できます。http(s) の URL は、`--fetch-allowed-host` で許可したホストのものだけ取得して検査します。
 - **PDF などのファイル**: `structured_messages` にしか入りません。メッセージをそのまま渡す設定（`forward_messages_as_sent: true`）にしてください。
 - **テキストの無いメッセージ**: LiteLLM は、テキストもツール呼び出しも無いリクエストではガードレールを呼びません。画像や PDF だけのメッセージは検査されません。
 - **応答側（`input_type: response`）**: 画像やファイルは送られません。
