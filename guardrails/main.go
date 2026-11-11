@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/nonchan7720/manifold/guardrails/internal/version"
 )
 
 const usage = `Usage: manifold-guardrail <command> [flags]
@@ -22,6 +24,8 @@ Commands:
   file    Serve the Generic Guardrail API for files: transcribe each file
           (LLM or an OCR service) and check the text with a downstream
           text guardrail.
+
+  version Print the version.
 
 Run "manifold-guardrail <command> -h" for the flags of a command.
 `
@@ -48,6 +52,9 @@ func run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "file":
 		return runFile(ctx, args[1:])
+	case "version", "-v", "--version":
+		fmt.Fprintln(os.Stdout, "manifold-guardrail", version.Version)
+		return nil
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stdout, usage)
 		return nil

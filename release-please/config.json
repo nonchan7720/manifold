@@ -48,6 +48,24 @@
           "path": "server.json",
           "jsonpath": "$.version"
         }
+      ],
+      "exclude-paths": [
+        "guardrails"
+      ]
+    },
+    "guardrails": {
+      "release-type": "go",
+      "component": "guardrails",
+      "package-name": "manifold-guardrail",
+      "include-component-in-tag": true,
+      "tag-separator": "/",
+      "include-v-in-tag": true,
+      "draft": false,
+      "prerelease": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": [
+        "internal/version/version.go"
       ]
     }
   }
