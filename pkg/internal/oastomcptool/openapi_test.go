@@ -2252,9 +2252,9 @@ func TestCreateToolFunction_Multipart_FileObjectValue_TextDetectsContentType(t *
 func TestCreateToolFunction_Multipart_FileObjectValue_Base64LargeBodyKeepsLeadingBytes(
 	t *testing.T,
 ) {
-	// http.DetectContentType のスニフィング窓（先頭512バイト）を超えるサイズの本文でも、
+	// mimetype のスニフィング窓（先頭 contentSniffLen バイト）を超えるサイズの本文でも、
 	// 先頭部分が失われずボディ全体が送信されることを確認する。
-	content := append([]byte("%PDF-1.4 "), bytes.Repeat([]byte("A"), 1024)...)
+	content := append([]byte("%PDF-1.4 "), bytes.Repeat([]byte("A"), 2*contentSniffLen)...)
 
 	var capturedContentType string
 	var capturedContent []byte
