@@ -844,3 +844,55 @@ func TestHandler_FileWithoutData(t *testing.T) {
 	require.Equal(t, actionBlocked, res.Action)
 	require.Contains(t, res.BlockedReason, "files given without their content")
 }
+
+// ツールの結果（tool_result / function_call_output）の中のパートにあるファイルも読む。
+func TestHandler_NestedMessageParts(t *testing.T) {
+	body := func(p map[string]any) map[string]any {
+		return map[string]any{
+			"texts": []string{"summarize"},
+			"structured_messages": []any{
+				map[string]any{"role": "user", "content": []any{p}},
+			},
+		}
+	}
+	extractor := &fakeExtractor{fn: transcribe}
+
+	// 読み方を知らない種類のパートは、入れ子の中でも読めないファイルとして拒否する。
+	srv, _ := newTestHandler(t, Config{Extractor: extractor}, none)
+	status, res, _ := post(t, srv, body(map[string]any{
+		"type": "tool_result", "tool_use_id": "t1",
+		"content": []any{map[string]any{
+			"type": "document", "source": map[string]any{"type": "base64", "data": "JVBERg=="},
+		}},
+	}))
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.Contains(t, res.BlockedReason, "message parts of a type it cannot read")
+
+	// 入れ子の中のファイルは、起こして下流で検査する。
+	srv, _ = newTestHandler(t, Config{Extractor: extractor}, blockOn("text of application/pdf"))
+	status, res, _ = post(t, srv, body(map[string]any{
+		"type": "function_call_output", "call_id": "c1",
+		"output": []any{map[string]any{
+			"type": "input_file", "file_data": "data:application/pdf;base64,JVBERi0xLjcK",
+		}},
+	}))
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.Equal(t, "prompt attack", res.BlockedReason)
+
+	// 文字列の結果やテキストだけの結果は、そのまま通す。
+	srv, _ = newTestHandler(t, Config{Extractor: extractor}, none)
+	status, res, _ = post(t, srv, map[string]any{
+		"texts": []string{"hi"},
+		"structured_messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "tool_result", "content": "done"},
+			map[string]any{"type": "tool_result", "content": []any{
+				map[string]any{"type": "text", "text": "done"},
+			}},
+			map[string]any{"type": "function_call_output", "output": "done"},
+		}}},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionNone, res.Action)
+}

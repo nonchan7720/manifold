@@ -95,6 +95,10 @@ type messagePart struct {
 	FileData string       `json:"file_data"`
 	FileURL  string       `json:"file_url"`
 	FileID   string       `json:"file_id"`
+	// tool_result（content）と function_call_output（output）は、中にパートの配列を
+	// 持てる。
+	Content json.RawMessage `json:"content"`
+	Output  json.RawMessage `json:"output"`
 }
 
 type messageFile struct {
@@ -124,42 +128,71 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 				"the content of a message must be a string or an array of parts",
 			}
 		}
-		// 配列なのに読めないものを無視すると、その中のファイルが未検査で通る。
-		var parts []messagePart
-		if json.Unmarshal(message.Content, &parts) != nil {
-			return nil, &badRequestError{"the content of a message must be an array of parts"}
+		partFiles, err := contentFiles(message.Content, 0)
+		if err != nil {
+			return nil, err
 		}
-		for _, part := range parts {
-			switch partKind(part.Type) {
-			case partNotFile:
-				continue
-			case partUnknown:
-				// 読み方を知らない種類（音声、動画、他の API の形の画像や文書など）を
-				// 無視すると、その中身が未検査で通る。読めないファイルとして扱う。
-				files = append(files, inputFile{unreadable: unreadablePart})
-				continue
-			case partFile:
-			}
-			file := messageFile{FileData: part.FileData, FileURL: part.FileURL, FileID: part.FileID}
-			if part.File != nil {
-				file = *part.File
-			}
-			switch {
-			case file.FileData != "" && !isRemoteURL(file.FileData):
-				f, err := decodeInline(file.FileData)
+		files = append(files, partFiles...)
+	}
+	return files, nil
+}
+
+// maxPartDepth は、パートの入れ子（tool_result の中のパートなど）を辿る深さの上限。
+const maxPartDepth = 8
+
+// contentFiles は、パートの配列 raw にあるファイルを返す。
+func contentFiles(raw json.RawMessage, depth int) ([]inputFile, error) {
+	// 配列なのに読めないものを無視すると、その中のファイルが未検査で通る。
+	var parts []messagePart
+	if json.Unmarshal(raw, &parts) != nil {
+		return nil, &badRequestError{"the content of a message must be an array of parts"}
+	}
+	var files []inputFile
+	for _, part := range parts {
+		switch partKind(part.Type) {
+		case partNotFile:
+			// ツールの結果は、中にパートの配列（ファイルを含みうる）を持てる。
+			for _, nested := range []json.RawMessage{part.Content, part.Output} {
+				if !strings.HasPrefix(strings.TrimSpace(string(nested)), "[") {
+					continue
+				}
+				if depth >= maxPartDepth {
+					files = append(files, inputFile{unreadable: unreadablePart})
+					continue
+				}
+				nestedFiles, err := contentFiles(nested, depth+1)
 				if err != nil {
-					return nil, &badRequestError{"file_data must be base64 or a data URL"}
+					return nil, err
 				}
-				files = append(files, inputFile{SourceFile: f})
-			case file.FileData != "" || file.FileURL != "":
-				remote := file.FileURL
-				if file.FileData != "" {
-					remote = file.FileData
-				}
-				files = append(files, inputFile{unreadable: unreadableFileURL, remoteURL: remote})
-			default:
-				files = append(files, inputFile{unreadable: unreadableFileID})
+				files = append(files, nestedFiles...)
 			}
+			continue
+		case partUnknown:
+			// 読み方を知らない種類（音声、動画、他の API の形の画像や文書など）を
+			// 無視すると、その中身が未検査で通る。読めないファイルとして扱う。
+			files = append(files, inputFile{unreadable: unreadablePart})
+			continue
+		case partFile:
+		}
+		file := messageFile{FileData: part.FileData, FileURL: part.FileURL, FileID: part.FileID}
+		if part.File != nil {
+			file = *part.File
+		}
+		switch {
+		case file.FileData != "" && !isRemoteURL(file.FileData):
+			f, err := decodeInline(file.FileData)
+			if err != nil {
+				return nil, &badRequestError{"file_data must be base64 or a data URL"}
+			}
+			files = append(files, inputFile{SourceFile: f})
+		case file.FileData != "" || file.FileURL != "":
+			remote := file.FileURL
+			if file.FileData != "" {
+				remote = file.FileData
+			}
+			files = append(files, inputFile{unreadable: unreadableFileURL, remoteURL: remote})
+		default:
+			files = append(files, inputFile{unreadable: unreadableFileID})
 		}
 	}
 	return files, nil
