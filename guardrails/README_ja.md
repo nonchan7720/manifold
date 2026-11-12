@@ -9,9 +9,17 @@
 
 Manifold 本体とは別の Go モジュール・別のバイナリ・別のイメージで、バージョンも本体とは独立しています。LLM や OCR の SDK の依存（とその不具合・脆弱性）を本体に持ち込まないためです。
 
+リリースは `guardrails/vX.Y.Z` というタグで出ます（本体の `vX.Y.Z` とは別系統です）。
+
+- **イメージ**: `ghcr.io/nonchan7720/manifold-guardrail:vX.Y.Z`（linux/amd64、linux/arm64）
+- **バイナリ**: GitHub のリリース `guardrails/vX.Y.Z` に、OS・アーキテクチャごとのアーカイブと `checksums.txt` を添付します。
+
+手元でビルドする場合:
+
 ```bash
 docker build -t manifold-guardrail .      # このディレクトリで
 go build -o manifold-guardrail .          # またはバイナリ
+manifold-guardrail version
 ```
 
 ## `manifold-guardrail file`: ファイル用ガードレール

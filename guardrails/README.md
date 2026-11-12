@@ -9,9 +9,17 @@
 
 It is a Go module, a binary and an image of its own, versioned independently of Manifold, so that the dependencies of the LLM and OCR SDKs (and their bugs and vulnerabilities) stay out of the gateway.
 
+Releases are tagged `guardrails/vX.Y.Z` (a series of their own, apart from Manifold's `vX.Y.Z`).
+
+- **Image**: `ghcr.io/nonchan7720/manifold-guardrail:vX.Y.Z` (linux/amd64, linux/arm64)
+- **Binaries**: the GitHub release `guardrails/vX.Y.Z` carries an archive per OS and architecture, and `checksums.txt`.
+
+To build it yourself:
+
 ```bash
 docker build -t manifold-guardrail .      # in this directory
 go build -o manifold-guardrail .          # or the binary
+manifold-guardrail version
 ```
 
 ## `manifold-guardrail file`: the file guardrail

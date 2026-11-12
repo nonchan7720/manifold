@@ -32,6 +32,7 @@
       "hidden": false
     }
   ],
+  "separate-pull-requests": true,
   "packages": {
     ".": {
       "release-type": "go",
@@ -48,6 +49,25 @@
           "path": "server.json",
           "jsonpath": "$.version"
         }
+      ],
+      "exclude-paths": [
+        "guardrails"
+      ]
+    },
+    "guardrails": {
+      "release-type": "go",
+      "component": "guardrails",
+      "package-name": "manifold-guardrail",
+      "initial-version": "0.1.0",
+      "include-component-in-tag": true,
+      "tag-separator": "/",
+      "include-v-in-tag": true,
+      "draft": false,
+      "prerelease": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": [
+        "internal/version/version.go"
       ]
     }
   }

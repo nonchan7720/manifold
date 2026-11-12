@@ -89,6 +89,11 @@ func TestParseFileFlags(t *testing.T) {
 	}
 }
 
+func TestRun_Version(t *testing.T) {
+	require.NoError(t, run(t.Context(), []string{"version"}))
+	require.NoError(t, run(t.Context(), []string{"--version"}))
+}
+
 func TestRun_UnknownCommand(t *testing.T) {
 	require.ErrorContains(t, run(t.Context(), []string{"bedrock"}), `unknown command "bedrock"`)
 	require.ErrorContains(t, run(t.Context(), nil), "a command is required")
