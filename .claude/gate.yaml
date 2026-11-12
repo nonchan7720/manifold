@@ -12,6 +12,18 @@ rules:
             timeout: 240
     run_checks:
       - all
+  # guardrails は本体とは別の Go モジュール（guardrails/go.mod）。本体の go test / golangci-lint は
+  # 入れ子のモジュールを見ないので、モジュールのディレクトリで実行する。
+  - match: ["guardrails/**/*.go", "guardrails/go.mod", "guardrails/go.sum"]
+    dir: guardrails
+    run:
+      - name: fmt
+        cmd: golangci-lint fmt
+      - parallel:
+          - cmd: go test ./...
+            timeout: 240
+          - cmd: golangci-lint run ./...
+            timeout: 240
   - match: "tools/extension/src/**/*.ts"
     dir: tools/extension
     run:

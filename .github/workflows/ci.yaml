@@ -30,6 +30,23 @@ jobs:
         if: always()
         run: docker compose down
 
+  guardrails:
+    # guardrails は本体とは別の Go モジュール（guardrails/go.mod）。ci ジョブの lint / test は
+    # 入れ子のモジュールを見ないので、ここで検査する。
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up tools
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      - name: Run lint
+        run: make lint-guardrails
+      - name: Run tests
+        run: make test-guardrails
+
   depgraph:
     # 循環 import・層違反・重複・未使用コードなど、depgraph の error / warn を検出したら失敗する（設定は .depgraph.yml）。
     runs-on: ubuntu-latest

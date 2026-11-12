@@ -14,11 +14,29 @@ forbidden:
   services: [interfaces]
   infrastructure: [services, interfaces]
 
+# guardrails は本体とは別の Go モジュール（guardrails/go.mod）。LLM や OCR の SDK の依存を
+# 本体に持ち込まないために分けているので、層もモジュールの中で定義する。
+components:
+  guardrails:
+    layers:
+      # Extractor のインターフェースと、種類（MIME）の判定などの共通部品。
+      extract: ["internal/extract"]
+      # Extractor の実装（bedrock / google / azure / openapi）。SDK を import するのはここだけ。
+      providers: ["internal/extract/*"]
+      # Generic Guardrail API のハンドラ。Extractor はインターフェース越しに使い、
+      # どの実装を使うかは main（file.go）が決める。
+      fileguard: ["internal/fileguard/**"]
+    forbidden:
+      extract: [providers, fileguard]
+      providers: [fileguard]
+      fileguard: [providers]
+
 rules:
-  # Client / NewClient / Config は、memory.Client / redis.Client のようにパッケージ名で区別する
-  # Go の慣用名なので重複扱いしない（ignore は既定を置き換えるので、depgraph の既定の名前も並べる）。
+  # Client / NewClient / Config / Extractor は、memory.Client / redis.Client / bedrock.Extractor の
+  # ようにパッケージ名で区別する Go の慣用名なので重複扱いしない（ignore は既定を置き換えるので、
+  # depgraph の既定の名前も並べる）。
   duplicate-symbol:
-    ignore: [main, init, New, String, Error, Close, Run, Validate, default, index, setup, teardown, handler, render, App, Client, NewClient, Config]
+    ignore: [main, init, New, String, Error, Close, Run, Validate, default, index, setup, teardown, handler, render, App, Client, NewClient, Config, Extractor]
   # 拡張の入口。background は manifest.json の service_worker、content は vite.config.ts の
   # additionalInputs から読み込まれるので、import をたどっても見つからない。
   unreachable-file:

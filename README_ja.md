@@ -743,7 +743,27 @@ Manifold は `{"texts": [...], "input_type": "request" | "response", ...}` を P
 
 テキストは1件ずつ `ApplyGuardrail` に送るので（`input_type: request` は source `INPUT`、`response` は `OUTPUT`）、応答の `texts` はリクエストと 1 対 1 で対応します。機密情報フィルタが `ANONYMIZE` したテキストはマスキングして返し（`GUARDRAIL_INTERVENED`）、いずれかのポリシーが `BLOCKED` した場合（または Bedrock が書き換え後のテキストを返さずに介入した場合）は、リクエスト全体を Bedrock の `actionReason` 付きで `BLOCKED` にします。Bedrock のエラーは `502` を返し、ゲートウェイは `guardrail check failed` として扱います。`GET /healthz` はプローブ用に `200` を返します。
 
-このサイドカーが検査するのは `texts` だけです。`images` と `files` はまだ見ないので、`files.enabled` を `true` にしても、サイドカー経由ではファイルは検査されずに通ります。
+このサイドカーが検査するのは `texts` だけです。`images` と `files` はまだ見ないので、`files.enabled` を `true` にしても、サイドカー経由ではファイルは検査されずに通ります。ファイルを検査するには、手前に[ファイル用ガードレール](#ファイル用ガードレールmanifold-guardrail-file)を置いてください。
+
+#### ファイル用ガードレール（`manifold-guardrail file`）
+
+結果に含まれるファイル（`guardrail.files.enabled` で送られる `images` / `files`）の中身を検査するには、[`manifold-guardrail file`](guardrails/README_ja.md) をゲートウェイとテキスト用ガードレールの間に置きます。ファイルをテキストに起こし（LLM、または OpenAPI で記述された OCR サービス）、そのテキストを下流のテキスト用ガードレールで検査するので、ファイルに埋め込まれた指示（プロンプトインジェクション）を既存のテキスト用のポリシーで検出できます。
+
+```
+Manifold ──▶ manifold-guardrail file ──▶ テキスト用ガードレール（guardrail bedrock など）
+                      └──▶ 書き起こし（LLM または OCR サービス）
+```
+
+```yaml
+guardrail:
+  enabled: true
+  url: http://localhost:8091/beta/litellm_basic_guardrail_api
+  timeout: 180s          # ファイルの取得（30s）と書き起こし（120s）、下流の判定を待てる長さにする
+  files:
+    enabled: true
+```
+
+`manifold-guardrail` は Manifold 本体とは別の Go モジュール（[`guardrails/`](guardrails)）で、別のバイナリ・別のイメージです。LLM や OCR の SDK の依存を本体に持ち込まないために分けており、バージョンも本体とは独立しています（現在は実験的な 0.x）。LiteLLM のガードレールとしても単体で使えます。書き起こしの方法、フラグ、注意点は [`guardrails/README_ja.md`](guardrails/README_ja.md) を参照してください。
 
 ### 設定リファレンス
 

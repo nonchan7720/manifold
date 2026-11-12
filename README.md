@@ -743,7 +743,27 @@ The guardrail is called synchronously, so its latency adds to every `tools/call`
 
 Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → source `INPUT`, `response` → `OUTPUT`), so the answer's `texts` line up with the request's. A text whose sensitive-information filters `ANONYMIZE` comes back masked (`GUARDRAIL_INTERVENED`); if any policy `BLOCKED` it — or Bedrock intervened without returning a rewrite — the whole request is `BLOCKED` with Bedrock's `actionReason`. A Bedrock error is answered with `502`, which the gateway turns into `guardrail check failed`. `GET /healthz` answers `200` for probes.
 
-The sidecar checks `texts` only. It does not look at `images` or `files` yet, so with `files.enabled: true` files still pass through the sidecar unchecked.
+The sidecar checks `texts` only. It does not look at `images` or `files` yet, so with `files.enabled: true` files still pass through the sidecar unchecked. To check files, put the [file guardrail](#file-guardrail-manifold-guardrail-file) in front of it.
+
+#### File guardrail (`manifold-guardrail file`)
+
+To check the content of the files of a result (the `images` / `files` that `guardrail.files.enabled` sends), put [`manifold-guardrail file`](guardrails/README.md) between the gateway and the text guardrail. It transcribes each file into text (with an LLM, or an OCR service described by OpenAPI) and has the downstream text guardrail check that text, so instructions embedded in a file (prompt injection) are caught by the text policies you already have.
+
+```
+Manifold ──▶ manifold-guardrail file ──▶ text guardrail (guardrail bedrock, ...)
+                      └──▶ transcription (an LLM or an OCR service)
+```
+
+```yaml
+guardrail:
+  enabled: true
+  url: http://localhost:8091/beta/litellm_basic_guardrail_api
+  timeout: 180s          # fetch (30s) + transcription (120s) of a file, plus the downstream check
+  files:
+    enabled: true
+```
+
+`manifold-guardrail` is a Go module of its own ([`guardrails/`](guardrails)), separate from Manifold: a different binary and a different image. It is split off so that the dependencies of the LLM and OCR SDKs stay out of the gateway, and it is versioned independently (currently an experimental 0.x). It also works on its own as a LiteLLM guardrail. See [`guardrails/README.md`](guardrails/README.md) for the transcription methods, the flags and the caveats.
 
 ### Configuration reference
 
