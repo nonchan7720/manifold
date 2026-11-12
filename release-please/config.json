@@ -32,6 +32,7 @@
       "hidden": false
     }
   ],
+  "separate-pull-requests": true,
   "packages": {
     ".": {
       "release-type": "go",
@@ -57,6 +58,7 @@
       "release-type": "go",
       "component": "guardrails",
       "package-name": "manifold-guardrail",
+      "initial-version": "0.1.0",
       "include-component-in-tag": true,
       "tag-separator": "/",
       "include-v-in-tag": true,

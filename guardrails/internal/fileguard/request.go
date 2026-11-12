@@ -25,6 +25,8 @@ const (
 	unreadableImageURL = "images given by URL"
 	unreadableFileURL  = "files given by URL"
 	unreadableFileID   = "files given by file_id"
+	unreadableNoData   = "files given without their content"
+	unreadablePart     = "message parts of a type it cannot read"
 )
 
 // requestFiles は req に含まれるファイルを、種類を揃えた一覧にする。
@@ -64,6 +66,11 @@ func requestFiles(req map[string]json.RawMessage) ([]inputFile, error) {
 			return nil, &badRequestError{"files must be an array of {uri, mime_type, data}"}
 		}
 		for _, f := range apiFiles {
+			if len(f.Data) == 0 && f.URI != "" {
+				// 中身が無く URI だけのファイルは、読めないので検査できない。
+				files = append(files, inputFile{unreadable: unreadableNoData})
+				continue
+			}
 			files = append(files, inputFile{
 				URI: f.URI, MIMEType: extract.NormalizeMIME(f.MIMEType, f.Data), Data: f.Data})
 		}
@@ -106,9 +113,16 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 	}
 	var files []inputFile
 	for _, message := range messages {
-		// content は文字列か、パートの配列。文字列（や null）にファイルは無い。
-		if !strings.HasPrefix(strings.TrimSpace(string(message.Content)), "[") {
+		// content は文字列か、パートの配列。文字列（や null、省略）にファイルは無い。
+		// それ以外の形（オブジェクトなど）を無視すると、その中のファイルが未検査で通る。
+		content := strings.TrimSpace(string(message.Content))
+		if content == "" || content == "null" || strings.HasPrefix(content, `"`) {
 			continue
+		}
+		if !strings.HasPrefix(content, "[") {
+			return nil, &badRequestError{
+				"the content of a message must be a string or an array of parts",
+			}
 		}
 		// 配列なのに読めないものを無視すると、その中のファイルが未検査で通る。
 		var parts []messagePart
@@ -116,8 +130,15 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 			return nil, &badRequestError{"the content of a message must be an array of parts"}
 		}
 		for _, part := range parts {
-			if part.Type != "file" && part.Type != "input_file" {
+			switch partKind(part.Type) {
+			case partNotFile:
 				continue
+			case partUnknown:
+				// 読み方を知らない種類（音声、動画、他の API の形の画像や文書など）を
+				// 無視すると、その中身が未検査で通る。読めないファイルとして扱う。
+				files = append(files, inputFile{unreadable: unreadablePart})
+				continue
+			case partFile:
 			}
 			file := messageFile{FileData: part.FileData, FileURL: part.FileURL, FileID: part.FileID}
 			if part.File != nil {
@@ -142,6 +163,30 @@ func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
 		}
 	}
 	return files, nil
+}
+
+// メッセージのパートの種類。
+const (
+	partFile = iota
+	partNotFile
+	partUnknown
+)
+
+// partKind は content のパートの type を、ファイル（file / input_file）、ファイルを
+// 運ばないと分かっている種類、それ以外（未知）に分ける。image_url の画像は、
+// 呼び出し側（LiteLLM）が images に入れて送るので、ここでは読まない。
+func partKind(partType string) int {
+	switch strings.ToLower(strings.TrimSpace(partType)) {
+	case "file", "input_file":
+		return partFile
+	case "text", "input_text", "output_text", "summary_text", "refusal",
+		"image_url",
+		"thinking", "redacted_thinking", "reasoning",
+		"tool_use", "tool_result", "function_call", "function_call_output":
+		return partNotFile
+	default:
+		return partUnknown
+	}
 }
 
 func isRemoteURL(s string) bool {

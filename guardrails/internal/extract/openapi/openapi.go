@@ -335,6 +335,21 @@ func uniqueStringProperty(schema *openapi3.Schema, format string) (string, error
 	}
 }
 
+// hasNestedProperty は schema に配列かオブジェクトのプロパティがあるかを返す。
+func hasNestedProperty(schema *openapi3.Schema) bool {
+	for _, ref := range schema.Properties {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		v := ref.Value
+		if v.Type == nil || v.Type.Is("array") || v.Type.Is("object") ||
+			v.Items != nil || len(v.Properties) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // setResponse は成功レスポンスからテキストの読み方を決める。
 func (e *Extractor) setResponse(op *openapi3.Operation, textPath string) error {
 	status, resp, err := successResponse(op)
@@ -370,6 +385,12 @@ func (e *Extractor) setResponse(op *openapi3.Operation, textPath string) error {
 	case hasText:
 	case hasJSON && jsonSchema != nil:
 		name, err := uniqueStringProperty(jsonSchema, "")
+		if err == nil && hasNestedProperty(jsonSchema) {
+			// 文字列のプロパティが1つでも、配列やオブジェクトのプロパティがあると、
+			// テキストがその中にある（文字列は ID など）かもしれない。取り違えると
+			// ファイルのテキストが検査されないので、推測しない。
+			err = fmt.Errorf("the schema also has array or object properties")
+		}
 		if err != nil {
 			return fmt.Errorf(
 				"openapi: text of the JSON response: %w; set the text path explicitly",
@@ -611,7 +632,8 @@ func fileExtension(mimeType string) string {
 }
 
 // collectText は v の path が指す文字列を out に集める。キーが無い、または指した先が
-// 文字列でない場合はエラーにする（パスの誤りを「テキスト無し」として通さないため）。
+// 文字列でない場合（null を含む）はエラーにする（パスの誤りや書き起こしの失敗を
+// 「テキスト無し」として通さないため）。
 // "*" が指す配列が空なのは、テキストが無いという正常な結果として扱う。
 func collectText(v any, path []string, out *[]string) error {
 	if len(path) == 0 {
@@ -619,9 +641,9 @@ func collectText(v any, path []string, out *[]string) error {
 		case string:
 			*out = append(*out, leaf)
 			return nil
-		case nil:
-			return nil
 		default:
+			// null も含む。null を「テキスト無し」として通すと、書き起こしに失敗して
+			// text: null を返すサービスのファイルが、検査されないまま通る。
 			return fmt.Errorf("openapi: the text path points at a non-string value")
 		}
 	}

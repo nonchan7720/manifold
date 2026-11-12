@@ -645,3 +645,63 @@ paths:
 	}, http.DefaultClient)
 	require.ErrorContains(t, err, "neither a 200 nor a 201 response")
 }
+
+// 応答の文字列のプロパティが1つでも、配列やオブジェクトのプロパティがあれば、テキストの
+// 場所を推測しない（request_id をテキストと取り違えると、本文が検査されない）。
+func TestNew_NestedResponseNeedsTextPath(t *testing.T) {
+	const nestedSpec = `
+openapi: 3.0.3
+info: {title: ocr, version: "1"}
+paths:
+  /ocr:
+    post:
+      operationId: ocr
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request_id: {type: string}
+                  pages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        text: {type: string}
+`
+	cfg := Config{
+		SpecPath: writeSpec(t, nestedSpec), OperationID: "ocr",
+		ServerURL: "https://ocr.example.com", MIMETypes: []string{"application/pdf"},
+	}
+	_, err := New(cfg, http.DefaultClient)
+	require.ErrorContains(t, err, "set the text path explicitly")
+
+	cfg.TextPath = "pages.*.text"
+	_, err = New(cfg, http.DefaultClient)
+	require.NoError(t, err)
+}
+
+// テキストが null の応答（書き起こしに失敗して text: null を返すサービスなど）は、
+// 「テキスト無し」として通さずにエラーにする。
+func TestExtractor_NullTextIsAnError(t *testing.T) {
+	srv, _ := ocrServer(t, http.StatusCreated, "application/json",
+		`{"text":null,"error":"ocr failed"}`)
+	e, err := New(Config{
+		SpecPath: writeSpec(t, jsonSpec), OperationID: "transcribe", ServerURL: srv.URL,
+		Params:    map[string]string{"mimeType": "{mime_type}"},
+		MIMETypes: []string{"application/pdf"},
+	}, srv.Client())
+	require.NoError(t, err)
+	_, err = e.Extract(
+		t.Context(),
+		extract.SourceFile{MIMEType: "application/pdf", Data: []byte("%PDF")},
+	)
+	require.ErrorContains(t, err, "non-string value")
+}
