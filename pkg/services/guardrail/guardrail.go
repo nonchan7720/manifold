@@ -7,10 +7,13 @@ package guardrail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/n-creativesystem/go-packages/lib/trace"
@@ -41,10 +44,22 @@ const (
 // maxResponseSize はガードレールの応答の最大バイト数。
 const maxResponseSize = 16 << 20
 
+// File は検査するファイル（画像・音声・リソースの blob）。
+type File struct {
+	// URI はファイルの出どころ（リソースの URI）。無ければ空。
+	URI string
+	// MIMEType は送り元が申告した種類。無ければ空。
+	MIMEType string
+	Data     []byte
+}
+
 // Request はガードレールに渡すテキストと文脈。
 type Request struct {
 	// Texts は検査するテキスト。結果の Texts はこれと 1 対 1 で対応する。
-	Texts     []string
+	Texts []string
+	// Files は検査するファイル。ガードレールはファイルを書き換えられないので、
+	// 判定は通すか拒否するかだけになる。
+	Files     []File
 	InputType InputType
 	// TraceID は呼び出しを関連付ける ID（litellm_trace_id）。
 	TraceID string
@@ -61,6 +76,10 @@ type Result struct {
 	Texts []string
 	// BlockedReason は Action が ActionBlocked のときの理由。
 	BlockedReason string
+	// FilesRewritten は、Action が ActionIntervened のときに、ガードレールが
+	// ファイル（画像）の書き換えを返したかどうか。ファイルは書き換えられないので、
+	// 呼び出し側は元のファイルを通さずに拒否する。
+	FilesRewritten bool
 }
 
 // Guardrail はテキストを検査・マスキングするガードレール。
@@ -68,8 +87,21 @@ type Guardrail interface {
 	Apply(ctx context.Context, req Request) (Result, error)
 }
 
+// apiFile は apiRequest.Files の1件。Data は JSON では base64 になる。フィールドの
+// 並びと型は File と同じにしておく（splitFiles が型変換で詰め替える）。
+type apiFile struct {
+	URI      string `json:"uri,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Data     []byte `json:"data"`
+}
+
+// apiRequest は Generic Guardrail API のリクエスト。Files は LiteLLM の仕様に無い
+// Manifold の拡張で、画像以外のファイルを運ぶ（画像は仕様にある Images で送る）。
 type apiRequest struct {
-	Texts          []string       `json:"texts"`
+	Texts []string `json:"texts"`
+	// Images は画像（base64）。
+	Images         []string       `json:"images,omitempty"`
+	Files          []apiFile      `json:"files,omitempty"`
 	InputType      InputType      `json:"input_type"`
 	CallID         string         `json:"litellm_call_id"`
 	TraceID        string         `json:"litellm_trace_id"`
@@ -81,6 +113,9 @@ type apiResponse struct {
 	Action        Action   `json:"action"`
 	BlockedReason string   `json:"blocked_reason,omitempty"`
 	Texts         []string `json:"texts,omitempty"`
+	// Images は書き換え後の画像。Generic Guardrail API は画像の書き換えも返せるが、
+	// Manifold はファイルを書き換えないので、書き換えの有無だけを見る。
+	Images []string `json:"images,omitempty"`
 }
 
 // HTTPGuardrail は Generic Guardrail API を HTTP で呼ぶ Guardrail。
@@ -115,8 +150,16 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 	if traceID == "" {
 		traceID = uuid.NewString()
 	}
+	images, files := splitFiles(req.Files)
+	// texts は仕様上必須なので、ファイルだけの検査でも null ではなく [] を送る。
+	texts := req.Texts
+	if texts == nil {
+		texts = []string{}
+	}
 	body, err := json.Marshal(apiRequest{
-		Texts:          req.Texts,
+		Texts:          texts,
+		Images:         images,
+		Files:          files,
 		InputType:      req.InputType,
 		CallID:         uuid.NewString(),
 		TraceID:        traceID,
@@ -165,10 +208,39 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 				len(out.Texts), len(req.Texts),
 			)
 		}
-		return Result{Action: ActionIntervened, Texts: out.Texts}, nil
+		// 送った画像と同じものを返しただけなら、書き換えではない。images を返したのに
+		// 送ったものと違えば、空（すべて取り除いた）でも書き換えとして扱う。
+		filesRewritten := out.Images != nil && !slices.Equal(out.Images, images)
+		return Result{
+			Action: ActionIntervened, Texts: out.Texts, FilesRewritten: filesRewritten,
+		}, nil
 	case ActionBlocked:
 		return Result{Action: ActionBlocked, BlockedReason: out.BlockedReason}, nil
 	default:
 		return Result{}, fmt.Errorf("guardrail: unknown action %q", out.Action)
 	}
+}
+
+// splitFiles は files を Generic Guardrail API の images（画像の base64）と、
+// それ以外を運ぶ files に分ける。
+func splitFiles(files []File) (images []string, rest []apiFile) {
+	for _, f := range files {
+		if isImage(f) {
+			images = append(images, base64.StdEncoding.EncodeToString(f.Data))
+			continue
+		}
+		rest = append(rest, apiFile(f))
+	}
+	return images, rest
+}
+
+// isImage は f が画像かを返す。申告された種類（image/*）に加えて、中身からも判定する。
+// 種類は検査対象（バックエンド）の自己申告なので、申告だけで決めると、画像を
+// application/octet-stream などと申告するだけで、images しか読まないガードレールの
+// 検査を外れてしまう。
+func isImage(f File) bool {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.MIMEType)), "image/") {
+		return true
+	}
+	return strings.HasPrefix(http.DetectContentType(f.Data), "image/")
 }

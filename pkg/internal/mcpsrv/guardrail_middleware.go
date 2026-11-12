@@ -31,44 +31,130 @@ func guardrailBlockedError(reason string) error {
 	return &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: msg}
 }
 
-// NewGuardrailMiddleware runs g on tools/call for server serverName (of
-// service serviceCode): with preCall, the arguments before they reach the
-// backend; with postCall, the text of the result before it reaches the
-// caller. GUARDRAIL_INTERVENED rewrites them, BLOCKED rejects the call, and
-// a guardrail failure rejects it too (fail closed).
+// GuardrailOptions selects what NewGuardrailMiddleware checks.
+type GuardrailOptions struct {
+	// PreCall checks the tools/call arguments before they reach the backend.
+	PreCall bool
+	// PostCall checks the tools/call result before it reaches the caller.
+	PostCall bool
+	// ResourceRead checks the resources/read result before it reaches the
+	// caller.
+	ResourceRead bool
+	// Files also sends the files of a checked result (images, audio, resource
+	// blobs) to the guardrail. Without it they pass through unchecked.
+	Files bool
+	// MaxFileBytes caps the total size of the files of one result. A result
+	// over it cannot be checked and is rejected. Zero means no files fit.
+	MaxFileBytes int64
+}
+
+// NewGuardrailMiddleware runs g for server serverName (of service
+// serviceCode) on tools/call and, with opts.ResourceRead, on resources/read:
+// with PreCall, the tools/call arguments before they reach the backend; with
+// PostCall / ResourceRead, the result before it reaches the caller.
+// GUARDRAIL_INTERVENED rewrites the text, BLOCKED rejects the call, and a
+// guardrail failure rejects it too (fail closed).
 //
 // It sits inside authz, so denied calls never reach the guardrail, and
 // outside the tool filter, so it sees the names callers use.
 func NewGuardrailMiddleware(
-	serverName, serviceCode string, g guardrail.Guardrail, preCall, postCall bool,
+	serverName, serviceCode string, g guardrail.Guardrail, opts GuardrailOptions,
 ) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method != authzMethodToolsCall {
-				return next(ctx, method, req)
-			}
-			params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
-			if !ok {
-				return next(ctx, method, req)
-			}
-			gp := map[string]any{"server": serverName, "service": serviceCode, "tool": params.Name}
-			if preCall {
-				var err error
-				if req, err = guardrailPreCall(ctx, g, gp, req, params); err != nil {
-					return nil, err
+			switch method {
+			case authzMethodToolsCall:
+				return guardrailToolsCall(ctx, g, serverName, serviceCode, opts, next, req)
+			case authzMethodResourcesRead:
+				if opts.ResourceRead {
+					return guardrailResourcesRead(ctx, g, serverName, serviceCode, opts, next, req)
 				}
 			}
-			res, err := next(ctx, method, req)
-			if err != nil || !postCall {
-				return res, err
-			}
-			result, ok := res.(*mcp.CallToolResult)
-			if !ok {
-				return res, nil
-			}
-			return guardrailPostCall(ctx, g, gp, result)
+			return next(ctx, method, req)
 		}
 	}
+}
+
+// guardrailToolsCall checks a tools/call: with opts.PreCall the arguments
+// before the backend is called, with opts.PostCall the result after it.
+func guardrailToolsCall(
+	ctx context.Context,
+	g guardrail.Guardrail,
+	serverName, serviceCode string,
+	opts GuardrailOptions,
+	next mcp.MethodHandler,
+	req mcp.Request,
+) (mcp.Result, error) {
+	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+	if !ok {
+		return next(ctx, authzMethodToolsCall, req)
+	}
+	gp := map[string]any{
+		"server": serverName, "service": serviceCode,
+		"method": authzMethodToolsCall, "tool": params.Name,
+	}
+	if opts.PreCall {
+		var err error
+		if req, err = guardrailPreCall(ctx, g, gp, req, params); err != nil {
+			return nil, err
+		}
+	}
+	res, err := next(ctx, authzMethodToolsCall, req)
+	if err != nil || !opts.PostCall {
+		return res, err
+	}
+	result, ok := res.(*mcp.CallToolResult)
+	if !ok {
+		return res, nil
+	}
+	return guardrailPostCall(ctx, g, gp, opts, result)
+}
+
+// guardrailResourcesRead checks the contents of a resources/read result: the
+// text of every content and, with opts.Files, the blobs.
+func guardrailResourcesRead(
+	ctx context.Context,
+	g guardrail.Guardrail,
+	serverName, serviceCode string,
+	opts GuardrailOptions,
+	next mcp.MethodHandler,
+	req mcp.Request,
+) (mcp.Result, error) {
+	res, err := next(ctx, authzMethodResourcesRead, req)
+	if err != nil {
+		return res, err
+	}
+	result, ok := res.(*mcp.ReadResourceResult)
+	if !ok || result == nil {
+		return res, nil
+	}
+	gp := map[string]any{
+		"server": serverName, "service": serviceCode, "method": authzMethodResourcesRead,
+	}
+	if params, ok := req.GetParams().(*mcp.ReadResourceParams); ok && params != nil {
+		gp["uri"] = params.URI
+	}
+
+	// The struct copy keeps the unexported resultType of result.
+	copied := *result
+	copied.Contents = append([]*mcp.ResourceContents(nil), result.Contents...)
+	var in guardrailResponseInput
+	for i, rc := range result.Contents {
+		if rc == nil {
+			continue
+		}
+		in.addResource(rc, opts.Files, func(rewritten *mcp.ResourceContents) {
+			copied.Contents[i] = rewritten
+		})
+	}
+	changed, err := in.check(ctx, g, gp, opts)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return result, nil
+	}
+	return &copied, nil
 }
 
 // guardrailPreCall checks the arguments, returning req to forward (rewritten
@@ -119,76 +205,178 @@ func guardrailPreCall(
 	return req, nil
 }
 
-// guardrailPostCall checks the text of result: every TextContent, then
-// StructuredContent (as JSON) when present. Other content (images, resource
-// links, ...) passes through unchecked.
-func guardrailPostCall(
-	ctx context.Context, g guardrail.Guardrail, gp map[string]any, result *mcp.CallToolResult,
-) (mcp.Result, error) {
-	var (
-		texts   []string
-		indexes []int
-	)
-	for i, c := range result.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			texts = append(texts, tc.Text)
-			indexes = append(indexes, i)
-		}
+// guardrailResponseInput collects what a result sends to the guardrail: the
+// texts, how to write each one back when the guardrail rewrites it, and the
+// files (which the guardrail can only pass or block).
+type guardrailResponseInput struct {
+	texts   []string
+	rewrite []func(text string) error
+	files   []guardrail.File
+}
+
+// addText adds a text to check. rewrite stores the rewritten text when the
+// guardrail rewrites it.
+func (in *guardrailResponseInput) addText(text string, rewrite func(text string) error) {
+	in.texts = append(in.texts, text)
+	in.rewrite = append(in.rewrite, rewrite)
+}
+
+// addResource adds the contents of rc: its text, or with files its blob. set
+// stores the rewritten copy of rc when the guardrail rewrites the text.
+func (in *guardrailResponseInput) addResource(
+	rc *mcp.ResourceContents, files bool, set func(rewritten *mcp.ResourceContents),
+) {
+	if rc.Text != "" {
+		in.addText(rc.Text, func(text string) error {
+			rewritten := *rc
+			rewritten.Text = text
+			set(&rewritten)
+			return nil
+		})
 	}
-	hasStructured := result.StructuredContent != nil
-	if hasStructured {
-		raw, err := json.Marshal(result.StructuredContent)
-		if err != nil {
-			return nil, fmt.Errorf("encode structuredContent for the guardrail: %w", err)
-		}
-		texts = append(texts, string(raw))
+	if files && len(rc.Blob) > 0 {
+		in.files = append(in.files, guardrail.File{
+			URI: rc.URI, MIMEType: rc.MIMEType, Data: rc.Blob,
+		})
 	}
-	if len(texts) == 0 {
-		return result, nil
+}
+
+// check sends in to the guardrail and writes rewritten texts back. It reports
+// whether anything was rewritten. A BLOCKED decision, a guardrail failure,
+// files over opts.MaxFileBytes and a guardrail that would rewrite a file all
+// return the error to answer the caller with.
+func (in *guardrailResponseInput) check(
+	ctx context.Context, g guardrail.Guardrail, gp map[string]any, opts GuardrailOptions,
+) (changed bool, _ error) {
+	if len(in.texts) == 0 && len(in.files) == 0 {
+		return false, nil
+	}
+	var fileBytes int64
+	for _, f := range in.files {
+		fileBytes += int64(len(f.Data))
+	}
+	if fileBytes > opts.MaxFileBytes {
+		// The files cannot be checked, so the result does not go through.
+		slog.WarnContext(ctx, "guardrail cannot check a result: files exceed the size limit",
+			slog.Any("method", gp["method"]), slog.Any("tool", gp["tool"]),
+			slog.Any("server", gp["server"]),
+			slog.Int64("bytes", fileBytes), slog.Int64("limit", opts.MaxFileBytes))
+		return false, guardrailBlockedError("files exceed the size limit of the guardrail check")
 	}
 
 	res, err := g.Apply(ctx, guardrail.Request{
-		Texts: texts, InputType: guardrail.InputTypeResponse, Params: gp,
+		Texts: in.texts, Files: in.files, InputType: guardrail.InputTypeResponse, Params: gp,
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "guardrail failed on tools/call result",
-			slog.Any("tool", gp["tool"]), slog.Any("server", gp["server"]), slog.Any("error", err))
-		return nil, errGuardrailUnavailable
+		slog.ErrorContext(ctx, "guardrail failed on a result",
+			slog.Any("method", gp["method"]), slog.Any("tool", gp["tool"]),
+			slog.Any("server", gp["server"]), slog.Any("error", err))
+		return false, errGuardrailUnavailable
 	}
 	switch res.Action {
 	case guardrail.ActionBlocked:
 		logGuardrailDecision(ctx, gp, guardrail.InputTypeResponse, res)
-		return nil, guardrailBlockedError(res.BlockedReason)
+		return false, guardrailBlockedError(res.BlockedReason)
 	case guardrail.ActionIntervened:
-		copied := *result
-		copied.Content = append([]mcp.Content(nil), result.Content...)
-		for j, i := range indexes {
-			tc := *result.Content[i].(*mcp.TextContent)
-			tc.Text = res.Texts[j]
-			copied.Content[i] = &tc
+		if res.FilesRewritten {
+			// The guardrail wants a file changed (an image masked, ...), which
+			// cannot be done here. Passing the original on would ignore its
+			// decision, so the result does not go through.
+			logGuardrailDecision(ctx, gp, guardrail.InputTypeResponse, res)
+			return false, guardrailBlockedError(
+				"the guardrail would rewrite a file, which cannot be rewritten",
+			)
 		}
-		if hasStructured {
-			var structured any
-			if err := json.Unmarshal([]byte(res.Texts[len(texts)-1]), &structured); err != nil {
-				slog.ErrorContext(ctx, "guardrail rewrote structuredContent into invalid JSON",
-					slog.Any("tool", gp["tool"]), slog.Any("server", gp["server"]),
-					slog.Any("error", err))
-				return nil, errGuardrailUnavailable
+		for i, rewrite := range in.rewrite {
+			if err := rewrite(res.Texts[i]); err != nil {
+				slog.ErrorContext(ctx, "guardrail rewrote a result into invalid content",
+					slog.Any("method", gp["method"]), slog.Any("tool", gp["tool"]),
+					slog.Any("server", gp["server"]), slog.Any("error", err))
+				return false, errGuardrailUnavailable
 			}
-			copied.StructuredContent = structured
 		}
 		logGuardrailDecision(ctx, gp, guardrail.InputTypeResponse, res)
-		return &copied, nil
+		return true, nil
 	case guardrail.ActionNone:
 	}
-	return result, nil
+	return false, nil
+}
+
+// guardrailPostCall checks result: the text of every TextContent and embedded
+// resource, then StructuredContent (as JSON) when present, and with
+// opts.Files the images, audio and embedded resource blobs. Resource links
+// are not fetched: the caller reads them with resources/read, which
+// opts.ResourceRead checks.
+func guardrailPostCall(
+	ctx context.Context,
+	g guardrail.Guardrail,
+	gp map[string]any,
+	opts GuardrailOptions,
+	result *mcp.CallToolResult,
+) (mcp.Result, error) {
+	// The struct copy keeps the unexported resultType of result.
+	copied := *result
+	copied.Content = append([]mcp.Content(nil), result.Content...)
+	var in guardrailResponseInput
+	for i, c := range result.Content {
+		switch v := c.(type) {
+		case *mcp.TextContent:
+			in.addText(v.Text, func(text string) error {
+				rewritten := *v
+				rewritten.Text = text
+				copied.Content[i] = &rewritten
+				return nil
+			})
+		case *mcp.EmbeddedResource:
+			if v.Resource == nil {
+				continue
+			}
+			in.addResource(v.Resource, opts.Files, func(rc *mcp.ResourceContents) {
+				rewritten := *v
+				rewritten.Resource = rc
+				copied.Content[i] = &rewritten
+			})
+		case *mcp.ImageContent:
+			if opts.Files && len(v.Data) > 0 {
+				in.files = append(in.files, guardrail.File{MIMEType: v.MIMEType, Data: v.Data})
+			}
+		case *mcp.AudioContent:
+			if opts.Files && len(v.Data) > 0 {
+				in.files = append(in.files, guardrail.File{MIMEType: v.MIMEType, Data: v.Data})
+			}
+		}
+	}
+	if result.StructuredContent != nil {
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return nil, fmt.Errorf("encode structuredContent for the guardrail: %w", err)
+		}
+		in.addText(string(raw), func(text string) error {
+			var structured any
+			if err := json.Unmarshal([]byte(text), &structured); err != nil {
+				return fmt.Errorf("structuredContent is not JSON: %w", err)
+			}
+			copied.StructuredContent = structured
+			return nil
+		})
+	}
+	changed, err := in.check(ctx, g, gp, opts)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return result, nil
+	}
+	return &copied, nil
 }
 
 func logGuardrailDecision(
 	ctx context.Context, gp map[string]any, input guardrail.InputType, res guardrail.Result,
 ) {
+	// resources/read の URI は秘匿値を含みうるのでログに出さない。
 	slog.InfoContext(ctx, "guardrail decision",
-		slog.Any("server", gp["server"]), slog.Any("tool", gp["tool"]),
+		slog.Any("server", gp["server"]), slog.Any("method", gp["method"]),
+		slog.Any("tool", gp["tool"]),
 		slog.String("input", string(input)), slog.String("action", string(res.Action)),
 		slog.String("reason", res.BlockedReason))
 }

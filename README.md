@@ -700,7 +700,7 @@ audit:
 
 ### Guardrail (`guardrail`)
 
-A guardrail checks every `tools/call` on its way through the gateway, the way authz does: the arguments before they reach the backend (`pre_call`) and the text of the result before it reaches the caller (`post_call`). There is no standardized guardrail API, so Manifold speaks [LiteLLM's Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api): any guardrail service built for LiteLLM works as is, and AWS Bedrock Guardrails is used through the bundled sidecar (below).
+A guardrail checks every `tools/call` on its way through the gateway, the way authz does: the arguments before they reach the backend (`pre_call`) and the text of the result before it reaches the caller (`post_call`). With `resource_read` in `mode`, it checks the results of `resources/read` as well. There is no standardized guardrail API, so Manifold speaks [LiteLLM's Generic Guardrail API](https://docs.litellm.ai/docs/adding_provider/generic_guardrail_api): any guardrail service built for LiteLLM works as is, and AWS Bedrock Guardrails is used through the bundled sidecar (below).
 
 ```yaml
 guardrail:
@@ -709,17 +709,22 @@ guardrail:
   headers:                    # optional, e.g. the guardrail's API key
     X-Api-Key: ${GUARDRAIL_API_KEY}
   timeout: 5s                 # per call (default 5s)
-  mode: [pre_call, post_call] # default: both
+  mode: [pre_call, post_call] # default: these two; resource_read only when listed
+  files:                      # optional: also check the files in a result
+    enabled: true             # default false (files pass through unchecked)
+    maxBytes: 8388608         # cap on the total size of the files of one call (default 8MiB)
 ```
 
-Manifold POSTs `{"texts": [...], "input_type": "request" | "response", ...}` with `additional_provider_specific_params` carrying `server`, `service` and `tool`:
+Manifold POSTs `{"texts": [...], "input_type": "request" | "response", ...}` with `additional_provider_specific_params` carrying `server`, `service`, `method` (`tools/call` or `resources/read`) and, for `tools/call`, `tool` or, for `resources/read`, `uri`:
 
 - **`pre_call`** sends the arguments as one JSON text. `GUARDRAIL_INTERVENED` calls the backend with the rewritten arguments (which must still be a JSON object).
-- **`post_call`** sends every `text` content of the result, then `structuredContent` as JSON when present. `GUARDRAIL_INTERVENED` returns them rewritten; other content (images, resource links, ...) passes through unchecked.
+- **`post_call`** sends every `text` content and the text of every embedded resource (`resource`) of the result, then `structuredContent` as JSON when present. `GUARDRAIL_INTERVENED` returns them rewritten. Images, audio and embedded resource blobs are sent only when `files.enabled` is `true` (below). Resource links are not fetched: `resource_read` checks them when the caller reads them with `resources/read`.
+- **`resource_read`** sends the text of every content of a `resources/read` result (`input_type` is `response`). `GUARDRAIL_INTERVENED` returns them rewritten; blobs are handled as in `post_call`. It is on only when listed in `mode`, and is not part of the default when `mode` is omitted.
+- **`files`**: with `files.enabled: true`, the files in a checked result go to the guardrail too. Images (declared as `image/*`, or recognised as an image from their content) are sent in the Generic Guardrail API's `images` (base64), everything else in `files` (`[{"uri": ..., "mime_type": ..., "data": <base64>}]`). `files` is a Manifold extension that is not part of LiteLLM's spec, so a guardrail that does not read it does not check those files (and one that rejects unknown fields fails the call, which fails closed). A guardrail cannot rewrite a file, so the decision is pass or `BLOCKED`. When the guardrail answers with rewritten images (`GUARDRAIL_INTERVENED` with `images` that differ from the ones sent, including an empty list), the original file is not let through: the call is rejected with `blocked by guardrail: the guardrail would rewrite a file, which cannot be rewritten`. A result whose files exceed `files.maxBytes` cannot be checked and is rejected with `blocked by guardrail: files exceed the size limit of the guardrail check`, without calling the guardrail.
 - **`BLOCKED`** rejects the call with `blocked by guardrail: <blocked_reason>`. On `pre_call` the backend is never called.
 - **Fail closed**: a guardrail that fails, answers non-200, or answers something invalid rejects the call with `guardrail check failed`, without passing the reason on (it is logged).
 
-The guardrail is called synchronously, so its latency adds to every `tools/call`; `mode` limits it to the side you need. It runs inside authz (denied calls never reach it) and applies to every server, including reverse (WebMCP) ones. The audit log records the arguments as the caller sent them (with [`audit.redact`](#redacting-secrets-auditredact) applied).
+The guardrail is called synchronously, so its latency adds to every `tools/call` (and `resources/read`); `mode` limits it to the side you need. It runs inside authz (denied calls never reach it) and applies to every server, including reverse (WebMCP) ones. The audit log records the arguments as the caller sent them (with [`audit.redact`](#redacting-secrets-auditredact) applied).
 
 #### AWS Bedrock Guardrails sidecar (`manifold guardrail bedrock`)
 
@@ -737,6 +742,8 @@ The guardrail is called synchronously, so its latency adds to every `tools/call`
 ```
 
 Each text is sent to `ApplyGuardrail` on its own (`input_type: request` → source `INPUT`, `response` → `OUTPUT`), so the answer's `texts` line up with the request's. A text whose sensitive-information filters `ANONYMIZE` comes back masked (`GUARDRAIL_INTERVENED`); if any policy `BLOCKED` it — or Bedrock intervened without returning a rewrite — the whole request is `BLOCKED` with Bedrock's `actionReason`. A Bedrock error is answered with `502`, which the gateway turns into `guardrail check failed`. `GET /healthz` answers `200` for probes.
+
+The sidecar checks `texts` only. It does not look at `images` or `files` yet, so with `files.enabled: true` files still pass through the sidecar unchecked.
 
 ### Configuration reference
 
@@ -1099,7 +1106,9 @@ storage:
 | `url`     | string            | Generic Guardrail API endpoint (**required** when enabled; absolute http(s) URL) |
 | `headers` | map[string]string | Headers added to every guardrail request |
 | `timeout` | duration          | Timeout of one guardrail call (default `5s`) |
-| `mode`    | []string          | `pre_call` and/or `post_call` (default: both) |
+| `mode`    | []string          | Any of `pre_call`, `post_call` and `resource_read` (default: `pre_call` and `post_call`) |
+| `files.enabled`  | bool       | Also send the files in a checked result (images, audio, resource blobs) to the guardrail (default: `false`) |
+| `files.maxBytes` | int        | Cap on the total size in bytes of the files sent for one call; a call over it is rejected (default: `8388608`) |
 
 #### `fileFetch`
 
@@ -1258,6 +1267,15 @@ spec:
         limits:
           memory: 1Gi
 ```
+
+### Upgrading from 1.26.x or earlier
+
+From 1.27.0 the guardrail's `post_call` also checks the text of embedded resources (`resource`) in a result. 1.26.x and earlier checked only `text` content and `structuredContent`, and let embedded resources through unchecked. No config change is needed, but where `post_call` is enabled:
+
+- For tools that return embedded resource text, more `texts` are sent to the guardrail. A result that used to pass may now be rewritten or `BLOCKED`.
+- `additional_provider_specific_params` gains `method` (`tools/call`). The existing `server`, `service` and `tool` are unchanged.
+
+Checking `resources/read` (`resource_read` in `mode`) and checking files (`files.enabled`) are on only when configured, and 1.26.x and earlier know neither setting. A config with `resource_read` in `mode` fails validation at startup on an older version, so during a rolling update add it only after every pod runs 1.27.0 or later, and remove it before rolling back. `files` is ignored by older versions.
 
 ### Upgrading from 1.25.x or earlier
 

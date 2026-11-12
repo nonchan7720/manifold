@@ -1,6 +1,7 @@
 package guardrail
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -116,4 +117,94 @@ func TestHTTPGuardrail_Responses(t *testing.T) {
 			require.Equal(t, tc.want, res)
 		})
 	}
+}
+
+// 画像は仕様にある images（base64）で、それ以外のファイルは Manifold の拡張の files で送る。
+func TestHTTPGuardrail_Files(t *testing.T) {
+	var got map[string]any
+	g := newGuardrailStub(t, http.StatusOK, `{"action":"NONE"}`, &got, nil)
+	res, err := g.Apply(t.Context(), Request{
+		Files: []File{
+			{MIMEType: "image/png", Data: []byte("img")},
+			{URI: "file:///doc.pdf", MIMEType: "application/pdf", Data: []byte("%PDF")},
+			{Data: []byte("raw")},
+		},
+		InputType: InputTypeResponse,
+	})
+	require.NoError(t, err)
+	require.Equal(t, ActionNone, res.Action)
+
+	// ファイルだけの検査でも、仕様上必須の texts は [] で送る。
+	require.Equal(t, []any{}, got["texts"])
+	require.Equal(t, []any{"aW1n"}, got["images"])
+	require.Equal(t, []any{
+		map[string]any{
+			"uri":       "file:///doc.pdf",
+			"mime_type": "application/pdf",
+			"data":      "JVBERg==",
+		},
+		map[string]any{"data": "cmF3"},
+	}, got["files"])
+}
+
+// ファイルが無ければ、images / files のキーは送らない（従来のリクエストと同じ）。
+func TestHTTPGuardrail_NoFiles(t *testing.T) {
+	var got map[string]any
+	g := newGuardrailStub(t, http.StatusOK, `{"action":"NONE"}`, &got, nil)
+	_, err := g.Apply(t.Context(), Request{Texts: []string{"x"}, InputType: InputTypeRequest})
+	require.NoError(t, err)
+	require.NotContains(t, got, "images")
+	require.NotContains(t, got, "files")
+}
+
+// ガードレールが画像の書き換えを返したら FilesRewritten を立てる。送った画像を
+// そのまま返しただけなら、書き換えではない。
+func TestHTTPGuardrail_FilesRewritten(t *testing.T) {
+	req := Request{
+		Texts:     []string{"hello"},
+		Files:     []File{{MIMEType: "image/png", Data: []byte("img")}},
+		InputType: InputTypeResponse,
+	}
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "rewritten image", want: true,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hello"],"images":["bWFza2Vk"]}`},
+		{name: "echoed image", want: false,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hi"],"images":["aW1n"]}`},
+		{name: "no images", want: false,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hi"]}`},
+		// 空の images は「画像をすべて取り除いた」なので、元の画像をそのまま通さない。
+		{name: "removed images", want: true,
+			body: `{"action":"GUARDRAIL_INTERVENED","texts":["hi"],"images":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGuardrailStub(t, http.StatusOK, tc.body, nil, nil)
+			res, err := g.Apply(t.Context(), req)
+			require.NoError(t, err)
+			require.Equal(t, ActionIntervened, res.Action)
+			require.Equal(t, tc.want, res.FilesRewritten)
+		})
+	}
+}
+
+// 種類の申告が画像でなくても、中身が画像なら images で送る。種類は検査対象の自己申告
+// なので、申告だけで振り分けると、images しか読まないガードレールの検査を外せてしまう。
+func TestHTTPGuardrail_ImageDetectedFromContent(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	var got map[string]any
+	g := newGuardrailStub(t, http.StatusOK, `{"action":"NONE"}`, &got, nil)
+	_, err := g.Apply(t.Context(), Request{
+		Files: []File{
+			{MIMEType: "application/octet-stream", Data: png},
+			{Data: png},
+		},
+		InputType: InputTypeResponse,
+	})
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(png)
+	require.Equal(t, []any{encoded, encoded}, got["images"])
+	require.NotContains(t, got, "files")
 }

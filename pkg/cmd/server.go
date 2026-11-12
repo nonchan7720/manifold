@@ -294,14 +294,20 @@ func guardrailMiddlewareFn(
 		return nil
 	}
 	g := guardrail.NewHTTPGuardrail(cfg, nil)
-	preCall, postCall := cfg.PreCall(), cfg.PostCall()
+	opts := mcpsrv.GuardrailOptions{
+		PreCall:      cfg.PreCall(),
+		PostCall:     cfg.PostCall(),
+		ResourceRead: cfg.ResourceRead(),
+		Files:        cfg.Files.Enabled,
+		MaxFileBytes: cfg.Files.MaxBytesOrDefault(),
+	}
 	return func(name string) []mcp.Middleware {
 		service := name
 		if srv, ok := servers[name]; ok && srv != nil {
 			service = srv.ServiceCode()
 		}
 		return []mcp.Middleware{
-			mcpsrv.NewGuardrailMiddleware(name, service, g, preCall, postCall),
+			mcpsrv.NewGuardrailMiddleware(name, service, g, opts),
 		}
 	}
 }
