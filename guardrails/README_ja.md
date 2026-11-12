@@ -24,16 +24,35 @@ go build -o manifold-guardrail .          # またはバイナリ
 ```
 
 ```bash
-manifold-guardrail file \
-  --host 127.0.0.1 --port 8091 \
-  --downstream-url http://localhost:8090/beta/litellm_basic_guardrail_api \
-  --extractor bedrock \
-  --model <Bedrock のモデル ID か推論プロファイル>
+manifold-guardrail file --config guardrail.yaml
 ```
 
-エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。フラグの一覧は `manifold-guardrail file -h` で見られます。
+```yaml
+# guardrail.yaml
+host: 127.0.0.1
+port: 8091
+downstream-url: http://localhost:8090/beta/litellm_basic_guardrail_api
+downstream-header:
+  X-Api-Key: ${DOWNSTREAM_API_KEY}
+extractor: bedrock
+model: <Bedrock のモデル ID か推論プロファイル>
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
+```
 
-エンドポイントに認証は無いので、呼び出し側（Manifold や LiteLLM）からだけ到達できるようにしてください。既定ではすべてのインターフェースで待ち受けるので、呼び出し側と同じ Pod に置くだけでは、他の Pod からの接続を防げません。サイドカーとして動かすときは `--host 127.0.0.1` を指定すると、同じ Pod のコンテナからだけ接続できます（ループバックで待ち受けると `httpGet` のプローブは届かないので、`exec` のプローブを使うか、プローブを置かないでください）。別の Pod やホストで動かすときは、NetworkPolicy やファイアウォールで呼び出し元を制限してください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
+エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。
+
+### 設定
+
+設定は YAML ファイルに書きます（`--config`、または環境変数 `FILE_GUARDRAIL_CONFIG`）。デプロイの他の設定と同じように、レビューして版管理できます。
+
+- キーは、フラグの名前から先頭の `--` を除いたものです。一覧と既定値は `manifold-guardrail file -h` で見られます。未知のキーは起動時にエラーになります。
+- 繰り返せるフラグ（`fetch-allowed-host`）は YAML のリストで、`name=value` のフラグ（`downstream-header`、`openapi-header`、`openapi-param`）は YAML のマップで書きます。
+- 値の中の `${VAR}` と `${VAR:-default}` は環境変数に置き換えます。秘匿値をファイルに書かずに済みます。既定値の無い未設定の変数はエラーになります。
+- どの設定も、コマンドラインのフラグで指定できます（ファイルより優先します）。一時的な上書きのためのもので、設定の置き場所にはしないでください。フラグで渡したヘッダーは、プロセスの一覧から見えます。
+
+エンドポイントに認証は無いので、呼び出し側（Manifold や LiteLLM）からだけ到達できるようにしてください。既定ではすべてのインターフェースで待ち受けるので、呼び出し側と同じ Pod に置くだけでは、他の Pod からの接続を防げません。サイドカーとして動かすときは `host: 127.0.0.1` を指定すると、同じ Pod のコンテナからだけ接続できます（ループバックで待ち受けると `httpGet` のプローブは届かないので、`exec` のプローブを使うか、プローブを置かないでください）。別の Pod やホストで動かすときは、NetworkPolicy やファイアウォールで呼び出し元を制限してください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
 
 ## リクエストのどこからファイルを読むか
 
@@ -49,10 +68,10 @@ manifold-guardrail file \
 
 URL で渡されたファイル（`images` の http(s) の URL、`file_url`）は、**`--fetch-allowed-host` で許可したホストからだけ取得して検査します**。呼び出し側が指定した URL を無条件に取得すると SSRF の入口になるためです。
 
-```bash
-manifold-guardrail file ... \
-  --fetch-allowed-host files.example.com \
-  --fetch-allowed-host minio.internal:9000
+```yaml
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
 ```
 
 - `files.example.com`: そのホスト名だけ。ポートは既定のもの（https は 443、http は 80）に限ります。

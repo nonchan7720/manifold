@@ -34,6 +34,9 @@ const (
 	extractorOpenAPI = "openapi"
 )
 
+// configFlag は設定ファイルを指定するフラグの名前。
+const configFlag = "config"
+
 // stringList は値を繰り返し（またはカンマ区切りで）受け取るフラグ。
 type stringList []string
 
@@ -112,6 +115,11 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		openapiParams:     keyValues{},
 	}
 	fs := flag.NewFlagSet("manifold-guardrail file", flag.ContinueOnError)
+	var configPath string
+	fs.StringVar(&configPath, configFlag, os.Getenv("FILE_GUARDRAIL_CONFIG"),
+		"YAML file with the settings: the keys are the flag names, repeatable flags are "+
+			"lists, name=value flags are maps, and ${VAR} is replaced by the environment "+
+			"variable. A flag on the command line wins over the file (env FILE_GUARDRAIL_CONFIG)")
 	fs.StringVar(&opts.host, "host", "",
 		"listening address; empty listens on every interface. The endpoint has no "+
 			"authentication, so set 127.0.0.1 when only a caller in the same Pod or host calls it")
@@ -203,6 +211,13 @@ func parseFileFlags(args []string) (fileOptions, error) {
 	}
 	if fs.NArg() > 0 {
 		return fileOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if configPath != "" {
+		explicit := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		if err := applyConfigFile(fs, configPath, explicit); err != nil {
+			return fileOptions{}, err
+		}
 	}
 	return opts, opts.validate()
 }
