@@ -762,3 +762,85 @@ func TestHandler_LimitsChunks(t *testing.T) {
 	_, res, _ = post(t, srv, map[string]any{"files": []any{pdf("%PDF"), pdf("%PDF")}})
 	require.Equal(t, actionBlocked, res.Action)
 }
+
+// 読み方を知らない種類のパート（音声、他の API の形の文書や画像、大文字の type）を
+// 無視すると、その中身が未検査で通る。読めないファイルとして、既定で拒否する。
+func TestHandler_UnknownMessageParts(t *testing.T) {
+	body := func(p map[string]any) map[string]any {
+		return map[string]any{
+			"texts": []string{"summarize"},
+			"structured_messages": []any{
+				map[string]any{"role": "user", "content": []any{p}},
+			},
+		}
+	}
+	for _, p := range []map[string]any{
+		{"type": "document", "source": map[string]any{"type": "base64", "data": "JVBERg=="}},
+		{"type": "image", "source": map[string]any{"type": "base64", "data": "aW1n"}},
+		{"type": "input_image", "image_url": "data:image/png;base64,aW1n"},
+		{"type": "input_audio", "input_audio": map[string]any{"data": "AAAA"}},
+		{"source": "no type"},
+	} {
+		srv, _ := newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}}, none)
+		status, res, _ := post(t, srv, body(p))
+		require.Equal(t, http.StatusOK, status)
+		require.Equalf(t, actionBlocked, res.Action, "part %v", p)
+		require.Contains(t, res.BlockedReason, "message parts of a type it cannot read")
+	}
+
+	// type の大文字小文字は区別しない。
+	srv, d := newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}},
+		blockOn("text of application/pdf"))
+	status, res, _ := post(t, srv, body(map[string]any{
+		"type": "FILE", "file": map[string]any{"file_data": "JVBERi0xLjcK"},
+	}))
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.NotEmpty(t, d.bodies)
+
+	// ファイルを運ばない種類のパートは、そのまま通す。
+	srv, _ = newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}}, none)
+	status, res, _ = post(t, srv, map[string]any{
+		"texts": []string{"hi"},
+		"structured_messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "hi"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "x"}},
+			map[string]any{"type": "tool_use", "id": "t1"},
+		}}},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionNone, res.Action)
+
+	// --allow-unsupported-files なら通す。
+	srv, _ = newTestHandler(t,
+		Config{Extractor: &fakeExtractor{fn: transcribe}, AllowUnsupported: true}, none)
+	status, res, _ = post(t, srv, body(map[string]any{"type": "input_audio"}))
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionNone, res.Action)
+}
+
+// content が文字列でも配列でもない（オブジェクトなど）メッセージは、中のファイルを
+// 読めないので 400 にする。
+func TestHandler_ObjectMessageContent(t *testing.T) {
+	srv, d := newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}}, none)
+	status, _, _ := post(t, srv, map[string]any{
+		"texts": []string{"hello"},
+		"structured_messages": []any{map[string]any{"role": "user", "content": map[string]any{
+			"type": "file", "file": map[string]any{"file_id": "file-1"},
+		}}},
+	})
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Empty(t, d.bodies)
+}
+
+// 中身が無く URI だけの files の要素は、読めないので既定で拒否する。
+func TestHandler_FileWithoutData(t *testing.T) {
+	srv, _ := newTestHandler(t, Config{Extractor: &fakeExtractor{fn: transcribe}}, none)
+	status, res, _ := post(t, srv, map[string]any{
+		"texts": []string{"hello"},
+		"files": []any{map[string]any{"uri": "file:///secret.pdf", "mime_type": "application/pdf"}},
+	})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.Contains(t, res.BlockedReason, "files given without their content")
+}
