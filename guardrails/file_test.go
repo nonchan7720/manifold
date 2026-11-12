@@ -70,6 +70,8 @@ func TestParseFileFlags(t *testing.T) {
 			wantErr: "--downstream-url must be an absolute http(s) URL"},
 		{name: "downstream without host", args: []string{"--downstream-url", "http:///x"},
 			wantErr: "--downstream-url must be an absolute http(s) URL"},
+		{name: "downstream with a port only", args: []string{"--downstream-url", "http://:80/x"},
+			wantErr: "--downstream-url must be an absolute http(s) URL"},
 		{name: "bad extract timeout", args: []string{downstream, "--extract-timeout", "0s"},
 			wantErr: "--extract-timeout must be positive"},
 		{name: "bad fetch timeout", args: []string{downstream, "--fetch-timeout", "-1s"},

@@ -214,7 +214,7 @@ func (o fileOptions) validateDownstreamURL() error {
 	}
 	// URL は認証用のクエリを含みうるので、エラー文には出さない。
 	if u, err := url.Parse(o.downstreamURL); err != nil ||
-		(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		(u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return errors.New("--downstream-url must be an absolute http(s) URL")
 	}
 	return nil
