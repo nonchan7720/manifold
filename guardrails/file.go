@@ -154,7 +154,7 @@ func parseFileFlags(args []string) (fileOptions, error) {
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
-			"files.example.com, *.example.com or minio.internal:9000 (repeatable or "+
+			"files.example.com or minio.internal:9000 (exact host names; repeatable or "+
 			"comma-separated); URLs of other hosts are never fetched")
 	fs.Int64Var(&opts.fetchMaxBytes, "fetch-max-bytes", 20<<20,
 		"size limit of a file fetched from a URL; larger files are blocked")

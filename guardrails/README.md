@@ -52,12 +52,11 @@ A file given by URL (an http(s) URL in `images`, a `file_url`) is fetched and ch
 ```bash
 manifold-guardrail file ... \
   --fetch-allowed-host files.example.com \
-  --fetch-allowed-host '*.cdn.example.com' \
   --fetch-allowed-host minio.internal:9000
 ```
 
 - `files.example.com`: that host name only, on the default port (443 for https, 80 for http).
-- `*.cdn.example.com`: every subdomain, but not `cdn.example.com` itself.
+- Wildcards (`*.example.com`) are not supported: each host is listed by its exact name. The request is built from the name in this list, never from the host text of the URL the caller sent; only the path and the query come from that URL.
 - `minio.internal:9000`: any other port has to be named.
 
 How fetching behaves:

@@ -27,12 +27,12 @@ func TestParseFileFlags(t *testing.T) {
 	require.Empty(t, opts.fetchAllowedHosts)
 
 	opts, err = parseFileFlags([]string{
-		downstream, "--fetch-allowed-host", "files.example.com, *.cdn.example.com",
+		downstream, "--fetch-allowed-host", "files.example.com, cdn.example.com",
 		"--fetch-allowed-host", "minio.internal:9000",
 	})
 	require.NoError(t, err)
 	require.Equal(t,
-		stringList{"files.example.com", "*.cdn.example.com", "minio.internal:9000"},
+		stringList{"files.example.com", "cdn.example.com", "minio.internal:9000"},
 		opts.fetchAllowedHosts)
 
 	for _, tc := range []struct {

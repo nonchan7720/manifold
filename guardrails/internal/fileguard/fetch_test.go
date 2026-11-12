@@ -14,7 +14,7 @@ import (
 
 func TestFetcher_Allowed(t *testing.T) {
 	f, err := NewFetcher(
-		[]string{"Files.Example.com", "*.cdn.example.com", "minio.internal:9000", "[::1]:8080"},
+		[]string{"Files.Example.com", "minio.internal:9000", "[::1]:8080"},
 		1024, time.Second,
 	)
 	require.NoError(t, err)
@@ -26,10 +26,7 @@ func TestFetcher_Allowed(t *testing.T) {
 		"https://evil.example.com/a.pdf":       false,
 		"https://files.example.com.evil.test/": false,
 		"https://files.example.com@evil.test/": false, // userinfo に紛れ込ませたホスト
-		"https://a.cdn.example.com/a.png":      true,
-		"https://a.b.cdn.example.com/a.png":    true,
-		"https://cdn.example.com/a.png":        false, // *. は自身には一致しない
-		"https://evilcdn.example.com/a.png":    false,
+		"https://a.files.example.com/a.png":    false, // サブドメインは別のホスト
 		"http://minio.internal:9000/b/a.pdf":   true,
 		"http://minio.internal/b/a.pdf":        false,
 		"http://[::1]:8080/a.pdf":              true,
@@ -44,7 +41,7 @@ func TestFetcher_Allowed(t *testing.T) {
 	require.False(t, none.Allowed(&url.URL{Scheme: "https", Host: "files.example.com"}))
 
 	for _, bad := range []string{
-		"", "*", "https://files.example.com", "a b", "user@host", "host:https", "a:b:c",
+		"", "*", "*.example.com", "https://files.example.com", "a b", "user@host", "host:https", "a:b:c",
 	} {
 		_, err := NewFetcher([]string{bad}, 1024, time.Second)
 		require.Errorf(t, err, "%q", bad)
@@ -173,4 +170,26 @@ func TestHandler_FetchesAllowedURLs(t *testing.T) {
 	status, _, raw := post(t, srv, map[string]any{"images": []string{files.URL + "/missing"}})
 	require.Equal(t, http.StatusBadGateway, status)
 	require.JSONEq(t, `{"error":"file guardrail failed"}`, raw)
+}
+
+// 取得する URL の接続先は、呼び出し側の文字列ではなく許可リストの項目から組み立てる。
+// 呼び出し側の値はパスとクエリにだけ入る。
+func TestAllowedHost_RequestURL(t *testing.T) {
+	f, err := NewFetcher(
+		[]string{"files.example.com", "minio.internal:9000", "::1"}, 1024, time.Second,
+	)
+	require.NoError(t, err)
+	for raw, want := range map[string]string{
+		"https://FILES.example.com/a%20b.pdf?sig=x%2Fy#frag": "https://files.example.com/a%20b.pdf?sig=x%2Fy",
+		"https://user:pw@files.example.com:443/a.pdf":        "https://files.example.com/a.pdf",
+		"http://files.example.com":                           "http://files.example.com/",
+		"http://minio.internal:9000//b/../a.pdf":             "http://minio.internal:9000//b/../a.pdf",
+		"https://[::1]/a.pdf":                                "https://[::1]/a.pdf",
+	} {
+		u, err := url.Parse(raw)
+		require.NoError(t, err)
+		host, ok := f.match(u)
+		require.Truef(t, ok, "%s", raw)
+		require.Equalf(t, want, host.requestURL(u), "%s", raw)
+	}
 }

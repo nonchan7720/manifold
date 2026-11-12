@@ -52,12 +52,11 @@ URL で渡されたファイル（`images` の http(s) の URL、`file_url`）�
 ```bash
 manifold-guardrail file ... \
   --fetch-allowed-host files.example.com \
-  --fetch-allowed-host '*.cdn.example.com' \
   --fetch-allowed-host minio.internal:9000
 ```
 
 - `files.example.com`: そのホスト名だけ。ポートは既定のもの（https は 443、http は 80）に限ります。
-- `*.cdn.example.com`: サブドメインすべて。`cdn.example.com` 自身は含みません。
+- ワイルドカード（`*.example.com`）は使えません。ホストは正確な名前で 1 つずつ指定します。取得するときの接続先は、呼び出し側が渡した URL のホスト部分ではなく、この一覧の名前から組み立てます。呼び出し側の URL から使うのはパスとクエリだけです。
 - `minio.internal:9000`: 既定以外のポートは明示します。
 
 取得の挙動は次のとおりです。
