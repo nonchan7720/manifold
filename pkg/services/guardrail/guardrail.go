@@ -208,8 +208,9 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 				len(out.Texts), len(req.Texts),
 			)
 		}
-		// 送った画像と同じものを返しただけなら、書き換えではない。
-		filesRewritten := len(out.Images) > 0 && !slices.Equal(out.Images, images)
+		// 送った画像と同じものを返しただけなら、書き換えではない。images を返したのに
+		// 送ったものと違えば、空（すべて取り除いた）でも書き換えとして扱う。
+		filesRewritten := out.Images != nil && !slices.Equal(out.Images, images)
 		return Result{
 			Action: ActionIntervened, Texts: out.Texts, FilesRewritten: filesRewritten,
 		}, nil
@@ -220,11 +221,11 @@ func (g *HTTPGuardrail) Apply(ctx context.Context, req Request) (_ Result, rErr 
 	}
 }
 
-// splitFiles は files を Generic Guardrail API の images（image/* の base64）と、
+// splitFiles は files を Generic Guardrail API の images（画像の base64）と、
 // それ以外を運ぶ files に分ける。
 func splitFiles(files []File) (images []string, rest []apiFile) {
 	for _, f := range files {
-		if isImageMIME(f.MIMEType) {
+		if isImage(f) {
 			images = append(images, base64.StdEncoding.EncodeToString(f.Data))
 			continue
 		}
@@ -233,7 +234,13 @@ func splitFiles(files []File) (images []string, rest []apiFile) {
 	return images, rest
 }
 
-// isImageMIME は mimeType が画像（image/*）かを返す。
-func isImageMIME(mimeType string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "image/")
+// isImage は f が画像かを返す。申告された種類（image/*）に加えて、中身からも判定する。
+// 種類は検査対象（バックエンド）の自己申告なので、申告だけで決めると、画像を
+// application/octet-stream などと申告するだけで、images しか読まないガードレールの
+// 検査を外れてしまう。
+func isImage(f File) bool {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(f.MIMEType)), "image/") {
+		return true
+	}
+	return strings.HasPrefix(http.DetectContentType(f.Data), "image/")
 }

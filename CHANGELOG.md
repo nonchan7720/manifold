@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.26.2](https://github.com/nonchan7720/manifold/compare/v1.26.1...v1.26.2) (2026-11-11)
+
+
+### Miscellaneous
+
+* release 1.26.2 ([19e3413](https://github.com/nonchan7720/manifold/commit/19e3413218c93c990e30d5bb02e12eb8ff9a38f5))
+
+## [1.26.1](https://github.com/nonchan7720/manifold/compare/v1.26.0...v1.26.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **storage:** 保存するオブジェクトの ID に拡張子を付ける ([#379](https://github.com/nonchan7720/manifold/issues/379)) ([0560a8f](https://github.com/nonchan7720/manifold/commit/0560a8f38c158b5b8a5913c119812a2376efa4ff))
+
 ## [1.26.0](https://github.com/nonchan7720/manifold/compare/v1.25.1...v1.26.0) (2026-11-10)
 
 
