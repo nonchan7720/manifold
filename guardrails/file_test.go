@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -27,12 +28,12 @@ func TestParseFileFlags(t *testing.T) {
 	require.Empty(t, opts.fetchAllowedHosts)
 
 	opts, err = parseFileFlags([]string{
-		downstream, "--fetch-allowed-host", "files.example.com, *.cdn.example.com",
+		downstream, "--fetch-allowed-host", "files.example.com, cdn.example.com",
 		"--fetch-allowed-host", "minio.internal:9000",
 	})
 	require.NoError(t, err)
 	require.Equal(t,
-		stringList{"files.example.com", "*.cdn.example.com", "minio.internal:9000"},
+		stringList{"files.example.com", "cdn.example.com", "minio.internal:9000"},
 		opts.fetchAllowedHosts)
 
 	for _, tc := range []struct {
@@ -65,6 +66,20 @@ func TestParseFileFlags(t *testing.T) {
 			wantErr: "--max-chunks must be positive"},
 		{name: "bad fetch size", args: []string{downstream, "--fetch-max-bytes", "0"},
 			wantErr: "--fetch-max-bytes must be positive"},
+		{name: "downstream not a url", args: []string{"--downstream-url", "not-a-url"},
+			wantErr: "--downstream-url must be an absolute http(s) URL"},
+		{name: "downstream without host", args: []string{"--downstream-url", "http:///x"},
+			wantErr: "--downstream-url must be an absolute http(s) URL"},
+		{name: "downstream with a port only", args: []string{"--downstream-url", "http://:80/x"},
+			wantErr: "--downstream-url must be an absolute http(s) URL"},
+		{name: "bad extract timeout", args: []string{downstream, "--extract-timeout", "0s"},
+			wantErr: "--extract-timeout must be positive"},
+		{name: "bad fetch timeout", args: []string{downstream, "--fetch-timeout", "-1s"},
+			wantErr: "--fetch-timeout must be positive"},
+		{name: "bad concurrency", args: []string{downstream, "--concurrency", "0"},
+			wantErr: "--concurrency must be positive"},
+		{name: "bad max files", args: []string{downstream, "--max-files", "0"},
+			wantErr: "--max-files must be positive"},
 		{name: "stray argument", args: []string{downstream, "extra"}, wantErr: "unexpected argument"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,4 +97,17 @@ func TestRun_Version(t *testing.T) {
 func TestRun_UnknownCommand(t *testing.T) {
 	require.ErrorContains(t, run(t.Context(), []string{"bedrock"}), `unknown command "bedrock"`)
 	require.ErrorContains(t, run(t.Context(), nil), "a command is required")
+}
+
+// 応答を書き終えるまでの上限は、--max-files 件を --concurrency 件ずつ取得して起こし、
+// そのあと下流を呼ぶ、最も遅い場合より長い。
+func TestFileOptions_WriteTimeout(t *testing.T) {
+	opts, err := parseFileFlags([]string{
+		"--downstream-url=http://localhost:8090/beta/litellm_basic_guardrail_api",
+		"--max-files", "17", "--concurrency", "4",
+		"--extract-timeout", "120s", "--fetch-timeout", "30s",
+	})
+	require.NoError(t, err)
+	// 17 件は 5 回に分かれる: 5 * (30s + 120s) + 下流 120s + 余裕 1m。
+	require.Equal(t, 5*150*time.Second+120*time.Second+time.Minute, opts.writeTimeout())
 }

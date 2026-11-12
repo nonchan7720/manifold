@@ -758,7 +758,7 @@ Manifold ──▶ manifold-guardrail file ──▶ text guardrail (guardrail b
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
-  timeout: 120s          # long enough to wait for the transcription of a file
+  timeout: 180s          # fetch (30s) + transcription (120s) of a file, plus the downstream check
   files:
     enabled: true
 ```

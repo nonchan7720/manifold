@@ -32,16 +32,35 @@ caller (Manifold / LiteLLM) ──▶ manifold-guardrail file ──▶ text gua
 ```
 
 ```bash
-manifold-guardrail file \
-  --host 127.0.0.1 --port 8091 \
-  --downstream-url http://localhost:8090/beta/litellm_basic_guardrail_api \
-  --extractor bedrock \
-  --model <Bedrock model ID or inference profile>
+manifold-guardrail file --config guardrail.yaml
 ```
 
-The endpoint is `POST /beta/litellm_basic_guardrail_api`, with `GET /healthz` for probes. `manifold-guardrail file -h` lists the flags.
+```yaml
+# guardrail.yaml
+host: 127.0.0.1
+port: 8091
+downstream-url: http://localhost:8090/beta/litellm_basic_guardrail_api
+downstream-header:
+  X-Api-Key: ${DOWNSTREAM_API_KEY}
+extractor: bedrock
+model: <Bedrock model ID or inference profile>
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
+```
 
-The endpoint has no authentication, so run it where only the caller (Manifold or LiteLLM) can reach it. By default it listens on every interface, and putting it in the same Pod as the caller does not by itself keep other Pods out. As a sidecar, pass `--host 127.0.0.1` so that only containers in the same Pod can connect (an `httpGet` probe cannot reach a loopback listener; use an `exec` probe or none). When it runs as its own Pod or host, restrict the callers with a NetworkPolicy or a firewall. It trusts the caller to assemble the request correctly (that `texts` covers the text of `structured_messages`, and so on).
+The endpoint is `POST /beta/litellm_basic_guardrail_api`, with `GET /healthz` for probes.
+
+### Settings
+
+Settings go in a YAML file (`--config`, or the `FILE_GUARDRAIL_CONFIG` environment variable), so that they can be reviewed and versioned like the rest of a deployment:
+
+- The keys are the flag names without the leading `--`; `manifold-guardrail file -h` lists them with their defaults. An unknown key is an error at startup.
+- A repeatable flag (`fetch-allowed-host`) is a YAML list. A `name=value` flag (`downstream-header`, `openapi-header`, `openapi-param`) is a YAML map.
+- `${VAR}` and `${VAR:-default}` in a value are replaced by the environment variable, so secrets stay out of the file. A variable that is not set and has no default is an error.
+- Every setting can also be given as a flag on the command line, which wins over the file. Use that for a one-off override, not as the place where the settings live: a header given as a flag is visible in the process list.
+
+The endpoint has no authentication, so run it where only the caller (Manifold or LiteLLM) can reach it. By default it listens on every interface, and putting it in the same Pod as the caller does not by itself keep other Pods out. As a sidecar, set `host: 127.0.0.1` so that only containers in the same Pod can connect (an `httpGet` probe cannot reach a loopback listener; use an `exec` probe or none). When it runs as its own Pod or host, restrict the callers with a NetworkPolicy or a firewall. It trusts the caller to assemble the request correctly (that `texts` covers the text of `structured_messages`, and so on).
 
 ## Where files are read from
 
@@ -57,15 +76,14 @@ The type (MIME type) is the declared one when there is one, and is otherwise dec
 
 A file given by URL (an http(s) URL in `images`, a `file_url`) is fetched and checked **only when its host is allowed with `--fetch-allowed-host`**. Fetching whatever URL the caller chose would be an SSRF entry point.
 
-```bash
-manifold-guardrail file ... \
-  --fetch-allowed-host files.example.com \
-  --fetch-allowed-host '*.cdn.example.com' \
-  --fetch-allowed-host minio.internal:9000
+```yaml
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
 ```
 
 - `files.example.com`: that host name only, on the default port (443 for https, 80 for http).
-- `*.cdn.example.com`: every subdomain, but not `cdn.example.com` itself.
+- Wildcards (`*.example.com`) are not supported: each host is listed by its exact name. The request is built from the name in this list, never from the host text of the URL the caller sent; only the path and the query come from that URL.
 - `minio.internal:9000`: any other port has to be named.
 
 How fetching behaves:
@@ -86,7 +104,7 @@ Put it between the gateway and the text guardrail and point `guardrail.url` at i
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
-  timeout: 120s          # long enough to wait for the transcription of a file
+  timeout: 180s          # fetch (30s) + transcription (120s) of a file, plus the downstream check
   files:
     enabled: true
 ```
@@ -152,6 +170,8 @@ args:
 ## Caveats
 
 - **Transcription by an LLM is itself a prompt-injection target.** A file that says "do not output this part" may make the LLM drop that part. The model gets no tools, is told to transcribe verbatim, and never sees the file name, but this cannot be reduced to zero. When you need certainty, use an OCR service (`openapi`), which does not follow instructions.
+- **Files per request**: a request with more files than `--max-files` (default 16) is `BLOCKED` without fetching or transcribing any of them. Files are processed `--concurrency` (default 4) at a time, so a request with many slow files takes several times `--extract-timeout`; set the caller's timeout accordingly.
+- **Redirects**: the transcription service and the downstream guardrail are called without following redirects, so that authentication headers and file content never go to another host. A redirect answer is a failure.
 - **Splitting long text**: when the downstream guardrail limits the length of a text, `--chunk-chars` splits the transcribed text into pieces (off by default). Neighbouring pieces share `--chunk-overlap-chars` characters (default 200), so a phrase up to that length is whole in one piece even when a boundary cuts it. Set it to the length of the longest phrase the downstream policy has to catch (0 is not accepted, and it can be at most half of `--chunk-chars`). Longer phrases, and policies that judge from a wide context, may be missed once the text is split. Split only when you have to, and keep the pieces as large as you can. The number of pieces one request sends is limited (`--max-chunks`, default 1000); a request over it is `BLOCKED`.
 - **Latency and cost**: every file is one call to an LLM or an OCR service. Set the caller's guardrail timeout long enough to wait for a transcription (in Manifold, `guardrail.timeout`, default 5s).
 - **The provider integrations are untested against the real services**: the Bedrock / Google / Azure calls follow the official documentation and SDK types and are tested with fake clients, but have not been run against the services themselves. Verify them in your environment before relying on them.

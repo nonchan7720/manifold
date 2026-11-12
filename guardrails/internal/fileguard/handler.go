@@ -30,6 +30,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// DefaultMaxFiles は Config.MaxFiles の既定値。
+const DefaultMaxFiles = 16
+
 // DefaultMaxChunks は Config.MaxChunks の既定値。
 const DefaultMaxChunks = 1000
 
@@ -95,6 +98,10 @@ type Config struct {
 	// 断片の数の上限（分割しないときは、テキストのあるファイルの数）。超えた
 	// リクエストは拒否する。0 以下なら DefaultMaxChunks。
 	MaxChunks int
+	// MaxFiles は1リクエストのファイルの数の上限。超えたリクエストは、1件も取得・
+	// 書き起こしをせずに拒否する（1リクエストで外部の呼び出しを際限なく起こさせない）。
+	// 0 以下なら DefaultMaxFiles。
+	MaxFiles int
 	// ChunkOverlap は隣り合う断片を重ねる文字数。境界で切れた語句を下流が検出
 	// できるようにする。ChunkChars の半分まで（超える分は切り詰める）。
 	ChunkOverlap int
@@ -115,6 +122,9 @@ func NewHandler(cfg Config) *Handler {
 	cfg.ChunkOverlap = min(max(cfg.ChunkOverlap, 0), cfg.ChunkChars/2)
 	if cfg.MaxChunks <= 0 {
 		cfg.MaxChunks = DefaultMaxChunks
+	}
+	if cfg.MaxFiles <= 0 {
+		cfg.MaxFiles = DefaultMaxFiles
 	}
 	return &Handler{cfg: cfg}
 }
@@ -192,7 +202,11 @@ type badRequestError struct{ message string }
 func (e *badRequestError) Error() string { return e.message }
 
 func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (apiResponse, error) {
-	files, err := requestFiles(req)
+	// 上限を超えたら、残りのファイルを読まず、1件も取得・書き起こしをせずに拒否する。
+	files, err := requestFiles(req, h.cfg.MaxFiles)
+	if errors.Is(err, errTooManyFiles) {
+		return apiResponse{Action: actionBlocked, BlockedReason: errTooManyFiles.Error()}, nil
+	}
 	if err != nil {
 		return apiResponse{}, err
 	}
@@ -251,6 +265,9 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 	return original, nil
 }
 
+// blockedTooLong は、下流へ送る断片が上限（Config.MaxChunks）を超えたときの拒否の理由。
+const blockedTooLong = "the text of the files is too long for the guardrail check"
+
 // checkOnlyTexts は、通すか拒否するかだけを見るテキストを、下流へ送る断片にして返す。
 // ファイルから起こしたもの（results）と、texts を付けずに送られてきたメッセージの
 // テキスト。blocked が空でなければ、下流へ送らずに拒否する理由。
@@ -269,7 +286,12 @@ func (h *Handler) checkOnlyTexts(
 	if raw, ok := req[keyStructuredMessages]; ok && len(texts) == 0 {
 		// texts があれば、呼び出し側（LiteLLM など）がメッセージのテキストをそこに入れて
 		// いるので、取り出さない（同じテキストを2回検査しない）。
-		messageTexts, err := structuredMessageTexts(raw)
+		// 空でないテキストは 1 件が少なくとも 1 断片になるので、断片の上限まで集めれば
+		// 足りる。超えた時点で残りを読まずに拒否する。
+		messageTexts, err := structuredMessageTexts(raw, h.cfg.MaxChunks)
+		if errors.Is(err, errTooManyTexts) {
+			return nil, blockedTooLong, nil
+		}
 		if err != nil {
 			return nil, "", err
 		}
@@ -281,7 +303,7 @@ func (h *Handler) checkOnlyTexts(
 		// 数百万件の断片ができ、メモリと下流へのリクエストが膨らむ。
 		count += chunkCount(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)
 		if count > h.cfg.MaxChunks {
-			return nil, "the text of the files is too long for the guardrail check", nil
+			return nil, blockedTooLong, nil
 		}
 		pieces = append(pieces, chunk(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
 	}

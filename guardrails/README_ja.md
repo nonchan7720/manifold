@@ -32,16 +32,35 @@ manifold-guardrail version
 ```
 
 ```bash
-manifold-guardrail file \
-  --host 127.0.0.1 --port 8091 \
-  --downstream-url http://localhost:8090/beta/litellm_basic_guardrail_api \
-  --extractor bedrock \
-  --model <Bedrock のモデル ID か推論プロファイル>
+manifold-guardrail file --config guardrail.yaml
 ```
 
-エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。フラグの一覧は `manifold-guardrail file -h` で見られます。
+```yaml
+# guardrail.yaml
+host: 127.0.0.1
+port: 8091
+downstream-url: http://localhost:8090/beta/litellm_basic_guardrail_api
+downstream-header:
+  X-Api-Key: ${DOWNSTREAM_API_KEY}
+extractor: bedrock
+model: <Bedrock のモデル ID か推論プロファイル>
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
+```
 
-エンドポイントに認証は無いので、呼び出し側（Manifold や LiteLLM）からだけ到達できるようにしてください。既定ではすべてのインターフェースで待ち受けるので、呼び出し側と同じ Pod に置くだけでは、他の Pod からの接続を防げません。サイドカーとして動かすときは `--host 127.0.0.1` を指定すると、同じ Pod のコンテナからだけ接続できます（ループバックで待ち受けると `httpGet` のプローブは届かないので、`exec` のプローブを使うか、プローブを置かないでください）。別の Pod やホストで動かすときは、NetworkPolicy やファイアウォールで呼び出し元を制限してください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
+エンドポイントは `POST /beta/litellm_basic_guardrail_api`、プローブ用に `GET /healthz` があります。
+
+### 設定
+
+設定は YAML ファイルに書きます（`--config`、または環境変数 `FILE_GUARDRAIL_CONFIG`）。デプロイの他の設定と同じように、レビューして版管理できます。
+
+- キーは、フラグの名前から先頭の `--` を除いたものです。一覧と既定値は `manifold-guardrail file -h` で見られます。未知のキーは起動時にエラーになります。
+- 繰り返せるフラグ（`fetch-allowed-host`）は YAML のリストで、`name=value` のフラグ（`downstream-header`、`openapi-header`、`openapi-param`）は YAML のマップで書きます。
+- 値の中の `${VAR}` と `${VAR:-default}` は環境変数に置き換えます。秘匿値をファイルに書かずに済みます。既定値の無い未設定の変数はエラーになります。
+- どの設定も、コマンドラインのフラグで指定できます（ファイルより優先します）。一時的な上書きのためのもので、設定の置き場所にはしないでください。フラグで渡したヘッダーは、プロセスの一覧から見えます。
+
+エンドポイントに認証は無いので、呼び出し側（Manifold や LiteLLM）からだけ到達できるようにしてください。既定ではすべてのインターフェースで待ち受けるので、呼び出し側と同じ Pod に置くだけでは、他の Pod からの接続を防げません。サイドカーとして動かすときは `host: 127.0.0.1` を指定すると、同じ Pod のコンテナからだけ接続できます（ループバックで待ち受けると `httpGet` のプローブは届かないので、`exec` のプローブを使うか、プローブを置かないでください）。別の Pod やホストで動かすときは、NetworkPolicy やファイアウォールで呼び出し元を制限してください。リクエストの中身（`texts` と `structured_messages` の対応など）は、呼び出し側が正しく組み立てる前提です。
 
 ## リクエストのどこからファイルを読むか
 
@@ -57,15 +76,14 @@ manifold-guardrail file \
 
 URL で渡されたファイル（`images` の http(s) の URL、`file_url`）は、**`--fetch-allowed-host` で許可したホストからだけ取得して検査します**。呼び出し側が指定した URL を無条件に取得すると SSRF の入口になるためです。
 
-```bash
-manifold-guardrail file ... \
-  --fetch-allowed-host files.example.com \
-  --fetch-allowed-host '*.cdn.example.com' \
-  --fetch-allowed-host minio.internal:9000
+```yaml
+fetch-allowed-host:
+  - files.example.com
+  - minio.internal:9000
 ```
 
 - `files.example.com`: そのホスト名だけ。ポートは既定のもの（https は 443、http は 80）に限ります。
-- `*.cdn.example.com`: サブドメインすべて。`cdn.example.com` 自身は含みません。
+- ワイルドカード（`*.example.com`）は使えません。ホストは正確な名前で 1 つずつ指定します。取得するときの接続先は、呼び出し側が渡した URL のホスト部分ではなく、この一覧の名前から組み立てます。呼び出し側の URL から使うのはパスとクエリだけです。
 - `minio.internal:9000`: 既定以外のポートは明示します。
 
 取得の挙動は次のとおりです。
@@ -86,7 +104,7 @@ manifold-guardrail file ... \
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
-  timeout: 120s          # ファイルの書き起こしを待てる長さにする
+  timeout: 180s          # ファイルの取得（30s）と書き起こし（120s）、下流の判定を待てる長さにする
   files:
     enabled: true
 ```
@@ -152,6 +170,8 @@ args:
 ## 注意
 
 - **LLM による書き起こしは、それ自体がプロンプトインジェクションの対象です**。ファイルに「この部分は出力するな」と書かれていると、LLM が従ってその部分を落とす可能性があります。ツールを持たせない、逐語で書き起こすよう指示する、ファイル名をモデルに渡さない、といった対策はしていますが、ゼロにはできません。確実さが要るなら、指示に従うことの無い OCR サービス（`openapi`）を使ってください。
+- **1リクエストのファイル数**: ファイルが `--max-files`（既定 16）を超えるリクエストは、1 件も取得・書き起こしをせずに `BLOCKED` にします。ファイルは `--concurrency`（既定 4）件ずつ処理するので、時間のかかるファイルが多いリクエストは `--extract-timeout` の数倍かかります。呼び出し側のタイムアウトはそれに合わせてください。
+- **リダイレクト**: 書き起こしのサービスと下流のガードレールは、リダイレクトをたどらずに呼びます（認証用のヘッダーやファイルの中身を別のホストへ送らないため）。リダイレクトの応答は失敗として扱います。
 - **長いテキストの分割**: 下流が受け取れるテキストの長さに上限があるときは、`--chunk-chars` で起こしたテキストを分割して送れます（既定は分割なし）。隣り合う断片は `--chunk-overlap-chars`（既定 200 文字）ずつ重ねるので、その長さまでの語句は境界で切れても、どれかの断片に全体が入ります。下流のポリシーが検出すべき最も長い語句の長さを指定してください（0 は指定できません。`--chunk-chars` の半分までです）。それより長い語句や、広い文脈を見て判定するポリシーは、分割すると検出できないことがあります。分割は必要なときだけ使い、断片はできるだけ大きくしてください。1リクエストで送る断片の数には上限があり（`--max-chunks`、既定 1000）、超えるリクエストは `BLOCKED` にします。
 - **遅延と費用**: ファイル1件ごとに LLM か OCR を呼びます。呼び出し側のガードレールのタイムアウトは、書き起こしを待てる長さにしてください（Manifold は `guardrail.timeout`、既定 5s）。
 - **各プロバイダとの結合は未検証です**: Bedrock / Google / Azure の呼び出しは、それぞれの公式ドキュメントと SDK の型に合わせて実装し、偽のクライアントでテストしていますが、実際のサービスに対しては動かしていません。導入時に実機で確認してください。

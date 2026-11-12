@@ -507,7 +507,9 @@ func (e *Extractor) Extract(ctx context.Context, f extract.SourceFile) (string, 
 			header.Set(p.name, fill(p.value))
 		}
 	}
-	target = e.baseURL + target
+	// 接続先（baseURL）は運用者の設定で決まる。ファイル由来の値（{mime_type}）は
+	// "/" より後（パスとクエリ）にだけ入るので、接続先のホストを変えられない。
+	target = fmt.Sprintf("%s/%s", e.baseURL, strings.TrimPrefix(target, "/"))
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}

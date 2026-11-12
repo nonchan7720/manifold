@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -32,6 +33,9 @@ const (
 	extractorAzure   = "azure"
 	extractorOpenAPI = "openapi"
 )
+
+// configFlag は設定ファイルを指定するフラグの名前。
+const configFlag = "config"
 
 // stringList は値を繰り返し（またはカンマ区切りで）受け取るフラグ。
 type stringList []string
@@ -80,6 +84,7 @@ type fileOptions struct {
 	chunkChars         int
 	chunkOverlapChars  int
 	maxChunks          int
+	maxFiles           int
 
 	fetchAllowedHosts stringList
 	fetchMaxBytes     int64
@@ -110,6 +115,11 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		openapiParams:     keyValues{},
 	}
 	fs := flag.NewFlagSet("manifold-guardrail file", flag.ContinueOnError)
+	var configPath string
+	fs.StringVar(&configPath, configFlag, os.Getenv("FILE_GUARDRAIL_CONFIG"),
+		"YAML file with the settings: the keys are the flag names, repeatable flags are "+
+			"lists, name=value flags are maps, and ${VAR} is replaced by the environment "+
+			"variable. A flag on the command line wins over the file (env FILE_GUARDRAIL_CONFIG)")
 	fs.StringVar(&opts.host, "host", "",
 		"listening address; empty listens on every interface. The endpoint has no "+
 			"authentication, so set 127.0.0.1 when only a caller in the same Pod or host calls it")
@@ -148,13 +158,15 @@ func parseFileFlags(args []string) (fileOptions, error) {
 		"with --chunk-chars, how many characters neighbouring pieces share, so that a phrase "+
 			"cut at a boundary is still whole in one piece: set it to the longest phrase the "+
 			"downstream guardrail has to catch; must be positive and at most half of --chunk-chars")
+	fs.IntVar(&opts.maxFiles, "max-files", fileguard.DefaultMaxFiles,
+		"limit on the files of one request; a request over it is BLOCKED")
 	fs.IntVar(&opts.maxChunks, "max-chunks", fileguard.DefaultMaxChunks,
 		"limit on the pieces of transcribed text one request sends downstream; a request "+
 			"over it is blocked")
 
 	fs.Var(&opts.fetchAllowedHosts, "fetch-allowed-host",
 		"host whose http(s) URLs may be fetched to check a file given by URL, e.g. "+
-			"files.example.com, *.example.com or minio.internal:9000 (repeatable or "+
+			"files.example.com or minio.internal:9000 (exact host names; repeatable or "+
 			"comma-separated); URLs of other hosts are never fetched")
 	fs.Int64Var(&opts.fetchMaxBytes, "fetch-max-bytes", 20<<20,
 		"size limit of a file fetched from a URL; larger files are blocked")
@@ -200,12 +212,58 @@ func parseFileFlags(args []string) (fileOptions, error) {
 	if fs.NArg() > 0 {
 		return fileOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	if configPath != "" {
+		explicit := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+		if err := applyConfigFile(fs, configPath, explicit); err != nil {
+			return fileOptions{}, err
+		}
+	}
 	return opts, opts.validate()
 }
 
-func (o fileOptions) validate() error {
+// validateDownstreamURL は、下流の URL が http(s) の絶対 URL かを確かめる。
+func (o fileOptions) validateDownstreamURL() error {
 	if o.downstreamURL == "" {
 		return errors.New("--downstream-url is required")
+	}
+	// URL は認証用のクエリを含みうるので、エラー文には出さない。
+	if u, err := url.Parse(o.downstreamURL); err != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("--downstream-url must be an absolute http(s) URL")
+	}
+	return nil
+}
+
+// validateLimits は、タイムアウトと並行数・ファイル数の上限を確かめる。
+func (o fileOptions) validateLimits() error {
+	// 0 以下のタイムアウトは「無制限」になり、応答しない相手を待ち続ける。
+	if o.extractTimeout <= 0 {
+		return errors.New("--extract-timeout must be positive")
+	}
+	if o.fetchTimeout <= 0 {
+		return errors.New("--fetch-timeout must be positive")
+	}
+	if o.concurrency <= 0 {
+		return errors.New("--concurrency must be positive")
+	}
+	if o.maxFiles <= 0 {
+		return errors.New("--max-files must be positive")
+	}
+	return nil
+}
+
+// writeTimeout は応答を書き終えるまでの上限。1リクエストのファイル（--max-files まで）
+// を --concurrency 件ずつ取得して起こし、そのあと下流を呼ぶ、最も遅い場合より長くする。
+func (o fileOptions) writeTimeout() time.Duration {
+	batches := (o.maxFiles + o.concurrency - 1) / o.concurrency
+	return time.Duration(batches)*(o.fetchTimeout+o.extractTimeout) +
+		o.extractTimeout + time.Minute
+}
+
+func (o fileOptions) validate() error {
+	if err := o.validateDownstreamURL(); err != nil {
+		return err
 	}
 	switch o.extractedInputType {
 	case "request", "response", "inherit":
@@ -220,6 +278,9 @@ func (o fileOptions) validate() error {
 	}
 	if o.fetchMaxBytes <= 0 {
 		return errors.New("--fetch-max-bytes must be positive")
+	}
+	if err := o.validateLimits(); err != nil {
+		return err
 	}
 	switch o.extractor {
 	case extractorNone:
@@ -337,7 +398,15 @@ func runFile(ctx context.Context, args []string) error {
 		return err
 	}
 	// 書き起こしと下流の呼び出しに使う。タイムアウトは1回の呼び出しの上限。
-	httpClient := &http.Client{Timeout: opts.extractTimeout}
+	// リダイレクトはたどらない。たどると、認証用のヘッダー（X-Api-Key など、Go が
+	// 別ホストへのリダイレクトで落とさないもの）やファイルの本文が、設定した相手とは
+	// 別のホストへ送られうる。3xx はそのまま返り、各呼び出しで失敗として扱われる。
+	httpClient := &http.Client{
+		Timeout: opts.extractTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	extractor, err := newExtractor(ctx, opts, httpClient)
 	if err != nil {
 		return err
@@ -375,6 +444,7 @@ func runFile(ctx context.Context, args []string) error {
 		ChunkChars:         opts.chunkChars,
 		ChunkOverlap:       opts.chunkOverlapChars,
 		MaxChunks:          opts.maxChunks,
+		MaxFiles:           opts.maxFiles,
 	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -384,9 +454,8 @@ func runFile(ctx context.Context, args []string) error {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       time.Minute,
-		// 1リクエストで複数のファイルを起こすので、書き起こしのタイムアウトより長くする。
-		WriteTimeout: 4*opts.extractTimeout + time.Minute,
-		IdleTimeout:  2 * time.Minute,
+		WriteTimeout:      opts.writeTimeout(),
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	errCh := make(chan error, 1)

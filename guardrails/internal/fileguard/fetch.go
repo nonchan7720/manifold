@@ -28,12 +28,35 @@ var (
 
 // allowedHost は URL の取得を許可するホスト1件。
 type allowedHost struct {
-	// name は小文字のホスト名。wildcard なら、そのサブドメインすべて（"example.com"
-	// は "a.example.com" に一致し、"example.com" 自身には一致しない）。
-	name     string
-	wildcard bool
+	// name は小文字のホスト名（完全一致）。
+	name string
 	// port が空なら、スキームの既定のポート（https は 443、http は 80）だけを許可する。
 	port string
+}
+
+// requestURL は、u と同じファイルを指す URL を、許可リストのホスト名から組み立てる。
+//
+// 接続先（スキーム・ホスト・ポート）には、呼び出し側が渡した文字列を使わない。
+// スキームは定数、ホストとポートは運用者の設定から取り、呼び出し側の値は "/" より後
+// （パスとクエリ）にだけ入れる。こうすると、URL の解釈の揺れ（userinfo、特殊な表記の
+// ホスト名など）を突いて、判定したホストと違う接続先へ向けることができない。
+func (h allowedHost) requestURL(u *url.URL) string {
+	scheme := "https"
+	if u.Scheme == "http" {
+		scheme = "http"
+	}
+	authority := h.name
+	switch {
+	case h.port != "":
+		authority = net.JoinHostPort(h.name, h.port)
+	case strings.Contains(h.name, ":"):
+		authority = "[" + h.name + "]"
+	}
+	rest := strings.TrimPrefix(u.EscapedPath(), "/")
+	if u.RawQuery != "" {
+		rest += "?" + u.RawQuery
+	}
+	return fmt.Sprintf("%s://%s/%s", scheme, authority, rest)
 }
 
 // Fetcher は、URL で渡されたファイルを、許可したホストからだけ取得する。
@@ -49,7 +72,7 @@ type Fetcher struct {
 	httpClient *http.Client
 }
 
-// NewFetcher は hosts（"files.example.com"、"*.example.com"、"minio.internal:9000"）
+// NewFetcher は hosts（"files.example.com"、"minio.internal:9000"）
 // からの取得だけを許可する Fetcher を返す。maxBytes は取得するファイルの上限、
 // timeout は1回の取得（リダイレクトを含む）の上限。
 func NewFetcher(hosts []string, maxBytes int64, timeout time.Duration) (*Fetcher, error) {
@@ -85,9 +108,6 @@ func parseAllowedHost(raw string) (allowedHost, error) {
 	} else {
 		host.name = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
 	}
-	if rest, ok := strings.CutPrefix(host.name, "*."); ok {
-		host.name, host.wildcard = rest, true
-	}
 	// ホスト名に ":" を許すのは IPv6 のアドレスだけ（"https://host" のような URL を
 	// ホスト名 "https" として受け付けない）。ポートは数字だけ。
 	validName := host.name != "" && !strings.ContainsAny(host.name, "*/@ ") &&
@@ -95,7 +115,8 @@ func parseAllowedHost(raw string) (allowedHost, error) {
 	validPort := strings.Trim(host.port, "0123456789") == ""
 	if !validName || !validPort {
 		return allowedHost{}, fmt.Errorf(
-			"allowed host %q must be a host name, optionally with a leading *. and a :port", raw,
+			"allowed host %q must be a host name, optionally with a :port "+
+				"(wildcards are not supported)", raw,
 		)
 	}
 	return host, nil
@@ -103,36 +124,34 @@ func parseAllowedHost(raw string) (allowedHost, error) {
 
 // Allowed は u が許可したホストの http(s) の URL かを返す。
 func (f *Fetcher) Allowed(u *url.URL) bool {
+	_, ok := f.match(u)
+	return ok
+}
+
+// match は u のホストとポートに一致する、許可リストの項目を返す。
+func (f *Fetcher) match(u *url.URL) (allowedHost, bool) {
 	if f == nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return false
+		return allowedHost{}, false
+	}
+	defaultPort := "443"
+	if u.Scheme == "http" {
+		defaultPort = "80"
 	}
 	name := strings.ToLower(u.Hostname())
 	port := u.Port()
 	if port == "" {
-		port = "443"
-		if u.Scheme == "http" {
-			port = "80"
-		}
+		port = defaultPort
 	}
 	for _, host := range f.hosts {
 		wantPort := host.port
 		if wantPort == "" {
-			wantPort = "443"
-			if u.Scheme == "http" {
-				wantPort = "80"
-			}
+			wantPort = defaultPort
 		}
-		if port != wantPort {
-			continue
-		}
-		if host.wildcard && strings.HasSuffix(name, "."+host.name) {
-			return true
-		}
-		if !host.wildcard && name == host.name {
-			return true
+		if port == wantPort && name == host.name {
+			return host, true
 		}
 	}
-	return false
+	return allowedHost{}, false
 }
 
 // Fetch は rawURL のファイルを取得する。許可していないホストなら ok は false で、
@@ -144,10 +163,14 @@ func (f *Fetcher) Fetch(
 	rawURL string,
 ) (_ extract.SourceFile, ok bool, _ error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || !f.Allowed(u) {
+	if err != nil {
 		return extract.SourceFile{}, false, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	host, allowed := f.match(u)
+	if !allowed {
+		return extract.SourceFile{}, false, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, host.requestURL(u), nil)
 	if err != nil {
 		return extract.SourceFile{}, true, errors.New("fetch: build request")
 	}

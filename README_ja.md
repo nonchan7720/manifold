@@ -758,7 +758,7 @@ Manifold ──▶ manifold-guardrail file ──▶ テキスト用ガードレ
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
-  timeout: 120s          # ファイルの書き起こしを待てる長さにする
+  timeout: 180s          # ファイルの取得（30s）と書き起こし（120s）、下流の判定を待てる長さにする
   files:
     enabled: true
 ```
