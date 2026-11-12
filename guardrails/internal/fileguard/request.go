@@ -335,8 +335,8 @@ func decodeInline(s string) (extract.SourceFile, error) {
 // 呼び出し側が texts を付けずにメッセージだけを送ってきたときに使う。texts だけを
 // 検査する下流（同梱の Bedrock サイドカーなど）は、メッセージを転送しても中のテキストを
 // 検査しないので、取り出して texts として送る。
-func structuredMessageTexts(raw json.RawMessage) ([]string, error) {
-	var texts []string
+func structuredMessageTexts(raw json.RawMessage, limit int) ([]string, error) {
+	list := &textList{limit: limit}
 	err := eachElement(raw, errBadMessage, func(item json.RawMessage) error {
 		var message struct {
 			Content json.RawMessage `json:"content"`
@@ -344,18 +344,40 @@ func structuredMessageTexts(raw json.RawMessage) ([]string, error) {
 		if json.Unmarshal(item, &message) != nil {
 			return errBadMessage
 		}
-		return contentTexts(message.Content, 0, &texts)
+		return list.addContent(message.Content, 0)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return texts, nil
+	return list.texts, nil
 }
 
-// contentTexts は、content（文字列か、パートの配列）にあるテキストを out に加える。
-// ツールの結果（tool_result の content、function_call_output の output）の中も辿る。
+// errTooManyTexts は、メッセージから取り出すテキストが上限を超えたことを表す。
+var errTooManyTexts = errors.New("too many texts")
+
+// textList は、上限つきのテキストの一覧。
+type textList struct {
+	texts []string
+	limit int
+}
+
+// add は空でない text を加える。上限を超えるなら errTooManyTexts を返す（短いテキストを
+// 大量に並べたメッセージを、全件集めてから拒否しないため）。
+func (l *textList) add(text string) error {
+	if text == "" {
+		return nil
+	}
+	if len(l.texts) >= l.limit {
+		return errTooManyTexts
+	}
+	l.texts = append(l.texts, text)
+	return nil
+}
+
+// addContent は、content（文字列か、パートの配列）にあるテキストを加える。ツールの
+// 結果（tool_result の content、function_call_output の output）の中も辿る。
 // 読めない形や、深すぎる入れ子は、中のテキストを黙って捨てずに拒否する。
-func contentTexts(raw json.RawMessage, depth int, out *[]string) error {
+func (l *textList) addContent(raw json.RawMessage, depth int) error {
 	switch contentShape(raw) {
 	case contentEmpty:
 		return nil
@@ -366,10 +388,7 @@ func contentTexts(raw json.RawMessage, depth int, out *[]string) error {
 		if json.Unmarshal(raw, &text) != nil {
 			return errBadContent
 		}
-		if text != "" {
-			*out = append(*out, text)
-		}
-		return nil
+		return l.add(text)
 	}
 	if depth > maxPartDepth {
 		return errTooDeep
@@ -381,12 +400,10 @@ func contentTexts(raw json.RawMessage, depth int, out *[]string) error {
 		}
 		switch strings.ToLower(strings.TrimSpace(part.Type)) {
 		case "text", "input_text", "output_text":
-			if part.Text != "" {
-				*out = append(*out, part.Text)
-			}
+			return l.add(part.Text)
 		case "tool_result", "function_call_output":
 			for _, nested := range []json.RawMessage{part.Content, part.Output} {
-				if err := contentTexts(nested, depth+1, out); err != nil {
+				if err := l.addContent(nested, depth+1); err != nil {
 					return err
 				}
 			}

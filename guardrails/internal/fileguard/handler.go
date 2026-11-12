@@ -265,6 +265,9 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 	return original, nil
 }
 
+// blockedTooLong は、下流へ送る断片が上限（Config.MaxChunks）を超えたときの拒否の理由。
+const blockedTooLong = "the text of the files is too long for the guardrail check"
+
 // checkOnlyTexts は、通すか拒否するかだけを見るテキストを、下流へ送る断片にして返す。
 // ファイルから起こしたもの（results）と、texts を付けずに送られてきたメッセージの
 // テキスト。blocked が空でなければ、下流へ送らずに拒否する理由。
@@ -283,7 +286,12 @@ func (h *Handler) checkOnlyTexts(
 	if raw, ok := req[keyStructuredMessages]; ok && len(texts) == 0 {
 		// texts があれば、呼び出し側（LiteLLM など）がメッセージのテキストをそこに入れて
 		// いるので、取り出さない（同じテキストを2回検査しない）。
-		messageTexts, err := structuredMessageTexts(raw)
+		// 空でないテキストは 1 件が少なくとも 1 断片になるので、断片の上限まで集めれば
+		// 足りる。超えた時点で残りを読まずに拒否する。
+		messageTexts, err := structuredMessageTexts(raw, h.cfg.MaxChunks)
+		if errors.Is(err, errTooManyTexts) {
+			return nil, blockedTooLong, nil
+		}
 		if err != nil {
 			return nil, "", err
 		}
@@ -295,7 +303,7 @@ func (h *Handler) checkOnlyTexts(
 		// 数百万件の断片ができ、メモリと下流へのリクエストが膨らむ。
 		count += chunkCount(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)
 		if count > h.cfg.MaxChunks {
-			return nil, "the text of the files is too long for the guardrail check", nil
+			return nil, blockedTooLong, nil
 		}
 		pieces = append(pieces, chunk(text, h.cfg.ChunkChars, h.cfg.ChunkOverlap)...)
 	}

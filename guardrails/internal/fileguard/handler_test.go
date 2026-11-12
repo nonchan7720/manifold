@@ -1043,3 +1043,26 @@ func TestHandler_ChecksDeeplyNestedText(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, actionBlocked, res.Action)
 }
+
+// texts の無いリクエストで、メッセージの短いテキストが断片の上限を超えるときは、全件を
+// 集めずに、上限を超えた時点で拒否する。
+func TestStructuredMessageTexts_StopsAtLimit(t *testing.T) {
+	parts := strings.Repeat(`{"type":"text","text":"a"},`, 3)
+	// 上限を超えたあとに不正な要素を置く。全件を読む実装なら 400 になる。
+	raw := json.RawMessage(`[{"role":"user","content":[` + parts + `{"type":"text","text":7}]}]`)
+	_, err := structuredMessageTexts(raw, 2)
+	require.ErrorIs(t, err, errTooManyTexts)
+
+	srv, d := newTestHandler(t, Config{MaxChunks: 2}, none)
+	status, res, _ := post(t, srv, map[string]any{"structured_messages": []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "a"},
+			map[string]any{"type": "text", "text": "b"},
+			map[string]any{"type": "text", "text": "c"},
+		}},
+	}})
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, actionBlocked, res.Action)
+	require.Equal(t, blockedTooLong, res.BlockedReason)
+	require.Empty(t, d.bodies)
+}
