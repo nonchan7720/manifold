@@ -7,6 +7,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "jose": "^6.2.9",
-    "playwright": "1.64.1"
+    "playwright": "1.65.0"
   }
 }
