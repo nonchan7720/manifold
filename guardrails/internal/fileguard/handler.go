@@ -202,7 +202,11 @@ type badRequestError struct{ message string }
 func (e *badRequestError) Error() string { return e.message }
 
 func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (apiResponse, error) {
-	files, err := requestFiles(req)
+	// 上限を超えたら、残りのファイルを読まず、1件も取得・書き起こしをせずに拒否する。
+	files, err := requestFiles(req, h.cfg.MaxFiles)
+	if errors.Is(err, errTooManyFiles) {
+		return apiResponse{Action: actionBlocked, BlockedReason: errTooManyFiles.Error()}, nil
+	}
 	if err != nil {
 		return apiResponse{}, err
 	}
@@ -211,13 +215,6 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 		if err := json.Unmarshal(raw, &texts); err != nil {
 			return apiResponse{}, &badRequestError{"texts must be an array of strings"}
 		}
-	}
-
-	if len(files) > h.cfg.MaxFiles {
-		return apiResponse{
-			Action:        actionBlocked,
-			BlockedReason: "the request has more files than the guardrail checks at once",
-		}, nil
 	}
 
 	results, err := h.extractAll(ctx, files)

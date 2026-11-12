@@ -1,8 +1,10 @@
 package fileguard
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,6 +31,63 @@ const (
 	unreadablePart     = "message parts of a type it cannot read"
 )
 
+// errTooManyFiles は、リクエストのファイルが上限（Config.MaxFiles）を超えたことを表す。
+var errTooManyFiles = errors.New("the request has more files than the guardrail checks at once")
+
+// メッセージの形が読めないときのエラー。
+var (
+	errBadContent = &badRequestError{
+		"the content of a message must be a string or an array of parts",
+	}
+	errBadParts   = &badRequestError{"the content of a message must be an array of parts"}
+	errTooDeep    = &badRequestError{"the parts of a message are nested too deeply"}
+	errBadImages  = &badRequestError{"images must be an array of strings"}
+	errBadFiles   = &badRequestError{"files must be an array of {uri, mime_type, data}"}
+	errBadMessage = &badRequestError{"structured_messages must be an array of messages"}
+)
+
+// eachElement は JSON の配列 raw の要素を、1件ずつ fn に渡す。配列全体を一度に
+// 復元しないので、要素の多い配列（空に近い要素を大量に並べたものなど）でも、使う
+// メモリは処理中の1件ぶんで済み、fn がエラーを返した時点で打ち切れる。null は空の
+// 配列として扱う。配列として読めなければ bad を返す。
+func eachElement(raw json.RawMessage, bad error, fn func(json.RawMessage) error) error {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return bad
+	}
+	for dec.More() {
+		var item json.RawMessage
+		if dec.Decode(&item) != nil {
+			return bad
+		}
+		if err := fn(item); err != nil {
+			return err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return bad
+	}
+	return nil
+}
+
+// fileList は、上限つきのファイルの一覧。
+type fileList struct {
+	files []inputFile
+	limit int
+}
+
+// add は f を加える。上限を超えるなら errTooManyFiles を返す。
+func (l *fileList) add(f inputFile) error {
+	if len(l.files) >= l.limit {
+		return errTooManyFiles
+	}
+	l.files = append(l.files, f)
+	return nil
+}
+
 // requestFiles は req に含まれるファイルを、種類を揃えた一覧にする。
 //
 //   - images: 画像。base64 か data URL。LiteLLM はメッセージの image_url を
@@ -41,48 +100,57 @@ const (
 // URL で渡されたファイルは、許可したホスト（Config.Fetcher）からだけ取得する
 // （呼び出し側が指定した URL を取得すると SSRF の入口になる）。それ以外の URL と
 // file_id で渡されたファイルは、中身を検査できないファイルとして扱う。
-func requestFiles(req map[string]json.RawMessage) ([]inputFile, error) {
-	var files []inputFile
+//
+// ファイルが limit 件を超えたら、残りを読まずに errTooManyFiles を返す。
+func requestFiles(req map[string]json.RawMessage, limit int) ([]inputFile, error) {
+	list := &fileList{limit: limit}
 	if raw, ok := req[keyImages]; ok {
-		var images []string
-		if err := json.Unmarshal(raw, &images); err != nil {
-			return nil, &badRequestError{"images must be an array of strings"}
-		}
-		for _, image := range images {
-			if isRemoteURL(image) {
-				files = append(files, inputFile{unreadable: unreadableImageURL, remoteURL: image})
-				continue
-			}
-			f, err := decodeInline(image)
-			if err != nil {
-				return nil, &badRequestError{"images must be base64, data URLs or http(s) URLs"}
-			}
-			files = append(files, inputFile{SourceFile: f})
+		if err := eachElement(raw, errBadImages, list.addImage); err != nil {
+			return nil, err
 		}
 	}
 	if raw, ok := req[keyFiles]; ok {
-		var apiFiles []apiFile
-		if err := json.Unmarshal(raw, &apiFiles); err != nil {
-			return nil, &badRequestError{"files must be an array of {uri, mime_type, data}"}
-		}
-		for _, f := range apiFiles {
-			if len(f.Data) == 0 && f.URI != "" {
-				// 中身が無く URI だけのファイルは、読めないので検査できない。
-				files = append(files, inputFile{unreadable: unreadableNoData})
-				continue
-			}
-			files = append(files, inputFile{
-				URI: f.URI, MIMEType: extract.NormalizeMIME(f.MIMEType, f.Data), Data: f.Data})
+		if err := eachElement(raw, errBadFiles, list.addAPIFile); err != nil {
+			return nil, err
 		}
 	}
 	if raw, ok := req[keyStructuredMessages]; ok {
-		messageFiles, err := structuredMessageFiles(raw)
-		if err != nil {
+		if err := eachElement(raw, errBadMessage, list.addMessage); err != nil {
 			return nil, err
 		}
-		files = append(files, messageFiles...)
 	}
-	return files, nil
+	return list.files, nil
+}
+
+// addImage は images の1件を加える。
+func (l *fileList) addImage(raw json.RawMessage) error {
+	var image string
+	if json.Unmarshal(raw, &image) != nil {
+		return errBadImages
+	}
+	if isRemoteURL(image) {
+		return l.add(inputFile{unreadable: unreadableImageURL, remoteURL: image})
+	}
+	f, err := decodeInline(image)
+	if err != nil {
+		return &badRequestError{"images must be base64, data URLs or http(s) URLs"}
+	}
+	return l.add(inputFile{SourceFile: f})
+}
+
+// addAPIFile は files の1件を加える。
+func (l *fileList) addAPIFile(raw json.RawMessage) error {
+	var f apiFile
+	if json.Unmarshal(raw, &f) != nil {
+		return errBadFiles
+	}
+	if len(f.Data) == 0 && f.URI != "" {
+		// 中身が無く URI だけのファイルは、読めないので検査できない。
+		return l.add(inputFile{unreadable: unreadableNoData})
+	}
+	return l.add(inputFile{
+		URI: f.URI, MIMEType: extract.NormalizeMIME(f.MIMEType, f.Data), Data: f.Data,
+	})
 }
 
 // messagePart はメッセージの content の1件。ファイルは OpenAI の Chat Completions
@@ -107,102 +175,109 @@ type messageFile struct {
 	FileID   string `json:"file_id"`
 }
 
-// structuredMessageFiles は structured_messages の content にあるファイルを返す。
-func structuredMessageFiles(raw json.RawMessage) ([]inputFile, error) {
-	var messages []struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &messages); err != nil {
-		return nil, &badRequestError{"structured_messages must be an array of messages"}
-	}
-	var files []inputFile
-	for _, message := range messages {
-		// content は文字列か、パートの配列。文字列（や null、省略）にファイルは無い。
-		// それ以外の形（オブジェクトなど）を無視すると、その中のファイルが未検査で通る。
-		content := strings.TrimSpace(string(message.Content))
-		if content == "" || content == "null" || strings.HasPrefix(content, `"`) {
-			continue
-		}
-		if !strings.HasPrefix(content, "[") {
-			return nil, &badRequestError{
-				"the content of a message must be a string or an array of parts",
-			}
-		}
-		partFiles, err := contentFiles(message.Content, 0)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, partFiles...)
-	}
-	return files, nil
-}
-
 // maxPartDepth は、パートの入れ子（tool_result の中のパートなど）を辿る深さの上限。
+// これより深いメッセージは、中身を読めないので拒否する。
 const maxPartDepth = 8
 
-// contentFiles は、パートの配列 raw にあるファイルを返す。
-func contentFiles(raw json.RawMessage, depth int) ([]inputFile, error) {
-	// 配列なのに読めないものを無視すると、その中のファイルが未検査で通る。
-	var parts []messagePart
-	if json.Unmarshal(raw, &parts) != nil {
-		return nil, &badRequestError{"the content of a message must be an array of parts"}
+// content の形。
+const (
+	contentEmpty  = iota // 省略、null
+	contentString        // 文字列
+	contentParts         // パートの配列
+	contentOther         // それ以外（オブジェクト、数値など）
+)
+
+// contentShape は、content（メッセージの content、ツールの結果の content / output）の
+// 形を返す。
+func contentShape(raw json.RawMessage) int {
+	content := strings.TrimSpace(string(raw))
+	switch {
+	case content == "" || content == "null":
+		return contentEmpty
+	case strings.HasPrefix(content, `"`):
+		return contentString
+	case strings.HasPrefix(content, "["):
+		return contentParts
+	default:
+		return contentOther
 	}
-	var files []inputFile
-	for _, part := range parts {
-		switch partKind(part.Type) {
-		case partNotFile:
-			// 最上位の image_url は呼び出し側（LiteLLM）が images に入れて送るが、
-			// ツールの結果の中の image_url は images に入らない。読まずに通すと
-			// 未検査になるので、読めないファイルとして扱う。
-			if depth > 0 && strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
-				files = append(files, inputFile{unreadable: unreadablePart})
-				continue
-			}
-			// ツールの結果は、中にパートの配列（ファイルを含みうる）を持てる。
-			for _, nested := range []json.RawMessage{part.Content, part.Output} {
-				if !strings.HasPrefix(strings.TrimSpace(string(nested)), "[") {
-					continue
-				}
-				if depth >= maxPartDepth {
-					files = append(files, inputFile{unreadable: unreadablePart})
-					continue
-				}
-				nestedFiles, err := contentFiles(nested, depth+1)
-				if err != nil {
-					return nil, err
-				}
-				files = append(files, nestedFiles...)
-			}
-			continue
-		case partUnknown:
-			// 読み方を知らない種類（音声、動画、他の API の形の画像や文書など）を
-			// 無視すると、その中身が未検査で通る。読めないファイルとして扱う。
-			files = append(files, inputFile{unreadable: unreadablePart})
-			continue
-		case partFile:
-		}
-		file := messageFile{FileData: part.FileData, FileURL: part.FileURL, FileID: part.FileID}
-		if part.File != nil {
-			file = *part.File
-		}
-		switch {
-		case file.FileData != "" && !isRemoteURL(file.FileData):
-			f, err := decodeInline(file.FileData)
-			if err != nil {
-				return nil, &badRequestError{"file_data must be base64 or a data URL"}
-			}
-			files = append(files, inputFile{SourceFile: f})
-		case file.FileData != "" || file.FileURL != "":
-			remote := file.FileURL
-			if file.FileData != "" {
-				remote = file.FileData
-			}
-			files = append(files, inputFile{unreadable: unreadableFileURL, remoteURL: remote})
-		default:
-			files = append(files, inputFile{unreadable: unreadableFileID})
-		}
+}
+
+// addMessage は structured_messages の1件の content にあるファイルを加える。
+func (l *fileList) addMessage(raw json.RawMessage) error {
+	var message struct {
+		Content json.RawMessage `json:"content"`
 	}
-	return files, nil
+	if json.Unmarshal(raw, &message) != nil {
+		return errBadMessage
+	}
+	return l.addContent(message.Content, 0)
+}
+
+// addContent は content にあるファイルを加える。content は文字列か、パートの配列。
+// 文字列（や null、省略）にファイルは無い。それ以外の形（オブジェクトなど）を
+// 無視すると、その中のファイルが未検査で通るので、拒否する。
+func (l *fileList) addContent(raw json.RawMessage, depth int) error {
+	switch contentShape(raw) {
+	case contentEmpty, contentString:
+		return nil
+	case contentOther:
+		return errBadContent
+	}
+	if depth > maxPartDepth {
+		return errTooDeep
+	}
+	return eachElement(raw, errBadParts, func(item json.RawMessage) error {
+		var part messagePart
+		if json.Unmarshal(item, &part) != nil {
+			return errBadParts
+		}
+		return l.addPart(part, depth)
+	})
+}
+
+// addPart はパート1件にあるファイルを加える。
+func (l *fileList) addPart(part messagePart, depth int) error {
+	switch partKind(part.Type) {
+	case partNotFile:
+		// 最上位の image_url は呼び出し側（LiteLLM）が images に入れて送るが、
+		// ツールの結果の中の image_url は images に入らない。読まずに通すと
+		// 未検査になるので、読めないファイルとして扱う。
+		if depth > 0 && strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
+			return l.add(inputFile{unreadable: unreadablePart})
+		}
+		// ツールの結果は、中にパートの配列（ファイルを含みうる）を持てる。
+		for _, nested := range []json.RawMessage{part.Content, part.Output} {
+			if err := l.addContent(nested, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case partUnknown:
+		// 読み方を知らない種類（音声、動画、他の API の形の画像や文書など）を
+		// 無視すると、その中身が未検査で通る。読めないファイルとして扱う。
+		return l.add(inputFile{unreadable: unreadablePart})
+	}
+	file := messageFile{FileData: part.FileData, FileURL: part.FileURL, FileID: part.FileID}
+	if part.File != nil {
+		file = *part.File
+	}
+	switch {
+	case file.FileData != "" && !isRemoteURL(file.FileData):
+		f, err := decodeInline(file.FileData)
+		if err != nil {
+			return &badRequestError{"file_data must be base64 or a data URL"}
+		}
+		return l.add(inputFile{SourceFile: f})
+	case file.FileData != "" || file.FileURL != "":
+		remote := file.FileURL
+		if file.FileData != "" {
+			remote = file.FileData
+		}
+		return l.add(inputFile{unreadable: unreadableFileURL, remoteURL: remote})
+	default:
+		return l.add(inputFile{unreadable: unreadableFileID})
+	}
 }
 
 // メッセージのパートの種類。
@@ -261,65 +336,61 @@ func decodeInline(s string) (extract.SourceFile, error) {
 // 検査する下流（同梱の Bedrock サイドカーなど）は、メッセージを転送しても中のテキストを
 // 検査しないので、取り出して texts として送る。
 func structuredMessageTexts(raw json.RawMessage) ([]string, error) {
-	var messages []struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &messages); err != nil {
-		return nil, &badRequestError{"structured_messages must be an array of messages"}
-	}
 	var texts []string
-	for _, message := range messages {
-		contentTexts, err := contentTexts(message.Content, 0)
-		if err != nil {
-			return nil, err
+	err := eachElement(raw, errBadMessage, func(item json.RawMessage) error {
+		var message struct {
+			Content json.RawMessage `json:"content"`
 		}
-		texts = append(texts, contentTexts...)
+		if json.Unmarshal(item, &message) != nil {
+			return errBadMessage
+		}
+		return contentTexts(message.Content, 0, &texts)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return texts, nil
 }
 
-// contentTexts は、content（文字列か、パートの配列）にあるテキストを返す。ツールの
-// 結果（tool_result の content、function_call_output の output）の中も辿る。
-func contentTexts(raw json.RawMessage, depth int) ([]string, error) {
-	content := strings.TrimSpace(string(raw))
-	switch {
-	case strings.HasPrefix(content, `"`):
+// contentTexts は、content（文字列か、パートの配列）にあるテキストを out に加える。
+// ツールの結果（tool_result の content、function_call_output の output）の中も辿る。
+// 読めない形や、深すぎる入れ子は、中のテキストを黙って捨てずに拒否する。
+func contentTexts(raw json.RawMessage, depth int, out *[]string) error {
+	switch contentShape(raw) {
+	case contentEmpty:
+		return nil
+	case contentOther:
+		return errBadContent
+	case contentString:
 		var text string
 		if json.Unmarshal(raw, &text) != nil {
-			return nil, &badRequestError{
-				"the content of a message must be a string or an array of parts",
-			}
+			return errBadContent
 		}
-		if text == "" {
-			return nil, nil
+		if text != "" {
+			*out = append(*out, text)
 		}
-		return []string{text}, nil
-	case strings.HasPrefix(content, "["):
-		var parts []messagePart
-		if json.Unmarshal(raw, &parts) != nil {
-			return nil, &badRequestError{"the content of a message must be an array of parts"}
-		}
-		var texts []string
-		for _, part := range parts {
-			switch strings.ToLower(strings.TrimSpace(part.Type)) {
-			case "text", "input_text", "output_text":
-				if part.Text != "" {
-					texts = append(texts, part.Text)
-				}
-			case "tool_result", "function_call_output":
-				if depth >= maxPartDepth {
-					continue
-				}
-				for _, nested := range []json.RawMessage{part.Content, part.Output} {
-					nestedTexts, err := contentTexts(nested, depth+1)
-					if err != nil {
-						return nil, err
-					}
-					texts = append(texts, nestedTexts...)
-				}
-			}
-		}
-		return texts, nil
+		return nil
 	}
-	return nil, nil
+	if depth > maxPartDepth {
+		return errTooDeep
+	}
+	return eachElement(raw, errBadParts, func(item json.RawMessage) error {
+		var part messagePart
+		if json.Unmarshal(item, &part) != nil {
+			return errBadParts
+		}
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text", "input_text", "output_text":
+			if part.Text != "" {
+				*out = append(*out, part.Text)
+			}
+		case "tool_result", "function_call_output":
+			for _, nested := range []json.RawMessage{part.Content, part.Output} {
+				if err := contentTexts(nested, depth+1, out); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
