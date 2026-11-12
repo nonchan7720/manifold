@@ -151,6 +151,13 @@ func contentFiles(raw json.RawMessage, depth int) ([]inputFile, error) {
 	for _, part := range parts {
 		switch partKind(part.Type) {
 		case partNotFile:
+			// 最上位の image_url は呼び出し側（LiteLLM）が images に入れて送るが、
+			// ツールの結果の中の image_url は images に入らない。読まずに通すと
+			// 未検査になるので、読めないファイルとして扱う。
+			if depth > 0 && strings.EqualFold(strings.TrimSpace(part.Type), "image_url") {
+				files = append(files, inputFile{unreadable: unreadablePart})
+				continue
+			}
 			// ツールの結果は、中にパートの配列（ファイルを含みうる）を持てる。
 			for _, nested := range []json.RawMessage{part.Content, part.Output} {
 				if !strings.HasPrefix(strings.TrimSpace(string(nested)), "[") {
@@ -262,32 +269,57 @@ func structuredMessageTexts(raw json.RawMessage) ([]string, error) {
 	}
 	var texts []string
 	for _, message := range messages {
-		content := strings.TrimSpace(string(message.Content))
-		switch {
-		case strings.HasPrefix(content, `"`):
-			var text string
-			if json.Unmarshal(message.Content, &text) != nil {
-				return nil, &badRequestError{
-					"the content of a message must be a string or an array of parts",
+		contentTexts, err := contentTexts(message.Content, 0)
+		if err != nil {
+			return nil, err
+		}
+		texts = append(texts, contentTexts...)
+	}
+	return texts, nil
+}
+
+// contentTexts は、content（文字列か、パートの配列）にあるテキストを返す。ツールの
+// 結果（tool_result の content、function_call_output の output）の中も辿る。
+func contentTexts(raw json.RawMessage, depth int) ([]string, error) {
+	content := strings.TrimSpace(string(raw))
+	switch {
+	case strings.HasPrefix(content, `"`):
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return nil, &badRequestError{
+				"the content of a message must be a string or an array of parts",
+			}
+		}
+		if text == "" {
+			return nil, nil
+		}
+		return []string{text}, nil
+	case strings.HasPrefix(content, "["):
+		var parts []messagePart
+		if json.Unmarshal(raw, &parts) != nil {
+			return nil, &badRequestError{"the content of a message must be an array of parts"}
+		}
+		var texts []string
+		for _, part := range parts {
+			switch strings.ToLower(strings.TrimSpace(part.Type)) {
+			case "text", "input_text", "output_text":
+				if part.Text != "" {
+					texts = append(texts, part.Text)
 				}
-			}
-			if text != "" {
-				texts = append(texts, text)
-			}
-		case strings.HasPrefix(content, "["):
-			var parts []messagePart
-			if json.Unmarshal(message.Content, &parts) != nil {
-				return nil, &badRequestError{"the content of a message must be an array of parts"}
-			}
-			for _, part := range parts {
-				switch part.Type {
-				case "text", "input_text", "output_text":
-					if part.Text != "" {
-						texts = append(texts, part.Text)
+			case "tool_result", "function_call_output":
+				if depth >= maxPartDepth {
+					continue
+				}
+				for _, nested := range []json.RawMessage{part.Content, part.Output} {
+					nestedTexts, err := contentTexts(nested, depth+1)
+					if err != nil {
+						return nil, err
 					}
+					texts = append(texts, nestedTexts...)
 				}
 			}
 		}
+		return texts, nil
 	}
-	return texts, nil
+	return nil, nil
 }

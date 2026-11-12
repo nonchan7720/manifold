@@ -30,6 +30,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// DefaultMaxFiles は Config.MaxFiles の既定値。
+const DefaultMaxFiles = 16
+
 // DefaultMaxChunks は Config.MaxChunks の既定値。
 const DefaultMaxChunks = 1000
 
@@ -95,6 +98,10 @@ type Config struct {
 	// 断片の数の上限（分割しないときは、テキストのあるファイルの数）。超えた
 	// リクエストは拒否する。0 以下なら DefaultMaxChunks。
 	MaxChunks int
+	// MaxFiles は1リクエストのファイルの数の上限。超えたリクエストは、1件も取得・
+	// 書き起こしをせずに拒否する（1リクエストで外部の呼び出しを際限なく起こさせない）。
+	// 0 以下なら DefaultMaxFiles。
+	MaxFiles int
 	// ChunkOverlap は隣り合う断片を重ねる文字数。境界で切れた語句を下流が検出
 	// できるようにする。ChunkChars の半分まで（超える分は切り詰める）。
 	ChunkOverlap int
@@ -115,6 +122,9 @@ func NewHandler(cfg Config) *Handler {
 	cfg.ChunkOverlap = min(max(cfg.ChunkOverlap, 0), cfg.ChunkChars/2)
 	if cfg.MaxChunks <= 0 {
 		cfg.MaxChunks = DefaultMaxChunks
+	}
+	if cfg.MaxFiles <= 0 {
+		cfg.MaxFiles = DefaultMaxFiles
 	}
 	return &Handler{cfg: cfg}
 }
@@ -201,6 +211,13 @@ func (h *Handler) apply(ctx context.Context, req map[string]json.RawMessage) (ap
 		if err := json.Unmarshal(raw, &texts); err != nil {
 			return apiResponse{}, &badRequestError{"texts must be an array of strings"}
 		}
+	}
+
+	if len(files) > h.cfg.MaxFiles {
+		return apiResponse{
+			Action:        actionBlocked,
+			BlockedReason: "the request has more files than the guardrail checks at once",
+		}, nil
 	}
 
 	results, err := h.extractAll(ctx, files)

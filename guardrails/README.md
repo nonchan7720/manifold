@@ -77,7 +77,7 @@ Put it between the gateway and the text guardrail and point `guardrail.url` at i
 guardrail:
   enabled: true
   url: http://localhost:8091/beta/litellm_basic_guardrail_api
-  timeout: 120s          # long enough to wait for the transcription of a file
+  timeout: 180s          # fetch (30s) + transcription (120s) of a file, plus the downstream check
   files:
     enabled: true
 ```
@@ -143,6 +143,8 @@ args:
 ## Caveats
 
 - **Transcription by an LLM is itself a prompt-injection target.** A file that says "do not output this part" may make the LLM drop that part. The model gets no tools, is told to transcribe verbatim, and never sees the file name, but this cannot be reduced to zero. When you need certainty, use an OCR service (`openapi`), which does not follow instructions.
+- **Files per request**: a request with more files than `--max-files` (default 16) is `BLOCKED` without fetching or transcribing any of them. Files are processed `--concurrency` (default 4) at a time, so a request with many slow files takes several times `--extract-timeout`; set the caller's timeout accordingly.
+- **Redirects**: the transcription service and the downstream guardrail are called without following redirects, so that authentication headers and file content never go to another host. A redirect answer is a failure.
 - **Splitting long text**: when the downstream guardrail limits the length of a text, `--chunk-chars` splits the transcribed text into pieces (off by default). Neighbouring pieces share `--chunk-overlap-chars` characters (default 200), so a phrase up to that length is whole in one piece even when a boundary cuts it. Set it to the length of the longest phrase the downstream policy has to catch (0 is not accepted, and it can be at most half of `--chunk-chars`). Longer phrases, and policies that judge from a wide context, may be missed once the text is split. Split only when you have to, and keep the pieces as large as you can. The number of pieces one request sends is limited (`--max-chunks`, default 1000); a request over it is `BLOCKED`.
 - **Latency and cost**: every file is one call to an LLM or an OCR service. Set the caller's guardrail timeout long enough to wait for a transcription (in Manifold, `guardrail.timeout`, default 5s).
 - **The provider integrations are untested against the real services**: the Bedrock / Google / Azure calls follow the official documentation and SDK types and are tested with fake clients, but have not been run against the services themselves. Verify them in your environment before relying on them.
