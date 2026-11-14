@@ -197,32 +197,6 @@ func swaggerSchemaToV3(
 	return dst
 }
 
-// schemaContainsBinary は schema 配下（properties / items / allOf、循環は打ち切り）に
-// format: binary のリーフが 1 つでもあるかを返す。
-func schemaContainsBinary(schema *openapi3.Schema, visited map[*openapi3.Schema]bool) bool {
-	if schema == nil || visited[schema] {
-		return false
-	}
-	visited[schema] = true
-	if schema.Format == "binary" {
-		return true
-	}
-	if schema.Items != nil && schemaContainsBinary(schema.Items.Value, visited) {
-		return true
-	}
-	for _, p := range schema.Properties {
-		if p != nil && schemaContainsBinary(p.Value, visited) {
-			return true
-		}
-	}
-	for _, a := range schema.AllOf {
-		if a != nil && schemaContainsBinary(a.Value, visited) {
-			return true
-		}
-	}
-	return false
-}
-
 // swaggerBodyV3Schema は in: body パラメータのスキーマを openapi3.Schema へ変換して返す。
 // スキーマが無い（解決できない）場合は nil を返す。
 func swaggerBodyV3Schema(p *openapi2.Parameter, spec *openapi2.T) *openapi3.Schema {
