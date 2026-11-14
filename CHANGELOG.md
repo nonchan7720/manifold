@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.27.0](https://github.com/nonchan7720/manifold/compare/v1.26.2...v1.27.0) (2026-11-14)
+
+
+### Features
+
+* **guardrail:** ファイル用ガードレール manifold-guardrail file を追加 ([#391](https://github.com/nonchan7720/manifold/issues/391)) ([01c8a99](https://github.com/nonchan7720/manifold/commit/01c8a9983935474da80d19f09ac17bf26078fa9d))
+* **guardrail:** 埋め込みリソースと resources/read、ファイルを検査対象に加える ([#381](https://github.com/nonchan7720/manifold/issues/381)) ([1fcb216](https://github.com/nonchan7720/manifold/commit/1fcb2167f042c076bbeb7b109c04e359538bd0f7))
+
+
+### Bug Fixes
+
+* **deps:** Go 1.27.4 へ更新し、guardrails の脆弱な依存（grpc / golang.org/x 系）を更新する ([#409](https://github.com/nonchan7720/manifold/issues/409)) ([eaecafa](https://github.com/nonchan7720/manifold/commit/eaecafa6fcfa9253ad844bb57ebd65e40fb1e62c))
+* **deps:** update dependency playwright to v1.65.0 ([#373](https://github.com/nonchan7720/manifold/issues/373)) ([43edf3e](https://github.com/nonchan7720/manifold/commit/43edf3ea9e8742a77db1f7a21343b8b77209abdd))
+* **deps:** update go patch dependencies ([#393](https://github.com/nonchan7720/manifold/issues/393)) ([08c87d5](https://github.com/nonchan7720/manifold/commit/08c87d5c3400de579192ad899d07a0ec3d2d071c))
+* **deps:** update go patch dependencies ([#405](https://github.com/nonchan7720/manifold/issues/405)) ([aebfb75](https://github.com/nonchan7720/manifold/commit/aebfb7565381a4c87976f361609ec3d192881276))
+* **deps:** update go patch dependencies ([#413](https://github.com/nonchan7720/manifold/issues/413)) ([4a2e65d](https://github.com/nonchan7720/manifold/commit/4a2e65d3fa596177aa53d11f8e527567b86ae071))
+
+
+### Miscellaneous
+
+* **deps:** update amannn/action-semantic-pull-request action to v6.1.2 ([#404](https://github.com/nonchan7720/manifold/issues/404)) ([3f0fc67](https://github.com/nonchan7720/manifold/commit/3f0fc671e79d62efb5aff1a4a97e84c9b1e5a3c5))
+* **deps:** update jdx/mise-action action to v5.2.7 ([#411](https://github.com/nonchan7720/manifold/issues/411)) ([dfbcb0f](https://github.com/nonchan7720/manifold/commit/dfbcb0f1acda7776a2430ec2f66a5a598b234ee5))
+
 ## [1.26.2](https://github.com/nonchan7720/manifold/compare/v1.26.1...v1.26.2) (2026-11-11)
 
 
