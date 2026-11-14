@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.5](https://github.com/nonchan7720/manifold/compare/v1.23.4...v1.23.5) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** Go 1.27.4 と golang.org/x/net v0.62.0 へ更新する（v1.23 へのバックポート） ([#417](https://github.com/nonchan7720/manifold/issues/417)) ([3eb7fb8](https://github.com/nonchan7720/manifold/commit/3eb7fb8c66bcf221be90732c78b0a2b3516eb21b))
+
 ## [1.23.4](https://github.com/nonchan7720/manifold/compare/v1.23.3...v1.23.4) (2026-11-11)
 
 
