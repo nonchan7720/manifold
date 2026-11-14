@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"sort"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // envRef は設定ファイルの値の中の ${VAR} / ${VAR:-default}。
