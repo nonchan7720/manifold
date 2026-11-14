@@ -4,7 +4,7 @@ setup-envtest = "go:sigs.k8s.io/controller-runtime/tools/setup-envtest"
 runn = "aqua:k1LoW/runn"
 
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 golangci-lint = "2.15.0"
 setup-envtest = "0.25.2"
 runn = "1.11.1"
