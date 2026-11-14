@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-var Version = "1.22.1" // x-release-please-version
+var Version = "1.22.2" // x-release-please-version
 
 var (
 	MarkVersion = fmt.Sprintf("v%s", Version)
