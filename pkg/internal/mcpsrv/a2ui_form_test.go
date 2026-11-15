@@ -434,7 +434,9 @@ func TestBuildA2UIFields_GroupsLast(t *testing.T) {
 	require.Equal(t, []string{"name", "id", "status", "category"}, names(fields[1].children))
 
 	// 必須のグループの見出しは、太字の外に必須の印を置く。
-	comps := buildA2UIFormComponents(a2uiFormSpec{title: "t", submitTool: "t__submit", fields: fields})
+	comps := buildA2UIFormComponents(
+		a2uiFormSpec{title: "t", submitTool: "t__submit", fields: fields},
+	)
 	var texts []string
 	for _, c := range comps {
 		if text, ok := c.(map[string]any)["text"].(string); ok {
