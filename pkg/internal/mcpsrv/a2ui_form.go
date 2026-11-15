@@ -66,7 +66,13 @@ const (
 
 // a2uiField は入力スキーマの 1 プロパティに対応するフォームの項目。
 type a2uiField struct {
-	name        string
+	// name は入力スキーマのプロパティ名。
+	name string
+	// key はデータモデル上のキー。プロパティ名が英数字と "_" だけならそのまま、
+	// それ以外（"X-Request-Id" など）は置き換えた別名にする。Express 記法のデータ
+	// パス（$/input/...）に書ける文字がそれだけのため。送信時に name へ戻す
+	// （a2uiCoerceInput）。
+	key         string
 	label       string
 	description string
 	kind        a2uiFieldKind
@@ -195,6 +201,13 @@ func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiFie
 	}
 
 	fields := make([]*a2uiField, 0, len(order))
+	// そのまま使える名前を先に確保し、別名がそれらと重ならないようにする。
+	usedKeys := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		if a2uiSafeDataKey(name) == name {
+			usedKeys[name] = struct{}{}
+		}
+	}
 	for _, name := range order {
 		*budget--
 		if *budget < 0 {
@@ -204,7 +217,9 @@ func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiFie
 		if prop == nil {
 			prop = map[string]any{}
 		}
-		fields = append(fields, buildA2UIField(name, prop, required[name], depth, budget))
+		field := buildA2UIField(name, prop, required[name], depth, budget)
+		field.key = a2uiDataKey(name, usedKeys)
+		fields = append(fields, field)
 	}
 	return fields
 }
@@ -275,9 +290,45 @@ func truncateRunes(s string, limit int) string {
 	return string(runes[:limit]) + "…"
 }
 
-// jsonPointerToken は JSON Pointer（RFC 6901）の参照トークンをエスケープする。
-func jsonPointerToken(name string) string {
-	return strings.NewReplacer("~", "~0", "/", "~1").Replace(name)
+// a2uiSafeDataKey は name の英数字と "_" 以外を "_" に置き換える。数字だけの名前
+// （データパスでは配列の添字と解釈される）と空の名前には "_" を前置する。
+func a2uiSafeDataKey(name string) string {
+	var b strings.Builder
+	digitsOnly := true
+	for _, r := range name {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_':
+			b.WriteRune(r)
+			digitsOnly = false
+		default:
+			b.WriteByte('_')
+			digitsOnly = false
+		}
+	}
+	if digitsOnly {
+		return "_" + b.String()
+	}
+	return b.String()
+}
+
+// a2uiDataKey は name のデータモデル上のキーを返す。そのまま使える名前はそのまま、
+// それ以外は used（同じ階層で使用済みのキー）と重ならない別名にして used に記録する。
+func a2uiDataKey(name string, used map[string]struct{}) string {
+	base := a2uiSafeDataKey(name)
+	if base == name {
+		return name
+	}
+	key := base
+	for i := 2; ; i++ {
+		if _, taken := used[key]; !taken {
+			break
+		}
+		key = base + "_" + strconv.Itoa(i)
+	}
+	used[key] = struct{}{}
+	return key
 }
 
 // a2uiFormSpec はフォームのテンプレートを組み立てるための入力。
@@ -352,23 +403,6 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 	}
 }
 
-// buildA2UIInlineForm はフォーム全体（レイアウトと初期値）を 1 つの createSurface
-// メッセージにまとめて返す。リソースを取得できないホスト（エージェントの出力から
-// A2UI を拾うホスト）向けに、ツール結果だけでフォームを完結させる。
-func buildA2UIInlineForm(spec a2uiFormSpec, dataModel map[string]any) []any {
-	return []any{
-		map[string]any{
-			"version": a2uiProtocolVersion,
-			"createSurface": map[string]any{
-				"surfaceId":  spec.surfaceID,
-				"catalogId":  a2uiBasicCatalogID,
-				"components": buildA2UIFormComponents(spec),
-				"dataModel":  dataModel,
-			},
-		},
-	}
-}
-
 // buildA2UIFormComponents はフォームのコンポーネントの一覧を返す。
 func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 	b := &a2uiTemplateBuilder{}
@@ -380,7 +414,7 @@ func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 
 	arguments := map[string]any{}
 	for _, f := range spec.fields {
-		arguments[f.name] = a2uiPath(a2uiInputPath + "/" + jsonPointerToken(f.name))
+		arguments[f.name] = a2uiPath(a2uiInputPath + "/" + f.key)
 	}
 	// 送信ボタンは A2UI の action（イベント）を発火するだけで、API は呼ばない。
 	// イベント名を送信用ツールの名前に、context をその引数にしておくので、
@@ -414,7 +448,7 @@ func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 func (b *a2uiTemplateBuilder) fields(fields []*a2uiField, basePath string) []any {
 	var ids []any
 	for _, f := range fields {
-		path := basePath + "/" + jsonPointerToken(f.name)
+		path := basePath + "/" + f.key
 		label := f.label
 		if f.required {
 			label += " *"
@@ -600,7 +634,7 @@ func a2uiInitialValues(fields []*a2uiField, args map[string]any) map[string]any 
 		if !ok || v == nil {
 			v = f.schema["default"]
 		}
-		out[f.name] = f.initialValue(v)
+		out[f.key] = f.initialValue(v)
 	}
 	return out
 }
@@ -672,7 +706,7 @@ func scalarText(v any) string {
 // a2uiCoerceInput はフォームが送ってきた値を入力スキーマの型に直す。
 //
 // フォームでは数値もテキスト欄の文字列で、単一選択も文字列の配列で届く。空のままの
-// 任意項目は送らない。既に正しい型の値（フォームを介さない呼び出し）と、スキーマに
+// 任意項目は送らない。データモデルのキーが別名の項目は、プロパティ名に戻す。既に正しい型の値（フォームを介さない呼び出し）と、スキーマに
 // 無いキーはそのまま通す。
 func a2uiCoerceInput(fields []*a2uiField, in map[string]any) (map[string]any, error) {
 	return a2uiCoerceValues(fields, in, "")
@@ -686,7 +720,14 @@ func a2uiCoerceValues(
 		out = map[string]any{}
 	}
 	for _, f := range fields {
+		// フォームはデータモデルのキー（別名）で送ってくる。プロパティ名で届いた値
+		// （フォームを介さない呼び出し）を優先する。
 		v, ok := in[f.name]
+		if !ok && f.key != f.name {
+			if v, ok = in[f.key]; ok {
+				delete(out, f.key)
+			}
+		}
 		if !ok {
 			continue
 		}

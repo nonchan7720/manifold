@@ -671,11 +671,30 @@ mcpServers:
 
 #### エージェントの出力から A2UI を描画するホスト（`inline`）
 
-レイアウトは MCP のリソースなので、ホストがそれを読める必要があります。エージェントの後ろにある UI（たとえば Claude Agent SDK の上に載せた Web UI で、エージェントの出力に含まれる A2UI メッセージを描画するもの）は、リソースを読むための MCP 接続を自分では持ちません。その場合は `inline: true` にします（こうしたエージェントは `_meta.a2ui` を申告しないので、通常は `assumeSupport: true` と併用します）。
+レイアウトは MCP のリソースなので、ホストがそれを読める必要があります。エージェントの後ろにある UI は、リソースを読むための MCP 接続を自分では持ちません。典型的には、エージェントの出力を A2UI Agent SDK が解析し、見つけた `<a2ui>` ブロックを A2UI メッセージにコンパイルしてレンダラへ渡す構成の Web UI です。その場合は `inline: true` にします（こうしたエージェントは `_meta.a2ui` を申告しないので、通常は `assumeSupport: true` と併用します）。
 
-- `tools/call <tool>` はフォーム全体をテキストで返します。`components` と `dataModel` を含む 1 つの `createSurface` メッセージで、その前に「メッセージを変更せずに出力すること」「ユーザーが送信したら、action の context を引数に `<tool>__submit` を呼ぶこと」をエージェントに伝える文が付きます。
-- `surfaceId` にはランダムな接尾辞が付きます（`manifold-form-<tool>-XXXXXXXX`）。A2UI は既存の surface への `createSurface` を拒否し、同じツールのフォームが複数回表示されうるためです。
-- エージェントがフォームを出力に書き写すので、大きなスキーマでは出力トークンを消費し、写しの正確さもモデル次第です。メッセージの包み方（タグ、コードブロックなど）はホスト側の決まりなので、エージェント自身のシステムプロンプトで指示してください。
+このとき `tools/call <tool>` は、フォーム全体を [A2UI Express](https://a2ui.org/concepts/inference-formats/)（エージェントが `<a2ui>` タグの中に書く簡潔な記法）のテキストで返します。その前に「ブロックを変更せずに返答へ含めること」「ユーザーが送信したら、action の context を引数に `<tool>__submit` を呼ぶこと」をエージェントに伝える文が付きます。
+
+```
+<a2ui>
+surface("manifold-form-createOrder-K7Q2M9XA")
+$/input/body/priority = ["high"]
+$/input/body/quantity = "2"
+$/input/body/title = "desk"
+text_1 = Text(text="### createOrder")
+field_2 = TextField([?required($/input/body/title, "title is required")], label="title *", value=$/input/body/title)
+field_3 = TextField([?regex($/input/body/quantity, "^(-?[0-9]+)?$", "quantity must be an integer")], label="quantity", value=$/input/body/quantity, variant="number")
+field_4 = ChoicePicker(label="priority", options=[{label: "low", value: "low"}, {label: "high", value: "high"}], value=$/input/body/priority, variant="mutuallyExclusive")
+text_5 = Text(text="Submit")
+submit_6 = Button([?required($/input/body/title, "title is required")], action=Event("createOrder__submit", {body: $/input/body}), child=text_5, variant="primary")
+column_7 = Column(children=[text_1, field_2, field_3, field_4, submit_6])
+root = Card(child=column_7)
+</a2ui>
+```
+
+- エージェントはブロックを書き写すだけで、コンパイルはエージェント側の Agent SDK が行います。Express は同等の A2UI の JSON の 3 分の 1 程度の大きさですが、大きなスキーマではやはり出力トークンを消費し、写しの正確さもモデル次第です。
+- `surfaceId` にはランダムな接尾辞が付きます。A2UI は既存の surface への `createSurface` を拒否し、同じツールのフォームが複数回表示されうるためです。
+- エージェントのカタログは v1.0 の basic カタログである必要があります。ブロックはそのコンポーネント（`Card`・`Column`・`Text`・`TextField`・`ChoicePicker`・`CheckBox`・`DateTimeInput`・`Button`）とチェック（`required`・`length`・`regex`）を使います。
 
 フォームは LLM を使わず、ツールの入力スキーマから生成します。
 
@@ -696,6 +715,7 @@ mcpServers:
 
 - **確認の機会を与える仕組みで、確認を強制する仕組みではありません。** A2UI に対応しない呼び出し元は従来どおり `<tool>` を直接実行します。`<tool>__submit` も通常のツールで、ユーザーが本当にフォームを送信したかどうかを Manifold は判別できません。確認を強制したいホストは、受け取った送信の action と一致する呼び出しだけを通すよう、ホスト側（ツール呼び出しの許可フックなど）で `<tool>__submit` を絞ってください。書き込める相手を絞るには `authz` を使ってください。
 - **`assumeSupport: true` では、A2UI を描画できないホストは書き込み系ツールを呼んでも実行できなくなります。** 「フォームを表示した」という結果だけが返り、フォームは表示されません。A2UI を描画するホストだけが使うエンドポイントで設定してください。
+- フォームの値は surface のデータモデルの `/input` 以下に、プロパティ名をキーにして置きます。英数字と `_` 以外の文字を含む名前（`X-Request-Id` など）は別名（`X_Request_Id`）で置きます。A2UI Express のデータパスにそれらの文字を書けないためです。`<tool>__submit` はどちらのキーも受け付け、API には本来の名前で送ります。
 - 入力スキーマの項目が 200 を超えるツール、既に `_meta.ui` を持つツール、`<tool>__submit` という名前のツールが別にあるツールには、フォームを付けません。ぶら下げた `agents` のスキルにも付けません。
 - `a2ui` は OpenAPI モードのサーバー専用です。MCP バックエンドはバックエンド自身の UI を中継します（[MCP Apps](#mcp-appsapps) 参照）。
 
@@ -916,7 +936,7 @@ gateway:
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 | `a2ui.forms`    | bool              | 書き込み系ツールに A2UI の入力フォームを付け、フォームの送信時に API を呼ぶ。OpenAPI モードのみ（[書き込み系ツールの A2UI フォーム](#書き込み系ツールの-a2ui-フォームa2ui) 参照） |
 | `a2ui.assumeSupport` | bool         | リクエストごとに A2UI 対応を申告しない（`_meta.a2ui`）呼び出し元も対応とみなす |
-| `a2ui.inline`   | bool              | レイアウトをリソースで配信する代わりに、フォーム全体（レイアウトと初期値）をツール結果のテキストで返し、エージェントにそのまま出力させる |
+| `a2ui.inline`   | bool              | レイアウトをリソースで配信する代わりに、フォーム全体を A2UI Express の `<a2ui>` ブロックとしてツール結果で返し、エージェントにそのまま出力させる |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 

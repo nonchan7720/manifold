@@ -338,16 +338,18 @@ func TestA2UIFormToolFromURI(t *testing.T) {
 	}
 }
 
-// inlineA2UIMessages は a2ui.inline のツール結果のテキストから A2UI メッセージを取り出す。
-func inlineA2UIMessages(t *testing.T, res *mcp.CallToolResult) []map[string]any {
+// inlineA2UIBlock は a2ui.inline のツール結果のテキストから <a2ui> ブロックの中身を
+// 行ごとに取り出す。
+func inlineA2UIBlock(t *testing.T, res *mcp.CallToolResult) []string {
 	t.Helper()
 	require.Len(t, res.Content, 1)
 	text := res.Content[0].(*mcp.TextContent).Text
-	_, raw, found := strings.Cut(text, "\n\n")
+	_, rest, found := strings.Cut(text, "<a2ui>\n")
 	require.True(t, found)
-	var messages []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(raw), &messages))
-	return messages
+	block, tail, found := strings.Cut(rest, "\n</a2ui>")
+	require.True(t, found)
+	require.Empty(t, tail, "the block must end the text")
+	return strings.Split(block, "\n")
 }
 
 func TestA2UIForms_Inline(t *testing.T) {
@@ -371,43 +373,34 @@ func TestA2UIForms_Inline(t *testing.T) {
 	require.Contains(t, text, "NOT been sent")
 	require.Contains(t, text, "createorder__submit")
 
-	// フォーム全体（レイアウトと初期値）が 1 つの createSurface に入っている。
-	messages := inlineA2UIMessages(t, res)
-	require.Len(t, messages, 1)
-	require.Equal(t, "1.0", messages[0]["version"])
-	surface := messages[0]["createSurface"].(map[string]any)
-	require.Equal(t, a2uiBasicCatalogID, surface["catalogId"])
-	surfaceID := surface["surfaceId"].(string)
-	require.Regexp(t, `^manifold-form-createorder-[A-Z0-9]{8}$`, surfaceID)
-
-	var comps []map[string]any
-	var submit map[string]any
-	for _, c := range surface["components"].([]any) {
-		comp := c.(map[string]any)
-		comps = append(comps, comp)
-		if comp["component"] == "Button" {
-			submit = comp
+	// フォーム全体が A2UI Express の <a2ui> ブロックで返る。
+	lines := inlineA2UIBlock(t, res)
+	require.Regexp(t, `^surface\("manifold-form-createorder-[A-Z0-9]{8}"\)$`, lines[0])
+	require.Contains(t, lines, `$/input/body/title = "desk"`)
+	require.Contains(t, lines, `$/input/body/quantity = "2"`)
+	require.Contains(t, lines, `$/input/body/address/city = ""`)
+	require.Contains(t, lines, `$/input/body/urgent = false`)
+	require.Contains(t, lines[len(lines)-1], "root = Card(child=")
+	var submit string
+	for _, line := range lines {
+		if strings.Contains(line, " = Button(") {
+			submit = line
 		}
 	}
-	require.Equal(t, map[string]any{"@path": "/input/body/title"},
-		a2uiComponentByLabel(t, comps, "title *")["value"])
-	event := submit["action"].(map[string]any)["event"].(map[string]any)
-	require.Equal(t, "createorder__submit", event["name"])
-	require.Equal(t, map[string]any{"body": map[string]any{"@path": "/input/body"}},
-		event["context"])
-
-	body := surface["dataModel"].(map[string]any)["input"].(map[string]any)["body"].(map[string]any)
-	require.Equal(t, "desk", body["title"])
-	require.Equal(t, "2", body["quantity"])
+	// 送信ボタンは UI から MCP を呼ばず、イベントを発火するだけ。
+	require.Contains(t, submit, `action=Event("createorder__submit", {body: $/input/body})`)
 
 	// 同じツールのフォームをもう一度出しても、surfaceId は重ならない。
-	again := inlineA2UIMessages(t, call())[0]["createSurface"].(map[string]any)
-	require.NotEqual(t, surfaceID, again["surfaceId"])
+	require.NotEqual(t, lines[0], inlineA2UIBlock(t, call())[0])
 
-	// 送信イベントの context をそのまま引数にして実行できる。
+	// 送信イベントの context（データモデルの /input/body）をそのまま引数にして実行できる。
 	submitted, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      "createorder__submit",
-		Arguments: map[string]any{"body": body},
+		Name: "createorder__submit",
+		Arguments: map[string]any{"body": map[string]any{
+			"title": "desk", "quantity": "2", "price": "", "priority": []any{},
+			"urgent": false, "dueDate": "", "tags": []any{}, "extra": "",
+			"address": map[string]any{"city": "", "zip": ""},
+		}},
 	})
 	require.NoError(t, err)
 	require.False(t, submitted.IsError, "%v", submitted.Content)

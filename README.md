@@ -671,11 +671,30 @@ The form never calls MCP itself. Its submit button only raises an A2UI action (`
 
 #### Hosts that render A2UI from the agent's output (`inline`)
 
-The layout is an MCP resource, so the host has to be able to read it. A UI that sits behind an agent — for example a web UI on top of the Claude Agent SDK that renders the A2UI messages it finds in the agent's output — has no MCP connection of its own to read it with. For those, set `inline: true` (usually together with `assumeSupport: true`, since such an agent does not declare `_meta.a2ui`):
+The layout is an MCP resource, so the host has to be able to read it. A UI that sits behind an agent has no MCP connection of its own to read it with: typically a web UI on top of an agent whose output is parsed by the A2UI Agent SDK, which compiles the `<a2ui>` blocks it finds into A2UI messages for the renderer. For those, set `inline: true` (usually together with `assumeSupport: true`, since such an agent does not declare `_meta.a2ui`).
 
-- `tools/call <tool>` returns the whole form as text: a single `createSurface` message carrying `components` and `dataModel`, preceded by a note telling the agent to output the messages unchanged and to call `<tool>__submit` with the action's context once the user submits.
-- The `surfaceId` gets a random suffix (`manifold-form-<tool>-XXXXXXXX`), because A2UI rejects a `createSurface` for a surface that already exists and the same tool's form may be shown more than once.
-- The agent copies the form into its output, so a large schema costs output tokens and the copy is only as exact as the model makes it. How the agent wraps the messages (a tag, a code block, ...) is the host's convention; tell the agent in its own system prompt.
+`tools/call <tool>` then returns the whole form as text, in [A2UI Express](https://a2ui.org/concepts/inference-formats/) — the compact notation agents write inside `<a2ui>` tags — preceded by a note telling the agent to include the block in its reply unchanged and to call `<tool>__submit` with the action's context once the user submits:
+
+```
+<a2ui>
+surface("manifold-form-createOrder-K7Q2M9XA")
+$/input/body/priority = ["high"]
+$/input/body/quantity = "2"
+$/input/body/title = "desk"
+text_1 = Text(text="### createOrder")
+field_2 = TextField([?required($/input/body/title, "title is required")], label="title *", value=$/input/body/title)
+field_3 = TextField([?regex($/input/body/quantity, "^(-?[0-9]+)?$", "quantity must be an integer")], label="quantity", value=$/input/body/quantity, variant="number")
+field_4 = ChoicePicker(label="priority", options=[{label: "low", value: "low"}, {label: "high", value: "high"}], value=$/input/body/priority, variant="mutuallyExclusive")
+text_5 = Text(text="Submit")
+submit_6 = Button([?required($/input/body/title, "title is required")], action=Event("createOrder__submit", {body: $/input/body}), child=text_5, variant="primary")
+column_7 = Column(children=[text_1, field_2, field_3, field_4, submit_6])
+root = Card(child=column_7)
+</a2ui>
+```
+
+- The agent only has to copy the block; the Agent SDK on the agent side compiles it. Express is about a third the size of the equivalent A2UI JSON, but a large schema still costs output tokens, and the copy is only as exact as the model makes it.
+- The `surfaceId` gets a random suffix, because A2UI rejects a `createSurface` for a surface that already exists and the same tool's form may be shown more than once.
+- The agent's catalog must be the v1.0 basic catalog: the block uses its components (`Card`, `Column`, `Text`, `TextField`, `ChoicePicker`, `CheckBox`, `DateTimeInput`, `Button`) and checks (`required`, `length`, `regex`).
 
 The form is generated from the tool's input schema, with no LLM involved:
 
@@ -696,6 +715,7 @@ Things to know before turning it on:
 
 - **It offers a review step; it does not enforce one.** A caller that does not support A2UI calls `<tool>` directly, as before, and `<tool>__submit` is an ordinary tool: Manifold cannot tell whether the user really submitted the form. A host that wants to enforce the review has to gate `<tool>__submit` itself, letting through only calls that match a submit action it received (for example in its tool-permission hook). Use `authz` to restrict who may write.
 - **With `assumeSupport: true`, a host that cannot render A2UI can no longer run write tools** by calling them: it gets the "form shown" result and no form. Only set it on endpoints whose hosts render A2UI.
+- Form values live in the surface's data model under `/input`, keyed by property name. A name with characters other than letters, digits and `_` (such as `X-Request-Id`) is stored under an alias (`X_Request_Id`), because A2UI Express data paths cannot contain them; `<tool>__submit` accepts either and sends the API the real name.
 - A tool is left without a form when its input schema has more than 200 fields, when it already has a `_meta.ui`, or when another tool is already named `<tool>__submit`. Skills of attached `agents` never get one.
 - `a2ui` is only for OpenAPI-mode servers. MCP backends relay their own UI (see [MCP Apps](#mcp-apps-apps)).
 
@@ -916,7 +936,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 | `a2ui.forms`    | bool              | Give write tools an A2UI input form; the API is called when the form is submitted. OpenAPI mode only (see [A2UI forms for write tools](#a2ui-forms-for-write-tools-a2ui)) |
 | `a2ui.assumeSupport` | bool         | Treat callers that don't declare A2UI support per request (`_meta.a2ui`) as supporting it |
-| `a2ui.inline`   | bool              | Return the whole form (layout and initial values) as text in the tool result, for the agent to output as is, instead of serving the layout as a resource |
+| `a2ui.inline`   | bool              | Return the whole form as an A2UI Express `<a2ui>` block in the tool result, for the agent to output as is, instead of serving the layout as a resource |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 

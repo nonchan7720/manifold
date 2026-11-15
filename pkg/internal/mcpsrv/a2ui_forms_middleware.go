@@ -358,8 +358,9 @@ func (m *a2uiFormsMiddleware) formResult(
 	return completeRelayedResult(req, res)
 }
 
-// inlineFormResult は a2ui.inline のときの formResult。フォーム全体を 1 つの
-// createSurface にまとめ、エージェントがそのまま出力できるようテキストで返す。
+// inlineFormResult は a2ui.inline のときの formResult。フォーム全体を A2UI Express の
+// <a2ui> ブロックにして、エージェントがそのまま出力できるようテキストで返す。
+// エージェント側の A2UI Agent SDK がそれを A2UI メッセージにコンパイルする。
 //
 // surfaceId は呼び出しごとに変える。A2UI は既存の surfaceId での createSurface を
 // エラーにするので、同じツールのフォームを 2 回出せるようにするため。
@@ -371,22 +372,22 @@ func (m *a2uiFormsMiddleware) inlineFormResult(
 	args map[string]any,
 ) (mcp.Result, error) {
 	submitTool := tool.Name + a2uiSubmitSuffix
-	messages, err := json.Marshal(buildA2UIInlineForm(
+	block, err := buildA2UIExpressForm(
 		m.formSpec(tool, fields, a2uiSurfacePrefix+tool.Name+"-"+rand.Text()[:8]),
 		a2uiInitialData(fields, args),
-	))
+	)
 	if err != nil {
-		return nil, fmt.Errorf("marshal a2ui form: %w", err)
+		return nil, fmt.Errorf("build a2ui express form: %w", err)
 	}
 	slog.InfoContext(ctx, "a2ui form returned instead of calling the tool",
 		slog.String("server", m.server), slog.String("tool", tool.Name))
 	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
-		"The %s request has NOT been sent yet. Show the user the form below by "+
-			"outputting these A2UI v1.0 messages exactly as they are, without "+
-			"changing them. When the user submits the form you receive an action "+
-			"named %s: call the %s tool with that action's context as the arguments, "+
-			"unchanged. Do not call %s before that.\n\n%s",
-		tool.Name, submitTool, submitTool, submitTool, messages)}}}
+		"The %s request has NOT been sent yet. Show the user the form by including "+
+			"the <a2ui> block below in your reply exactly as it is, without changing "+
+			"it. When the user submits the form you receive an action named %s: call "+
+			"the %s tool with that action's context as the arguments, unchanged. "+
+			"Do not call %s before that.\n\n%s",
+		tool.Name, submitTool, submitTool, submitTool, block)}}}
 	return completeRelayedResult(req, res)
 }
 

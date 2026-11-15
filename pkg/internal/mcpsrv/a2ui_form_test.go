@@ -145,8 +145,8 @@ func TestBuildA2UIFormTemplate(t *testing.T) {
 	require.Nil(t, due["enableTime"])
 	require.Equal(t, "longText", a2uiComponentByLabel(t, comps, "extra (JSON)")["variant"])
 	require.Equal(t, "obscured", a2uiComponentByLabel(t, comps, "secret")["variant"])
-	// JSON Pointer の予約文字はエスケープする。
-	require.Equal(t, map[string]any{"@path": "/input/body/a~1b~0c"},
+	// データパスに書けない文字を含むプロパティ名は、別名のキーに束縛する。
+	require.Equal(t, map[string]any{"@path": "/input/body/a_b_c"},
 		a2uiComponentByLabel(t, comps, "a/b~c")["value"])
 
 	var submit map[string]any
@@ -261,7 +261,7 @@ func TestA2UIInitialData(t *testing.T) {
 		"dueDate":  "",
 		"tags":     []any{"gift"},
 		"extra":    "{\n  \"k\": \"v\"\n}",
-		"a/b~c":    "",
+		"a_b_c":    "",
 		"secret":   "",
 		"any":      "",
 	}, input["body"])
@@ -348,4 +348,55 @@ func TestA2UICoerceInput(t *testing.T) {
 			"body":    map[string]any{"title": ""},
 		}, out)
 	})
+}
+
+func TestA2UIDataKey(t *testing.T) {
+	fields, ok := buildA2UIFields(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"X-Request-Id": map[string]any{"type": "string"},
+			"X_Request_Id": map[string]any{"type": "string"},
+			"X.Request.Id": map[string]any{"type": "string"},
+			"plain":        map[string]any{"type": "string"},
+			"123":          map[string]any{"type": "integer"},
+			"":             map[string]any{"type": "string"},
+		},
+	})
+	require.True(t, ok)
+	keys := map[string]string{}
+	seen := map[string]bool{}
+	for _, f := range fields {
+		keys[f.name] = f.key
+		require.False(t, seen[f.key], "duplicate key %q", f.key)
+		seen[f.key] = true
+		require.Regexp(t, `^[A-Za-z0-9_]+$`, f.key)
+	}
+	// そのまま使える名前は変えず、別名はそれと重ならないようにする。
+	require.Equal(t, "plain", keys["plain"])
+	require.Equal(t, "X_Request_Id", keys["X_Request_Id"])
+	require.Equal(t, "X_Request_Id_2", keys["X-Request-Id"])
+	require.Equal(t, "X_Request_Id_3", keys["X.Request.Id"])
+	// 数字だけの名前は、データパスで配列の添字と読まれないようにする。
+	require.Equal(t, "_123", keys["123"])
+	require.Equal(t, "_", keys[""])
+
+	// フォームは別名のキーで送ってくる。送信時にプロパティ名へ戻す。
+	out, err := a2uiCoerceInput(fields, map[string]any{
+		"X_Request_Id_2": "req-1",
+		"X_Request_Id":   "real",
+		"_123":           "7",
+		"plain":          "p",
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{
+		"X-Request-Id": "req-1",
+		"X_Request_Id": "real",
+		"123":          int64(7),
+		"plain":        "p",
+	}, out)
+
+	// プロパティ名で届いた値はそのまま通す。
+	out, err = a2uiCoerceInput(fields, map[string]any{"X-Request-Id": "req-2"})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"X-Request-Id": "req-2"}, out)
 }
