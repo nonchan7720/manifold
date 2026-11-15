@@ -54,15 +54,20 @@ func TestBuildA2UIExpressForm(t *testing.T) {
 			`?regex($/input/body/title, "^[a-z]+$", "title has an invalid format")], ` +
 			`label="title *", value=$/input/body/title)`,
 		// 正規表現のバックスラッシュはエスケープする。
-		`field_12 = TextField([?regex($/input/body/price, ` +
+		`field_11 = TextField([?regex($/input/body/price, ` +
 			`"^(-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?)?$", "price must be a number")], ` +
 			`label="price", value=$/input/body/price, variant="number")`,
-		`field_13 = ChoicePicker(label="priority", ` +
+		`field_12 = ChoicePicker(label="priority", ` +
 			`options=[{label: "low", value: "low"}, {label: "high", value: "high"}], ` +
 			`value=$/input/body/priority, variant="mutuallyExclusive")`,
 		`field_10 = DateTimeInput(enableDate=true, label="dueDate", value=$/input/body/dueDate)`,
-		`field_16 = CheckBox(label="urgent", value=$/input/body/urgent)`,
-		`root = Card(child=column_19)`,
+		`field_15 = CheckBox(label="urgent", value=$/input/body/urgent)`,
+		// 自由形式のオブジェクトは key と value の行。
+		`$/input/body/extra = [{key: "", value: ""}, {key: "", value: ""}, {key: "", value: ""}]`,
+		`text_16 = Text(text="**extra**")`,
+		`field_18 = TextField(label="key", value=$/input/body/extra/0/key)`,
+		`field_19 = TextField(label="value", value=$/input/body/extra/0/value)`,
+		`root = Card(child=column_28)`,
 	} {
 		require.Contains(t, lines, want)
 	}
@@ -74,12 +79,12 @@ func TestBuildA2UIExpressForm(t *testing.T) {
 		}
 	}
 	// 送信ボタンはイベントを発火する。未入力の必須項目があれば押せない。
-	require.Equal(t, `submit_18 = Button([`+
+	require.Equal(t, `submit_27 = Button([`+
 		`?required($/input/orderId, "orderId is required"), `+
 		`?required($/input/body/title, "title is required"), `+
 		`?required($/input/body/quantity, "quantity is required")], `+
 		`action=Event("createorder__submit", {body: $/input/body, orderId: $/input/orderId}), `+
-		`child=text_17, variant="primary")`, submit)
+		`child=text_26, variant="primary")`, submit)
 
 	// 各コンポーネントは 1 行で、変数名は識別子。
 	for _, line := range lines[2 : len(lines)-1] {
@@ -135,6 +140,6 @@ func TestExpressValue_Unsupported(t *testing.T) {
 		"condition": map[string]any{"@call": "email", "args": map[string]any{}},
 	})
 	require.Error(t, err)
-	_, err = expressComponent("not a component")
+	_, err = expressComponent("not a component", nil)
 	require.Error(t, err)
 }

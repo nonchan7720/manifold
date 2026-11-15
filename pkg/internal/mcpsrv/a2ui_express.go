@@ -60,7 +60,7 @@ func buildA2UIExpressForm(spec a2uiFormSpec, dataModel map[string]any) (string, 
 		lines = append(lines, "$"+leaf.path+" = "+value)
 	}
 	for _, c := range buildA2UIFormComponents(spec) {
-		line, err := expressComponent(c)
+		line, err := expressComponent(c, spec.vocab)
 		if err != nil {
 			return "", err
 		}
@@ -90,7 +90,7 @@ func expressDataLeaves(v any, path string) []expressDataLeaf {
 }
 
 // expressComponent は 1 つのコンポーネントを `id = Component(...)` の行にする。
-func expressComponent(component any) (string, error) {
+func expressComponent(component any, vocab *a2uiVocabulary) (string, error) {
 	c, ok := component.(map[string]any)
 	if !ok {
 		return "", fmt.Errorf("a2ui express: component is not an object")
@@ -116,8 +116,9 @@ func expressComponent(component any) (string, error) {
 		if prop == "id" || prop == "component" || prop == "@checks" {
 			continue
 		}
-		// child / children は他のコンポーネントの ID（変数名）への参照。
-		value, err := expressValue(c[prop], prop == "child" || prop == "children")
+		// 子の部品を指すプロパティ（basic カタログなら child / children）の値は、他の
+		// コンポーネントの ID（変数名）への参照。
+		value, err := expressValue(c[prop], vocab.isRef(name, prop))
 		if err != nil {
 			return "", err
 		}

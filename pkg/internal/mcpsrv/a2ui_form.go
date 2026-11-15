@@ -97,6 +97,9 @@ type a2uiField struct {
 	// 持つオブジェクト（a2uiFieldGroup）。要素の中の項目は必須として扱わない
 	// （空の行は「要素なし」を表すので、必須チェックで送信を止めない）。
 	item *a2uiField
+	// asMap は、配列（a2uiFieldList）の形で入力させる自由形式のオブジェクトかどうか。
+	// 行は key と value の組で、送信時にオブジェクトへ戻す。
+	asMap bool
 	// slots は配列の入力欄の行数。basic カタログにはデータモデルの配列へ行を足す
 	// 関数が無いので、行は固定数を並べる。空のままの行は送信時に取り除く。
 	slots int
@@ -248,8 +251,10 @@ func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiFie
 // isSection は f が見出しの下に複数の項目を並べるもの（オブジェクト、オブジェクトの
 // 配列）かを返す。
 func (f *a2uiField) isSection() bool {
-	return f.kind == a2uiFieldGroup ||
-		(f.kind == a2uiFieldList && f.item != nil && f.item.kind == a2uiFieldGroup)
+	if f.kind == a2uiFieldList && f.item != nil {
+		return f.item.kind == a2uiFieldGroup || f.item.kind == a2uiFieldList
+	}
+	return f.kind == a2uiFieldGroup
 }
 
 func boolToInt(b bool) int {
@@ -270,6 +275,12 @@ func buildA2UIField(
 		f.description = truncateRunes(strings.TrimSpace(desc), maxA2UIFormTextRunes)
 	}
 	typ := schemaType(prop)
+	if typ == "" {
+		// oneOf / anyOf は、1 つに決まる型か、オブジェクトどうしをまとめた型として扱う。
+		if resolved, ok := resolveA2UIUnion(prop); ok {
+			return buildA2UIField(name, resolved, required, depth, budget)
+		}
+	}
 	switch typ {
 	case "boolean":
 		f.kind = a2uiFieldBool
@@ -296,13 +307,17 @@ func buildA2UIField(
 		f.setArrayKind(prop, depth, budget)
 	case "object":
 		f.kind, f.typed = a2uiFieldJSON, true
-		if props, _ := prop["properties"].(map[string]any); len(props) > 0 &&
-			depth < maxA2UIFormDepth {
+		if depth >= maxA2UIFormDepth {
+			break
+		}
+		if props, _ := prop["properties"].(map[string]any); len(props) > 0 {
 			f.kind = a2uiFieldGroup
 			f.children = buildA2UIChildren(prop, depth+1, budget)
+		} else {
+			f.setMapKind(prop, depth, budget)
 		}
 	default:
-		// type が無い・複数ある・oneOf などは、値をそのまま書けるテキスト欄にする。
+		// type が無い・複数ある項目は、値をそのまま書けるテキスト欄にする。
 		if options, ok := stringEnum(prop); ok {
 			f.kind, f.options = a2uiFieldChoice, options
 		} else {
@@ -317,7 +332,7 @@ func buildA2UIField(
 func (f *a2uiField) setArrayKind(prop map[string]any, depth int, budget *int) {
 	f.kind, f.typed = a2uiFieldJSON, true
 	items, ok := asSchemaObject(prop["items"])
-	if !ok {
+	if !ok || depth >= maxA2UIFormDepth {
 		return
 	}
 	if options, ok := stringEnum(items); ok && schemaType(items) == "string" {
@@ -331,17 +346,110 @@ func (f *a2uiField) setArrayKind(prop map[string]any, depth int, budget *int) {
 	}
 }
 
+// setMapKind は properties を持たない自由形式のオブジェクトを、key と value の組を
+// 行ごとに入力する形にする。value の型は additionalProperties がスカラーならそれに
+// 従い、それ以外は型を決めないテキスト（数値や true / false はその型で送る）。
+func (f *a2uiField) setMapKind(prop map[string]any, depth int, budget *int) {
+	value := &a2uiField{
+		name:   "value",
+		label:  "value",
+		kind:   a2uiFieldJSON,
+		schema: map[string]any{},
+	}
+	if ap, ok := asSchemaObject(prop["additionalProperties"]); ok {
+		typed := buildA2UIField("value", ap, false, depth+1, budget)
+		switch typed.kind {
+		case a2uiFieldText, a2uiFieldInteger, a2uiFieldNumber, a2uiFieldChoice,
+			a2uiFieldDate, a2uiFieldDateTime:
+			typed.label = "value"
+			value = typed
+		case a2uiFieldBool, a2uiFieldMultiChoice, a2uiFieldJSON, a2uiFieldGroup, a2uiFieldList:
+		}
+	}
+	value.key = "value"
+	key := &a2uiField{
+		name:   "key",
+		key:    "key",
+		label:  "key",
+		kind:   a2uiFieldText,
+		schema: map[string]any{},
+	}
+	f.kind, f.typed, f.asMap = a2uiFieldList, false, true
+	f.item = &a2uiField{
+		kind:     a2uiFieldGroup,
+		schema:   map[string]any{},
+		children: []*a2uiField{key, value},
+	}
+	f.slots = a2uiListDefaultSlots
+	*budget -= f.slots * 2
+}
+
+// resolveA2UIUnion は oneOf / anyOf を 1 つのスキーマに直す。null 以外の選択肢が
+// 1 つならそれを、すべて properties を持つオブジェクトなら項目をまとめたオブジェクト
+// （どれも必須にしない）を返す。それ以外（型の違うスカラーの組など）は false。
+func resolveA2UIUnion(prop map[string]any) (map[string]any, bool) {
+	var variants []map[string]any
+	for _, key := range []string{"oneOf", "anyOf"} {
+		list, _ := prop[key].([]any)
+		for _, raw := range list {
+			variant, ok := asSchemaObject(raw)
+			if !ok || variant["type"] == "null" {
+				continue
+			}
+			variants = append(variants, variant)
+		}
+	}
+	if len(variants) == 0 {
+		return nil, false
+	}
+	resolved := map[string]any{}
+	if len(variants) == 1 {
+		maps.Copy(resolved, variants[0])
+	} else {
+		properties := map[string]any{}
+		for _, variant := range variants {
+			props, _ := variant["properties"].(map[string]any)
+			if schemaType(variant) != "object" || len(props) == 0 {
+				return nil, false
+			}
+			for name, schema := range props {
+				if _, exists := properties[name]; !exists {
+					properties[name] = schema
+				}
+			}
+		}
+		resolved["type"], resolved["properties"] = "object", properties
+	}
+	// 説明と表題は、外側（選択肢を束ねる側）のものを優先する。
+	for _, key := range []string{"title", "description", "default"} {
+		if v, ok := prop[key]; ok {
+			resolved[key] = v
+		}
+	}
+	// 選択肢がさらに oneOf / anyOf だけを持つ場合の無限再帰を避ける。
+	if schemaType(resolved) == "" {
+		delete(resolved, "oneOf")
+		delete(resolved, "anyOf")
+	}
+	return resolved, true
+}
+
 // buildA2UIListItem は配列の要素 1 つぶんの項目を返す。要素がスカラー（文字列・
-// 数値・単一選択・日付）か、properties を持つオブジェクトのときだけ入力欄にできる。
-// それ以外（配列の配列、自由形式のオブジェクトなど）は nil。
+// 数値・単一選択・日付・型を決めないテキスト）、properties を持つオブジェクト、
+// 配列、自由形式のオブジェクトのときに入力欄にできる。それ以外は nil。
 func buildA2UIListItem(items map[string]any, depth int, budget *int) *a2uiField {
 	item := buildA2UIField("", items, false, depth+1, budget)
 	switch item.kind {
 	case a2uiFieldText, a2uiFieldInteger, a2uiFieldNumber, a2uiFieldChoice,
-		a2uiFieldDate, a2uiFieldDateTime, a2uiFieldGroup:
+		a2uiFieldDate, a2uiFieldDateTime, a2uiFieldGroup, a2uiFieldList:
 		clearA2UIRequired(item)
 		return item
-	case a2uiFieldBool, a2uiFieldMultiChoice, a2uiFieldJSON, a2uiFieldList:
+	case a2uiFieldJSON:
+		if !item.typed {
+			clearA2UIRequired(item)
+			return item
+		}
+	case a2uiFieldBool, a2uiFieldMultiChoice:
 	}
 	return nil
 }
@@ -366,6 +474,11 @@ func a2uiSizeLists(fields []*a2uiField, args map[string]any) {
 		case map[string]any:
 			if f.kind == a2uiFieldGroup {
 				a2uiSizeLists(f.children, v)
+			} else if f.kind == a2uiFieldList && f.asMap {
+				f.slots = min(
+					max(a2uiListDefaultSlots, len(v)+a2uiListSpareSlots),
+					a2uiListMaxSlots,
+				)
 			}
 		case []any:
 			if f.kind == a2uiFieldList {
@@ -435,6 +548,8 @@ type a2uiFormSpec struct {
 	// submitTool は送信用ツールの名前。送信ボタンが発火するイベントの名前になる。
 	submitTool string
 	fields     []*a2uiField
+	// vocab はエージェントのカタログに合わせた部品の語彙。nil は basic カタログ。
+	vocab *a2uiVocabulary
 }
 
 // a2uiTemplateBuilder はテンプレートのコンポーネントを貯める。コンポーネント ID は
@@ -486,7 +601,7 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 			"version": a2uiProtocolVersion,
 			"createSurface": map[string]any{
 				"surfaceId": spec.surfaceID,
-				"catalogId": a2uiBasicCatalogID,
+				"catalogId": spec.vocab.id(),
 			},
 		},
 		map[string]any{
@@ -537,7 +652,9 @@ func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 		"id": b.newID("column"), "component": "Column", "children": children,
 	})
 	b.add(map[string]any{"id": "root", "component": "Card", "child": column})
-	return b.components
+	// ここまでは basic カタログの語彙。エージェントのカタログの部品名・プロパティ名に
+	// 書き換える。
+	return spec.vocab.translate(b.components)
 }
 
 // fields は項目のコンポーネントを追加し、親の Column に並べる ID を返す。
@@ -575,11 +692,11 @@ func (b *a2uiTemplateBuilder) fields(fields []*a2uiField, basePath string) []any
 }
 
 // list は配列の入力欄を slots 行ぶん追加する。要素がオブジェクトなら行ごとに見出しを
-// 付けて子の項目を並べ、スカラーなら行ごとに 1 つの入力欄を置く。値は配列の添字の
-// パス（.../photoUrls/0）に束縛する。
+// 付けて子の項目を並べ、配列ならその入力欄を入れ子にし、スカラーなら行ごとに 1 つの
+// 入力欄を置く。値は配列の添字のパス（.../photoUrls/0）に束縛する。
 func (b *a2uiTemplateBuilder) list(f *a2uiField, path string) []any {
 	var ids []any
-	if f.item.kind == a2uiFieldGroup {
+	if f.isSection() {
 		heading := "**" + f.label + "**"
 		if f.required {
 			heading += " *"
@@ -591,20 +708,27 @@ func (b *a2uiTemplateBuilder) list(f *a2uiField, path string) []any {
 	}
 	for i := range f.slots {
 		itemPath := path + "/" + strconv.Itoa(i)
-		if f.item.kind == a2uiFieldGroup {
-			ids = append(ids, b.text(fmt.Sprintf("%s #%d", f.label, i+1), "caption"))
+		row := fmt.Sprintf("%s #%d", f.label, i+1)
+		switch f.item.kind {
+		case a2uiFieldGroup:
+			ids = append(ids, b.text(row, "caption"))
 			ids = append(ids, b.fields(f.item.children, itemPath)...)
-			continue
+		case a2uiFieldList:
+			nested := *f.item
+			nested.label, nested.description = row, ""
+			ids = append(ids, b.list(&nested, itemPath)...)
+		case a2uiFieldText, a2uiFieldInteger, a2uiFieldNumber, a2uiFieldBool, a2uiFieldChoice,
+			a2uiFieldMultiChoice, a2uiFieldDate, a2uiFieldDateTime, a2uiFieldJSON:
+			// 必須の配列は、最初の行だけ必須にする（1 つ以上の要素が要る）。
+			item := *f.item
+			item.label = f.label
+			item.required = f.required && i == 0
+			label := fmt.Sprintf("%s %d", f.label, i+1)
+			if item.required {
+				label += " *"
+			}
+			ids = append(ids, b.add(b.input(&item, label, itemPath)))
 		}
-		// 必須の配列は、最初の行だけ必須にする（1 つ以上の要素が要る）。
-		item := *f.item
-		item.label = f.label
-		item.required = f.required && i == 0
-		label := fmt.Sprintf("%s %d", f.label, i+1)
-		if item.required {
-			label += " *"
-		}
-		ids = append(ids, b.add(b.input(&item, label, itemPath)))
 	}
 	return ids
 }
@@ -656,8 +780,10 @@ func (b *a2uiTemplateBuilder) input(f *a2uiField, label, path string) map[string
 		))
 	case a2uiFieldJSON:
 		c["component"] = "TextField"
-		c["variant"] = "longText"
+		// 型を決めない項目は普通のテキスト欄。JSON を書かせるのは、深すぎる入れ子など
+		// 入力欄に展開できなかったものだけ。
 		if f.typed {
+			c["variant"] = "longText"
 			c["label"] = label + " (JSON)"
 		}
 	case a2uiFieldText, a2uiFieldGroup, a2uiFieldList:
@@ -785,22 +911,15 @@ func (f *a2uiField) initialValue(v any) any {
 		child, _ := v.(map[string]any)
 		return a2uiInitialValues(f.children, child)
 	case a2uiFieldList:
-		// 行数ぶんの要素を用意する（束縛先の添字が未定義にならないように）。行数を
-		// 超える要素も落とさずに持つ。
-		list, _ := v.([]any)
-		out := make([]any, 0, max(f.slots, len(list)))
-		for i := range max(f.slots, len(list)) {
-			var element any
-			if i < len(list) {
-				element = list[i]
-			}
-			out = append(out, f.item.initialValue(element))
-		}
-		return out
+		return f.initialList(v)
 	case a2uiFieldBool:
 		b, _ := v.(bool)
 		return b
 	case a2uiFieldChoice:
+		// 真偽値を true / false の選択で表している場合（a2uiVocabulary.adapt）。
+		if b, ok := v.(bool); ok {
+			return []any{strconv.FormatBool(b)}
+		}
 		if s, ok := v.(string); ok && s != "" {
 			return []any{s}
 		}
@@ -833,6 +952,27 @@ func (f *a2uiField) initialValue(v any) any {
 		return scalarText(v)
 	}
 	return scalarText(v)
+}
+
+// initialList は配列の初期値を返す。行数ぶんの要素を用意し（束縛先の添字が未定義に
+// ならないように）、行数を超える要素も落とさずに持つ。
+func (f *a2uiField) initialList(v any) []any {
+	list, _ := v.([]any)
+	if object, ok := v.(map[string]any); ok && f.asMap {
+		// オブジェクトを key と value の行に直す（キーの昇順）。
+		for _, key := range slices.Sorted(maps.Keys(object)) {
+			list = append(list, map[string]any{"key": key, "value": object[key]})
+		}
+	}
+	out := make([]any, 0, max(f.slots, len(list)))
+	for i := range max(f.slots, len(list)) {
+		var element any
+		if i < len(list) {
+			element = list[i]
+		}
+		out = append(out, f.item.initialValue(element))
+	}
+	return out
 }
 
 // scalarText はテキスト欄に入れる文字列を返す。
@@ -910,7 +1050,8 @@ func (f *a2uiField) coerce(v any, path string) (_ any, keep bool, _ error) {
 	case a2uiFieldInteger, a2uiFieldNumber:
 		return f.coerceNumber(v, path)
 	case a2uiFieldChoice:
-		return f.coerceChoice(v)
+		value, keep := f.coerceChoice(v)
+		return f.boolFromText(value), keep, nil
 	case a2uiFieldMultiChoice:
 		if list, ok := v.([]any); ok {
 			return list, len(list) > 0 || f.required, nil
@@ -920,11 +1061,25 @@ func (f *a2uiField) coerce(v any, path string) (_ any, keep bool, _ error) {
 	case a2uiFieldText, a2uiFieldDate, a2uiFieldDateTime:
 		// 空のままの任意項目は送らない。必須項目の空文字は API 側に判断させる。
 		if s, ok := v.(string); ok {
-			return s, s != "" || f.required, nil
+			return f.boolFromText(s), s != "" || f.required, nil
 		}
 	case a2uiFieldBool:
 	}
 	return v, true, nil
+}
+
+// boolFromText は、真偽値の項目をテキストや選択で入力させた場合（カタログに
+// チェックボックスが無いとき）の "true" / "false" を真偽値に戻す。
+func (f *a2uiField) boolFromText(v any) any {
+	if schemaType(f.schema) != "boolean" {
+		return v
+	}
+	if s, ok := v.(string); ok {
+		if b, err := strconv.ParseBool(strings.TrimSpace(s)); err == nil {
+			return b
+		}
+	}
+	return v
 }
 
 func (f *a2uiField) coerceGroup(v any, path string) (any, bool, error) {
@@ -941,8 +1096,22 @@ func (f *a2uiField) coerceGroup(v any, path string) (any, bool, error) {
 
 // coerceList は配列の各要素を直し、空のままの行（要素）を取り除く。
 func (f *a2uiField) coerceList(v any, path string) (any, bool, error) {
+	if text, isText := v.(string); isText {
+		// フォームを介さない呼び出しが JSON の文字列で渡してきた場合。空なら送らない。
+		if strings.TrimSpace(text) == "" {
+			return nil, false, nil
+		}
+		var parsed any
+		dec := json.NewDecoder(strings.NewReader(text))
+		dec.UseNumber()
+		if err := dec.Decode(&parsed); err != nil || dec.More() {
+			return nil, false, fmt.Errorf("%s: must be valid JSON", path)
+		}
+		v = parsed
+	}
 	list, ok := v.([]any)
 	if !ok {
+		// 既にオブジェクトで届いた自由形式のオブジェクトなどは、そのまま通す。
 		return v, true, nil
 	}
 	out := make([]any, 0, len(list))
@@ -956,7 +1125,28 @@ func (f *a2uiField) coerceList(v any, path string) (any, bool, error) {
 		}
 		out = append(out, coerced)
 	}
+	if f.asMap {
+		return f.rowsToObject(out)
+	}
 	return out, len(out) > 0 || f.required, nil
+}
+
+// rowsToObject は key と value の行をオブジェクトに戻す。key が空の行は捨てる。
+func (f *a2uiField) rowsToObject(rows []any) (any, bool, error) {
+	object := make(map[string]any, len(rows))
+	for _, row := range rows {
+		entry, _ := row.(map[string]any)
+		key, _ := entry["key"].(string)
+		if key == "" {
+			continue
+		}
+		value, ok := entry["value"]
+		if !ok {
+			value = ""
+		}
+		object[key] = value
+	}
+	return object, len(object) > 0 || f.required, nil
 }
 
 // a2uiBlankValue は v が何も入力されていない要素かを返す。チェックボックスは未操作でも
@@ -1002,17 +1192,17 @@ func (f *a2uiField) coerceNumber(v any, path string) (any, bool, error) {
 }
 
 // coerceChoice は単一選択の値（ChoicePicker は文字列の配列で持つ）を 1 つの値に直す。
-func (f *a2uiField) coerceChoice(v any) (any, bool, error) {
+func (f *a2uiField) coerceChoice(v any) (any, bool) {
 	switch s := v.(type) {
 	case []any:
 		if len(s) == 0 {
-			return nil, false, nil
+			return nil, false
 		}
-		return s[0], true, nil
+		return s[0], true
 	case string:
-		return s, s != "" || f.required, nil
+		return s, s != "" || f.required
 	}
-	return v, true, nil
+	return v, true
 }
 
 // coerceJSON はテキスト欄に書かれた JSON を値に直す。空なら送らない。

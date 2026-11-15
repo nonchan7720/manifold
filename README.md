@@ -669,6 +669,47 @@ The form never calls MCP itself. Its submit button only raises an A2UI action (`
 }
 ```
 
+#### Using the agent's catalog (`catalog`)
+
+An A2UI catalog (`catalog.json`) defines which components exist and what their properties are called, and it belongs to the agent and its renderer. By default the form uses the v1.0 basic catalog. An agent with its own catalog cannot compile or render that, so point `catalog` at the agent's catalog and Manifold writes the form in its vocabulary:
+
+```yaml
+mcpServers:
+  petstore:
+    a2ui:
+      forms: true
+      catalog: ./acme-catalog.json
+      components:
+        TextField:
+          component: Input             # the catalog's component for this role
+          properties:                  # role property -> the component's property
+            label: title
+            value: text
+            variant: mode
+        Button:
+          component: Action
+          properties: {label: caption, action: onPress}
+```
+
+The form is built from eight roles, named after the basic catalog's components:
+
+| Role | Properties | Used for | If the catalog has none |
+| ---- | ---------- | -------- | ----------------------- |
+| `Text` | `text`, `variant` | title, descriptions, headings | startup fails |
+| `Column` | `children` | the vertical layout | startup fails |
+| `TextField` | `label`, `value`, `variant` | text and number inputs | startup fails |
+| `Button` | `action`, `child` or `label`, `variant` | the submit button | startup fails |
+| `Card` | `child` | the frame around the form | the layout itself is the root |
+| `CheckBox` | `label`, `value` | booleans | a `true` / `false` choice, or a text input |
+| `ChoicePicker` | `value`, `options`, `label`, `variant` | enums | a text input; a multiple choice becomes rows of text inputs |
+| `DateTimeInput` | `value`, `label`, `enableDate`, `enableTime` | dates | a text input |
+
+- A role needs no entry when the catalog has a component of the same name with the same property names.
+- `Button` takes its label either as a child component (`child`, as in the basic catalog) or as a string property (`label`).
+- An optional property the component lacks is left out, and so is a value its `enum` does not list (a `variant` the catalog does not know, for example). A check (`required`, `regex`, `length`) is written only when the catalog defines that function.
+- The catalog is read once at startup. A catalog that cannot be read, a component or property named in `components` that the catalog does not have, or a required role with no usable component fails startup, so a form that cannot be compiled is never served.
+- With `catalog` set, a caller declaring `_meta.a2ui` is treated as supporting A2UI when it lists this catalog's `catalogId`.
+
 #### Hosts that render A2UI from the agent's output (`inline`)
 
 The layout is an MCP resource, so the host has to be able to read it. A UI that sits behind an agent has no MCP connection of its own to read it with: typically a web UI on top of an agent whose output is parsed by the A2UI Agent SDK, which compiles the `<a2ui>` blocks it finds into A2UI messages for the renderer. For those, set `inline: true` (usually together with `assumeSupport: true`, since such an agent does not declare `_meta.a2ui`).
@@ -694,7 +735,7 @@ root = Card(child=column_7)
 
 - The agent only has to copy the block; the Agent SDK on the agent side compiles it. Express is about a third the size of the equivalent A2UI JSON, but a large schema still costs output tokens, and the copy is only as exact as the model makes it.
 - The `surfaceId` gets a random suffix, because A2UI rejects a `createSurface` for a surface that already exists and the same tool's form may be shown more than once.
-- The agent's catalog must be the v1.0 basic catalog: the block uses its components (`Card`, `Column`, `Text`, `TextField`, `ChoicePicker`, `CheckBox`, `DateTimeInput`, `Button`) and checks (`required`, `length`, `regex`).
+- The block uses the components of the catalog Manifold is configured with: the v1.0 basic catalog by default, or the agent's own (see [Using the agent's catalog](#using-the-agents-catalog-catalog)). The agent's A2UI SDK must compile with that same catalog.
 
 The form is generated from the tool's input schema, with no LLM involved:
 
@@ -707,14 +748,18 @@ The form is generated from the tool's input schema, with no LLM involved:
 | `boolean` | `CheckBox` |
 | `string` with `format: date` / `date-time` | `DateTimeInput` |
 | object with `properties` | its fields, nested up to 4 levels |
-| array of `string` / `integer` / `number` / object with `properties` | one row of inputs per element, bound to the element's index (`/input/tags/0/name`) |
-| anything else (free-form objects without `properties`, arrays of arrays, `oneOf`, ...) | `TextField` (`longText`) holding JSON |
+| array | one row of inputs per element, bound to the element's index (`/input/tags/0/name`); arrays of arrays nest |
+| free-form object (no `properties`) | rows of `key` and `value` inputs, turned back into an object on submit; `additionalProperties` types the values |
+| `oneOf` / `anyOf` | the one non-null alternative, or, when every alternative is an object, the fields of all of them (none required) |
+| no single type (alternatives of different scalar types, ...) | `TextField`; a number or `true` / `false` is sent as that type |
 
-The basic catalog has no function that adds an element to a list in the data model, so an array gets a fixed number of rows: 3, or the elements the model passed plus 2 empty rows (at most 20). Rows left empty are dropped when the form is submitted, and fields inside an array element are never marked required, so an unused row does not block the submit.
+Nothing is left as a JSON text area except what is nested deeper than 4 levels.
+
+The basic catalog has no function that adds an element to a list in the data model, so an array (or a free-form object) gets a fixed number of rows: 3, or the elements the model passed plus 2 empty rows (at most 20). Rows left empty are dropped when the form is submitted, and fields inside an array element are never marked required, so an unused row does not block the submit.
 
 A2UI Express and the A2UI JSON carry the same form. The JSON follows the current v1.0 specification, which names a component's checks `@checks`; renderers released before that rename (`@a2ui/web_core` 0.15) read `checks`. This only matters for the default delivery: with `inline: true` the agent's own A2UI SDK compiles the block and picks the key its renderer reads.
 
-A caller supports A2UI when its request declares the basic catalog (`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`) in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`. Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
+A caller supports A2UI when its request declares the form's catalog (the basic catalog, `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`, unless `catalog` is set) in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`. Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
 
 Things to know before turning it on:
 
@@ -942,6 +987,8 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `a2ui.forms`    | bool              | Give write tools an A2UI input form; the API is called when the form is submitted. OpenAPI mode only (see [A2UI forms for write tools](#a2ui-forms-for-write-tools-a2ui)) |
 | `a2ui.assumeSupport` | bool         | Treat callers that don't declare A2UI support per request (`_meta.a2ui`) as supporting it |
 | `a2ui.inline`   | bool              | Return the whole form as an A2UI Express `<a2ui>` block in the tool result, for the agent to output as is, instead of serving the layout as a resource |
+| `a2ui.catalog`  | string            | Path to the agent's A2UI catalog (`catalog.json`); the form is written with its components. Default: the v1.0 basic catalog |
+| `a2ui.components` | map[string]object | Per role (`Text`, `Column`, `Card`, `Button`, `TextField`, `CheckBox`, `ChoicePicker`, `DateTimeInput`): `component`, the catalog's component, and `properties`, role property → component property. Requires `catalog` |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 

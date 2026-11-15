@@ -669,6 +669,47 @@ mcpServers:
 }
 ```
 
+#### エージェントのカタログを使う（`catalog`）
+
+A2UI のカタログ（`catalog.json`）は、どの部品があり、そのプロパティが何という名前かを決めます。カタログはエージェントとそのレンダラの持ち物です。既定ではフォームは v1.0 の basic カタログを使いますが、独自のカタログを持つエージェントはそれをコンパイルも描画もできません。`catalog` にエージェントのカタログを指定すると、Manifold はその語彙でフォームを書きます。
+
+```yaml
+mcpServers:
+  petstore:
+    a2ui:
+      forms: true
+      catalog: ./acme-catalog.json
+      components:
+        TextField:
+          component: Input             # この役割に使うカタログの部品
+          properties:                  # 役割のプロパティ -> 部品のプロパティ
+            label: title
+            value: text
+            variant: mode
+        Button:
+          component: Action
+          properties: {label: caption, action: onPress}
+```
+
+フォームは 8 つの役割で組み立てます。役割の名前は basic カタログの部品名です。
+
+| 役割 | プロパティ | 用途 | カタログに無い場合 |
+| ---- | ---------- | ---- | ------------------ |
+| `Text` | `text`, `variant` | 表題・説明・見出し | 起動に失敗する |
+| `Column` | `children` | 縦の並び | 起動に失敗する |
+| `TextField` | `label`, `value`, `variant` | 文字列・数値の入力 | 起動に失敗する |
+| `Button` | `action`, `child` か `label`, `variant` | 送信ボタン | 起動に失敗する |
+| `Card` | `child` | フォームの枠 | 縦の並びそのものを root にする |
+| `CheckBox` | `label`, `value` | 真偽値 | `true` / `false` の選択、またはテキスト欄 |
+| `ChoicePicker` | `value`, `options`, `label`, `variant` | enum | テキスト欄。複数選択は行ごとのテキスト欄 |
+| `DateTimeInput` | `value`, `label`, `enableDate`, `enableTime` | 日付 | テキスト欄 |
+
+- カタログに同じ名前の部品があり、プロパティ名も同じ役割は、指定しなくて構いません。
+- `Button` のラベルは、子の部品（`child`。basic カタログの形）か、文字列のプロパティ（`label`）のどちらかで渡します。
+- 部品に無い任意のプロパティは書きません。`enum` に無い値（カタログが知らない `variant` など）も書きません。チェック（`required`・`regex`・`length`）は、カタログがその関数を定義しているときだけ書きます。
+- カタログは起動時に 1 度読みます。カタログを読めない場合、`components` で名指しした部品やプロパティがカタログに無い場合、必須の役割に使える部品が無い場合は、起動に失敗します。コンパイルできないフォームを返すことはありません。
+- `catalog` を指定した場合、`_meta.a2ui` を申告する呼び出し元は、このカタログの `catalogId` を挙げているときに A2UI 対応とみなします。
+
 #### エージェントの出力から A2UI を描画するホスト（`inline`）
 
 レイアウトは MCP のリソースなので、ホストがそれを読める必要があります。エージェントの後ろにある UI は、リソースを読むための MCP 接続を自分では持ちません。典型的には、エージェントの出力を A2UI Agent SDK が解析し、見つけた `<a2ui>` ブロックを A2UI メッセージにコンパイルしてレンダラへ渡す構成の Web UI です。その場合は `inline: true` にします（こうしたエージェントは `_meta.a2ui` を申告しないので、通常は `assumeSupport: true` と併用します）。
@@ -694,7 +735,7 @@ root = Card(child=column_7)
 
 - エージェントはブロックを書き写すだけで、コンパイルはエージェント側の Agent SDK が行います。Express は同等の A2UI の JSON の 3 分の 1 程度の大きさですが、大きなスキーマではやはり出力トークンを消費し、写しの正確さもモデル次第です。
 - `surfaceId` にはランダムな接尾辞が付きます。A2UI は既存の surface への `createSurface` を拒否し、同じツールのフォームが複数回表示されうるためです。
-- エージェントのカタログは v1.0 の basic カタログである必要があります。ブロックはそのコンポーネント（`Card`・`Column`・`Text`・`TextField`・`ChoicePicker`・`CheckBox`・`DateTimeInput`・`Button`）とチェック（`required`・`length`・`regex`）を使います。
+- ブロックは、Manifold に設定したカタログの部品を使います。既定は v1.0 の basic カタログ、指定すればエージェント自身のカタログです（[エージェントのカタログを使う](#エージェントのカタログを使うcatalog) 参照）。エージェントの A2UI SDK は、同じカタログでコンパイルする必要があります。
 
 フォームは LLM を使わず、ツールの入力スキーマから生成します。
 
@@ -707,14 +748,18 @@ root = Card(child=column_7)
 | `boolean` | `CheckBox` |
 | `format: date` / `date-time` の `string` | `DateTimeInput` |
 | `properties` を持つオブジェクト | その項目（4 階層まで入れ子で展開） |
-| `string` / `integer` / `number` / `properties` を持つオブジェクトの配列 | 要素ごとに 1 行の入力欄。要素の添字に束縛する（`/input/tags/0/name`） |
-| それ以外（`properties` の無い自由形式のオブジェクト、配列の配列、`oneOf` など） | JSON を書く `TextField`（`longText`） |
+| 配列 | 要素ごとに 1 行の入力欄。要素の添字に束縛する（`/input/tags/0/name`）。配列の配列は入れ子にする |
+| 自由形式のオブジェクト（`properties` 無し） | `key` と `value` の入力欄の行。送信時にオブジェクトへ戻す。値の型は `additionalProperties` に従う |
+| `oneOf` / `anyOf` | null 以外の選択肢が 1 つならその型。すべてオブジェクトなら、全選択肢の項目（どれも必須にしない） |
+| 型が 1 つに決まらないもの（型の違うスカラーの選択肢など） | `TextField`。数値や `true` / `false` はその型で送る |
 
-basic カタログには、データモデルのリストへ要素を足す関数がありません。そのため配列の行数は固定で、3 行、またはモデルが渡した要素の数 + 空の 2 行（最大 20 行）です。空のままの行はフォームの送信時に取り除きます。配列の要素の中の項目は必須にしないので、使わない行が送信を妨げることはありません。
+JSON のテキスト欄になるのは、4 階層より深い入れ子だけです。
+
+basic カタログには、データモデルのリストへ要素を足す関数がありません。そのため配列（と自由形式のオブジェクト）の行数は固定で、3 行、またはモデルが渡した要素の数 + 空の 2 行（最大 20 行）です。空のままの行はフォームの送信時に取り除きます。配列の要素の中の項目は必須にしないので、使わない行が送信を妨げることはありません。
 
 A2UI Express と A2UI の JSON は同じフォームを表します。JSON は現行の v1.0 仕様に従い、コンポーネントのチェックを `@checks` という名前で書きます。この改名より前に公開されたレンダラ（`@a2ui/web_core` 0.15）は `checks` を読みます。影響するのは既定の配信だけです。`inline: true` では、エージェント自身の A2UI SDK がブロックをコンパイルし、レンダラが読むキーを選びます。
 
-呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に basic カタログ（`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
+呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に、フォームのカタログ（`catalog` を指定しなければ basic カタログ `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
 
 有効にする前に知っておくこと:
 
@@ -942,6 +987,8 @@ gateway:
 | `a2ui.forms`    | bool              | 書き込み系ツールに A2UI の入力フォームを付け、フォームの送信時に API を呼ぶ。OpenAPI モードのみ（[書き込み系ツールの A2UI フォーム](#書き込み系ツールの-a2ui-フォームa2ui) 参照） |
 | `a2ui.assumeSupport` | bool         | リクエストごとに A2UI 対応を申告しない（`_meta.a2ui`）呼び出し元も対応とみなす |
 | `a2ui.inline`   | bool              | レイアウトをリソースで配信する代わりに、フォーム全体を A2UI Express の `<a2ui>` ブロックとしてツール結果で返し、エージェントにそのまま出力させる |
+| `a2ui.catalog`  | string            | エージェントの A2UI カタログ（`catalog.json`）へのパス。フォームをその部品で書く。既定は v1.0 の basic カタログ |
+| `a2ui.components` | map[string]object | 役割（`Text`・`Column`・`Card`・`Button`・`TextField`・`CheckBox`・`ChoicePicker`・`DateTimeInput`）ごとの指定。`component` はカタログの部品、`properties` は役割のプロパティ → 部品のプロパティ。`catalog` が必要 |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 

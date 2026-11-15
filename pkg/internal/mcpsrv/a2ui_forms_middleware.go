@@ -89,20 +89,26 @@ func a2uiFormUIMeta(tool string) map[string]any {
 // メソッド（と x-mcp.annotations）から annotations が付くので、それが読み取り専用で
 // ないものを対象にする。annotations の無いツール（エージェントのスキル等）と、
 // 既に UI を持つツールは対象にしない。
-func a2uiFormTarget(tool *mcp.Tool) ([]*a2uiField, bool) {
+func a2uiFormTarget(tool *mcp.Tool, vocab *a2uiVocabulary) ([]*a2uiField, bool) {
 	if tool == nil || tool.Annotations == nil || tool.Annotations.ReadOnlyHint {
 		return nil, false
 	}
 	if _, hasUI := tool.Meta[mcpAppsMetaKey]; hasUI {
 		return nil, false
 	}
-	return buildA2UIFields(tool.InputSchema)
+	fields, ok := buildA2UIFields(tool.InputSchema)
+	if !ok {
+		return nil, false
+	}
+	// エージェントのカタログに無い種類の入力欄を、ある部品で表せるものに置き換える。
+	vocab.adapt(fields)
+	return fields, true
 }
 
 // callerDeclaredA2UI は meta（リクエストの _meta）の a2ui から、呼び出し元が
 // このフォームを描画できるかを返す。declared は申告があったかどうか。
-// 描画には v1.0 の basic カタログが要る。
-func callerDeclaredA2UI(meta mcp.Meta) (supported, declared bool) {
+// 描画には、フォームが使うカタログ（catalogID）が要る。
+func callerDeclaredA2UI(meta mcp.Meta, catalogID string) (supported, declared bool) {
 	raw, ok := meta[a2uiMetaKey]
 	if !ok {
 		return false, false
@@ -111,7 +117,7 @@ func callerDeclaredA2UI(meta mcp.Meta) (supported, declared bool) {
 	caps, _ := decl["rendererCapabilities"].(map[string]any)
 	v1, _ := caps[a2uiProtocolVersion].(map[string]any)
 	ids, _ := v1["supportedCatalogIds"].([]any)
-	return slices.Contains(ids, any(a2uiBasicCatalogID)), true
+	return slices.Contains(ids, any(catalogID)), true
 }
 
 // a2uiRequestMeta は tools/list・tools/call のリクエストの _meta を返す。
@@ -138,31 +144,41 @@ type a2uiFormsMiddleware struct {
 	assumeSupport bool
 	// inline はフォーム全体をツール結果のテキストに載せるか（a2ui.inline）。
 	inline bool
+	// vocab はエージェントのカタログに合わせた部品の語彙（a2ui.catalog）。nil は
+	// basic カタログ。
+	vocab *a2uiVocabulary
 }
 
 // newA2UIFormsMiddleware は書き込み系ツールの A2UI フォームを配信するミドルウェアを
 // 返す。cfg.A2UI.Forms が有効な OpenAPI モードのサーバーに、他のミドルウェアより
 // 外側へ追加する。
-func newA2UIFormsMiddleware(name string, cfg *config.Server) mcp.Middleware {
-	m := &a2uiFormsMiddleware{
-		server:        name,
-		assumeSupport: cfg != nil && cfg.A2UI != nil && cfg.A2UI.AssumeSupport,
-		inline:        cfg != nil && cfg.A2UI != nil && cfg.A2UI.Inline,
+func newA2UIFormsMiddleware(name string, cfg *config.Server) (mcp.Middleware, error) {
+	m := &a2uiFormsMiddleware{server: name}
+	if cfg != nil && cfg.A2UI != nil {
+		m.assumeSupport, m.inline = cfg.A2UI.AssumeSupport, cfg.A2UI.Inline
+		vocab, err := loadA2UIVocabulary(cfg.A2UI)
+		if err != nil {
+			return nil, err
+		}
+		m.vocab = vocab
 	}
-	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			switch method {
-			case authzMethodToolsList:
-				return m.listTools(ctx, next, req)
-			case authzMethodToolsCall:
-				return m.callTool(ctx, next, req)
-			case authzMethodResourcesList:
-				return m.listResources(ctx, next, req)
-			case authzMethodResourcesRead:
-				return m.readResource(ctx, next, req)
-			default:
-				return next(ctx, method, req)
-			}
+	return m.handle, nil
+}
+
+// handle は a2uiFormsMiddleware のミドルウェア本体。
+func (m *a2uiFormsMiddleware) handle(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		switch method {
+		case authzMethodToolsList:
+			return m.listTools(ctx, next, req)
+		case authzMethodToolsCall:
+			return m.callTool(ctx, next, req)
+		case authzMethodResourcesList:
+			return m.listResources(ctx, next, req)
+		case authzMethodResourcesRead:
+			return m.readResource(ctx, next, req)
+		default:
+			return next(ctx, method, req)
 		}
 	}
 }
@@ -170,7 +186,7 @@ func newA2UIFormsMiddleware(name string, cfg *config.Server) mcp.Middleware {
 // supports は req の呼び出し元を A2UI 対応とみなすかを返す。リクエストの申告を
 // 優先し、申告が無ければ a2ui.assumeSupport に従う。
 func (m *a2uiFormsMiddleware) supports(req mcp.Request) bool {
-	if supported, declared := callerDeclaredA2UI(a2uiRequestMeta(req)); declared {
+	if supported, declared := callerDeclaredA2UI(a2uiRequestMeta(req), m.vocab.id()); declared {
 		return supported
 	}
 	return m.assumeSupport
@@ -196,7 +212,7 @@ func (m *a2uiFormsMiddleware) listTools(
 	// 内側（SDK やキャッシュ）が保持している結果を書き換えないよう、複製して足す。
 	tools := make([]*mcp.Tool, 0, len(list.Tools))
 	for _, tool := range list.Tools {
-		if _, target := a2uiFormTarget(tool); !target {
+		if _, target := a2uiFormTarget(tool, m.vocab); !target {
 			tools = append(tools, tool)
 			continue
 		}
@@ -273,7 +289,7 @@ func (m *a2uiFormsMiddleware) callTool(
 
 	if tool, exists := tools[name]; exists {
 		// 実在するツール。名前が __submit で終わっていても、そのツール自身が優先。
-		fields, target := a2uiFormTarget(tool)
+		fields, target := a2uiFormTarget(tool, m.vocab)
 		if !target || !m.supports(req) {
 			return next(ctx, authzMethodToolsCall, req)
 		}
@@ -282,7 +298,7 @@ func (m *a2uiFormsMiddleware) callTool(
 	if !isSubmit {
 		return next(ctx, authzMethodToolsCall, req)
 	}
-	fields, target := a2uiFormTarget(tools[base])
+	fields, target := a2uiFormTarget(tools[base], m.vocab)
 	if !target {
 		return next(ctx, authzMethodToolsCall, req)
 	}
@@ -403,6 +419,7 @@ func (m *a2uiFormsMiddleware) formSpec(
 	}
 	return a2uiFormSpec{
 		surfaceID:   surfaceID,
+		vocab:       m.vocab,
 		title:       title,
 		description: truncateRunes(strings.TrimSpace(tool.Description), maxA2UIFormTextRunes),
 		submitTool:  tool.Name + a2uiSubmitSuffix,
@@ -446,7 +463,7 @@ func (m *a2uiFormsMiddleware) listResources(
 ) (mcp.Result, error) {
 	res := &mcp.ListResourcesResult{Resources: []*mcp.Resource{}}
 	err := walkServiceTools(ctx, next, req, "", func(tool *mcp.Tool) bool {
-		if _, target := a2uiFormTarget(tool); target {
+		if _, target := a2uiFormTarget(tool, m.vocab); target {
 			res.Resources = append(res.Resources, &mcp.Resource{
 				URI:         a2uiFormURI(tool.Name),
 				Name:        tool.Name + " form",
@@ -479,7 +496,7 @@ func (m *a2uiFormsMiddleware) readResource(
 		return nil, err
 	}
 	tool := tools[name]
-	fields, target := a2uiFormTarget(tool)
+	fields, target := a2uiFormTarget(tool, m.vocab)
 	if !target {
 		return nil, mcp.ResourceNotFoundError(params.URI)
 	}
