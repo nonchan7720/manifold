@@ -1,0 +1,28 @@
+{
+  "name": "a2ui-forms",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Web UI + Claude Agent SDK + Manifold: write tools of an OpenAPI backend get an A2UI input form the user reviews and submits",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx server/main.ts",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@a2ui/agent": "0.1.0",
+    "@a2ui/lit": "0.15.0",
+    "@a2ui/markdown-it": "0.2.2",
+    "@a2ui/web_core": "0.15.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.325",
+    "lit": "3.3.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "8.2.2"
+  }
+}

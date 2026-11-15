@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manifold A2UI forms</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 0 auto;
+        max-width: 720px;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 1.1rem;
+      }
+      #log {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding-bottom: 96px;
+      }
+      .entry {
+        border-radius: 8px;
+        padding: 8px 12px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .entry.user {
+        align-self: flex-end;
+        background: color-mix(in srgb, CanvasText 12%, Canvas);
+      }
+      .entry.assistant {
+        align-self: flex-start;
+        border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas);
+      }
+      .entry.tool {
+        font: 0.8rem ui-monospace, monospace;
+        opacity: 0.7;
+        padding: 0 12px;
+      }
+      .entry.error {
+        border: 1px solid #c33;
+        color: #c33;
+      }
+      .entry.surface {
+        padding: 0;
+        white-space: normal;
+      }
+      .entry.surface[inert] {
+        opacity: 0.6;
+      }
+      #composer {
+        background: Canvas;
+        bottom: 0;
+        display: flex;
+        gap: 8px;
+        left: 0;
+        margin: 0 auto;
+        max-width: 720px;
+        padding: 16px;
+        position: fixed;
+        right: 0;
+      }
+      #message {
+        flex: 1;
+        font: inherit;
+        padding: 8px;
+      }
+      #composer button {
+        font: inherit;
+        padding: 8px 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Manifold A2UI forms: Petstore</h1>
+    <div id="log"></div>
+    <form id="composer">
+      <input id="message" autocomplete="off" placeholder="e.g. Add a dog named Rex" />
+      <button type="submit">Send</button>
+    </form>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

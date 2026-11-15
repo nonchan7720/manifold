@@ -11,6 +11,7 @@ Ready-to-run configuration examples for Manifold. Each directory contains a `con
 | [`a2a-agent/`](a2a-agent/) | Expose an A2A (Agent2Agent) agent's skills as MCP tools |
 | [`oauth2-backend/`](oauth2-backend/) | Expose an OAuth-protected REST API (Google Calendar) as MCP tools |
 | [`opa/`](opa/) | Authorize `tools/call` / `tools/list` per caller group with an OPA sidecar |
+| [`a2ui-forms/`](a2ui-forms/) | Web UI + Claude Agent SDK + Manifold: write tools get an [A2UI](https://a2ui.org/) input form the user reviews and submits |
 
 ## Prerequisites
 

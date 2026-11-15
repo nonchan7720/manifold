@@ -1,0 +1,20 @@
+gateway:
+  port: 9999
+  # Generate with: openssl rand -base64 32
+  encryptKey: ${ENCRYPT_KEY}
+
+mcpServers:
+  petstore:
+    description: Swagger Petstore sample API
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    baseURL: https://petstore3.swagger.io/api/v3
+    a2ui:
+      # Give write tools (POST / PUT / DELETE ...) an input form.
+      forms: true
+      # The agent does not declare A2UI support per request; treat it as supporting it.
+      assumeSupport: true
+      # Return the form as an A2UI Express <a2ui> block for the agent to output.
+      inline: true
+
+sqlite:
+  path: ./tmp/manifold.db
