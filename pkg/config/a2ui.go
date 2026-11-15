@@ -9,8 +9,9 @@ package config
 type A2UIConfig struct {
 	// Forms は書き込み系のツール（POST / PUT / PATCH / DELETE など、読み取り専用で
 	// ないツール）に入力フォームを付けるかどうか。有効にすると、A2UI 対応の
-	// 呼び出し元がそのツールを呼んだとき、API は実行せずにフォームを返し、
-	// ユーザーがフォームを送信した時点（<tool>__submit）で実行する。
+	// 呼び出し元がそのツールを呼んだとき、API は実行せずにフォームを返す。フォームの
+	// 送信ボタンは A2UI の action を発火するだけで、それを受けたエージェント側が
+	// <tool>__submit を呼んだ時点で実行する。
 	Forms bool `mapstructure:"forms"`
 
 	// AssumeSupport は、リクエストの _meta.a2ui で A2UI 対応を申告しない呼び出し元も

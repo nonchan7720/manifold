@@ -650,8 +650,23 @@ A write tool is one that is not read-only: by default every operation other than
 
 - **`tools/list`** adds `_meta.ui` (`resourceUri: a2ui://form/<tool>`, `mimeType: application/a2ui+json`) to each write tool and lists a `<tool>__submit` tool next to it.
 - **`tools/call <tool>`** does **not** call the API. It returns an `updateDataModel` message carrying the given arguments (as an embedded resource for the user, kept out of the model's context) and a text telling the model the request has not been sent yet.
-- **`tools/call <tool>__submit`** is what the form's submit button calls (`callMcpTool`). Manifold converts the form values back to the types of the input schema (numbers typed as text, single choices sent as lists, empty optional fields dropped) and runs `<tool>`. `authz`, `guardrail`, the audit log and metrics see it as `<tool>`.
+- **`tools/call <tool>__submit`** runs the tool. Manifold converts the form values back to the types of the input schema (numbers typed as text, single choices sent as lists, empty optional fields dropped) and runs `<tool>`. `authz`, `guardrail`, the audit log and metrics see it as `<tool>`.
 - **`resources/list` / `resources/read`** serve the form template (`createSurface` + `updateComponents`) of each write tool the caller is allowed to list. The endpoint advertises the `resources` capability.
+
+The form never calls MCP itself. Its submit button only raises an A2UI action (`action.event`) whose `name` is `<tool>__submit` and whose `context` is the tool's arguments, bound to the form values. The agent side — the host that renders the form — receives that action and makes the `tools/call`, so the UI needs no MCP connection or credentials of its own, and the result goes back to the agent:
+
+```json
+{
+  "version": "1.0",
+  "action": {
+    "name": "createOrder__submit",
+    "surfaceId": "manifold-form-createOrder",
+    "sourceComponentId": "submit_12",
+    "timestamp": "2026-03-20T12:00:00Z",
+    "context": { "body": { "title": "desk", "quantity": "2", "priority": ["high"] } }
+  }
+}
+```
 
 The form is generated from the tool's input schema, with no LLM involved:
 
@@ -666,11 +681,11 @@ The form is generated from the tool's input schema, with no LLM involved:
 | object with `properties` | its fields, nested up to 4 levels |
 | anything else (free-form objects, other arrays, `oneOf`, ...) | `TextField` (`longText`) holding JSON |
 
-A caller supports A2UI when its request declares, in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`, both the basic catalog (`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`) and the MCP catalog (`https://a2ui.org/specification/v1_0/catalogs/mcp/catalog.json`, which defines `callMcpTool`). Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
+A caller supports A2UI when its request declares the basic catalog (`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`) in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`. Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
 
 Things to know before turning it on:
 
-- **It offers a review step; it does not enforce one.** A caller that does not support A2UI calls `<tool>` directly, as before, and `<tool>__submit` is an ordinary tool: `_meta.ui.visibility: ["app"]` asks hosts to hide it from the model, nothing more. Use `authz` to restrict who may write.
+- **It offers a review step; it does not enforce one.** A caller that does not support A2UI calls `<tool>` directly, as before, and `<tool>__submit` is an ordinary tool: Manifold cannot tell whether the user really submitted the form. A host that wants to enforce the review has to gate `<tool>__submit` itself, letting through only calls that match a submit action it received (for example in its tool-permission hook). Use `authz` to restrict who may write.
 - **With `assumeSupport: true`, a host that cannot render A2UI can no longer run write tools** by calling them: it gets the "form shown" result and no form. Only set it on endpoints whose hosts render A2UI.
 - A tool is left without a form when its input schema has more than 200 fields, when it already has a `_meta.ui`, or when another tool is already named `<tool>__submit`. Skills of attached `agents` never get one.
 - `a2ui` is only for OpenAPI-mode servers. MCP backends relay their own UI (see [MCP Apps](#mcp-apps-apps)).

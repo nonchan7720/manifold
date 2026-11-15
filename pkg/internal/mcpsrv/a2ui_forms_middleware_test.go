@@ -99,7 +99,7 @@ func TestA2UIForms_DisabledByDefault(t *testing.T) {
 
 	// 申告があっても、設定が無ければ何も変えない。
 	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{
-		Meta: a2uiDeclaredMeta(a2uiBasicCatalogID, a2uiMCPCatalogID),
+		Meta: a2uiDeclaredMeta(a2uiBasicCatalogID),
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"createorder", "deleteorder", "getorder"}, sortedToolNames(listed))
@@ -131,9 +131,9 @@ func TestA2UIForms_CallerWithoutA2UIIsUnchanged(t *testing.T) {
 	require.Equal(t, []string{"createorder", "deleteorder", "getorder"}, sortedToolNames(listed))
 	require.Empty(t, toolByName(listed.Tools, "createorder").Meta)
 
-	// 申告していても、必要なカタログ（mcp）が無ければ非対応として扱う。
+	// 申告していても、必要なカタログ（basic）が無ければ非対応として扱う。
 	listed, err = session.ListTools(t.Context(), &mcp.ListToolsParams{
-		Meta: a2uiDeclaredMeta(a2uiBasicCatalogID),
+		Meta: a2uiDeclaredMeta("https://example.com/catalogs/custom.json"),
 	})
 	require.NoError(t, err)
 	require.Len(t, listed.Tools, 3)
@@ -151,7 +151,7 @@ func TestA2UIForms_CallerWithoutA2UIIsUnchanged(t *testing.T) {
 
 func TestA2UIForms_DeclaredCaller(t *testing.T) {
 	session, api := newA2UIFormsSession(t, &config.A2UIConfig{Forms: true})
-	meta := a2uiDeclaredMeta(a2uiBasicCatalogID, a2uiMCPCatalogID)
+	meta := a2uiDeclaredMeta(a2uiBasicCatalogID)
 
 	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{Meta: meta})
 	require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestA2UIForms_DeclaredCaller(t *testing.T) {
 		"mimeType":    "application/a2ui+json",
 	}, create.Meta["ui"])
 	submit := toolByName(listed.Tools, "createorder__submit")
-	require.Equal(t, map[string]any{"visibility": []any{"app"}}, submit.Meta["ui"])
+	require.Empty(t, submit.Meta)
 	require.Equal(t, create.InputSchema, submit.InputSchema)
 	require.NotNil(t, submit.Annotations)
 	require.False(t, submit.Annotations.ReadOnlyHint)

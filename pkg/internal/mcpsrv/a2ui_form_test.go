@@ -156,17 +156,18 @@ func TestBuildA2UIFormTemplate(t *testing.T) {
 		}
 	}
 	require.NotNil(t, submit)
-	call := submit["action"].(map[string]any)["functionCall"].(map[string]any)
-	require.Equal(t, "callMcpTool", call["@call"])
-	require.Equal(t, a2uiMCPCatalogID, call["catalogId"])
-	args := call["args"].(map[string]any)
-	require.Equal(t, "createorder__submit", args["name"])
-	require.Equal(t, "/result", args["targetDataPath"])
-	// 引数はトップレベルのプロパティごとにデータモデルの部分木を束縛する。
+	// 送信ボタンは UI から MCP を呼ばず、イベントを発火するだけ。イベント名が
+	// 送信用ツールの名前、context がその引数（トップレベルのプロパティごとに
+	// データモデルの部分木を束縛する）。
 	require.Equal(t, map[string]any{
-		"orderId": map[string]any{"@path": "/input/orderId"},
-		"body":    map[string]any{"@path": "/input/body"},
-	}, args["arguments"])
+		"event": map[string]any{
+			"name": "createorder__submit",
+			"context": map[string]any{
+				"orderId": map[string]any{"@path": "/input/orderId"},
+				"body":    map[string]any{"@path": "/input/body"},
+			},
+		},
+	}, submit["action"])
 	// 必須項目（orderId, title, quantity）が未入力のままでは送信できない。
 	require.Len(t, submit["@checks"], 3)
 }
@@ -248,7 +249,7 @@ func TestA2UIInitialData(t *testing.T) {
 			"extra":    map[string]any{"k": "v"},
 		},
 	})
-	require.Equal(t, map[string]any{"text": ""}, data["result"])
+	require.Len(t, data, 1)
 	input := data["input"].(map[string]any)
 	require.Equal(t, "o-1", input["orderId"])
 	require.Equal(t, map[string]any{

@@ -650,8 +650,23 @@ mcpServers:
 
 - **`tools/list`**: 書き込み系ツールに `_meta.ui`（`resourceUri: a2ui://form/<tool>`、`mimeType: application/a2ui+json`）を付け、その隣に `<tool>__submit` ツールを並べます。
 - **`tools/call <tool>`**: API を **呼びません**。渡された引数を載せた `updateDataModel` メッセージ（ユーザー向けの埋め込みリソース。モデルのコンテキストには入れません）と、リクエストがまだ送られていないことをモデルに伝えるテキストを返します。
-- **`tools/call <tool>__submit`**: フォームの送信ボタンが呼びます（`callMcpTool`）。Manifold はフォームの値を入力スキーマの型に直し（テキストで入力された数値、リストで届く単一選択、空のままの任意項目の除外）、`<tool>` を実行します。`authz`・`guardrail`・監査ログ・メトリクスからは `<tool>` として見えます。
+- **`tools/call <tool>__submit`**: ツールを実行します。Manifold はフォームの値を入力スキーマの型に直し（テキストで入力された数値、リストで届く単一選択、空のままの任意項目の除外）、`<tool>` を実行します。`authz`・`guardrail`・監査ログ・メトリクスからは `<tool>` として見えます。
 - **`resources/list`・`resources/read`**: 呼び出し元が一覧できる書き込み系ツールごとに、フォームのテンプレート（`createSurface` + `updateComponents`）を返します。エンドポイントは `resources` capability を広告します。
+
+フォーム自身は MCP を呼びません。送信ボタンは A2UI の action（`action.event`）を発火するだけで、その `name` が `<tool>__submit`、`context` がフォームの値を束縛したツールの引数です。action を受け取ったエージェント側（フォームを描画するホスト）が `tools/call` を行うので、UI に MCP の接続や認証情報を持たせる必要がなく、結果もエージェントに返ります。
+
+```json
+{
+  "version": "1.0",
+  "action": {
+    "name": "createOrder__submit",
+    "surfaceId": "manifold-form-createOrder",
+    "sourceComponentId": "submit_12",
+    "timestamp": "2026-03-20T12:00:00Z",
+    "context": { "body": { "title": "desk", "quantity": "2", "priority": ["high"] } }
+  }
+}
+```
 
 フォームは LLM を使わず、ツールの入力スキーマから生成します。
 
@@ -666,11 +681,11 @@ mcpServers:
 | `properties` を持つオブジェクト | その項目（4 階層まで入れ子で展開） |
 | それ以外（自由形式のオブジェクト、その他の配列、`oneOf` など） | JSON を書く `TextField`（`longText`） |
 
-呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に、basic カタログ（`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）と MCP カタログ（`https://a2ui.org/specification/v1_0/catalogs/mcp/catalog.json`。`callMcpTool` を定義する）の両方を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
+呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に basic カタログ（`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
 
 有効にする前に知っておくこと:
 
-- **確認の機会を与える仕組みで、確認を強制する仕組みではありません。** A2UI に対応しない呼び出し元は従来どおり `<tool>` を直接実行します。`<tool>__submit` も通常のツールで、`_meta.ui.visibility: ["app"]` はモデルから隠すようホストに頼むだけです。書き込める相手を絞るには `authz` を使ってください。
+- **確認の機会を与える仕組みで、確認を強制する仕組みではありません。** A2UI に対応しない呼び出し元は従来どおり `<tool>` を直接実行します。`<tool>__submit` も通常のツールで、ユーザーが本当にフォームを送信したかどうかを Manifold は判別できません。確認を強制したいホストは、受け取った送信の action と一致する呼び出しだけを通すよう、ホスト側（ツール呼び出しの許可フックなど）で `<tool>__submit` を絞ってください。書き込める相手を絞るには `authz` を使ってください。
 - **`assumeSupport: true` では、A2UI を描画できないホストは書き込み系ツールを呼んでも実行できなくなります。** 「フォームを表示した」という結果だけが返り、フォームは表示されません。A2UI を描画するホストだけが使うエンドポイントで設定してください。
 - 入力スキーマの項目が 200 を超えるツール、既に `_meta.ui` を持つツール、`<tool>__submit` という名前のツールが別にあるツールには、フォームを付けません。ぶら下げた `agents` のスキルにも付けません。
 - `a2ui` は OpenAPI モードのサーバー専用です。MCP バックエンドはバックエンド自身の UI を中継します（[MCP Apps](#mcp-appsapps) 参照）。

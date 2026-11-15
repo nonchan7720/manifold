@@ -31,13 +31,9 @@ const (
 	a2uiMIMEType = "application/a2ui+json"
 	// a2uiBasicCatalogID はフォームが使う basic カタログ。
 	a2uiBasicCatalogID = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json"
-	// a2uiMCPCatalogID は送信ボタンが使う callMcpTool を定義する mcp カタログ。
-	a2uiMCPCatalogID = "https://a2ui.org/specification/v1_0/catalogs/mcp/catalog.json"
 
 	// a2uiInputPath はフォームの入力値を置くデータモデルのパス。
 	a2uiInputPath = "/input"
-	// a2uiResultPath は送信結果（callMcpTool の targetDataPath）を置くパス。
-	a2uiResultPath = "/result"
 
 	// maxA2UIFormFields は 1 つのフォームに並べるフィールド数の上限。超える
 	// スキーマにはフォームを付けない（巨大な spec でレスポンスを膨らませない）。
@@ -289,7 +285,7 @@ type a2uiFormSpec struct {
 	surfaceID   string
 	title       string
 	description string
-	// submitTool は送信ボタンが callMcpTool で呼ぶツール名。
+	// submitTool は送信用ツールの名前。送信ボタンが発火するイベントの名前になる。
 	submitTool string
 	fields     []*a2uiField
 }
@@ -349,6 +345,9 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 	for _, f := range spec.fields {
 		arguments[f.name] = a2uiPath(a2uiInputPath + "/" + jsonPointerToken(f.name))
 	}
+	// 送信ボタンは A2UI の action（イベント）を発火するだけで、API は呼ばない。
+	// イベント名を送信用ツールの名前に、context をその引数にしておくので、
+	// 受け取ったエージェント側（ホスト）はそのまま tools/call に渡せる。
 	submitText := b.text("Submit", "")
 	submit := map[string]any{
 		"id":        b.newID("submit"),
@@ -356,14 +355,9 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 		"child":     submitText,
 		"variant":   "primary",
 		"action": map[string]any{
-			"functionCall": map[string]any{
-				"@call":     "callMcpTool",
-				"catalogId": a2uiMCPCatalogID,
-				"args": map[string]any{
-					"name":           spec.submitTool,
-					"arguments":      arguments,
-					"targetDataPath": a2uiResultPath,
-				},
+			"event": map[string]any{
+				"name":    spec.submitTool,
+				"context": arguments,
 			},
 		},
 	}
@@ -371,12 +365,6 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 		submit["@checks"] = b.requiredChecks
 	}
 	children = append(children, b.add(submit))
-	// 送信結果（callMcpTool が targetDataPath に書くペイロードの text）を表示する。
-	children = append(children, b.add(map[string]any{
-		"id":        b.newID("result"),
-		"component": "Text",
-		"text":      a2uiPath(a2uiResultPath + "/text"),
-	}))
 
 	column := b.add(map[string]any{
 		"id": b.newID("column"), "component": "Column", "children": children,
@@ -580,8 +568,7 @@ func a2uiRegexSupported(pattern string) bool {
 // （入力コンポーネントの束縛先が未定義にならないように）。
 func a2uiInitialData(fields []*a2uiField, args map[string]any) map[string]any {
 	return map[string]any{
-		strings.TrimPrefix(a2uiInputPath, "/"):  a2uiInitialValues(fields, args),
-		strings.TrimPrefix(a2uiResultPath, "/"): map[string]any{"text": ""},
+		strings.TrimPrefix(a2uiInputPath, "/"): a2uiInitialValues(fields, args),
 	}
 }
 

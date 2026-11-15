@@ -29,20 +29,27 @@ import (
 //     リソースを付け、送信用のツール <tool>__submit を並べる。
 //   - tools/call <tool>: A2UI 対応の呼び出し元には API を実行せず、モデルの引数を
 //     初期値にした updateDataModel を返す（フォームが表示される）。
-//   - tools/call <tool>__submit: フォームの送信ボタン（callMcpTool）が呼ぶ。値を
+//   - tools/call <tool>__submit: フォームの送信を受けたエージェント側が呼ぶ。値を
 //     入力スキーマの型に直し、<tool> として内側へ渡して実行する。
 //   - resources/list・resources/read: ツールごとのフォームのテンプレートを返す。
 //
 // A2UI に対応しない呼び出し元には何も変えず、<tool> は従来どおり直接実行される。
+//
+// フォームの送信ボタンは A2UI の action（イベント）を発火するだけで、UI から MCP は
+// 呼ばない。イベント名は <tool>__submit、context はその引数なので、イベントを
+// 受けたエージェント側（ホスト）がそのまま tools/call に渡す。実行の主体を
+// エージェント側に置くことで、UI に MCP の接続や認証情報を持たせずに済み、
+// 送信結果もエージェントに返る。
 //
 // このミドルウェアは最も外側（metrics・audit・authz より外）に置く。
 // <tool>__submit を <tool> に書き換えてから内側へ渡すので、authz・guardrail・
 // 監査・メトリクスは実際に実行されるツール名で掛かる。フォームを出す対象は、内側の
 // tools/list（tool filter と authz を通ったもの）で呼び出し元に見えるツールに限る。
 //
-// <tool>__submit は _meta.ui.visibility: ["app"] を付けるが、これはホストへの
-// 表示のヒントで、モデルから呼べなくする境界ではない。人の確認を強制する仕組み
-// ではなく、確認の機会を与える仕組みである。
+// <tool>__submit は通常のツールで、ユーザーが実際に送信したかどうかをゲートウェイは
+// 知らない。人の確認を強制する仕組みではなく、確認の機会を与える仕組みである。
+// 強制したいホストは、ユーザーの送信イベントと一致する呼び出しだけを通すよう、
+// ホスト側（ツール呼び出しの許可フックなど）で <tool>__submit を絞る。
 
 const (
 	// a2uiMetaKey はリクエストの _meta で A2UI のレンダラの能力を申告するキー。
@@ -93,7 +100,7 @@ func a2uiFormTarget(tool *mcp.Tool) ([]*a2uiField, bool) {
 
 // callerDeclaredA2UI は meta（リクエストの _meta）の a2ui から、呼び出し元が
 // このフォームを描画できるかを返す。declared は申告があったかどうか。
-// 描画には v1.0 の basic カタログと、送信ボタンが使う mcp カタログの両方が要る。
+// 描画には v1.0 の basic カタログが要る。
 func callerDeclaredA2UI(meta mcp.Meta) (supported, declared bool) {
 	raw, ok := meta[a2uiMetaKey]
 	if !ok {
@@ -103,8 +110,7 @@ func callerDeclaredA2UI(meta mcp.Meta) (supported, declared bool) {
 	caps, _ := decl["rendererCapabilities"].(map[string]any)
 	v1, _ := caps[a2uiProtocolVersion].(map[string]any)
 	ids, _ := v1["supportedCatalogIds"].([]any)
-	return slices.Contains(ids, any(a2uiBasicCatalogID)) &&
-		slices.Contains(ids, any(a2uiMCPCatalogID)), true
+	return slices.Contains(ids, any(a2uiBasicCatalogID)), true
 }
 
 // a2uiRequestMeta は tools/list・tools/call のリクエストの _meta を返す。
@@ -209,11 +215,10 @@ func (m *a2uiFormsMiddleware) listTools(
 		submit.Name = submitName
 		submit.Title = ""
 		submit.Description = fmt.Sprintf(
-			"Submits the %s form. The form UI calls this after the user has reviewed "+
-				"the input; it executes %s.", tool.Name, tool.Name)
-		submit.Meta = mcp.Meta{
-			mcpAppsMetaKey: map[string]any{"visibility": []any{"app"}},
-		}
+			"Submits the %s form. Call this only after the user has submitted the form "+
+				"(the form's %s action), with the action's context as the arguments; "+
+				"it executes %s.", tool.Name, submitName, tool.Name)
+		submit.Meta = nil
 		tools = append(tools, &withForm, &submit)
 	}
 	copied := *list
