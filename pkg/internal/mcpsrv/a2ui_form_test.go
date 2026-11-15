@@ -143,7 +143,19 @@ func TestBuildA2UIFormTemplate(t *testing.T) {
 	require.Equal(t, "DateTimeInput", due["component"])
 	require.Equal(t, true, due["enableDate"])
 	require.Nil(t, due["enableTime"])
-	require.Equal(t, "longText", a2uiComponentByLabel(t, comps, "extra (JSON)")["variant"])
+	// 自由形式のオブジェクトは JSON 欄ではなく、key と value の行。
+	for _, c := range comps {
+		require.NotEqual(t, "longText", c["variant"], "no JSON text area: %v", c["label"])
+	}
+	var extraKeys []any
+	for _, c := range comps {
+		if c["label"] == "key" {
+			extraKeys = append(extraKeys, c["value"].(map[string]any)["@path"])
+		}
+	}
+	require.Equal(t, []any{
+		"/input/body/extra/0/key", "/input/body/extra/1/key", "/input/body/extra/2/key",
+	}, extraKeys)
 	require.Equal(t, "obscured", a2uiComponentByLabel(t, comps, "secret")["variant"])
 	// データパスに書けない文字を含むプロパティ名は、別名のキーに束縛する。
 	require.Equal(t, map[string]any{"@path": "/input/body/a_b_c"},
@@ -260,10 +272,14 @@ func TestA2UIInitialData(t *testing.T) {
 		"urgent":   true,
 		"dueDate":  "",
 		"tags":     []any{"gift"},
-		"extra":    "{\n  \"k\": \"v\"\n}",
-		"a_b_c":    "",
-		"secret":   "",
-		"any":      "",
+		"extra": []any{
+			map[string]any{"key": "k", "value": "v"},
+			map[string]any{"key": "", "value": ""},
+			map[string]any{"key": "", "value": ""},
+		},
+		"a_b_c":  "",
+		"secret": "",
+		"any":    "",
 	}, input["body"])
 
 	// 引数が無くても、束縛先はすべて埋まる。
@@ -471,7 +487,7 @@ func a2uiListSchema() map[string]any {
 					},
 				},
 			},
-			// 入力欄にできない配列は JSON のテキスト欄のまま。
+			// 配列の配列は、行の中に行を並べる。
 			"matrix": map[string]any{
 				"type":  "array",
 				"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -491,12 +507,14 @@ func TestA2UIForm_Lists(t *testing.T) {
 		order = append(order, f.name)
 	}
 	// オブジェクトの配列は見出しを持つので、他の項目の後ろ。
-	require.Equal(t, []string{"photoUrls", "matrix", "name", "scores", "tags"}, order)
+	require.Equal(t, []string{"photoUrls", "name", "scores", "matrix", "tags"}, order)
 	require.Equal(t, a2uiFieldList, byName["photoUrls"].kind)
 	require.Equal(t, a2uiFieldText, byName["photoUrls"].item.kind)
 	require.Equal(t, a2uiFieldInteger, byName["scores"].item.kind)
 	require.Equal(t, a2uiFieldGroup, byName["tags"].item.kind)
-	require.Equal(t, a2uiFieldJSON, byName["matrix"].kind)
+	require.Equal(t, a2uiFieldList, byName["matrix"].kind)
+	require.Equal(t, a2uiFieldList, byName["matrix"].item.kind)
+	require.Equal(t, a2uiFieldText, byName["matrix"].item.item.kind)
 	// 要素の中の項目は必須にしない（空の行で送信を止めない）。
 	for _, child := range byName["tags"].item.children {
 		require.False(t, child.required, child.name)
@@ -588,4 +606,137 @@ func TestA2UIForm_Lists(t *testing.T) {
 
 	_, err = a2uiCoerceInput(fields, map[string]any{"scores": []any{"1", "x"}})
 	require.EqualError(t, err, "scores[1]: must be an integer")
+}
+
+// 自由形式のオブジェクト・配列の配列・oneOf / anyOf も、JSON のテキスト欄ではなく
+// 入力欄に展開する。
+func TestA2UIForm_ComplexTypes(t *testing.T) {
+	fields, ok := buildA2UIFields(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			// 自由形式のオブジェクト: key と value の行。
+			"labels": map[string]any{"type": "object"},
+			"limits": map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "integer"},
+			},
+			// 配列の配列。
+			"matrix": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "integer"},
+				},
+			},
+			// null との oneOf は、中身の型として扱う。
+			"nickname": map[string]any{
+				"oneOf": []any{map[string]any{"type": "null"}, map[string]any{"type": "string"}},
+			},
+			// オブジェクトどうしの anyOf は、項目をまとめる。
+			"contact": map[string]any{
+				"description": "how to reach",
+				"anyOf": []any{
+					map[string]any{
+						"type": "object", "required": []any{"email"},
+						"properties": map[string]any{"email": map[string]any{"type": "string"}},
+					},
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"phone": map[string]any{"type": "string"}},
+					},
+				},
+			},
+			// 型の違うスカラーの oneOf は、型を決めないテキスト欄。
+			"amount": map[string]any{
+				"oneOf": []any{map[string]any{"type": "string"}, map[string]any{"type": "number"}},
+			},
+		},
+	})
+	require.True(t, ok)
+	byName := map[string]*a2uiField{}
+	for _, f := range fields {
+		byName[f.name] = f
+	}
+	require.True(t, byName["labels"].asMap)
+	require.Equal(t, a2uiFieldInteger, byName["limits"].item.children[1].kind)
+	require.Equal(t, a2uiFieldText, byName["nickname"].kind)
+	require.Equal(t, a2uiFieldGroup, byName["contact"].kind)
+	require.Equal(t, "how to reach", byName["contact"].description)
+	require.Len(t, byName["contact"].children, 2)
+	require.False(t, byName["contact"].children[0].required)
+	require.Equal(t, a2uiFieldJSON, byName["amount"].kind)
+	require.False(t, byName["amount"].typed)
+
+	// JSON を書かせるテキスト欄は 1 つも無い。
+	comps := buildA2UIFormComponents(
+		a2uiFormSpec{title: "t", submitTool: "t__submit", fields: fields},
+	)
+	for _, c := range comps {
+		comp := c.(map[string]any)
+		require.NotEqual(t, "longText", comp["variant"], "%v", comp["label"])
+		if label, ok := comp["label"].(string); ok {
+			require.NotContains(t, label, "(JSON)")
+		}
+	}
+
+	args := map[string]any{
+		"labels": map[string]any{"env": "prod", "tier": json.Number("2")},
+		"matrix": []any{[]any{json.Number("1"), json.Number("2")}},
+	}
+	a2uiSizeLists(fields, args)
+	input := a2uiInitialData(fields, args)["input"].(map[string]any)
+	// オブジェクトはキーの昇順で行にする。既にある組 + 空の行 2 つ。
+	require.Equal(t, []any{
+		map[string]any{"key": "env", "value": "prod"},
+		map[string]any{"key": "tier", "value": "2"},
+		map[string]any{"key": "", "value": ""},
+		map[string]any{"key": "", "value": ""},
+	}, input["labels"])
+	require.Equal(t, []any{
+		[]any{"1", "2", ""}, []any{"", "", ""}, []any{"", "", ""},
+	}, input["matrix"])
+	require.Equal(t, map[string]any{"email": "", "phone": ""}, input["contact"])
+
+	out, err := a2uiCoerceInput(fields, map[string]any{
+		"labels": []any{
+			map[string]any{"key": "env", "value": "prod"},
+			map[string]any{"key": "tier", "value": "2"},
+			map[string]any{"key": "", "value": "ignored: no key"},
+			map[string]any{"key": "", "value": ""},
+		},
+		"limits": []any{
+			map[string]any{"key": "cpu", "value": "4"},
+			map[string]any{"key": "", "value": ""},
+		},
+		"matrix":   []any{[]any{"1", "2", ""}, []any{"", "", ""}, []any{"3", "", ""}},
+		"nickname": "",
+		"contact":  map[string]any{"email": "a@example.com", "phone": ""},
+		"amount":   "12.5",
+	})
+	require.NoError(t, err)
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"labels": {"env": "prod", "tier": 2},
+		"limits": {"cpu": 4},
+		"matrix": [[1, 2], [3]],
+		"contact": {"email": "a@example.com"},
+		"amount": 12.5
+	}`, string(raw))
+
+	// フォームを介さない呼び出しの値（オブジェクトそのもの、JSON の文字列）も通す。
+	out, err = a2uiCoerceInput(fields, map[string]any{
+		"labels": map[string]any{"env": "prod"},
+		"matrix": `[[1, 2]]`,
+		"limits": "",
+	})
+	require.NoError(t, err)
+	raw, err = json.Marshal(out)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"labels": {"env": "prod"}, "matrix": [[1, 2]]}`, string(raw))
+
+	_, err = a2uiCoerceInput(fields, map[string]any{
+		"limits": []any{map[string]any{"key": "cpu", "value": "many"}},
+	})
+	require.EqualError(t, err, "limits[0].value: must be an integer")
 }
