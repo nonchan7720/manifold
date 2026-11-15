@@ -510,3 +510,71 @@ func TestA2UIForms_Authz(t *testing.T) {
 	require.Len(t, calls, 1)
 	require.JSONEq(t, `{"title": "desk", "quantity": 1}`, calls[0].body)
 }
+
+// a2ui.catalog を指定したサーバーは、そのカタログの部品でフォームを返す。
+func TestA2UIForms_CustomCatalog(t *testing.T) {
+	session, api := newA2UIFormsSession(t, &config.A2UIConfig{
+		Forms:      true,
+		Inline:     true,
+		Catalog:    a2uiCustomCatalogPath,
+		Components: a2uiCustomComponents(),
+	})
+
+	// basic カタログしか描画できない呼び出し元には、フォームを出さない。
+	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{
+		Meta: a2uiDeclaredMeta(a2uiBasicCatalogID),
+	})
+	require.NoError(t, err)
+	require.Nil(t, toolByName(listed.Tools, "createorder__submit"))
+
+	meta := a2uiDeclaredMeta(a2uiCustomCatalogID)
+	listed, err = session.ListTools(t.Context(), &mcp.ListToolsParams{Meta: meta})
+	require.NoError(t, err)
+	require.NotNil(t, toolByName(listed.Tools, "createorder__submit"))
+
+	res, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Meta:      meta,
+		Name:      "createorder",
+		Arguments: map[string]any{"body": map[string]any{"title": "desk", "urgent": true}},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Empty(t, api.recorded())
+	block := strings.Join(inlineA2UIBlock(t, res), "\n")
+	require.Contains(t, block, `Input([?required($/input/body/title, "title is required")]`)
+	require.Contains(t, block, `Toggle(checked=$/input/body/urgent, title="urgent")`)
+	require.Contains(t, block, `root = Stack(items=[`)
+	for _, basic := range []string{"TextField(", "CheckBox(", "Column(", "Card(", "Button(", "Text("} {
+		require.NotContains(t, block, basic)
+	}
+
+	// リソースのテンプレートも同じカタログ。
+	read, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{
+		URI: "a2ui://form/createorder",
+	})
+	require.NoError(t, err)
+	var template []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(read.Contents[0].Text), &template))
+	require.Equal(t, a2uiCustomCatalogID,
+		template[0]["createSurface"].(map[string]any)["catalogId"])
+}
+
+// カタログに役割を割り当てられないサーバーは、起動を失敗させる。
+func TestA2UIForms_CatalogMismatchFailsInit(t *testing.T) {
+	t.Setenv("TEST", "true")
+	servers := config.Servers{"orders": &config.Server{
+		Name:    "orders",
+		Spec:    "fixtures/a2ui_orders_oas.json",
+		BaseURL: "https://orders.example.com",
+		A2UI:    &config.A2UIConfig{Forms: true, Catalog: a2uiCustomCatalogPath},
+	}}
+	s := NewMCPServer(servers, nil)
+	t.Cleanup(s.Close)
+	err := s.Init(t.Context())
+	require.Error(t, err)
+	require.Contains(
+		t,
+		err.Error(),
+		`server "orders": a2ui.catalog: the catalog has no component "Text"`,
+	)
+}

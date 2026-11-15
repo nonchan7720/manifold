@@ -140,6 +140,6 @@ func TestExpressValue_Unsupported(t *testing.T) {
 		"condition": map[string]any{"@call": "email", "args": map[string]any{}},
 	})
 	require.Error(t, err)
-	_, err = expressComponent("not a component")
+	_, err = expressComponent("not a component", nil)
 	require.Error(t, err)
 }

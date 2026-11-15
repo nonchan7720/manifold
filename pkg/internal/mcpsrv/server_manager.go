@@ -297,7 +297,13 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 		if server.A2UIForms() {
 			// 後から足したミドルウェアほど外側になる。<tool>__submit を <tool> に
 			// 書き換えてから metrics・audit・authz に渡すため、最も外側に置く。
-			srv.AddReceivingMiddleware(newA2UIFormsMiddleware(name, server))
+			forms, err := newA2UIFormsMiddleware(name, server)
+			if err != nil {
+				// カタログを読めない・役割に部品を割り当てられないのは設定の誤り。
+				// 壊れたフォームを返すより、起動を失敗させる。
+				return fmt.Errorf("server %q: %w", name, err)
+			}
+			srv.AddReceivingMiddleware(forms)
 		}
 
 		if !passthrough {

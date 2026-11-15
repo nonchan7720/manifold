@@ -548,6 +548,8 @@ type a2uiFormSpec struct {
 	// submitTool は送信用ツールの名前。送信ボタンが発火するイベントの名前になる。
 	submitTool string
 	fields     []*a2uiField
+	// vocab はエージェントのカタログに合わせた部品の語彙。nil は basic カタログ。
+	vocab *a2uiVocabulary
 }
 
 // a2uiTemplateBuilder はテンプレートのコンポーネントを貯める。コンポーネント ID は
@@ -599,7 +601,7 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 			"version": a2uiProtocolVersion,
 			"createSurface": map[string]any{
 				"surfaceId": spec.surfaceID,
-				"catalogId": a2uiBasicCatalogID,
+				"catalogId": spec.vocab.id(),
 			},
 		},
 		map[string]any{
@@ -650,7 +652,9 @@ func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 		"id": b.newID("column"), "component": "Column", "children": children,
 	})
 	b.add(map[string]any{"id": "root", "component": "Card", "child": column})
-	return b.components
+	// ここまでは basic カタログの語彙。エージェントのカタログの部品名・プロパティ名に
+	// 書き換える。
+	return spec.vocab.translate(b.components)
 }
 
 // fields は項目のコンポーネントを追加し、親の Column に並べる ID を返す。
@@ -912,6 +916,10 @@ func (f *a2uiField) initialValue(v any) any {
 		b, _ := v.(bool)
 		return b
 	case a2uiFieldChoice:
+		// 真偽値を true / false の選択で表している場合（a2uiVocabulary.adapt）。
+		if b, ok := v.(bool); ok {
+			return []any{strconv.FormatBool(b)}
+		}
 		if s, ok := v.(string); ok && s != "" {
 			return []any{s}
 		}
@@ -1042,7 +1050,8 @@ func (f *a2uiField) coerce(v any, path string) (_ any, keep bool, _ error) {
 	case a2uiFieldInteger, a2uiFieldNumber:
 		return f.coerceNumber(v, path)
 	case a2uiFieldChoice:
-		return f.coerceChoice(v)
+		value, keep := f.coerceChoice(v)
+		return f.boolFromText(value), keep, nil
 	case a2uiFieldMultiChoice:
 		if list, ok := v.([]any); ok {
 			return list, len(list) > 0 || f.required, nil
@@ -1052,11 +1061,25 @@ func (f *a2uiField) coerce(v any, path string) (_ any, keep bool, _ error) {
 	case a2uiFieldText, a2uiFieldDate, a2uiFieldDateTime:
 		// 空のままの任意項目は送らない。必須項目の空文字は API 側に判断させる。
 		if s, ok := v.(string); ok {
-			return s, s != "" || f.required, nil
+			return f.boolFromText(s), s != "" || f.required, nil
 		}
 	case a2uiFieldBool:
 	}
 	return v, true, nil
+}
+
+// boolFromText は、真偽値の項目をテキストや選択で入力させた場合（カタログに
+// チェックボックスが無いとき）の "true" / "false" を真偽値に戻す。
+func (f *a2uiField) boolFromText(v any) any {
+	if schemaType(f.schema) != "boolean" {
+		return v
+	}
+	if s, ok := v.(string); ok {
+		if b, err := strconv.ParseBool(strings.TrimSpace(s)); err == nil {
+			return b
+		}
+	}
+	return v
 }
 
 func (f *a2uiField) coerceGroup(v any, path string) (any, bool, error) {
@@ -1169,17 +1192,17 @@ func (f *a2uiField) coerceNumber(v any, path string) (any, bool, error) {
 }
 
 // coerceChoice は単一選択の値（ChoicePicker は文字列の配列で持つ）を 1 つの値に直す。
-func (f *a2uiField) coerceChoice(v any) (any, bool, error) {
+func (f *a2uiField) coerceChoice(v any) (any, bool) {
 	switch s := v.(type) {
 	case []any:
 		if len(s) == 0 {
-			return nil, false, nil
+			return nil, false
 		}
-		return s[0], true, nil
+		return s[0], true
 	case string:
-		return s, s != "" || f.required, nil
+		return s, s != "" || f.required
 	}
-	return v, true, nil
+	return v, true
 }
 
 // coerceJSON はテキスト欄に書かれた JSON を値に直す。空なら送らない。

@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/catalogs/acme.json",
+  "protocolVersion": "1.0",
+  "title": "Acme design system",
+  "description": "A custom catalog whose component and property names differ from the basic catalog.",
+  "catalogId": "https://example.com/catalogs/acme.json",
+  "components": {
+    "Label": {
+      "type": "object",
+      "properties": {
+        "component": { "const": "Label" },
+        "content": { "$ref": "common_types.json#/$defs/DynamicString" },
+        "tone": { "type": "string", "enum": ["normal", "muted"] }
+      },
+      "required": ["component", "content"]
+    },
+    "Stack": {
+      "type": "object",
+      "properties": {
+        "component": { "const": "Stack" },
+        "items": { "$ref": "common_types.json#/$defs/ChildList" }
+      },
+      "required": ["component", "items"]
+    },
+    "Action": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "common_types.json#/$defs/Checkable" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Action" },
+            "caption": { "$ref": "common_types.json#/$defs/DynamicString" },
+            "onPress": { "$ref": "common_types.json#/$defs/Action" },
+            "kind": { "type": "string", "enum": ["primary", "secondary"] }
+          },
+          "required": ["component", "caption", "onPress"]
+        }
+      ]
+    },
+    "Input": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "common_types.json#/$defs/Checkable" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "Input" },
+            "title": { "$ref": "common_types.json#/$defs/DynamicString" },
+            "text": { "$ref": "common_types.json#/$defs/DynamicString" },
+            "mode": { "type": "string", "enum": ["number", "multiline"] }
+          },
+          "required": ["component", "title", "text"]
+        }
+      ]
+    },
+    "Toggle": {
+      "type": "object",
+      "properties": {
+        "component": { "const": "Toggle" },
+        "title": { "$ref": "common_types.json#/$defs/DynamicString" },
+        "checked": { "$ref": "common_types.json#/$defs/DynamicBoolean" }
+      },
+      "required": ["component", "title", "checked"]
+    },
+    "Select": {
+      "type": "object",
+      "properties": {
+        "component": { "const": "Select" },
+        "title": { "$ref": "common_types.json#/$defs/DynamicString" },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": { "$ref": "common_types.json#/$defs/DynamicString" },
+              "value": { "type": "string" }
+            },
+            "required": ["label", "value"],
+            "additionalProperties": false
+          }
+        },
+        "value": { "$ref": "common_types.json#/$defs/DynamicStringList" }
+      },
+      "required": ["component", "options", "value"]
+    }
+  },
+  "functions": {
+    "required": {
+      "type": "object",
+      "description": "Checks that the value is not null, undefined, or empty.",
+      "returnType": "validationResult",
+      "properties": {
+        "@call": { "const": "required" },
+        "args": {
+          "type": "object",
+          "properties": { "value": { "description": "The value to check." } },
+          "required": ["value"],
+          "unevaluatedProperties": false
+        }
+      },
+      "required": ["@call", "args"]
+    },
+    "regex": {
+      "type": "object",
+      "description": "Checks that the value matches a regular expression string.",
+      "returnType": "validationResult",
+      "properties": {
+        "@call": { "const": "regex" },
+        "args": {
+          "type": "object",
+          "properties": {
+            "value": { "$ref": "common_types.json#/$defs/DynamicString" },
+            "pattern": { "type": "string" }
+          },
+          "required": ["value", "pattern"],
+          "unevaluatedProperties": false
+        }
+      },
+      "required": ["@call", "args"]
+    }
+  },
+  "$defs": {
+    "anyComponent": {
+      "oneOf": [
+        { "$ref": "#/components/Label" },
+        { "$ref": "#/components/Stack" },
+        { "$ref": "#/components/Action" },
+        { "$ref": "#/components/Input" },
+        { "$ref": "#/components/Toggle" },
+        { "$ref": "#/components/Select" }
+      ],
+      "discriminator": { "propertyName": "component" }
+    },
+    "anyFunction": {
+      "oneOf": [
+        { "$ref": "#/functions/required" },
+        { "$ref": "#/functions/regex" }
+      ]
+    }
+  }
+}
