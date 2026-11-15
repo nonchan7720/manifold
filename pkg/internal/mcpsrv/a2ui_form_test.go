@@ -400,3 +400,47 @@ func TestA2UIDataKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"X-Request-Id": "req-2"}, out)
 }
+
+func TestBuildA2UIFields_GroupsLast(t *testing.T) {
+	fields, ok := buildA2UIFields(map[string]any{
+		"type":     "object",
+		"required": []any{"body"},
+		"properties": map[string]any{
+			"body": map[string]any{
+				"type":     "object",
+				"required": []any{"name"},
+				"properties": map[string]any{
+					"category": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"id": map[string]any{"type": "integer"}},
+					},
+					"id":     map[string]any{"type": "integer"},
+					"name":   map[string]any{"type": "string"},
+					"status": map[string]any{"type": "string"},
+				},
+			},
+			"apiKey": map[string]any{"type": "string"},
+		},
+	})
+	require.True(t, ok)
+	names := func(fields []*a2uiField) (out []string) {
+		for _, f := range fields {
+			out = append(out, f.name)
+		}
+		return out
+	}
+	// 入れ子のオブジェクトは、必須であっても同じ階層の他の項目の後ろ。
+	require.Equal(t, []string{"apiKey", "body"}, names(fields))
+	require.Equal(t, []string{"name", "id", "status", "category"}, names(fields[1].children))
+
+	// 必須のグループの見出しは、太字の外に必須の印を置く。
+	comps := buildA2UIFormComponents(a2uiFormSpec{title: "t", submitTool: "t__submit", fields: fields})
+	var texts []string
+	for _, c := range comps {
+		if text, ok := c.(map[string]any)["text"].(string); ok {
+			texts = append(texts, text)
+		}
+	}
+	require.Contains(t, texts, "**body** *")
+	require.Contains(t, texts, "**category**")
+}

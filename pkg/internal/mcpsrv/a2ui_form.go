@@ -1,6 +1,7 @@
 package mcpsrv
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -165,7 +166,7 @@ func stringEnum(schema map[string]any) ([]string, bool) {
 }
 
 // buildA2UIChildren は schema の properties を項目に直す。必須の項目を required の
-// 並びで先に、残りを名前順に並べる。budget は残りの項目数で、負になったら打ち切る。
+// 並びで先に、残りを名前順に並べ、入れ子のオブジェクトは最後に回す。budget は残りの項目数で、負になったら打ち切る。
 func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiField {
 	props, _ := schema["properties"].(map[string]any)
 	if len(props) == 0 {
@@ -221,7 +222,19 @@ func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiFie
 		field.key = a2uiDataKey(name, usedKeys)
 		fields = append(fields, field)
 	}
+	// 入れ子のオブジェクトは同じ階層の他の項目の後ろに回す。グループには終わりの
+	// 目印が無いので、後ろに続く項目がグループの一部に見えてしまうため。
+	slices.SortStableFunc(fields, func(a, b *a2uiField) int {
+		return cmp.Compare(boolToInt(a.kind == a2uiFieldGroup), boolToInt(b.kind == a2uiFieldGroup))
+	})
 	return fields
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func buildA2UIField(
@@ -454,7 +467,12 @@ func (b *a2uiTemplateBuilder) fields(fields []*a2uiField, basePath string) []any
 			label += " *"
 		}
 		if f.kind == a2uiFieldGroup {
-			ids = append(ids, b.text("**"+label+"**", ""))
+			// 必須の印は太字の外に置く（"**body ***" は太字として解釈されない）。
+			heading := "**" + f.label + "**"
+			if f.required {
+				heading += " *"
+			}
+			ids = append(ids, b.text(heading, ""))
 			if f.description != "" {
 				ids = append(ids, b.text(f.description, "caption"))
 			}
