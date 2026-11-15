@@ -57,7 +57,7 @@ The backend reads `MANIFOLD_URL` (default `http://localhost:9999/mcp/petstore`),
 
 ## Notes
 
-- **Catalog**: the form uses the A2UI v1.0 basic catalog (`TextField`, `ChoicePicker`, `CheckBox`, `DateTimeInput`, `Button`, ...). The agent side must compile with that catalog, and the page must render it, as this example does. An agent with its own catalog cannot compile the block.
+- **Catalog**: this example uses the A2UI v1.0 basic catalog on all three sides: Manifold writes the form with it (the default), the backend compiles with it, and the page renders it. An agent with its own catalog sets `a2ui.catalog` (and `a2ui.components` where names differ) in `config.yaml`, so that Manifold writes the form with that catalog's components. See [Using the agent's catalog](../../README.md#using-the-agents-catalog-catalog).
 - **Token**: Manifold requires a Bearer token on `/mcp/<name>` and, by default, passes it to the backend API. The Petstore needs none, so the example sends a placeholder. In a real service, send the signed-in user's token.
 - **The agent copies the block**: the form reaches the page through the agent's reply, so a large schema costs output tokens. If the agent gets the copy wrong, the backend reports that the block could not be read.
 - **Public sandbox**: the Petstore is a shared public API. What you add is visible to everyone and disappears on its own.
