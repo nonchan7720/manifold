@@ -446,3 +446,146 @@ func TestBuildA2UIFields_GroupsLast(t *testing.T) {
 	require.Contains(t, texts, "**body** *")
 	require.Contains(t, texts, "**category**")
 }
+
+func a2uiListSchema() map[string]any {
+	return map[string]any{
+		"type":     "object",
+		"required": []any{"photoUrls"},
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+			"photoUrls": map[string]any{
+				"type": "array", "items": map[string]any{"type": "string"},
+			},
+			"scores": map[string]any{
+				"type": "array", "items": map[string]any{"type": "integer"},
+			},
+			"tags": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":     "object",
+					"required": []any{"name"},
+					"properties": map[string]any{
+						"id":     map[string]any{"type": "integer"},
+						"name":   map[string]any{"type": "string"},
+						"hidden": map[string]any{"type": "boolean"},
+					},
+				},
+			},
+			// 入力欄にできない配列は JSON のテキスト欄のまま。
+			"matrix": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		},
+	}
+}
+
+// 配列は JSON のテキスト欄ではなく、要素ごとの入力欄として並べる。
+func TestA2UIForm_Lists(t *testing.T) {
+	fields, ok := buildA2UIFields(a2uiListSchema())
+	require.True(t, ok)
+	byName := map[string]*a2uiField{}
+	var order []string
+	for _, f := range fields {
+		byName[f.name] = f
+		order = append(order, f.name)
+	}
+	// オブジェクトの配列は見出しを持つので、他の項目の後ろ。
+	require.Equal(t, []string{"photoUrls", "matrix", "name", "scores", "tags"}, order)
+	require.Equal(t, a2uiFieldList, byName["photoUrls"].kind)
+	require.Equal(t, a2uiFieldText, byName["photoUrls"].item.kind)
+	require.Equal(t, a2uiFieldInteger, byName["scores"].item.kind)
+	require.Equal(t, a2uiFieldGroup, byName["tags"].item.kind)
+	require.Equal(t, a2uiFieldJSON, byName["matrix"].kind)
+	// 要素の中の項目は必須にしない（空の行で送信を止めない）。
+	for _, child := range byName["tags"].item.children {
+		require.False(t, child.required, child.name)
+	}
+
+	args := map[string]any{
+		"photoUrls": []any{"https://example.com/1.png", "https://example.com/2.png"},
+		"tags":      []any{map[string]any{"id": json.Number("7"), "name": "cute"}},
+	}
+	a2uiSizeLists(fields, args)
+	// 既にある要素 + 空の行 2 つ。値の無い配列は既定の 3 行。
+	require.Equal(t, 4, byName["photoUrls"].slots)
+	require.Equal(t, 3, byName["scores"].slots)
+	require.Equal(t, 3, byName["tags"].slots)
+
+	input := a2uiInitialData(fields, args)["input"].(map[string]any)
+	require.Equal(t,
+		[]any{"https://example.com/1.png", "https://example.com/2.png", "", ""}, input["photoUrls"])
+	require.Equal(t, []any{"", "", ""}, input["scores"])
+	require.Equal(t, []any{
+		map[string]any{"id": "7", "name": "cute", "hidden": false},
+		map[string]any{"id": "", "name": "", "hidden": false},
+		map[string]any{"id": "", "name": "", "hidden": false},
+	}, input["tags"])
+
+	comps := buildA2UIFormComponents(
+		a2uiFormSpec{title: "t", submitTool: "t__submit", fields: fields})
+	var cs []map[string]any
+	for _, c := range comps {
+		cs = append(cs, c.(map[string]any))
+	}
+	// 行ごとに配列の添字のパスへ束縛する。必須の配列は最初の行だけ必須。
+	first := a2uiComponentByLabel(t, cs, "photoUrls 1 *")
+	require.Equal(t, map[string]any{"@path": "/input/photoUrls/0"}, first["value"])
+	require.Len(t, first["@checks"], 1)
+	last := a2uiComponentByLabel(t, cs, "photoUrls 4")
+	require.Equal(t, map[string]any{"@path": "/input/photoUrls/3"}, last["value"])
+	require.Nil(t, last["@checks"])
+	require.Equal(t, "number", a2uiComponentByLabel(t, cs, "scores 2")["variant"])
+	var tagNamePaths []any
+	for _, c := range cs {
+		if c["label"] == "name" && c["component"] == "TextField" {
+			tagNamePaths = append(tagNamePaths, c["value"].(map[string]any)["@path"])
+		}
+	}
+	require.Equal(t,
+		[]any{"/input/name", "/input/tags/0/name", "/input/tags/1/name", "/input/tags/2/name"},
+		tagNamePaths)
+
+	// Express でも同じ形で書ける。
+	block, err := buildA2UIExpressForm(
+		a2uiFormSpec{surfaceID: "s", title: "t", submitTool: "t__submit", fields: fields},
+		a2uiInitialData(fields, args))
+	require.NoError(t, err)
+	require.Contains(t, block,
+		`$/input/tags = [{hidden: false, id: "7", name: "cute"}, `+
+			`{hidden: false, id: "", name: ""}, {hidden: false, id: "", name: ""}]`)
+	require.Contains(t, block, `value=$/input/tags/1/name`)
+
+	// 送信時は空のままの行を取り除き、要素を型に直す。
+	out, err := a2uiCoerceInput(fields, map[string]any{
+		"name":      "Rex",
+		"photoUrls": []any{"https://example.com/1.png", "", "https://example.com/3.png", ""},
+		"scores":    []any{"3", "", "5"},
+		"tags": []any{
+			map[string]any{"id": "7", "name": "cute", "hidden": false},
+			map[string]any{"id": "", "name": "", "hidden": false},
+			map[string]any{"id": "", "name": "", "hidden": true},
+		},
+		"matrix": "",
+	})
+	require.NoError(t, err)
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"name": "Rex",
+		"photoUrls": ["https://example.com/1.png", "https://example.com/3.png"],
+		"scores": [3, 5],
+		"tags": [{"id": 7, "name": "cute", "hidden": false}, {"hidden": true}]
+	}`, string(raw))
+
+	// 任意の配列は、すべて空なら送らない。必須の配列は空でも送る。
+	out, err = a2uiCoerceInput(fields, map[string]any{
+		"photoUrls": []any{"", ""},
+		"scores":    []any{"", ""},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"photoUrls": []any{}}, out)
+
+	_, err = a2uiCoerceInput(fields, map[string]any{"scores": []any{"1", "x"}})
+	require.EqualError(t, err, "scores[1]: must be an integer")
+}

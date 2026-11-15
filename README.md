@@ -707,7 +707,12 @@ The form is generated from the tool's input schema, with no LLM involved:
 | `boolean` | `CheckBox` |
 | `string` with `format: date` / `date-time` | `DateTimeInput` |
 | object with `properties` | its fields, nested up to 4 levels |
-| anything else (free-form objects, other arrays, `oneOf`, ...) | `TextField` (`longText`) holding JSON |
+| array of `string` / `integer` / `number` / object with `properties` | one row of inputs per element, bound to the element's index (`/input/tags/0/name`) |
+| anything else (free-form objects without `properties`, arrays of arrays, `oneOf`, ...) | `TextField` (`longText`) holding JSON |
+
+The basic catalog has no function that adds an element to a list in the data model, so an array gets a fixed number of rows: 3, or the elements the model passed plus 2 empty rows (at most 20). Rows left empty are dropped when the form is submitted, and fields inside an array element are never marked required, so an unused row does not block the submit.
+
+A2UI Express and the A2UI JSON carry the same form. The JSON follows the current v1.0 specification, which names a component's checks `@checks`; renderers released before that rename (`@a2ui/web_core` 0.15) read `checks`. This only matters for the default delivery: with `inline: true` the agent's own A2UI SDK compiles the block and picks the key its renderer reads.
 
 A caller supports A2UI when its request declares the basic catalog (`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`) in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`. Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
 

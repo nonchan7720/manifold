@@ -42,6 +42,12 @@ const (
 	// maxA2UIFormDepth はオブジェクトを入れ子のまま展開する深さの上限。これより
 	// 深いオブジェクトは JSON のテキスト欄にする。
 	maxA2UIFormDepth = 4
+	// a2uiListDefaultSlots は配列の入力欄の既定の行数。
+	a2uiListDefaultSlots = 3
+	// a2uiListSpareSlots は、既に値のある配列に足す空の行数。
+	a2uiListSpareSlots = 2
+	// a2uiListMaxSlots は配列の入力欄の行数の上限。
+	a2uiListMaxSlots = 20
 	// maxA2UIFormTextRunes はフォームに載せる説明文の長さの上限。
 	maxA2UIFormTextRunes = 300
 	// maxA2UIRegexRunes は A2UI の regex 関数が受け付けるパターン長の上限。
@@ -63,6 +69,8 @@ const (
 	a2uiFieldJSON
 	// a2uiFieldGroup は properties を持つオブジェクト。子フィールドを並べる。
 	a2uiFieldGroup
+	// a2uiFieldList は配列。要素ごとの入力欄を slots 行ぶん並べる。
+	a2uiFieldList
 )
 
 // a2uiField は入力スキーマの 1 プロパティに対応するフォームの項目。
@@ -85,6 +93,13 @@ type a2uiField struct {
 	options  []string
 	schema   map[string]any
 	children []*a2uiField
+	// item は配列（a2uiFieldList）の要素 1 つぶんの項目。スカラーか、properties を
+	// 持つオブジェクト（a2uiFieldGroup）。要素の中の項目は必須として扱わない
+	// （空の行は「要素なし」を表すので、必須チェックで送信を止めない）。
+	item *a2uiField
+	// slots は配列の入力欄の行数。basic カタログにはデータモデルの配列へ行を足す
+	// 関数が無いので、行は固定数を並べる。空のままの行は送信時に取り除く。
+	slots int
 }
 
 // buildA2UIFields は入力スキーマをフォームの項目に直す。スキーマがオブジェクトで
@@ -225,9 +240,16 @@ func buildA2UIChildren(schema map[string]any, depth int, budget *int) []*a2uiFie
 	// 入れ子のオブジェクトは同じ階層の他の項目の後ろに回す。グループには終わりの
 	// 目印が無いので、後ろに続く項目がグループの一部に見えてしまうため。
 	slices.SortStableFunc(fields, func(a, b *a2uiField) int {
-		return cmp.Compare(boolToInt(a.kind == a2uiFieldGroup), boolToInt(b.kind == a2uiFieldGroup))
+		return cmp.Compare(boolToInt(a.isSection()), boolToInt(b.isSection()))
 	})
 	return fields
+}
+
+// isSection は f が見出しの下に複数の項目を並べるもの（オブジェクト、オブジェクトの
+// 配列）かを返す。
+func (f *a2uiField) isSection() bool {
+	return f.kind == a2uiFieldGroup ||
+		(f.kind == a2uiFieldList && f.item != nil && f.item.kind == a2uiFieldGroup)
 }
 
 func boolToInt(b bool) int {
@@ -271,12 +293,7 @@ func buildA2UIField(
 			f.kind = a2uiFieldText
 		}
 	case "array":
-		f.kind, f.typed = a2uiFieldJSON, true
-		if items, ok := asSchemaObject(prop["items"]); ok && schemaType(items) == "string" {
-			if options, ok := stringEnum(items); ok {
-				f.kind, f.options = a2uiFieldMultiChoice, options
-			}
-		}
+		f.setArrayKind(prop, depth, budget)
 	case "object":
 		f.kind, f.typed = a2uiFieldJSON, true
 		if props, _ := prop["properties"].(map[string]any); len(props) > 0 &&
@@ -293,6 +310,72 @@ func buildA2UIField(
 		}
 	}
 	return f
+}
+
+// setArrayKind は配列の項目の種類を決める。enum の文字列の配列は複数選択、要素を
+// 入力欄にできる配列は行ごとの入力欄、それ以外は JSON のテキスト欄。
+func (f *a2uiField) setArrayKind(prop map[string]any, depth int, budget *int) {
+	f.kind, f.typed = a2uiFieldJSON, true
+	items, ok := asSchemaObject(prop["items"])
+	if !ok {
+		return
+	}
+	if options, ok := stringEnum(items); ok && schemaType(items) == "string" {
+		f.kind, f.options = a2uiFieldMultiChoice, options
+		return
+	}
+	if item := buildA2UIListItem(items, depth, budget); item != nil {
+		f.kind, f.item, f.slots = a2uiFieldList, item, a2uiListDefaultSlots
+		// 残りの行のぶんも項目数に数える。
+		*budget -= (f.slots - 1) * max(1, len(item.children))
+	}
+}
+
+// buildA2UIListItem は配列の要素 1 つぶんの項目を返す。要素がスカラー（文字列・
+// 数値・単一選択・日付）か、properties を持つオブジェクトのときだけ入力欄にできる。
+// それ以外（配列の配列、自由形式のオブジェクトなど）は nil。
+func buildA2UIListItem(items map[string]any, depth int, budget *int) *a2uiField {
+	item := buildA2UIField("", items, false, depth+1, budget)
+	switch item.kind {
+	case a2uiFieldText, a2uiFieldInteger, a2uiFieldNumber, a2uiFieldChoice,
+		a2uiFieldDate, a2uiFieldDateTime, a2uiFieldGroup:
+		clearA2UIRequired(item)
+		return item
+	case a2uiFieldBool, a2uiFieldMultiChoice, a2uiFieldJSON, a2uiFieldList:
+	}
+	return nil
+}
+
+// clearA2UIRequired は f とその子孫を必須でなくする。
+func clearA2UIRequired(f *a2uiField) {
+	f.required = false
+	for _, child := range f.children {
+		clearA2UIRequired(child)
+	}
+	if f.item != nil {
+		clearA2UIRequired(f.item)
+	}
+}
+
+// a2uiSizeLists は args（モデルが渡した引数）に合わせて配列の入力欄の行数を決める。
+// 既にある要素をすべて表示し、その後ろに空の行を足す。配列の要素の中にある配列は
+// 既定の行数のまま。
+func a2uiSizeLists(fields []*a2uiField, args map[string]any) {
+	for _, f := range fields {
+		switch v := args[f.name].(type) {
+		case map[string]any:
+			if f.kind == a2uiFieldGroup {
+				a2uiSizeLists(f.children, v)
+			}
+		case []any:
+			if f.kind == a2uiFieldList {
+				f.slots = min(
+					max(a2uiListDefaultSlots, len(v)+a2uiListSpareSlots),
+					a2uiListMaxSlots,
+				)
+			}
+		}
+	}
 }
 
 func truncateRunes(s string, limit int) string {
@@ -479,10 +562,49 @@ func (b *a2uiTemplateBuilder) fields(fields []*a2uiField, basePath string) []any
 			ids = append(ids, b.fields(f.children, path)...)
 			continue
 		}
+		if f.kind == a2uiFieldList {
+			ids = append(ids, b.list(f, path)...)
+			continue
+		}
 		ids = append(ids, b.add(b.input(f, label, path)))
 		if f.description != "" {
 			ids = append(ids, b.text(f.description, "caption"))
 		}
+	}
+	return ids
+}
+
+// list は配列の入力欄を slots 行ぶん追加する。要素がオブジェクトなら行ごとに見出しを
+// 付けて子の項目を並べ、スカラーなら行ごとに 1 つの入力欄を置く。値は配列の添字の
+// パス（.../photoUrls/0）に束縛する。
+func (b *a2uiTemplateBuilder) list(f *a2uiField, path string) []any {
+	var ids []any
+	if f.item.kind == a2uiFieldGroup {
+		heading := "**" + f.label + "**"
+		if f.required {
+			heading += " *"
+		}
+		ids = append(ids, b.text(heading, ""))
+	}
+	if f.description != "" {
+		ids = append(ids, b.text(f.description, "caption"))
+	}
+	for i := range f.slots {
+		itemPath := path + "/" + strconv.Itoa(i)
+		if f.item.kind == a2uiFieldGroup {
+			ids = append(ids, b.text(fmt.Sprintf("%s #%d", f.label, i+1), "caption"))
+			ids = append(ids, b.fields(f.item.children, itemPath)...)
+			continue
+		}
+		// 必須の配列は、最初の行だけ必須にする（1 つ以上の要素が要る）。
+		item := *f.item
+		item.label = f.label
+		item.required = f.required && i == 0
+		label := fmt.Sprintf("%s %d", f.label, i+1)
+		if item.required {
+			label += " *"
+		}
+		ids = append(ids, b.add(b.input(&item, label, itemPath)))
 	}
 	return ids
 }
@@ -538,8 +660,8 @@ func (b *a2uiTemplateBuilder) input(f *a2uiField, label, path string) map[string
 		if f.typed {
 			c["label"] = label + " (JSON)"
 		}
-	case a2uiFieldText, a2uiFieldGroup:
-		// グループは fields が子を展開するので、ここへは来ない。
+	case a2uiFieldText, a2uiFieldGroup, a2uiFieldList:
+		// グループと配列は fields が展開するので、ここへは来ない。
 		c["component"] = "TextField"
 		if f.secret {
 			c["variant"] = "obscured"
@@ -662,6 +784,19 @@ func (f *a2uiField) initialValue(v any) any {
 	case a2uiFieldGroup:
 		child, _ := v.(map[string]any)
 		return a2uiInitialValues(f.children, child)
+	case a2uiFieldList:
+		// 行数ぶんの要素を用意する（束縛先の添字が未定義にならないように）。行数を
+		// 超える要素も落とさずに持つ。
+		list, _ := v.([]any)
+		out := make([]any, 0, max(f.slots, len(list)))
+		for i := range max(f.slots, len(list)) {
+			var element any
+			if i < len(list) {
+				element = list[i]
+			}
+			out = append(out, f.item.initialValue(element))
+		}
+		return out
 	case a2uiFieldBool:
 		b, _ := v.(bool)
 		return b
@@ -770,6 +905,8 @@ func (f *a2uiField) coerce(v any, path string) (_ any, keep bool, _ error) {
 	switch f.kind {
 	case a2uiFieldGroup:
 		return f.coerceGroup(v, path)
+	case a2uiFieldList:
+		return f.coerceList(v, path)
 	case a2uiFieldInteger, a2uiFieldNumber:
 		return f.coerceNumber(v, path)
 	case a2uiFieldChoice:
@@ -800,6 +937,44 @@ func (f *a2uiField) coerceGroup(v any, path string) (any, bool, error) {
 		return nil, false, err
 	}
 	return coerced, len(coerced) > 0 || f.required, nil
+}
+
+// coerceList は配列の各要素を直し、空のままの行（要素）を取り除く。
+func (f *a2uiField) coerceList(v any, path string) (any, bool, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return v, true, nil
+	}
+	out := make([]any, 0, len(list))
+	for i, element := range list {
+		coerced, keep, err := f.item.coerce(element, fmt.Sprintf("%s[%d]", path, i))
+		if err != nil {
+			return nil, false, err
+		}
+		if !keep || a2uiBlankValue(coerced) {
+			continue
+		}
+		out = append(out, coerced)
+	}
+	return out, len(out) > 0 || f.required, nil
+}
+
+// a2uiBlankValue は v が何も入力されていない要素かを返す。チェックボックスは未操作でも
+// false を送ってくるので、false だけから成るオブジェクトは空とみなす。
+func a2uiBlankValue(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, value := range m {
+		if b, isBool := value.(bool); isBool && !b {
+			continue
+		}
+		if !a2uiBlankValue(value) {
+			return false
+		}
+	}
+	return true
 }
 
 // coerceNumber はテキスト欄の文字列を数値に直す。空なら送らない。

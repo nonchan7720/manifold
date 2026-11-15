@@ -320,6 +320,8 @@ func (m *a2uiFormsMiddleware) formResult(
 		// 引数を読めなくても、空のフォームは出せる。
 		args = map[string]any{}
 	}
+	// 既にある配列の要素をすべて表示できるよう、行数を引数に合わせる。
+	a2uiSizeLists(fields, args)
 	if m.inline {
 		return m.inlineFormResult(ctx, req, tool, fields, args)
 	}

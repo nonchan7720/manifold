@@ -707,7 +707,12 @@ root = Card(child=column_7)
 | `boolean` | `CheckBox` |
 | `format: date` / `date-time` の `string` | `DateTimeInput` |
 | `properties` を持つオブジェクト | その項目（4 階層まで入れ子で展開） |
-| それ以外（自由形式のオブジェクト、その他の配列、`oneOf` など） | JSON を書く `TextField`（`longText`） |
+| `string` / `integer` / `number` / `properties` を持つオブジェクトの配列 | 要素ごとに 1 行の入力欄。要素の添字に束縛する（`/input/tags/0/name`） |
+| それ以外（`properties` の無い自由形式のオブジェクト、配列の配列、`oneOf` など） | JSON を書く `TextField`（`longText`） |
+
+basic カタログには、データモデルのリストへ要素を足す関数がありません。そのため配列の行数は固定で、3 行、またはモデルが渡した要素の数 + 空の 2 行（最大 20 行）です。空のままの行はフォームの送信時に取り除きます。配列の要素の中の項目は必須にしないので、使わない行が送信を妨げることはありません。
+
+A2UI Express と A2UI の JSON は同じフォームを表します。JSON は現行の v1.0 仕様に従い、コンポーネントのチェックを `@checks` という名前で書きます。この改名より前に公開されたレンダラ（`@a2ui/web_core` 0.15）は `checks` を読みます。影響するのは既定の配信だけです。`inline: true` では、エージェント自身の A2UI SDK がブロックをコンパイルし、レンダラが読むキーを選びます。
 
 呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に basic カタログ（`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
 
