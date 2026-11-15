@@ -644,6 +644,7 @@ mcpServers:
     a2ui:
       forms: true            # 既定: false
       assumeSupport: false   # 既定: false
+      inline: false          # 既定: false
 ```
 
 書き込み系ツールとは、読み取り専用でないツールです。既定では `GET` / `HEAD` / `OPTIONS` / `TRACE` 以外のすべての operation で、`x-mcp.annotations` があればそれに従います。`forms: true` にすると、A2UI に対応した呼び出し元に対して次のように動きます。
@@ -667,6 +668,14 @@ mcpServers:
   }
 }
 ```
+
+#### エージェントの出力から A2UI を描画するホスト（`inline`）
+
+レイアウトは MCP のリソースなので、ホストがそれを読める必要があります。エージェントの後ろにある UI（たとえば Claude Agent SDK の上に載せた Web UI で、エージェントの出力に含まれる A2UI メッセージを描画するもの）は、リソースを読むための MCP 接続を自分では持ちません。その場合は `inline: true` にします（こうしたエージェントは `_meta.a2ui` を申告しないので、通常は `assumeSupport: true` と併用します）。
+
+- `tools/call <tool>` はフォーム全体をテキストで返します。`components` と `dataModel` を含む 1 つの `createSurface` メッセージで、その前に「メッセージを変更せずに出力すること」「ユーザーが送信したら、action の context を引数に `<tool>__submit` を呼ぶこと」をエージェントに伝える文が付きます。
+- `surfaceId` にはランダムな接尾辞が付きます（`manifold-form-<tool>-XXXXXXXX`）。A2UI は既存の surface への `createSurface` を拒否し、同じツールのフォームが複数回表示されうるためです。
+- エージェントがフォームを出力に書き写すので、大きなスキーマでは出力トークンを消費し、写しの正確さもモデル次第です。メッセージの包み方（タグ、コードブロックなど）はホスト側の決まりなので、エージェント自身のシステムプロンプトで指示してください。
 
 フォームは LLM を使わず、ツールの入力スキーマから生成します。
 
@@ -907,6 +916,7 @@ gateway:
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
 | `a2ui.forms`    | bool              | 書き込み系ツールに A2UI の入力フォームを付け、フォームの送信時に API を呼ぶ。OpenAPI モードのみ（[書き込み系ツールの A2UI フォーム](#書き込み系ツールの-a2ui-フォームa2ui) 参照） |
 | `a2ui.assumeSupport` | bool         | リクエストごとに A2UI 対応を申告しない（`_meta.a2ui`）呼び出し元も対応とみなす |
+| `a2ui.inline`   | bool              | レイアウトをリソースで配信する代わりに、フォーム全体（レイアウトと初期値）をツール結果のテキストで返し、エージェントにそのまま出力させる |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 

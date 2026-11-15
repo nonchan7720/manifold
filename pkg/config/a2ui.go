@@ -14,6 +14,13 @@ type A2UIConfig struct {
 	// <tool>__submit を呼んだ時点で実行する。
 	Forms bool `mapstructure:"forms"`
 
+	// Inline は、フォーム全体（レイアウトと初期値）をツール結果のテキストに載せて
+	// 返すかどうか。エージェントが出力した A2UI メッセージを UI が拾って描画する
+	// ホスト（MCP のリソースを UI から取得できない構成）向け。エージェントはその
+	// メッセージをそのまま出力してユーザーに見せる。false なら、レイアウトは
+	// a2ui:// リソースで、初期値はツール結果の埋め込みリソースで返す。
+	Inline bool `mapstructure:"inline"`
+
 	// AssumeSupport は、リクエストの _meta.a2ui で A2UI 対応を申告しない呼び出し元も
 	// 対応とみなすかどうか。ゲートウェイは HTTP を Stateless で配信するため、
 	// initialize の capabilities.a2ui で申告された内容は以降のリクエストでは

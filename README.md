@@ -644,6 +644,7 @@ mcpServers:
     a2ui:
       forms: true            # default: false
       assumeSupport: false   # default: false
+      inline: false          # default: false
 ```
 
 A write tool is one that is not read-only: by default every operation other than `GET` / `HEAD` / `OPTIONS` / `TRACE`, or whatever `x-mcp.annotations` says. With `forms: true`, for a caller that supports A2UI:
@@ -667,6 +668,14 @@ The form never calls MCP itself. Its submit button only raises an A2UI action (`
   }
 }
 ```
+
+#### Hosts that render A2UI from the agent's output (`inline`)
+
+The layout is an MCP resource, so the host has to be able to read it. A UI that sits behind an agent — for example a web UI on top of the Claude Agent SDK that renders the A2UI messages it finds in the agent's output — has no MCP connection of its own to read it with. For those, set `inline: true` (usually together with `assumeSupport: true`, since such an agent does not declare `_meta.a2ui`):
+
+- `tools/call <tool>` returns the whole form as text: a single `createSurface` message carrying `components` and `dataModel`, preceded by a note telling the agent to output the messages unchanged and to call `<tool>__submit` with the action's context once the user submits.
+- The `surfaceId` gets a random suffix (`manifold-form-<tool>-XXXXXXXX`), because A2UI rejects a `createSurface` for a surface that already exists and the same tool's form may be shown more than once.
+- The agent copies the form into its output, so a large schema costs output tokens and the copy is only as exact as the model makes it. How the agent wraps the messages (a tag, a code block, ...) is the host's convention; tell the agent in its own system prompt.
 
 The form is generated from the tool's input schema, with no LLM involved:
 
@@ -907,6 +916,7 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
 | `a2ui.forms`    | bool              | Give write tools an A2UI input form; the API is called when the form is submitted. OpenAPI mode only (see [A2UI forms for write tools](#a2ui-forms-for-write-tools-a2ui)) |
 | `a2ui.assumeSupport` | bool         | Treat callers that don't declare A2UI support per request (`_meta.a2ui`) as supporting it |
+| `a2ui.inline`   | bool              | Return the whole form (layout and initial values) as text in the tool result, for the agent to output as is, instead of serving the layout as a resource |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 

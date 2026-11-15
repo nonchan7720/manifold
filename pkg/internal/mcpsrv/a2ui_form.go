@@ -334,6 +334,43 @@ func a2uiCheck(condition map[string]any, message string) map[string]any {
 // buildA2UIFormTemplate はフォームのレイアウト（createSurface と
 // updateComponents）を A2UI メッセージの配列として返す。
 func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
+	return []any{
+		map[string]any{
+			"version": a2uiProtocolVersion,
+			"createSurface": map[string]any{
+				"surfaceId": spec.surfaceID,
+				"catalogId": a2uiBasicCatalogID,
+			},
+		},
+		map[string]any{
+			"version": a2uiProtocolVersion,
+			"updateComponents": map[string]any{
+				"surfaceId":  spec.surfaceID,
+				"components": buildA2UIFormComponents(spec),
+			},
+		},
+	}
+}
+
+// buildA2UIInlineForm はフォーム全体（レイアウトと初期値）を 1 つの createSurface
+// メッセージにまとめて返す。リソースを取得できないホスト（エージェントの出力から
+// A2UI を拾うホスト）向けに、ツール結果だけでフォームを完結させる。
+func buildA2UIInlineForm(spec a2uiFormSpec, dataModel map[string]any) []any {
+	return []any{
+		map[string]any{
+			"version": a2uiProtocolVersion,
+			"createSurface": map[string]any{
+				"surfaceId":  spec.surfaceID,
+				"catalogId":  a2uiBasicCatalogID,
+				"components": buildA2UIFormComponents(spec),
+				"dataModel":  dataModel,
+			},
+		},
+	}
+}
+
+// buildA2UIFormComponents はフォームのコンポーネントの一覧を返す。
+func buildA2UIFormComponents(spec a2uiFormSpec) []any {
 	b := &a2uiTemplateBuilder{}
 	children := []any{b.text("### "+spec.title, "")}
 	if spec.description != "" {
@@ -370,23 +407,7 @@ func buildA2UIFormTemplate(spec a2uiFormSpec) []any {
 		"id": b.newID("column"), "component": "Column", "children": children,
 	})
 	b.add(map[string]any{"id": "root", "component": "Card", "child": column})
-
-	return []any{
-		map[string]any{
-			"version": a2uiProtocolVersion,
-			"createSurface": map[string]any{
-				"surfaceId": spec.surfaceID,
-				"catalogId": a2uiBasicCatalogID,
-			},
-		},
-		map[string]any{
-			"version": a2uiProtocolVersion,
-			"updateComponents": map[string]any{
-				"surfaceId":  spec.surfaceID,
-				"components": b.components,
-			},
-		},
-	}
+	return b.components
 }
 
 // fields は項目のコンポーネントを追加し、親の Column に並べる ID を返す。

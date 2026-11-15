@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -135,6 +136,8 @@ func a2uiRequestMeta(req mcp.Request) mcp.Meta {
 type a2uiFormsMiddleware struct {
 	server        string
 	assumeSupport bool
+	// inline はフォーム全体をツール結果のテキストに載せるか（a2ui.inline）。
+	inline bool
 }
 
 // newA2UIFormsMiddleware は書き込み系ツールの A2UI フォームを配信するミドルウェアを
@@ -144,6 +147,7 @@ func newA2UIFormsMiddleware(name string, cfg *config.Server) mcp.Middleware {
 	m := &a2uiFormsMiddleware{
 		server:        name,
 		assumeSupport: cfg != nil && cfg.A2UI != nil && cfg.A2UI.AssumeSupport,
+		inline:        cfg != nil && cfg.A2UI != nil && cfg.A2UI.Inline,
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -316,6 +320,9 @@ func (m *a2uiFormsMiddleware) formResult(
 		// 引数を読めなくても、空のフォームは出せる。
 		args = map[string]any{}
 	}
+	if m.inline {
+		return m.inlineFormResult(ctx, req, tool, fields, args)
+	}
 	data, err := json.Marshal([]any{map[string]any{
 		"version": a2uiProtocolVersion,
 		"updateDataModel": map[string]any{
@@ -349,6 +356,55 @@ func (m *a2uiFormsMiddleware) formResult(
 		Meta: mcp.Meta{mcpAppsMetaKey: a2uiFormUIMeta(tool.Name)},
 	}
 	return completeRelayedResult(req, res)
+}
+
+// inlineFormResult は a2ui.inline のときの formResult。フォーム全体を 1 つの
+// createSurface にまとめ、エージェントがそのまま出力できるようテキストで返す。
+//
+// surfaceId は呼び出しごとに変える。A2UI は既存の surfaceId での createSurface を
+// エラーにするので、同じツールのフォームを 2 回出せるようにするため。
+func (m *a2uiFormsMiddleware) inlineFormResult(
+	ctx context.Context,
+	req mcp.Request,
+	tool *mcp.Tool,
+	fields []*a2uiField,
+	args map[string]any,
+) (mcp.Result, error) {
+	submitTool := tool.Name + a2uiSubmitSuffix
+	messages, err := json.Marshal(buildA2UIInlineForm(
+		m.formSpec(tool, fields, a2uiSurfacePrefix+tool.Name+"-"+rand.Text()[:8]),
+		a2uiInitialData(fields, args),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("marshal a2ui form: %w", err)
+	}
+	slog.InfoContext(ctx, "a2ui form returned instead of calling the tool",
+		slog.String("server", m.server), slog.String("tool", tool.Name))
+	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
+		"The %s request has NOT been sent yet. Show the user the form below by "+
+			"outputting these A2UI v1.0 messages exactly as they are, without "+
+			"changing them. When the user submits the form you receive an action "+
+			"named %s: call the %s tool with that action's context as the arguments, "+
+			"unchanged. Do not call %s before that.\n\n%s",
+		tool.Name, submitTool, submitTool, submitTool, messages)}}}
+	return completeRelayedResult(req, res)
+}
+
+// formSpec は tool のフォームを組み立てるための入力を返す。
+func (m *a2uiFormsMiddleware) formSpec(
+	tool *mcp.Tool, fields []*a2uiField, surfaceID string,
+) a2uiFormSpec {
+	title := tool.Title
+	if title == "" {
+		title = tool.Name
+	}
+	return a2uiFormSpec{
+		surfaceID:   surfaceID,
+		title:       title,
+		description: truncateRunes(strings.TrimSpace(tool.Description), maxA2UIFormTextRunes),
+		submitTool:  tool.Name + a2uiSubmitSuffix,
+		fields:      fields,
+	}
 }
 
 // submit は <tool>__submit を <tool> の呼び出しに直して内側へ渡す。
@@ -424,17 +480,8 @@ func (m *a2uiFormsMiddleware) readResource(
 	if !target {
 		return nil, mcp.ResourceNotFoundError(params.URI)
 	}
-	title := tool.Title
-	if title == "" {
-		title = tool.Name
-	}
-	template, err := json.Marshal(buildA2UIFormTemplate(a2uiFormSpec{
-		surfaceID:   a2uiSurfacePrefix + tool.Name,
-		title:       title,
-		description: truncateRunes(strings.TrimSpace(tool.Description), maxA2UIFormTextRunes),
-		submitTool:  tool.Name + a2uiSubmitSuffix,
-		fields:      fields,
-	}))
+	template, err := json.Marshal(buildA2UIFormTemplate(
+		m.formSpec(tool, fields, a2uiSurfacePrefix+tool.Name)))
 	if err != nil {
 		return nil, fmt.Errorf("marshal a2ui form template: %w", err)
 	}
