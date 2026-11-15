@@ -264,23 +264,20 @@ func expressIdentifier(s string) bool {
 // a2uiSentinelRE は文字列の中に現れる Express のタグ。
 var a2uiSentinelRE = regexp.MustCompile(`(?i)<(/?a2ui)`)
 
-// expressString は文字列リテラルを書く。バックスラッシュを含み、引用符・改行・タブを
-// 含まない文字列（正規表現など）は raw 文字列、それ以外はエスケープした文字列にする。
+// expressString は文字列リテラルを書く。値は spec やツールの引数から来る外部入力
+// なので、引用符とバックスラッシュを必ずエスケープし、リテラルの外へ出られない
+// ようにする（raw 文字列は使わない）。
 //
 // タグの検出は文字列リテラルの中かどうかを見ないので、spec 由来の文字列（ツールの
 // 説明など）に </a2ui> が含まれるとブロックが途中で閉じてしまう。"<" の後ろに空白を
 // 入れてタグとして読まれないようにする。
 func expressString(s string) string {
 	s = a2uiSentinelRE.ReplaceAllString(s, "< ${1}")
-	if strings.Contains(s, `\`) && !strings.ContainsAny(s, "\"\n\r\t") {
-		return `r"` + s + `"`
-	}
-	escaped := strings.NewReplacer(
-		`\`, `\\`,
-		`"`, `\"`,
-		"\n", `\n`,
-		"\r", `\r`,
-		"\t", `\t`,
-	).Replace(s)
-	return `"` + escaped + `"`
+	// バックスラッシュを最初に置き換える（後続のエスケープを二重にしないため）。
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return `"` + s + `"`
 }

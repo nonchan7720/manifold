@@ -53,9 +53,9 @@ func TestBuildA2UIExpressForm(t *testing.T) {
 			`"title must be at most 40 characters and at least 1"), ` +
 			`?regex($/input/body/title, "^[a-z]+$", "title has an invalid format")], ` +
 			`label="title *", value=$/input/body/title)`,
-		// バックスラッシュを含む正規表現は raw 文字列。
+		// 正規表現のバックスラッシュはエスケープする。
 		`field_12 = TextField([?regex($/input/body/price, ` +
-			`r"^(-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)?$", "price must be a number")], ` +
+			`"^(-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?)?$", "price must be a number")], ` +
 			`label="price", value=$/input/body/price, variant="number")`,
 		`field_13 = ChoicePicker(label="priority", ` +
 			`options=[{label: "low", value: "low"}, {label: "high", value: "high"}], ` +
@@ -99,14 +99,16 @@ func TestBuildA2UIExpressForm_NoFields(t *testing.T) {
 
 func TestExpressString(t *testing.T) {
 	for in, want := range map[string]string{
-		`plain`:            `"plain"`,
-		`say "hi"`:         `"say \"hi\""`,
-		"line1\nline2\t!":  `"line1\nline2\t!"`,
-		`^\d{3}$`:          `r"^\d{3}$"`,
-		`a\b "c"`:          `"a\\b \"c\""`,
-		`close </a2ui> me`: `"close < /a2ui> me"`,
-		`open <A2UI> me`:   `"open < A2UI> me"`,
-		``:                 `""`,
+		`plain`:             `"plain"`,
+		`say "hi"`:          `"say \"hi\""`,
+		"line1\nline2\t!":   `"line1\nline2\t!"`,
+		`^\d{3}$`:           `"^\\d{3}$"`,
+		`end\`:              `"end\\"`,
+		`" + evil("x") + "`: `"\" + evil(\"x\") + \""`,
+		`a\b "c"`:           `"a\\b \"c\""`,
+		`close </a2ui> me`:  `"close < /a2ui> me"`,
+		`open <A2UI> me`:    `"open < A2UI> me"`,
+		``:                  `""`,
 	} {
 		require.Equal(t, want, expressString(in), "input %q", in)
 	}
