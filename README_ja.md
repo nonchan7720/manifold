@@ -44,6 +44,7 @@ flowchart TD
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）/ Google サービスアカウント（`googleServiceAccount`）から 1 つを選択
 - **MCP Apps 対応**: MCP バックエンドの [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)（`io.modelcontextprotocol/ui`）の UI（ツールの `_meta.ui` と、`resources/list`・`resources/read` で取得する `ui://` リソース）を対応ホストへそのまま通し、非対応ホストには取り除いて返す（`mcpServers.<name>.apps`）
+- **書き込み系ツールの A2UI フォーム**: OpenAPI バックエンドの書き込み系ツール（POST / PUT / PATCH / DELETE）に、スキーマから生成した入力フォームを付ける。[A2UI](https://a2ui.org/) v1.0 を MCP 越し（`a2ui://` リソース）に配信し、ユーザーがフォームを送信した時点で API を呼ぶ（`mcpServers.<name>.a2ui`）
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
 - **ストレージ選択可能**: インメモリ（デフォルト）・Redis・SQLite によるセッション・トークン管理
@@ -631,6 +632,49 @@ prompts:
 
 `content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。`authz` はツールと同じ判定でこれらの prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。
 
+### 書き込み系ツールの A2UI フォーム（`a2ui`）
+
+OpenAPI モードのサーバーは、書き込み系ツールに入力フォームを付けられます。フォームは [A2UI](https://a2ui.org/) v1.0 を MCP 越しに配信します（[Serve A2UI Layouts from an MCP Server](https://a2ui.org/guides/a2ui-over-mcp/)）。ホストは `a2ui://` リソース（`application/a2ui+json`）からフォームをネイティブに描画し、モデルが渡した引数がその初期値になり、ユーザーが送信した時点で初めて API を呼びます。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    a2ui:
+      forms: true            # 既定: false
+      assumeSupport: false   # 既定: false
+```
+
+書き込み系ツールとは、読み取り専用でないツールです。既定では `GET` / `HEAD` / `OPTIONS` / `TRACE` 以外のすべての operation で、`x-mcp.annotations` があればそれに従います。`forms: true` にすると、A2UI に対応した呼び出し元に対して次のように動きます。
+
+- **`tools/list`**: 書き込み系ツールに `_meta.ui`（`resourceUri: a2ui://form/<tool>`、`mimeType: application/a2ui+json`）を付け、その隣に `<tool>__submit` ツールを並べます。
+- **`tools/call <tool>`**: API を **呼びません**。渡された引数を載せた `updateDataModel` メッセージ（ユーザー向けの埋め込みリソース。モデルのコンテキストには入れません）と、リクエストがまだ送られていないことをモデルに伝えるテキストを返します。
+- **`tools/call <tool>__submit`**: フォームの送信ボタンが呼びます（`callMcpTool`）。Manifold はフォームの値を入力スキーマの型に直し（テキストで入力された数値、リストで届く単一選択、空のままの任意項目の除外）、`<tool>` を実行します。`authz`・`guardrail`・監査ログ・メトリクスからは `<tool>` として見えます。
+- **`resources/list`・`resources/read`**: 呼び出し元が一覧できる書き込み系ツールごとに、フォームのテンプレート（`createSurface` + `updateComponents`）を返します。エンドポイントは `resources` capability を広告します。
+
+フォームは LLM を使わず、ツールの入力スキーマから生成します。
+
+| スキーマ | コンポーネント |
+| -------- | -------------- |
+| `string` | `TextField`（`format: password` は `obscured`）。`required` / `length` / `regex` のチェック付き |
+| `enum` 付きの `string` | `ChoicePicker`（単一選択） |
+| `enum` 付きの `string` の配列 | `ChoicePicker`（複数選択） |
+| `integer` / `number` | `TextField`（`number`） |
+| `boolean` | `CheckBox` |
+| `format: date` / `date-time` の `string` | `DateTimeInput` |
+| `properties` を持つオブジェクト | その項目（4 階層まで入れ子で展開） |
+| それ以外（自由形式のオブジェクト、その他の配列、`oneOf` など） | JSON を書く `TextField`（`longText`） |
+
+呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に、basic カタログ（`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）と MCP カタログ（`https://a2ui.org/specification/v1_0/catalogs/mcp/catalog.json`。`callMcpTool` を定義する）の両方を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
+
+有効にする前に知っておくこと:
+
+- **確認の機会を与える仕組みで、確認を強制する仕組みではありません。** A2UI に対応しない呼び出し元は従来どおり `<tool>` を直接実行します。`<tool>__submit` も通常のツールで、`_meta.ui.visibility: ["app"]` はモデルから隠すようホストに頼むだけです。書き込める相手を絞るには `authz` を使ってください。
+- **`assumeSupport: true` では、A2UI を描画できないホストは書き込み系ツールを呼んでも実行できなくなります。** 「フォームを表示した」という結果だけが返り、フォームは表示されません。A2UI を描画するホストだけが使うエンドポイントで設定してください。
+- 入力スキーマの項目が 200 を超えるツール、既に `_meta.ui` を持つツール、`<tool>__submit` という名前のツールが別にあるツールには、フォームを付けません。ぶら下げた `agents` のスキルにも付けません。
+- `a2ui` は OpenAPI モードのサーバー専用です。MCP バックエンドはバックエンド自身の UI を中継します（[MCP Apps](#mcp-appsapps) 参照）。
+
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
@@ -846,6 +890,8 @@ gateway:
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
+| `a2ui.forms`    | bool              | 書き込み系ツールに A2UI の入力フォームを付け、フォームの送信時に API を呼ぶ。OpenAPI モードのみ（[書き込み系ツールの A2UI フォーム](#書き込み系ツールの-a2ui-フォームa2ui) 参照） |
+| `a2ui.assumeSupport` | bool         | リクエストごとに A2UI 対応を申告しない（`_meta.a2ui`）呼び出し元も対応とみなす |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 

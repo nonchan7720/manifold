@@ -44,6 +44,7 @@ flowchart TD
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`) / Google service account (`googleServiceAccount`)
 - **MCP Apps**: Passes [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) UIs of MCP backends through to hosts that support them — `_meta.ui` on tools, and the `ui://` resources via `resources/list` / `resources/read` — and strips them for hosts that don't (`mcpServers.<name>.apps`)
+- **A2UI forms for write tools**: Gives the write tools (POST / PUT / PATCH / DELETE) of an OpenAPI backend an input form generated from their schema, served with [A2UI](https://a2ui.org/) v1.0 over MCP (`a2ui://` resources); the API is called when the user submits the form (`mcpServers.<name>.a2ui`)
 - **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management in memory (default), Redis or SQLite
@@ -631,6 +632,49 @@ prompts:
 
 `content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. `authz` applies to these prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not.
 
+### A2UI forms for write tools (`a2ui`)
+
+An OpenAPI-mode server can give its write tools an input form, served with [A2UI](https://a2ui.org/) v1.0 over MCP ([Serve A2UI Layouts from an MCP Server](https://a2ui.org/guides/a2ui-over-mcp/)). The host renders the form natively from an `a2ui://` resource (`application/a2ui+json`), the model's arguments become its initial values, and the API is called only when the user submits it:
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    a2ui:
+      forms: true            # default: false
+      assumeSupport: false   # default: false
+```
+
+A write tool is one that is not read-only: by default every operation other than `GET` / `HEAD` / `OPTIONS` / `TRACE`, or whatever `x-mcp.annotations` says. With `forms: true`, for a caller that supports A2UI:
+
+- **`tools/list`** adds `_meta.ui` (`resourceUri: a2ui://form/<tool>`, `mimeType: application/a2ui+json`) to each write tool and lists a `<tool>__submit` tool next to it.
+- **`tools/call <tool>`** does **not** call the API. It returns an `updateDataModel` message carrying the given arguments (as an embedded resource for the user, kept out of the model's context) and a text telling the model the request has not been sent yet.
+- **`tools/call <tool>__submit`** is what the form's submit button calls (`callMcpTool`). Manifold converts the form values back to the types of the input schema (numbers typed as text, single choices sent as lists, empty optional fields dropped) and runs `<tool>`. `authz`, `guardrail`, the audit log and metrics see it as `<tool>`.
+- **`resources/list` / `resources/read`** serve the form template (`createSurface` + `updateComponents`) of each write tool the caller is allowed to list. The endpoint advertises the `resources` capability.
+
+The form is generated from the tool's input schema, with no LLM involved:
+
+| Schema | Component |
+| ------ | --------- |
+| `string` | `TextField` (`format: password` → `obscured`), with `required` / `length` / `regex` checks |
+| `string` with `enum` | `ChoicePicker` (single choice) |
+| array of `string` with `enum` | `ChoicePicker` (multiple choice) |
+| `integer` / `number` | `TextField` (`number`) |
+| `boolean` | `CheckBox` |
+| `string` with `format: date` / `date-time` | `DateTimeInput` |
+| object with `properties` | its fields, nested up to 4 levels |
+| anything else (free-form objects, other arrays, `oneOf`, ...) | `TextField` (`longText`) holding JSON |
+
+A caller supports A2UI when its request declares, in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`, both the basic catalog (`https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`) and the MCP catalog (`https://a2ui.org/specification/v1_0/catalogs/mcp/catalog.json`, which defines `callMcpTool`). Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
+
+Things to know before turning it on:
+
+- **It offers a review step; it does not enforce one.** A caller that does not support A2UI calls `<tool>` directly, as before, and `<tool>__submit` is an ordinary tool: `_meta.ui.visibility: ["app"]` asks hosts to hide it from the model, nothing more. Use `authz` to restrict who may write.
+- **With `assumeSupport: true`, a host that cannot render A2UI can no longer run write tools** by calling them: it gets the "form shown" result and no form. Only set it on endpoints whose hosts render A2UI.
+- A tool is left without a form when its input schema has more than 200 fields, when it already has a `_meta.ui`, or when another tool is already named `<tool>__submit`. Skills of attached `agents` never get one.
+- `a2ui` is only for OpenAPI-mode servers. MCP backends relay their own UI (see [MCP Apps](#mcp-apps-apps)).
+
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
 APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
@@ -846,6 +890,8 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
+| `a2ui.forms`    | bool              | Give write tools an A2UI input form; the API is called when the form is submitted. OpenAPI mode only (see [A2UI forms for write tools](#a2ui-forms-for-write-tools-a2ui)) |
+| `a2ui.assumeSupport` | bool         | Treat callers that don't declare A2UI support per request (`_meta.a2ui`) as supporting it |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 
