@@ -11,8 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mcp-b/transports": "6.0.3",
-    "@mcp-b/webmcp-ts-sdk": "6.0.3",
+    "@mcp-b/transports": "6.2.0",
+    "@mcp-b/webmcp-ts-sdk": "6.2.0",
     "uuid": "14.0.3"
   },
   "devDependencies": {
