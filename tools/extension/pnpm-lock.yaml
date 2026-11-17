@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@mcp-b/transports':
-        specifier: 6.0.3
-        version: 6.0.3
+        specifier: 6.2.0
+        version: 6.2.0
       '@mcp-b/webmcp-ts-sdk':
-        specifier: 6.0.3
-        version: 6.0.3
+        specifier: 6.2.0
+        version: 6.2.0
       uuid:
         specifier: 14.0.3
         version: 14.0.3
@@ -140,24 +140,24 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@mcp-b/transports@6.0.3':
-    resolution: {integrity: sha512-j+HReArxaFmgdPY21T1ZzFDJSBf66yEOUmCUkKUZS147uL9J6DLjHUTWpzWT2NIa4ub2x4QAb49ITbohPQINjg==}
+  '@mcp-b/transports@6.2.0':
+    resolution: {integrity: sha512-VxwVffoCUYRF6J2ifm879vHODEie+vPf1BzcYFDBg3Oet17cCMAHwoIdDTAGhdD7VRgEfRE2EwXDVafXDuI5Tw==}
     engines: {node: '>=20'}
 
-  '@mcp-b/webmcp-polyfill@6.0.3':
-    resolution: {integrity: sha512-pD8iKBXpDKLeYyqDcWPiNFI0JuK7/f+/RxspA6qW81kcDdabWUTt7A0fH+cJx6EIjpoHkk4o3QPci7yQPuHofA==}
+  '@mcp-b/webmcp-polyfill@6.2.0':
+    resolution: {integrity: sha512-2RiEKz7ey89lbw+CCia1292RCi56lZIJiCIGvOQKGaOemU2Ljzs8ejYsqGFj+lLXXWo2lH4RN9beA/eBPG4BFA==}
     engines: {node: '>=20'}
 
-  '@mcp-b/webmcp-ts-sdk@6.0.3':
-    resolution: {integrity: sha512-KNbsRW/lE05vE2lSrxNMgZuufuNyXYPRYMqoeKoFX3Se+9KzAOXdniTeGCIyoHJZbn6Zl0WQgDtijqgJmGLrHA==}
+  '@mcp-b/webmcp-ts-sdk@6.2.0':
+    resolution: {integrity: sha512-MJH+0jrxN9zKD85uzZW+EXlBwRS4/pm9YVHTFERH9NkBZlPDo/gIh+bgLsB02ACbVmAI7ehsMaLoHHa9R8hNBQ==}
     engines: {node: '>=20'}
 
-  '@modelcontextprotocol/core@2.0.0':
-    resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
+  '@modelcontextprotocol/core@2.4.0':
+    resolution: {integrity: sha512-z8QBKqdfXLPzkLQuG4xp8hrVEMm1PZ1IgxMN2sMbJiFiAKOWXnAzogXn2W4aqIBlP1ea6U5yiqVquvUNM1Cj6Q==}
     engines: {node: '>=20'}
 
-  '@modelcontextprotocol/server@2.0.0':
-    resolution: {integrity: sha512-YhHWdHfpFMQfd0prsEnxKeS3Qz3ytIGmsS0sth4KDjnacIT7hxk6hXHkJ9KysxlkvTM+WZAtQbbcUhdoP4Hvtw==}
+  '@modelcontextprotocol/server@2.4.0':
+    resolution: {integrity: sha512-rgR9yxSaAJ+bcsi/XroT/S2AfPiIWloXAnrdfYSCms9ivVju0ishu/wW0J21Ho6+ZOR1r7RyeRbjiRuF87ix5Q==}
     engines: {node: '>=20'}
 
   '@napi-rs/wasm-runtime@1.2.6':
@@ -446,6 +446,9 @@ packages:
 
   '@vitest/spy@5.1.0':
     resolution: {integrity: sha512-2DPO5OMHWKrBngC+fCmTQqemNF0gidRhp3lxbBmRhW+M1XJrfgPpqNqWVevXtn2f2ufD5ZaR1B6B641aAlcX5A==}
+
+  '@w3c/webmcp-polyfill@0.1.0':
+    resolution: {integrity: sha512-FNzmob4B72T9cHDVODskyFjNi0JaZgcD1U0eFmuc2J4o3Lr5k1xabZ5rjw1AuvzgvdxRfvNr9FHUP9yG1s/StA==}
 
   adm-zip@0.5.18:
     resolution: {integrity: sha512-ufJnssQGbxzLNS1Ho9bCtX4rQKCCvoVuDLHoJyc3F9dOGDB4BkWs2Ci0kv53lqocAEQ/Cbi+I2XCsNYGqVYqng==}
@@ -1402,8 +1405,8 @@ packages:
     resolution: {integrity: sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==}
     engines: {node: '>=20'}
 
-  webmcp-types@0.1.9:
-    resolution: {integrity: sha512-ibdkppgRDkQ/nvH541YS48kVt96OiuDr+d9JHnirAtI5k0coaFdo2QqCipbXyfwrteDC6xXwPoUGC9uS5ZGwfw==}
+  webmcp-types@0.1.10:
+    resolution: {integrity: sha512-U4GQ1RpJ0tqCUt2ALMV9Pnhi+hsy8L31f/Q1v4mLVhW64r5sYhh+2+SjP/Lq4/9jP33vZgNkuRZARJl65A/ZIg==}
 
   whatwg-mimetype@5.0.0:
     resolution: {integrity: sha512-sXcNcHOC51uPGF0P/D4NVtrkjSU2fNsm9iog4ZvZJsL3rjoDAzXZhkm2MWt1y+PUdggKAYVoMAIYcs78wJ51Cw==}
@@ -1572,29 +1575,30 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@mcp-b/transports@6.0.3':
+  '@mcp-b/transports@6.2.0':
     dependencies:
-      '@modelcontextprotocol/core': 2.0.0
-      '@modelcontextprotocol/server': 2.0.0
+      '@modelcontextprotocol/core': 2.4.0
+      '@modelcontextprotocol/server': 2.4.0
 
-  '@mcp-b/webmcp-polyfill@6.0.3':
+  '@mcp-b/webmcp-polyfill@6.2.0':
     dependencies:
-      webmcp-types: 0.1.9
+      '@w3c/webmcp-polyfill': 0.1.0
+      webmcp-types: 0.1.10
 
-  '@mcp-b/webmcp-ts-sdk@6.0.3':
+  '@mcp-b/webmcp-ts-sdk@6.2.0':
     dependencies:
-      '@mcp-b/webmcp-polyfill': 6.0.3
-      '@modelcontextprotocol/server': 2.0.0
+      '@mcp-b/webmcp-polyfill': 6.2.0
+      '@modelcontextprotocol/server': 2.4.0
       '@standard-schema/spec': 1.1.0
-      webmcp-types: 0.1.9
+      webmcp-types: 0.1.10
 
-  '@modelcontextprotocol/core@2.0.0':
+  '@modelcontextprotocol/core@2.4.0':
     dependencies:
       zod: 4.6.7
 
-  '@modelcontextprotocol/server@2.0.0':
+  '@modelcontextprotocol/server@2.4.0':
     dependencies:
-      '@modelcontextprotocol/core': 2.0.0
+      '@modelcontextprotocol/core': 2.4.0
       zod: 4.6.7
 
   '@napi-rs/wasm-runtime@1.2.6(@emnapi/core@2.0.0-beta.2)(@emnapi/runtime@2.0.0-beta.2)':
@@ -1770,6 +1774,10 @@ snapshots:
       vite: 8.3.7(@types/node@26.6.6)(yaml@2.9.1)
 
   '@vitest/spy@5.1.0': {}
+
+  '@w3c/webmcp-polyfill@0.1.0':
+    dependencies:
+      webmcp-types: 0.1.10
 
   adm-zip@0.5.18: {}
 
@@ -2681,7 +2689,7 @@ snapshots:
 
   webidl-conversions@8.0.1: {}
 
-  webmcp-types@0.1.9: {}
+  webmcp-types@0.1.10: {}
 
   whatwg-mimetype@5.0.0: {}
 
