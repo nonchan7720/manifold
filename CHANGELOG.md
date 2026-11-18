@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.27.0](https://github.com/nonchan7720/manifold/compare/v1.26.2...v1.27.0) (2026-11-18)
+
+
+### Features
+
+* **guardrail:** ファイル用ガードレール manifold-guardrail file を追加 ([#391](https://github.com/nonchan7720/manifold/issues/391)) ([01c8a99](https://github.com/nonchan7720/manifold/commit/01c8a9983935474da80d19f09ac17bf26078fa9d))
+* **guardrail:** 埋め込みリソースと resources/read、ファイルを検査対象に加える ([#381](https://github.com/nonchan7720/manifold/issues/381)) ([1fcb216](https://github.com/nonchan7720/manifold/commit/1fcb2167f042c076bbeb7b109c04e359538bd0f7))
+
+
+### Bug Fixes
+
+* **deps:** Go 1.27.4 へ更新し、guardrails の脆弱な依存（grpc / golang.org/x 系）を更新する ([#409](https://github.com/nonchan7720/manifold/issues/409)) ([eaecafa](https://github.com/nonchan7720/manifold/commit/eaecafa6fcfa9253ad844bb57ebd65e40fb1e62c))
+* **deps:** update [@mcp-b](https://github.com/mcp-b) to v6.2.0 ([#434](https://github.com/nonchan7720/manifold/issues/434)) ([186f179](https://github.com/nonchan7720/manifold/commit/186f179f9fa92e94f35a63290ffe6fecdba73e59))
+* **deps:** update dependency playwright to v1.65.0 ([#373](https://github.com/nonchan7720/manifold/issues/373)) ([43edf3e](https://github.com/nonchan7720/manifold/commit/43edf3ea9e8742a77db1f7a21343b8b77209abdd))
+* **deps:** update go patch dependencies ([#393](https://github.com/nonchan7720/manifold/issues/393)) ([08c87d5](https://github.com/nonchan7720/manifold/commit/08c87d5c3400de579192ad899d07a0ec3d2d071c))
+* **deps:** update go patch dependencies ([#405](https://github.com/nonchan7720/manifold/issues/405)) ([aebfb75](https://github.com/nonchan7720/manifold/commit/aebfb7565381a4c87976f361609ec3d192881276))
+* **deps:** update go patch dependencies ([#413](https://github.com/nonchan7720/manifold/issues/413)) ([4a2e65d](https://github.com/nonchan7720/manifold/commit/4a2e65d3fa596177aa53d11f8e527567b86ae071))
+* **deps:** update go patch dependencies ([#433](https://github.com/nonchan7720/manifold/issues/433)) ([b4f1ee2](https://github.com/nonchan7720/manifold/commit/b4f1ee262e13c46b2b7a8fad1e874d5e44efa6d4))
+* **deps:** update go patch dependencies ([#435](https://github.com/nonchan7720/manifold/issues/435)) ([ea106f8](https://github.com/nonchan7720/manifold/commit/ea106f81bbb4f6f5118cb35a62390fc92c694617))
+* **deps:** update module golang.org/x/oauth2 to v0.38.0 ([#415](https://github.com/nonchan7720/manifold/issues/415)) ([a9c7f2e](https://github.com/nonchan7720/manifold/commit/a9c7f2e3f90dee54626c85759654b6bcd0227123))
+
+
+### Miscellaneous
+
+* **deps:** lock file maintenance ([#428](https://github.com/nonchan7720/manifold/issues/428)) ([aead22e](https://github.com/nonchan7720/manifold/commit/aead22e9c7e8a7f43d31370035653e926ee18abf))
+* **deps:** lock file maintenance ([#429](https://github.com/nonchan7720/manifold/issues/429)) ([193d89b](https://github.com/nonchan7720/manifold/commit/193d89b80acabe8158e7bdc61c1855e8af257ef6))
+* **deps:** update amannn/action-semantic-pull-request action to v6.1.2 ([#404](https://github.com/nonchan7720/manifold/issues/404)) ([3f0fc67](https://github.com/nonchan7720/manifold/commit/3f0fc671e79d62efb5aff1a4a97e84c9b1e5a3c5))
+* **deps:** update dependency jose to v6.2.16 ([#430](https://github.com/nonchan7720/manifold/issues/430)) ([be4c00d](https://github.com/nonchan7720/manifold/commit/be4c00dac3792e63579631b73c9785aaffc504b4))
+* **deps:** update dependency jose to v6.2.17 ([#432](https://github.com/nonchan7720/manifold/issues/432)) ([dfc5287](https://github.com/nonchan7720/manifold/commit/dfc5287c669522c87cdb9de8707f35e06bafa671))
+* **deps:** update dependency vite to v8.3.6 ([#401](https://github.com/nonchan7720/manifold/issues/401)) ([5a8f300](https://github.com/nonchan7720/manifold/commit/5a8f300238396a3bcafc1bb633144426e775c3d9))
+* **deps:** update dependency vite to v8.3.7 ([#431](https://github.com/nonchan7720/manifold/issues/431)) ([181763c](https://github.com/nonchan7720/manifold/commit/181763c5c7c235aa630007adcecd665e7f78494a))
+* **deps:** update docker/login-action action to v4.8.0 ([#406](https://github.com/nonchan7720/manifold/issues/406)) ([5a47ccf](https://github.com/nonchan7720/manifold/commit/5a47ccf51e079b07ed34e78738716a64fce0e5dc))
+* **deps:** update grafana/otel-lgtm docker tag to v0.40.0 ([#412](https://github.com/nonchan7720/manifold/issues/412)) ([be8e880](https://github.com/nonchan7720/manifold/commit/be8e8803ac19a4065fb69386b0a0b72ba89d267a))
+* **deps:** update jdx/mise-action action to v5.2.7 ([#411](https://github.com/nonchan7720/manifold/issues/411)) ([dfbcb0f](https://github.com/nonchan7720/manifold/commit/dfbcb0f1acda7776a2430ec2f66a5a598b234ee5))
+* **deps:** update neo4j:5.26.32 docker digest to 42ef3eb ([#403](https://github.com/nonchan7720/manifold/issues/403)) ([d0e49c8](https://github.com/nonchan7720/manifold/commit/d0e49c88b69ec137068cbab7639ef0942ef527a9))
+
 ## [1.26.2](https://github.com/nonchan7720/manifold/compare/v1.26.1...v1.26.2) (2026-11-11)
 
 
