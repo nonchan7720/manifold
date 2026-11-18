@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.25.3](https://github.com/nonchan7720/manifold/compare/v1.25.2...v1.25.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** Go 1.27.4 へ更新する（v1.25 へのバックポート） ([#419](https://github.com/nonchan7720/manifold/issues/419)) ([4eb3fdd](https://github.com/nonchan7720/manifold/commit/4eb3fddfc09be05ac6de980f5780e09cd8fd1e4c))
+
 ## [1.25.2](https://github.com/nonchan7720/manifold/compare/v1.25.1...v1.25.2) (2026-11-11)
 
 
