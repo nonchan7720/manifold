@@ -1,0 +1,62 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Orders", "version": "1.0.0" },
+  "paths": {
+    "/orders": {
+      "post": {
+        "operationId": "createOrder",
+        "summary": "Create an order",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title", "quantity"],
+                "properties": {
+                  "title": { "type": "string", "minLength": 1, "maxLength": 40 },
+                  "quantity": { "type": "integer" },
+                  "price": { "type": "number" },
+                  "priority": { "type": "string", "enum": ["low", "high"] },
+                  "urgent": { "type": "boolean" },
+                  "dueDate": { "type": "string", "format": "date" },
+                  "tags": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["gift", "fragile"] }
+                  },
+                  "address": {
+                    "type": "object",
+                    "properties": {
+                      "city": { "type": "string" },
+                      "zip": { "type": "string" }
+                    }
+                  },
+                  "extra": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "created" } }
+      }
+    },
+    "/orders/{orderId}": {
+      "get": {
+        "operationId": "getOrder",
+        "summary": "Get an order",
+        "parameters": [
+          { "name": "orderId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "delete": {
+        "operationId": "deleteOrder",
+        "summary": "Delete an order",
+        "parameters": [
+          { "name": "orderId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "204": { "description": "deleted" } }
+      }
+    }
+  }
+}

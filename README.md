@@ -44,6 +44,7 @@ flowchart TD
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
 - **Pluggable backend authentication**: Choose one of static header (`authValue`) / OAuth 2.0 (`oauth2`) / API key Token Exchange (`tokenExchange`) / Google service account (`googleServiceAccount`)
 - **MCP Apps**: Passes [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) UIs of MCP backends through to hosts that support them — `_meta.ui` on tools, and the `ui://` resources via `resources/list` / `resources/read` — and strips them for hosts that don't (`mcpServers.<name>.apps`)
+- **A2UI forms for write tools**: Gives the write tools (POST / PUT / PATCH / DELETE) of an OpenAPI backend an input form generated from their schema, served with [A2UI](https://a2ui.org/) v1.0 over MCP (`a2ui://` resources); the API is called when the user submits the form (`mcpServers.<name>.a2ui`)
 - **Resource links**: Stores binary content from tool responses (including `format: binary` fields inside JSON responses) in S3 and returns download URLs (resource links)
 - **Lazy connection (stdio) / stateless connection (http)**: stdio backends connect on first request (no backend dependency at gateway startup); http backends open a fresh connection per request and never share a session across callers
 - **Selectable storage**: Session / token management in memory (default), Redis or SQLite
@@ -631,6 +632,143 @@ prompts:
 
 `content` is a Go [`text/template`](https://pkg.go.dev/text/template) that refers to the arguments by name (`{{index . "pet-id"}}` for names that contain `-`). A missing required argument is rejected with an invalid-params error, and an omitted optional argument expands to an empty string. `authz` applies to these prompts with the same decisions as tools (see [Decision contract](#decision-contract)); `tools.include` / `exclude` / `overrides` do not.
 
+### A2UI forms for write tools (`a2ui`)
+
+An OpenAPI-mode server can give its write tools an input form, served with [A2UI](https://a2ui.org/) v1.0 over MCP ([Serve A2UI Layouts from an MCP Server](https://a2ui.org/guides/a2ui-over-mcp/)). The host renders the form natively from an `a2ui://` resource (`application/a2ui+json`), the model's arguments become its initial values, and the API is called only when the user submits it:
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    a2ui:
+      forms: true            # default: false
+      assumeSupport: false   # default: false
+      inline: false          # default: false
+```
+
+A write tool is one that is not read-only: by default every operation other than `GET` / `HEAD` / `OPTIONS` / `TRACE`, or whatever `x-mcp.annotations` says. With `forms: true`, for a caller that supports A2UI:
+
+- **`tools/list`** adds `_meta.ui` (`resourceUri: a2ui://form/<tool>`, `mimeType: application/a2ui+json`) to each write tool and lists a `<tool>__submit` tool next to it.
+- **`tools/call <tool>`** does **not** call the API. It returns an `updateDataModel` message carrying the given arguments (as an embedded resource for the user, kept out of the model's context) and a text telling the model the request has not been sent yet.
+- **`tools/call <tool>__submit`** runs the tool. Manifold converts the form values back to the types of the input schema (numbers typed as text, single choices sent as lists, empty optional fields dropped) and runs `<tool>`. `authz`, `guardrail`, the audit log and metrics see it as `<tool>`.
+- **`resources/list` / `resources/read`** serve the form template (`createSurface` + `updateComponents`) of each write tool the caller is allowed to list. The endpoint advertises the `resources` capability.
+
+The form never calls MCP itself. Its submit button only raises an A2UI action (`action.event`) whose `name` is `<tool>__submit` and whose `context` is the tool's arguments, bound to the form values. The agent side — the host that renders the form — receives that action and makes the `tools/call`, so the UI needs no MCP connection or credentials of its own, and the result goes back to the agent:
+
+```json
+{
+  "version": "1.0",
+  "action": {
+    "name": "createOrder__submit",
+    "surfaceId": "manifold-form-createOrder",
+    "sourceComponentId": "submit_12",
+    "timestamp": "2026-03-20T12:00:00Z",
+    "context": { "body": { "title": "desk", "quantity": "2", "priority": ["high"] } }
+  }
+}
+```
+
+#### Using the agent's catalog (`catalog`)
+
+An A2UI catalog (`catalog.json`) defines which components exist and what their properties are called, and it belongs to the agent and its renderer. By default the form uses the v1.0 basic catalog. An agent with its own catalog cannot compile or render that, so point `catalog` at the agent's catalog and Manifold writes the form in its vocabulary:
+
+```yaml
+mcpServers:
+  petstore:
+    a2ui:
+      forms: true
+      catalog: ./acme-catalog.json
+      components:
+        TextField:
+          component: Input             # the catalog's component for this role
+          properties:                  # role property -> the component's property
+            label: title
+            value: text
+            variant: mode
+        Button:
+          component: Action
+          properties: {label: caption, action: onPress}
+```
+
+The form is built from eight roles, named after the basic catalog's components:
+
+| Role | Properties | Used for | If the catalog has none |
+| ---- | ---------- | -------- | ----------------------- |
+| `Text` | `text`, `variant` | title, descriptions, headings | startup fails |
+| `Column` | `children` | the vertical layout | startup fails |
+| `TextField` | `label`, `value`, `variant` | text and number inputs | startup fails |
+| `Button` | `action`, `child` or `label`, `variant` | the submit button | startup fails |
+| `Card` | `child` | the frame around the form | the layout itself is the root |
+| `CheckBox` | `label`, `value` | booleans | a `true` / `false` choice, or a text input |
+| `ChoicePicker` | `value`, `options`, `label`, `variant` | enums | a text input; a multiple choice becomes rows of text inputs |
+| `DateTimeInput` | `value`, `label`, `enableDate`, `enableTime` | dates | a text input |
+
+- A role needs no entry when the catalog has a component of the same name with the same property names.
+- `Button` takes its label either as a child component (`child`, as in the basic catalog) or as a string property (`label`).
+- An optional property the component lacks is left out, and so is a value its `enum` does not list (a `variant` the catalog does not know, for example). A check (`required`, `regex`, `length`) is written only when the catalog defines that function.
+- The catalog is read once at startup. A catalog that cannot be read, a component or property named in `components` that the catalog does not have, or a required role with no usable component fails startup, so a form that cannot be compiled is never served.
+- With `catalog` set, a caller declaring `_meta.a2ui` is treated as supporting A2UI when it lists this catalog's `catalogId`.
+
+#### Hosts that render A2UI from the agent's output (`inline`)
+
+The layout is an MCP resource, so the host has to be able to read it. A UI that sits behind an agent has no MCP connection of its own to read it with: typically a web UI on top of an agent whose output is parsed by the A2UI Agent SDK, which compiles the `<a2ui>` blocks it finds into A2UI messages for the renderer. For those, set `inline: true` (usually together with `assumeSupport: true`, since such an agent does not declare `_meta.a2ui`).
+
+`tools/call <tool>` then returns the whole form as text, in [A2UI Express](https://a2ui.org/concepts/inference-formats/) — the compact notation agents write inside `<a2ui>` tags — preceded by a note telling the agent to include the block in its reply unchanged and to call `<tool>__submit` with the action's context once the user submits:
+
+```
+<a2ui>
+surface("manifold-form-createOrder-K7Q2M9XA")
+$/input/body/priority = ["high"]
+$/input/body/quantity = "2"
+$/input/body/title = "desk"
+text_1 = Text(text="### createOrder")
+field_2 = TextField([?required($/input/body/title, "title is required")], label="title *", value=$/input/body/title)
+field_3 = TextField([?regex($/input/body/quantity, "^(-?[0-9]+)?$", "quantity must be an integer")], label="quantity", value=$/input/body/quantity, variant="number")
+field_4 = ChoicePicker(label="priority", options=[{label: "low", value: "low"}, {label: "high", value: "high"}], value=$/input/body/priority, variant="mutuallyExclusive")
+text_5 = Text(text="Submit")
+submit_6 = Button([?required($/input/body/title, "title is required")], action=Event("createOrder__submit", {body: $/input/body}), child=text_5, variant="primary")
+column_7 = Column(children=[text_1, field_2, field_3, field_4, submit_6])
+root = Card(child=column_7)
+</a2ui>
+```
+
+- The agent only has to copy the block; the Agent SDK on the agent side compiles it. Express is about a third the size of the equivalent A2UI JSON, but a large schema still costs output tokens, and the copy is only as exact as the model makes it.
+- The `surfaceId` gets a random suffix, because A2UI rejects a `createSurface` for a surface that already exists and the same tool's form may be shown more than once.
+- The block uses the components of the catalog Manifold is configured with: the v1.0 basic catalog by default, or the agent's own (see [Using the agent's catalog](#using-the-agents-catalog-catalog)). The agent's A2UI SDK must compile with that same catalog.
+
+The form is generated from the tool's input schema, with no LLM involved:
+
+| Schema | Component |
+| ------ | --------- |
+| `string` | `TextField` (`format: password` → `obscured`), with `required` / `length` / `regex` checks |
+| `string` with `enum` | `ChoicePicker` (single choice) |
+| array of `string` with `enum` | `ChoicePicker` (multiple choice) |
+| `integer` / `number` | `TextField` (`number`) |
+| `boolean` | `CheckBox` |
+| `string` with `format: date` / `date-time` | `DateTimeInput` |
+| object with `properties` | its fields, nested up to 4 levels |
+| array | one row of inputs per element, bound to the element's index (`/input/tags/0/name`); arrays of arrays nest |
+| free-form object (no `properties`) | rows of `key` and `value` inputs, turned back into an object on submit; `additionalProperties` types the values |
+| `oneOf` / `anyOf` | the one non-null alternative, or, when every alternative is an object, the fields of all of them (none required) |
+| no single type (alternatives of different scalar types, ...) | `TextField`; a number or `true` / `false` is sent as that type |
+
+Nothing is left as a JSON text area except what is nested deeper than 4 levels.
+
+The basic catalog has no function that adds an element to a list in the data model, so an array (or a free-form object) gets a fixed number of rows: 3, or the elements the model passed plus 2 empty rows (at most 20). Rows left empty are dropped when the form is submitted, and fields inside an array element are never marked required, so an unused row does not block the submit.
+
+A2UI Express and the A2UI JSON carry the same form. The JSON follows the current v1.0 specification, which names a component's checks `@checks`; renderers released before that rename (`@a2ui/web_core` 0.15) read `checks`. This only matters for the default delivery: with `inline: true` the agent's own A2UI SDK compiles the block and picks the key its renderer reads.
+
+A caller supports A2UI when its request declares the form's catalog (the basic catalog, `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`, unless `catalog` is set) in `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds`. Manifold serves MCP over stateless HTTP, so what a host declared in `initialize` (`capabilities.a2ui`) is gone by its next request; set `assumeSupport: true` to treat callers that declare nothing as supporting A2UI. A declaration, when present, always wins.
+
+Things to know before turning it on:
+
+- **It offers a review step; it does not enforce one.** A caller that does not support A2UI calls `<tool>` directly, as before, and `<tool>__submit` is an ordinary tool: Manifold cannot tell whether the user really submitted the form. A host that wants to enforce the review has to gate `<tool>__submit` itself, letting through only calls that match a submit action it received (for example in its tool-permission hook). Use `authz` to restrict who may write.
+- **With `assumeSupport: true`, a host that cannot render A2UI can no longer run write tools** by calling them: it gets the "form shown" result and no form. Only set it on endpoints whose hosts render A2UI.
+- Form values live in the surface's data model under `/input`, keyed by property name. A name with characters other than letters, digits and `_` (such as `X-Request-Id`) is stored under an alias (`X_Request_Id`), because A2UI Express data paths cannot contain them; `<tool>__submit` accepts either and sends the API the real name.
+- A tool is left without a form when its input schema has more than 200 fields, when it already has a `_meta.ui`, or when another tool is already named `<tool>__submit`. Skills of attached `agents` never get one.
+- `a2ui` is only for OpenAPI-mode servers. MCP backends relay their own UI (see [MCP Apps](#mcp-apps-apps)).
+
 ### Choosing which tools to expose (`tools.include` / `exclude` / `overrides`)
 
 APIs generated from OpenAPI often have far more tools than an agent needs. `tools.include` / `tools.exclude` take [`path.Match`](https://pkg.go.dev/path#Match) glob patterns matched against the tool's original name; a tool is exposed when it matches an `include` pattern (or `include` is empty) and no `exclude` pattern. `tools.overrides`, keyed by the original name, renames a tool and/or replaces its description. This works for every kind of server (OpenAPI, MCP backends, A2A agents served on their own via `agents`, WebMCP).
@@ -846,6 +984,11 @@ Server names (`<name>`) are used in URL paths, so only alphanumerics, `_`, and `
 | `agents`        | map[string]object | A2A agents attached to this service; their skills are added to its tools as `<agent>__<skill>`. Not for `transport: reverse` (see [`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent)) |
 | `apps`          | bool              | Treat hosts that don't declare MCP Apps support per request as supporting it. `http` / `stdio` only (see [MCP Apps](#mcp-apps-apps)) |
 | `prompts.url` / `prompts.file` | string | Source of the prompts document for an OpenAPI-mode server; exactly one (see [Prompts for an OpenAPI backend](#prompts-for-an-openapi-backend-prompts)) |
+| `a2ui.forms`    | bool              | Give write tools an A2UI input form; the API is called when the form is submitted. OpenAPI mode only (see [A2UI forms for write tools](#a2ui-forms-for-write-tools-a2ui)) |
+| `a2ui.assumeSupport` | bool         | Treat callers that don't declare A2UI support per request (`_meta.a2ui`) as supporting it |
+| `a2ui.inline`   | bool              | Return the whole form as an A2UI Express `<a2ui>` block in the tool result, for the agent to output as is, instead of serving the layout as a resource |
+| `a2ui.catalog`  | string            | Path to the agent's A2UI catalog (`catalog.json`); the form is written with its components. Default: the v1.0 basic catalog |
+| `a2ui.components` | map[string]object | Per role (`Text`, `Column`, `Card`, `Button`, `TextField`, `CheckBox`, `ChoicePicker`, `DateTimeInput`): `component`, the catalog's component, and `properties`, role property → component property. Requires `catalog` |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` are mutually exclusive; only one may be configured at a time. `auth.jwt` is independent of them: it governs the client-to-gateway side, the others the gateway-to-backend side.
 

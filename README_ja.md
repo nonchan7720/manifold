@@ -44,6 +44,7 @@ flowchart TD
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
 - **バックエンド認証方式の選択**: 静的ヘッダー（`authValue`）/ OAuth 2.0（`oauth2`）/ API キーの Token Exchange（`tokenExchange`）/ Google サービスアカウント（`googleServiceAccount`）から 1 つを選択
 - **MCP Apps 対応**: MCP バックエンドの [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)（`io.modelcontextprotocol/ui`）の UI（ツールの `_meta.ui` と、`resources/list`・`resources/read` で取得する `ui://` リソース）を対応ホストへそのまま通し、非対応ホストには取り除いて返す（`mcpServers.<name>.apps`）
+- **書き込み系ツールの A2UI フォーム**: OpenAPI バックエンドの書き込み系ツール（POST / PUT / PATCH / DELETE）に、スキーマから生成した入力フォームを付ける。[A2UI](https://a2ui.org/) v1.0 を MCP 越し（`a2ui://` リソース）に配信し、ユーザーがフォームを送信した時点で API を呼ぶ（`mcpServers.<name>.a2ui`）
 - **リソースリンク対応**: ツールのレスポンスに含まれるバイナリ等（JSON レスポンス内の `format: binary` のフィールドを含む）を S3 へ保存し、ダウンロード URL（リソースリンク）として返却
 - **遅延接続（stdio）/ ステートレス接続（http）**: stdio バックエンドは初回リクエスト時に接続を確立（ゲートウェイ起動時のバックエンド依存性を排除）。http バックエンドはリクエストごとに接続を確立し、呼び出し元をまたいでセッションを共有しない
 - **ストレージ選択可能**: インメモリ（デフォルト）・Redis・SQLite によるセッション・トークン管理
@@ -631,6 +632,143 @@ prompts:
 
 `content` は Go の [`text/template`](https://pkg.go.dev/text/template) で、引数を名前で参照します（`-` を含む名前は `{{index . "pet-id"}}`）。必須引数が無い場合は invalid params エラーになり、省略された任意引数は空文字列に展開されます。`authz` はツールと同じ判定でこれらの prompts にも掛かります（[input / data の契約](#input--data-の契約) 参照）。`tools.include` / `exclude` / `overrides` は適用されません。
 
+### 書き込み系ツールの A2UI フォーム（`a2ui`）
+
+OpenAPI モードのサーバーは、書き込み系ツールに入力フォームを付けられます。フォームは [A2UI](https://a2ui.org/) v1.0 を MCP 越しに配信します（[Serve A2UI Layouts from an MCP Server](https://a2ui.org/guides/a2ui-over-mcp/)）。ホストは `a2ui://` リソース（`application/a2ui+json`）からフォームをネイティブに描画し、モデルが渡した引数がその初期値になり、ユーザーが送信した時点で初めて API を呼びます。
+
+```yaml
+mcpServers:
+  petstore:
+    description: Swagger Petstore
+    spec: https://petstore3.swagger.io/api/v3/openapi.json
+    a2ui:
+      forms: true            # 既定: false
+      assumeSupport: false   # 既定: false
+      inline: false          # 既定: false
+```
+
+書き込み系ツールとは、読み取り専用でないツールです。既定では `GET` / `HEAD` / `OPTIONS` / `TRACE` 以外のすべての operation で、`x-mcp.annotations` があればそれに従います。`forms: true` にすると、A2UI に対応した呼び出し元に対して次のように動きます。
+
+- **`tools/list`**: 書き込み系ツールに `_meta.ui`（`resourceUri: a2ui://form/<tool>`、`mimeType: application/a2ui+json`）を付け、その隣に `<tool>__submit` ツールを並べます。
+- **`tools/call <tool>`**: API を **呼びません**。渡された引数を載せた `updateDataModel` メッセージ（ユーザー向けの埋め込みリソース。モデルのコンテキストには入れません）と、リクエストがまだ送られていないことをモデルに伝えるテキストを返します。
+- **`tools/call <tool>__submit`**: ツールを実行します。Manifold はフォームの値を入力スキーマの型に直し（テキストで入力された数値、リストで届く単一選択、空のままの任意項目の除外）、`<tool>` を実行します。`authz`・`guardrail`・監査ログ・メトリクスからは `<tool>` として見えます。
+- **`resources/list`・`resources/read`**: 呼び出し元が一覧できる書き込み系ツールごとに、フォームのテンプレート（`createSurface` + `updateComponents`）を返します。エンドポイントは `resources` capability を広告します。
+
+フォーム自身は MCP を呼びません。送信ボタンは A2UI の action（`action.event`）を発火するだけで、その `name` が `<tool>__submit`、`context` がフォームの値を束縛したツールの引数です。action を受け取ったエージェント側（フォームを描画するホスト）が `tools/call` を行うので、UI に MCP の接続や認証情報を持たせる必要がなく、結果もエージェントに返ります。
+
+```json
+{
+  "version": "1.0",
+  "action": {
+    "name": "createOrder__submit",
+    "surfaceId": "manifold-form-createOrder",
+    "sourceComponentId": "submit_12",
+    "timestamp": "2026-03-20T12:00:00Z",
+    "context": { "body": { "title": "desk", "quantity": "2", "priority": ["high"] } }
+  }
+}
+```
+
+#### エージェントのカタログを使う（`catalog`）
+
+A2UI のカタログ（`catalog.json`）は、どの部品があり、そのプロパティが何という名前かを決めます。カタログはエージェントとそのレンダラの持ち物です。既定ではフォームは v1.0 の basic カタログを使いますが、独自のカタログを持つエージェントはそれをコンパイルも描画もできません。`catalog` にエージェントのカタログを指定すると、Manifold はその語彙でフォームを書きます。
+
+```yaml
+mcpServers:
+  petstore:
+    a2ui:
+      forms: true
+      catalog: ./acme-catalog.json
+      components:
+        TextField:
+          component: Input             # この役割に使うカタログの部品
+          properties:                  # 役割のプロパティ -> 部品のプロパティ
+            label: title
+            value: text
+            variant: mode
+        Button:
+          component: Action
+          properties: {label: caption, action: onPress}
+```
+
+フォームは 8 つの役割で組み立てます。役割の名前は basic カタログの部品名です。
+
+| 役割 | プロパティ | 用途 | カタログに無い場合 |
+| ---- | ---------- | ---- | ------------------ |
+| `Text` | `text`, `variant` | 表題・説明・見出し | 起動に失敗する |
+| `Column` | `children` | 縦の並び | 起動に失敗する |
+| `TextField` | `label`, `value`, `variant` | 文字列・数値の入力 | 起動に失敗する |
+| `Button` | `action`, `child` か `label`, `variant` | 送信ボタン | 起動に失敗する |
+| `Card` | `child` | フォームの枠 | 縦の並びそのものを root にする |
+| `CheckBox` | `label`, `value` | 真偽値 | `true` / `false` の選択、またはテキスト欄 |
+| `ChoicePicker` | `value`, `options`, `label`, `variant` | enum | テキスト欄。複数選択は行ごとのテキスト欄 |
+| `DateTimeInput` | `value`, `label`, `enableDate`, `enableTime` | 日付 | テキスト欄 |
+
+- カタログに同じ名前の部品があり、プロパティ名も同じ役割は、指定しなくて構いません。
+- `Button` のラベルは、子の部品（`child`。basic カタログの形）か、文字列のプロパティ（`label`）のどちらかで渡します。
+- 部品に無い任意のプロパティは書きません。`enum` に無い値（カタログが知らない `variant` など）も書きません。チェック（`required`・`regex`・`length`）は、カタログがその関数を定義しているときだけ書きます。
+- カタログは起動時に 1 度読みます。カタログを読めない場合、`components` で名指しした部品やプロパティがカタログに無い場合、必須の役割に使える部品が無い場合は、起動に失敗します。コンパイルできないフォームを返すことはありません。
+- `catalog` を指定した場合、`_meta.a2ui` を申告する呼び出し元は、このカタログの `catalogId` を挙げているときに A2UI 対応とみなします。
+
+#### エージェントの出力から A2UI を描画するホスト（`inline`）
+
+レイアウトは MCP のリソースなので、ホストがそれを読める必要があります。エージェントの後ろにある UI は、リソースを読むための MCP 接続を自分では持ちません。典型的には、エージェントの出力を A2UI Agent SDK が解析し、見つけた `<a2ui>` ブロックを A2UI メッセージにコンパイルしてレンダラへ渡す構成の Web UI です。その場合は `inline: true` にします（こうしたエージェントは `_meta.a2ui` を申告しないので、通常は `assumeSupport: true` と併用します）。
+
+このとき `tools/call <tool>` は、フォーム全体を [A2UI Express](https://a2ui.org/concepts/inference-formats/)（エージェントが `<a2ui>` タグの中に書く簡潔な記法）のテキストで返します。その前に「ブロックを変更せずに返答へ含めること」「ユーザーが送信したら、action の context を引数に `<tool>__submit` を呼ぶこと」をエージェントに伝える文が付きます。
+
+```
+<a2ui>
+surface("manifold-form-createOrder-K7Q2M9XA")
+$/input/body/priority = ["high"]
+$/input/body/quantity = "2"
+$/input/body/title = "desk"
+text_1 = Text(text="### createOrder")
+field_2 = TextField([?required($/input/body/title, "title is required")], label="title *", value=$/input/body/title)
+field_3 = TextField([?regex($/input/body/quantity, "^(-?[0-9]+)?$", "quantity must be an integer")], label="quantity", value=$/input/body/quantity, variant="number")
+field_4 = ChoicePicker(label="priority", options=[{label: "low", value: "low"}, {label: "high", value: "high"}], value=$/input/body/priority, variant="mutuallyExclusive")
+text_5 = Text(text="Submit")
+submit_6 = Button([?required($/input/body/title, "title is required")], action=Event("createOrder__submit", {body: $/input/body}), child=text_5, variant="primary")
+column_7 = Column(children=[text_1, field_2, field_3, field_4, submit_6])
+root = Card(child=column_7)
+</a2ui>
+```
+
+- エージェントはブロックを書き写すだけで、コンパイルはエージェント側の Agent SDK が行います。Express は同等の A2UI の JSON の 3 分の 1 程度の大きさですが、大きなスキーマではやはり出力トークンを消費し、写しの正確さもモデル次第です。
+- `surfaceId` にはランダムな接尾辞が付きます。A2UI は既存の surface への `createSurface` を拒否し、同じツールのフォームが複数回表示されうるためです。
+- ブロックは、Manifold に設定したカタログの部品を使います。既定は v1.0 の basic カタログ、指定すればエージェント自身のカタログです（[エージェントのカタログを使う](#エージェントのカタログを使うcatalog) 参照）。エージェントの A2UI SDK は、同じカタログでコンパイルする必要があります。
+
+フォームは LLM を使わず、ツールの入力スキーマから生成します。
+
+| スキーマ | コンポーネント |
+| -------- | -------------- |
+| `string` | `TextField`（`format: password` は `obscured`）。`required` / `length` / `regex` のチェック付き |
+| `enum` 付きの `string` | `ChoicePicker`（単一選択） |
+| `enum` 付きの `string` の配列 | `ChoicePicker`（複数選択） |
+| `integer` / `number` | `TextField`（`number`） |
+| `boolean` | `CheckBox` |
+| `format: date` / `date-time` の `string` | `DateTimeInput` |
+| `properties` を持つオブジェクト | その項目（4 階層まで入れ子で展開） |
+| 配列 | 要素ごとに 1 行の入力欄。要素の添字に束縛する（`/input/tags/0/name`）。配列の配列は入れ子にする |
+| 自由形式のオブジェクト（`properties` 無し） | `key` と `value` の入力欄の行。送信時にオブジェクトへ戻す。値の型は `additionalProperties` に従う |
+| `oneOf` / `anyOf` | null 以外の選択肢が 1 つならその型。すべてオブジェクトなら、全選択肢の項目（どれも必須にしない） |
+| 型が 1 つに決まらないもの（型の違うスカラーの選択肢など） | `TextField`。数値や `true` / `false` はその型で送る |
+
+JSON のテキスト欄になるのは、4 階層より深い入れ子だけです。
+
+basic カタログには、データモデルのリストへ要素を足す関数がありません。そのため配列（と自由形式のオブジェクト）の行数は固定で、3 行、またはモデルが渡した要素の数 + 空の 2 行（最大 20 行）です。空のままの行はフォームの送信時に取り除きます。配列の要素の中の項目は必須にしないので、使わない行が送信を妨げることはありません。
+
+A2UI Express と A2UI の JSON は同じフォームを表します。JSON は現行の v1.0 仕様に従い、コンポーネントのチェックを `@checks` という名前で書きます。この改名より前に公開されたレンダラ（`@a2ui/web_core` 0.15）は `checks` を読みます。影響するのは既定の配信だけです。`inline: true` では、エージェント自身の A2UI SDK がブロックをコンパイルし、レンダラが読むキーを選びます。
+
+呼び出し元が A2UI 対応とみなされるのは、リクエストの `_meta.a2ui.rendererCapabilities["1.0"].supportedCatalogIds` に、フォームのカタログ（`catalog` を指定しなければ basic カタログ `https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json`）を申告している場合です。Manifold は MCP を Stateless な HTTP で配信するため、ホストが `initialize` で申告した内容（`capabilities.a2ui`）は次のリクエストでは分かりません。`assumeSupport: true` にすると、申告の無い呼び出し元も A2UI 対応とみなします。申告があれば常にそれを優先します。
+
+有効にする前に知っておくこと:
+
+- **確認の機会を与える仕組みで、確認を強制する仕組みではありません。** A2UI に対応しない呼び出し元は従来どおり `<tool>` を直接実行します。`<tool>__submit` も通常のツールで、ユーザーが本当にフォームを送信したかどうかを Manifold は判別できません。確認を強制したいホストは、受け取った送信の action と一致する呼び出しだけを通すよう、ホスト側（ツール呼び出しの許可フックなど）で `<tool>__submit` を絞ってください。書き込める相手を絞るには `authz` を使ってください。
+- **`assumeSupport: true` では、A2UI を描画できないホストは書き込み系ツールを呼んでも実行できなくなります。** 「フォームを表示した」という結果だけが返り、フォームは表示されません。A2UI を描画するホストだけが使うエンドポイントで設定してください。
+- フォームの値は surface のデータモデルの `/input` 以下に、プロパティ名をキーにして置きます。英数字と `_` 以外の文字を含む名前（`X-Request-Id` など）は別名（`X_Request_Id`）で置きます。A2UI Express のデータパスにそれらの文字を書けないためです。`<tool>__submit` はどちらのキーも受け付け、API には本来の名前で送ります。
+- 入力スキーマの項目が 200 を超えるツール、既に `_meta.ui` を持つツール、`<tool>__submit` という名前のツールが別にあるツールには、フォームを付けません。ぶら下げた `agents` のスキルにも付けません。
+- `a2ui` は OpenAPI モードのサーバー専用です。MCP バックエンドはバックエンド自身の UI を中継します（[MCP Apps](#mcp-appsapps) 参照）。
+
 ### 公開するツールの選択（`tools.include` / `exclude` / `overrides`）
 
 OpenAPI から生成した API は、エージェントが必要とするより遥かに多くのツールを持ちがちです。`tools.include` / `tools.exclude` には元のツール名に照合する [`path.Match`](https://pkg.go.dev/path#Match) の glob パターンを書きます。`include` のいずれかに一致し（`include` が空なら常に一致）、`exclude` のどれにも一致しないツールが公開されます。`tools.overrides` は元のツール名をキーに、ツールの名前や説明を置き換えます。すべての種類のサーバー（OpenAPI・MCP バックエンド・`agents` で単独公開した A2A エージェント・WebMCP）で使えます。
@@ -846,6 +984,11 @@ gateway:
 | `agents`        | map[string]object | このサービスにぶら下げる A2A エージェント。スキルが `<agent>__<skill>` としてサービスのツールに加わる。`transport: reverse` では使えない（[`mcpServers.<name>.agents.<agent>`](#mcpserversnameagentsagent) 参照） |
 | `apps`          | bool              | リクエストごとに MCP Apps 対応を申告しないホストも対応とみなす。`http` / `stdio` のみ（[MCP Apps](#mcp-appsapps) 参照） |
 | `prompts.url` / `prompts.file` | string | OpenAPI モードのサーバーの prompts 定義ドキュメントの取得元。どちらか1つ（[OpenAPI バックエンドの prompts](#openapi-バックエンドの-promptsprompts) 参照） |
+| `a2ui.forms`    | bool              | 書き込み系ツールに A2UI の入力フォームを付け、フォームの送信時に API を呼ぶ。OpenAPI モードのみ（[書き込み系ツールの A2UI フォーム](#書き込み系ツールの-a2ui-フォームa2ui) 参照） |
+| `a2ui.assumeSupport` | bool         | リクエストごとに A2UI 対応を申告しない（`_meta.a2ui`）呼び出し元も対応とみなす |
+| `a2ui.inline`   | bool              | レイアウトをリソースで配信する代わりに、フォーム全体を A2UI Express の `<a2ui>` ブロックとしてツール結果で返し、エージェントにそのまま出力させる |
+| `a2ui.catalog`  | string            | エージェントの A2UI カタログ（`catalog.json`）へのパス。フォームをその部品で書く。既定は v1.0 の basic カタログ |
+| `a2ui.components` | map[string]object | 役割（`Text`・`Column`・`Card`・`Button`・`TextField`・`CheckBox`・`ChoicePicker`・`DateTimeInput`）ごとの指定。`component` はカタログの部品、`properties` は役割のプロパティ → 部品のプロパティ。`catalog` が必要 |
 
 `authValue` / `oauth2` / `tokenExchange` / `googleServiceAccount` は排他で、同時に設定できるのは 1 つだけです。`auth.jwt` はこれらとは独立していて、クライアントからゲートウェイまでの側を扱います（他はゲートウェイからバックエンドまでの側）。
 

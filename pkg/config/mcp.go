@@ -124,6 +124,10 @@ type Server struct {
 	// Prompts は OpenAPI モードのサーバーが公開する prompts の取得元。
 	Prompts *PromptsConfig `mapstructure:"prompts"`
 
+	// A2UI は OpenAPI モードのサーバーが A2UI の UI（書き込み系ツールの入力フォーム）を
+	// a2ui:// リソースとして配信する設定。OpenAPI モードでのみ有効。
+	A2UI *A2UIConfig `mapstructure:"a2ui"`
+
 	// Agents はこのサービスにぶら下げる A2A エージェント。各エージェントの
 	// スキルは <agent>__<skill> というツール名で、サービス自身のツールと並んで
 	// このサービスの tools/list に現れる。reverse トランスポートでは使えない。
@@ -352,6 +356,11 @@ func (s Server) ValidateWithContext(ctx context.Context) error {
 		validation.Field(&s.Prompts, validation.When(!s.IsOpenAPI(),
 			validation.Nil.Error("is only supported in OpenAPI mode "+
 				"(MCP backends relay the backend's own prompts)"),
+		)),
+		// A2UI のフォームは OpenAPI の入力スキーマから生成する。MCP バックエンドは
+		// バックエンド自身の UI（apps）を中継する。
+		validation.Field(&s.A2UI, validation.When(!s.IsOpenAPI(),
+			validation.Nil.Error("is only supported in OpenAPI mode"),
 		)),
 	)
 }
