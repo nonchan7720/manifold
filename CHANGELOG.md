@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.27.1](https://github.com/nonchan7720/manifold/compare/v1.27.0...v1.27.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **deps:** update dependency playwright to v1.65.1 ([#445](https://github.com/nonchan7720/manifold/issues/445)) ([a0cd35d](https://github.com/nonchan7720/manifold/commit/a0cd35de5da875dfd4398a2a7d559dcf6ca41825))
+* **deps:** update module github.com/micahparks/keyfunc/v3 to v3.9.2 ([#442](https://github.com/nonchan7720/manifold/issues/442)) ([fad3174](https://github.com/nonchan7720/manifold/commit/fad317464a0dcc288c7b1ac28096b0a0645469b1))
+
+
+### Miscellaneous
+
+* **deps:** update dependency github:nonchan7720/depgraph to v0.1.12 ([#439](https://github.com/nonchan7720/manifold/issues/439)) ([3bac418](https://github.com/nonchan7720/manifold/commit/3bac4184f942497f63cdedd95af74c80e6f151cb))
+* **deps:** update dependency github:nonchan7720/depgraph to v0.1.13 ([#440](https://github.com/nonchan7720/manifold/issues/440)) ([66719e6](https://github.com/nonchan7720/manifold/commit/66719e60fe86db61f6755b179e65d619f0fe25b3))
+* **deps:** update dependency vite to v8.3.8 ([#436](https://github.com/nonchan7720/manifold/issues/436)) ([acf6d2e](https://github.com/nonchan7720/manifold/commit/acf6d2e6e4d7706ccfb622326cddc6dad39716b8))
+* **deps:** update grafana/otel-lgtm docker tag to v0.41.0 ([#443](https://github.com/nonchan7720/manifold/issues/443)) ([58b3a75](https://github.com/nonchan7720/manifold/commit/58b3a7569643836eec6d6d879297576b6aabe584))
+* **deps:** update jdx/mise-action action to v5.2.8 ([#441](https://github.com/nonchan7720/manifold/issues/441)) ([59b3c4c](https://github.com/nonchan7720/manifold/commit/59b3c4c4ba862d692c49f98e59207bcfbfda41fa))
+* **deps:** update neo4j docker tag to v5.26.33 ([#438](https://github.com/nonchan7720/manifold/issues/438)) ([511889f](https://github.com/nonchan7720/manifold/commit/511889f12f7796bb2c4dc241195e97b8d3950fb8))
+
 ## [1.27.0](https://github.com/nonchan7720/manifold/compare/v1.26.2...v1.27.0) (2026-11-18)
 
 
