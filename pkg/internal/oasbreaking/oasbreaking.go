@@ -11,6 +11,7 @@ import (
 	"github.com/oasdiff/oasdiff/checker"
 	"github.com/oasdiff/oasdiff/diff"
 	"github.com/oasdiff/oasdiff/load"
+	"github.com/oasdiff/oasdiff/versioning"
 )
 
 // Level is the severity of a Change. The zero value, LevelNone, is below
@@ -86,8 +87,8 @@ type Change struct {
 func Check(base, revision *openapi3.T) ([]Change, error) {
 	d, sources, err := diff.GetWithOperationsSourcesMap(
 		diff.NewConfig(),
-		&load.SpecInfo{Url: "base", Spec: base},
-		&load.SpecInfo{Url: "revision", Spec: revision},
+		&load.SpecInfo{Source: load.NewFileSource("base"), Spec: base},
+		&load.SpecInfo{Source: load.NewFileSource("revision"), Spec: revision},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("diff specs: %w", err)
@@ -111,8 +112,63 @@ func Check(base, revision *openapi3.T) ([]Change, error) {
 			Message:   c.GetUncolorizedText(l),
 		})
 	}
+	if c, ok := versioningPolicyChange(d, found); ok {
+		changes = append(changes, c)
+	}
 	sortBySeverity(changes)
 	return changes, nil
+}
+
+// The versioning policy ids oasdiff reported as checker rules up to v1.37.
+// From v1.38 the policy is judged by the versioning package instead and is no
+// longer part of the checker output, so Check reports it under the same ids,
+// level and messages to keep its output unchanged.
+const (
+	apiVersionNotBumpedID      = "api-version-not-bumped"
+	apiVersionDecreasedID      = "api-version-decreased"
+	apiMajorVersionNotBumpedID = "api-major-version-not-bumped"
+)
+
+// versioningPolicyChange reports a breaking change released without the
+// major version increase semver requires, as an info-level spec-wide change.
+// Like oasdiff up to v1.37, only error-level changes count as breaking here.
+func versioningPolicyChange(d *diff.Diff, found checker.Changes) (Change, bool) {
+	var breaking checker.Changes
+	for _, c := range found {
+		if c.GetLevel() >= checker.ERR {
+			breaking = append(breaking, c)
+		}
+	}
+	v := versioning.Check(d, breaking)
+	if v.Status != versioning.Violated {
+		return Change{}, false
+	}
+	var id, msg string
+	switch v.Reason {
+	case versioning.NotBumped:
+		id = apiVersionNotBumpedID
+		msg = fmt.Sprintf(
+			"a breaking change was detected but the version is still `%s`",
+			v.RevisionVersion,
+		)
+	case versioning.Decreased:
+		id = apiVersionDecreasedID
+		msg = fmt.Sprintf(
+			"a breaking change was detected but the version decreased from `%s` to `%s`",
+			v.BaseVersion,
+			v.RevisionVersion,
+		)
+	case versioning.MajorNotBumped:
+		id = apiMajorVersionNotBumpedID
+		msg = fmt.Sprintf(
+			"a breaking change was detected but the major version did not increase, from `%s` to `%s`",
+			v.BaseVersion,
+			v.RevisionVersion,
+		)
+	case versioning.NoReason:
+		return Change{}, false
+	}
+	return Change{Level: LevelInfo, ID: id, Message: msg}, true
 }
 
 // ResolveTools sets Tool on every change whose Operation appears in
