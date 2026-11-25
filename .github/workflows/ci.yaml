@@ -14,7 +14,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Set up tools
-        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Start dependencies
         run: docker compose up -d
       - name: Run lint
@@ -41,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up tools
-        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Run lint
         run: make lint-guardrails
       - name: Run tests
@@ -57,7 +57,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up tools
-        uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+        uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       - name: Run depgraph
         run: mise run depgraph:ci
       - name: Shutdown dependencies
