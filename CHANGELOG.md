@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.27.1](https://github.com/nonchan7720/manifold/compare/v1.27.0...v1.27.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **deps:** update dependency playwright to v1.65.1 ([#445](https://github.com/nonchan7720/manifold/issues/445)) ([a0cd35d](https://github.com/nonchan7720/manifold/commit/a0cd35de5da875dfd4398a2a7d559dcf6ca41825))
+* **deps:** update go minor dependencies と oasdiff v1.38+ への追従 ([#446](https://github.com/nonchan7720/manifold/issues/446)) ([6c2e9d1](https://github.com/nonchan7720/manifold/commit/6c2e9d17e84772de8dfa4c1c23c0792afd4ee5ce))
+* **deps:** update go patch dependencies ([#452](https://github.com/nonchan7720/manifold/issues/452)) ([ff7dc29](https://github.com/nonchan7720/manifold/commit/ff7dc2970401c27a9e1bb65d184d1dfc4a912f50))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager to v0.5.9 ([#454](https://github.com/nonchan7720/manifold/issues/454)) ([0a93aa9](https://github.com/nonchan7720/manifold/commit/0a93aa96548c51ba03445468251853ef7493426e))
+* **deps:** update module github.com/micahparks/keyfunc/v3 to v3.9.2 ([#442](https://github.com/nonchan7720/manifold/issues/442)) ([fad3174](https://github.com/nonchan7720/manifold/commit/fad317464a0dcc288c7b1ac28096b0a0645469b1))
+* **deps:** update module golang.org/x/net to v0.63.0 ([#456](https://github.com/nonchan7720/manifold/issues/456)) ([8fb57dc](https://github.com/nonchan7720/manifold/commit/8fb57dc6375ee8f84c3a8802197cb97d75408399))
+* **deps:** update module sigs.k8s.io/controller-runtime to v0.25.3 ([#451](https://github.com/nonchan7720/manifold/issues/451)) ([1ddb84e](https://github.com/nonchan7720/manifold/commit/1ddb84e6ed64cdcf9a68dce20d946db68f01ed5f))
+
+
+### Miscellaneous
+
+* **deps:** update actions/setup-go action to v7.1.0 ([#453](https://github.com/nonchan7720/manifold/issues/453)) ([45bd325](https://github.com/nonchan7720/manifold/commit/45bd32548c3f43e945fa4cff9183935177f8b5f4))
+* **deps:** update aws-actions/amazon-ecr-login action to v2.2.0 ([#455](https://github.com/nonchan7720/manifold/issues/455)) ([09c3da3](https://github.com/nonchan7720/manifold/commit/09c3da33352002e954c7e4bc484f44185f9d7e87))
+* **deps:** update dependency github:nonchan7720/depgraph to v0.1.12 ([#439](https://github.com/nonchan7720/manifold/issues/439)) ([3bac418](https://github.com/nonchan7720/manifold/commit/3bac4184f942497f63cdedd95af74c80e6f151cb))
+* **deps:** update dependency github:nonchan7720/depgraph to v0.1.13 ([#440](https://github.com/nonchan7720/manifold/issues/440)) ([66719e6](https://github.com/nonchan7720/manifold/commit/66719e60fe86db61f6755b179e65d619f0fe25b3))
+* **deps:** update dependency setup-envtest to v0.25.3 ([#450](https://github.com/nonchan7720/manifold/issues/450)) ([b0f0bc7](https://github.com/nonchan7720/manifold/commit/b0f0bc7abbdd943312d479b51941e81f8912ad55))
+* **deps:** update dependency vite to v8.3.8 ([#436](https://github.com/nonchan7720/manifold/issues/436)) ([acf6d2e](https://github.com/nonchan7720/manifold/commit/acf6d2e6e4d7706ccfb622326cddc6dad39716b8))
+* **deps:** update dependency vitest to v5.1.1 ([#458](https://github.com/nonchan7720/manifold/issues/458)) ([be37058](https://github.com/nonchan7720/manifold/commit/be37058bcdaa894db2e14fe73148eebea9872b49))
+* **deps:** update grafana/otel-lgtm docker tag to v0.41.0 ([#443](https://github.com/nonchan7720/manifold/issues/443)) ([58b3a75](https://github.com/nonchan7720/manifold/commit/58b3a7569643836eec6d6d879297576b6aabe584))
+* **deps:** update jdx/mise-action action to v5.2.8 ([#441](https://github.com/nonchan7720/manifold/issues/441)) ([59b3c4c](https://github.com/nonchan7720/manifold/commit/59b3c4c4ba862d692c49f98e59207bcfbfda41fa))
+* **deps:** update jdx/mise-action action to v5.2.9 ([#448](https://github.com/nonchan7720/manifold/issues/448)) ([2cc73e2](https://github.com/nonchan7720/manifold/commit/2cc73e248664a5338d334c6653e59fcc1cd47eef))
+* **deps:** update neo4j docker tag to v5.26.33 ([#438](https://github.com/nonchan7720/manifold/issues/438)) ([511889f](https://github.com/nonchan7720/manifold/commit/511889f12f7796bb2c4dc241195e97b8d3950fb8))
+* **main:** release guardrails 1.26.2 ([#400](https://github.com/nonchan7720/manifold/issues/400)) ([ec7192c](https://github.com/nonchan7720/manifold/commit/ec7192c85ec85cb783b8dd45996a503b8eea8a30))
+
 ## [1.27.0](https://github.com/nonchan7720/manifold/compare/v1.26.2...v1.27.0) (2026-11-18)
 
 
