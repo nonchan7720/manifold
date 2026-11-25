@@ -10,7 +10,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/sync v0.25.0
-	google.golang.org/genai v1.77.0
+	google.golang.org/genai v1.79.0
 )
 
 require (
