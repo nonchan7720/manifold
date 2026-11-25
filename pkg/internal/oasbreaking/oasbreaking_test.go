@@ -192,7 +192,17 @@ func TestCheck_VersioningPolicy(t *testing.T) {
 			wantMsg:  "a breaking change was detected but the major version did not increase, from `1.0.0` to `1.1.0`",
 		},
 		{name: "major bumped", base: "1.0.0", revision: "2.0.0"},
+		{
+			name:     "pre-1.0 patch bumped",
+			base:     "0.2.0",
+			revision: "0.2.1",
+			wantID:   "api-major-version-not-bumped",
+			wantMsg:  "a breaking change was detected but the major version did not increase, from `0.2.0` to `0.2.1`",
+		},
+		{name: "pre-1.0 minor bumped", base: "0.2.0", revision: "0.3.0"},
 		{name: "not semver", base: "2024-01-01", revision: "2024-01-01"},
+		{name: "only base is semver", base: "1.0.0", revision: "2024-01-01"},
+		{name: "only revision is semver", base: "2024-01-01", revision: "1.0.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,6 +211,7 @@ func TestCheck_VersioningPolicy(t *testing.T) {
 				loadSpec(t, withVersion(requiredParamSpec, tt.revision)),
 			)
 			require.NoError(t, err)
+			require.Equal(t, LevelErr, MaxLevel(changes))
 			var got []Change
 			for _, c := range changes {
 				if versioningIDs[c.ID] {
@@ -224,4 +235,30 @@ func TestCheck_VersioningPolicy_NoBreakingChange(t *testing.T) {
 	for _, c := range changes {
 		require.False(t, versioningIDs[c.ID], "changes: %+v", changes)
 	}
+}
+
+func TestCheck_VersioningPolicy_WarningOnly(t *testing.T) {
+	base := loadSpec(t, baseSpec)
+	op := base.Paths.Value("/pet/{petId}").Get
+	op.AddParameter(openapi3.NewQueryParameter("verbose").WithSchema(openapi3.NewBoolSchema()))
+
+	changes, err := Check(base, loadSpec(t, baseSpec))
+	require.NoError(t, err)
+	require.Equal(t, LevelWarn, MaxLevel(changes))
+	require.Len(t, changes, 1)
+	require.Equal(t, "request-parameter-removed", changes[0].ID)
+	require.Equal(t, "GET /pet/{petId}", changes[0].Operation)
+}
+
+func TestCheck_VersioningPolicy_VersionOnly(t *testing.T) {
+	revision := loadSpec(t, baseSpec)
+	revision.Info.Version = "1.1.0"
+
+	changes, err := Check(loadSpec(t, baseSpec), revision)
+	require.NoError(t, err)
+	require.Equal(t, []Change{{
+		Level:   LevelInfo,
+		ID:      "api-version-changed",
+		Message: "the API version changed from `1.0.0` to `1.1.0`",
+	}}, changes)
 }
