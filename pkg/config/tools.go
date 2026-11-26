@@ -40,6 +40,57 @@ type ToolsConfig struct {
 	Include   []string                `mapstructure:"include"`
 	Exclude   []string                `mapstructure:"exclude"`
 	Overrides map[string]ToolOverride `mapstructure:"overrides"`
+
+	// ResultFilter は、呼び出し元がツールの結果に JMESPath の式を適用して、必要な部分
+	// だけを受け取れるようにする設定。
+	ResultFilter *ResultFilterConfig `mapstructure:"resultFilter"`
+}
+
+// DefaultResultFilterArgument は ResultFilterConfig.Argument の既定値。
+const DefaultResultFilterArgument = "_jmespath"
+
+// argumentNameRegex は ResultFilterConfig.Argument に使える名前。MCP クライアントが
+// input schema のプロパティ名として受け付ける文字集合と長さ。
+var argumentNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// ResultFilterConfig は mcpServers.<name>.tools.resultFilter の設定。
+//
+// 有効にすると、ゲートウェイは対象のツールの input schema に Argument の名前の引数を
+// 足す。呼び出し元がそこへ JMESPath の式を渡すと、ゲートウェイはその引数を取り除いて
+// バックエンドを呼び、結果の JSON に式を適用したものだけを返す。
+//
+// Include / Exclude は対象のツールを絞る glob で、ToolsConfig の Include / Exclude と
+// 同じく元のツール名に照合する。どちらも空なら、サーバー自身の全ツールが対象になる。
+type ResultFilterConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Argument は式を渡す引数の名前。未設定なら DefaultResultFilterArgument。
+	// バックエンドのツールが同じ名前の引数を持つ場合はゲートウェイの引数が優先される
+	// ので、衝突するならここで別の名前にする。
+	Argument string   `mapstructure:"argument"`
+	Include  []string `mapstructure:"include"`
+	Exclude  []string `mapstructure:"exclude"`
+}
+
+// ArgumentName は式を渡す引数の名前を返す。
+func (c *ResultFilterConfig) ArgumentName() string {
+	if c == nil || c.Argument == "" {
+		return DefaultResultFilterArgument
+	}
+	return c.Argument
+}
+
+// Applies は元の名前が name のツールで結果の絞り込みを受け付けるかを返す。
+func (c *ResultFilterConfig) Applies(name string) bool {
+	return c != nil && c.Enabled && matchesPatterns(c.Include, c.Exclude, name)
+}
+
+func (c ResultFilterConfig) ValidateWithContext(context.Context) error {
+	if c.Argument != "" && !argumentNameRegex.MatchString(c.Argument) {
+		return fmt.Errorf(
+			"argument %q must be 1-64 characters of letters, digits, '_', '-' or '.'", c.Argument,
+		)
+	}
+	return validatePatterns(c.Include, c.Exclude)
 }
 
 // ToolOverride replaces the name and/or description a tool is exposed with.
@@ -69,10 +120,7 @@ func (c *ToolsConfig) Allowed(name string) bool {
 	if c == nil {
 		return true
 	}
-	if len(c.Include) > 0 && !matchAny(c.Include, name) {
-		return false
-	}
-	return !matchAny(c.Exclude, name)
+	return matchesPatterns(c.Include, c.Exclude, name)
 }
 
 // ResolvedOverrides returns Overrides keyed by the original tool name (the
@@ -103,10 +151,13 @@ func (c *ToolsConfig) Excluded(name string) bool {
 	return matchAny(c.Exclude, name)
 }
 
-func (c ToolsConfig) ValidateWithContext(context.Context) error {
-	for _, pattern := range slices.Concat(c.Include, c.Exclude) {
-		if _, err := path.Match(pattern, ""); err != nil {
-			return fmt.Errorf("invalid tool pattern %q: %w", pattern, err)
+func (c ToolsConfig) ValidateWithContext(ctx context.Context) error {
+	if err := validatePatterns(c.Include, c.Exclude); err != nil {
+		return err
+	}
+	if c.ResultFilter != nil {
+		if err := c.ResultFilter.ValidateWithContext(ctx); err != nil {
+			return fmt.Errorf("resultFilter: %w", err)
 		}
 	}
 	renamed := map[string]string{}
@@ -139,6 +190,25 @@ func (c ToolsConfig) ValidateWithContext(context.Context) error {
 		renamed[override.Name] = key
 	}
 	return nil
+}
+
+// validatePatterns は include / exclude の glob が path.Match の構文に合うかを検査する。
+func validatePatterns(include, exclude []string) error {
+	for _, pattern := range slices.Concat(include, exclude) {
+		if _, err := path.Match(pattern, ""); err != nil {
+			return fmt.Errorf("invalid tool pattern %q: %w", pattern, err)
+		}
+	}
+	return nil
+}
+
+// matchesPatterns は name が include のいずれかに一致し（include が空なら常に一致）、
+// exclude のどれにも一致しないかを返す。
+func matchesPatterns(include, exclude []string, name string) bool {
+	if len(include) > 0 && !matchAny(include, name) {
+		return false
+	}
+	return !matchAny(exclude, name)
 }
 
 func matchAny(patterns []string, name string) bool {

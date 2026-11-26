@@ -39,6 +39,7 @@ flowchart TD
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers, relaying their tools and prompts
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
+- **Result filtering**: An agent adds a [JMESPath](https://jmespath.org/) expression to a call and gets back only the part of the result the expression selects (the fields, rows, counts or aggregates it needs), which saves the agent's context (`mcpServers.<name>.tools.resultFilter`)
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
@@ -661,6 +662,78 @@ mcpServers:
 - Breaking changes `openapi diff` or `specRefresh` detects on an excluded operation are still reported and still count toward `--fail-on` / `rejectOn`, with no tool attributed to them (under `(spec-wide)` with `--by-tool`).
 - On a reverse (WebMCP) server the filter only applies to the tab's tools: `create_pairing_code` is registered by the gateway itself and is always exposed under that name, so users can still pair when `include` doesn't match it. Likewise the `<agent>__<skill>` tools of `mcpServers.<name>.agents` are never filtered or renamed: the filter only applies to the service's own tools, including a service tool whose name happens to start with `<agent>__`.
 
+### Filtering tool results (`tools.resultFilter`)
+
+A tool result is often far larger than what the agent needs (a list API returning every field, say). With `tools.resultFilter` enabled, the agent passes a [JMESPath](https://jmespath.org/) expression with the call and gets back only the part of the result it asked for. JMESPath is the language of `--query` in the AWS CLI and the Azure CLI, so agents (LLMs) write it without being taught.
+
+```yaml
+mcpServers:
+  github:
+    description: GitHub
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    tools:
+      resultFilter:
+        enabled: true
+```
+
+On a server that has it enabled:
+
+1. `tools/list` adds a string argument, `_jmespath`, to the input schema of every tool.
+2. When the agent puts `_jmespath` in the arguments of a `tools/call`, the gateway removes it before calling the backend (the backend never sees it).
+3. The gateway applies the expression to the JSON in the result and returns only the expression's result.
+
+```jsonc
+// params of tools/call
+{"name": "list_issues", "arguments": {"repo": "acme/app", "_jmespath": "items[?state=='open'].{number: number, title: title}"}}
+
+// content[0].text of the result
+[{"number":12,"title":"Fix login"},{"number":15,"title":"Add docs"}]
+```
+
+| To | Expression |
+| -- | ---------- |
+| Pick fields | `items[].{id: id, title: title}` |
+| Pull out nested values | `items[].{id: id, author: user.login, labels: labels[].name}` |
+| Filter by a condition | ``items[?state=='open' && comments > `10`].title`` |
+| Limit the count | `items[:5]` |
+| Count and aggregate | `length(items)`, `max_by(items, &comments).title` |
+| Sort | `sort_by(items, &created_at)[-3:].title` |
+| Look at the shape of the result | `keys(@)`, `items[0]` |
+
+- **What it applies to**: the result's `structuredContent`, and every text (`text` in `content`) that is a JSON object or array. The same expression is applied to each. Text that is not JSON, images and resource links are returned as they are. Write the expression against the JSON a call without `_jmespath` returns. An OpenAPI tool that returns an array has it wrapped as `{"items": [...]}`, so start from `items[...]`.
+- **What comes back**: the expression's result as JSON text without whitespace. When the result is an object it is also returned as `structuredContent` (an array or a scalar is not). Key order and number formatting are those of the original JSON, and integer IDs beyond 2^53 keep all their digits.
+- **Without an expression** (an empty string and `null` count as none), the whole result is returned as before.
+- **Errors in the expression**: a syntax error, an unknown function or a wrong number of arguments is returned as an `isError: true` result before the backend is called (`invalid _jmespath: unexpected '=' (use '==' to compare) at offset 13. The tool was not called.`). An error that only shows when the expression is evaluated, such as a function given a value of the wrong type, is returned as `isError: true` after the call. The backend call itself has completed by then, and the message says so.
+- **When the result is `null`**: an expression usually returns `null` because it guessed the top-level key wrong. The gateway adds the shape of the result after the `null` (`_jmespath returned null. The result is an object with keys: items, total.`), so the agent can fix the expression without fetching everything.
+- **Error results** (`isError: true`) are not filtered.
+- **`outputSchema`**: `tools/list` does not advertise the `outputSchema` of a filterable tool. Once an expression is passed, the expression decides the shape of the result, so a `structuredContent` that matches the schema can no longer be promised (the TypeScript and Python SDKs validate `structuredContent` against `outputSchema` and reject a result that does not match).
+
+**Supported JMESPath**: the whole grammar of the [specification](https://jmespath.org/specification.html) and its built-in functions (`abs` `avg` `ceil` `contains` `ends_with` `floor` `join` `keys` `length` `map` `max` `max_by` `merge` `min` `min_by` `not_null` `reverse` `sort` `sort_by` `starts_with` `sum` `to_array` `to_number` `to_string` `type` `values`). Like the Python implementation the AWS CLI uses, `<` `<=` `>` `>=` also compare two strings (`items[?created_at >= '2024-01-01']`).
+
+**Limits**: the expression is written by the caller, so its evaluation is bounded. An expression is at most 4096 bytes. The work an evaluation may do is capped in proportion to the size of the result (an expression that keeps doubling the result, like `[@,@][]` chained with `|`, fails part way). An expression whose result is more than 64 KiB larger than the original JSON, and a JSON over 32 MiB, is an error.
+
+Which tools are filterable, and the name of the argument, can be changed:
+
+```yaml
+mcpServers:
+  github:
+    # ...
+    tools:
+      resultFilter:
+        enabled: true
+        argument: _jmespath              # name of the argument that takes the expression (default)
+        include: ["list_*", "search_*"]  # filterable tools (default: all)
+        exclude: ["get_file_contents"]
+```
+
+- `include` / `exclude` are globs like `tools.include` / `exclude` and match the tool's **original name** (the original name even when `overrides` renames it). The description of the added argument is part of `tools/list` for every filterable tool, so limiting it to the tools with large results keeps `tools/list` small.
+- When a backend tool has an argument with the same name as `argument`, the gateway's argument takes it over (the backend's argument can no longer be used by callers, and a warning is logged). Give `argument` another name, or `exclude` that tool. On a tool that is not filterable, an argument of that name goes to the backend untouched.
+- Only the server's own tools are filterable. The `<agent>__<skill>` tools of `mcpServers.<name>.agents`, `create_pairing_code` of a reverse (WebMCP) server and tools with an MCP Apps UI (the UI renders the result) do not get the argument.
+- Filtering happens inside authz, the guardrail and the audit log. Authz decides on the tool name, so the expression does not affect it. The guardrail (`post_call`) checks the filtered result, and the audit log (`includeArguments`) records the expression the caller sent. `_jmespath` does not appear in `manifold openapi tools` or in the generated `tools.file` (it is added when `tools/list` is served).
+- The gateway does the filtering. The backend still returns everything, so what shrinks is what goes back to the caller (the agent's context), not the traffic to the backend.
+- With several replicas, enable it once every replica runs a version that supports it. A replica that does not passes `_jmespath` on to the backend.
+
 ### Audit log (`audit`)
 
 ```yaml
@@ -903,6 +976,15 @@ mcpServers:
 - `tools.file` must be a local path; a URL is rejected.
 - Both OpenAPI 3.x and Swagger 2.x specs are supported. A Swagger 2.x spec is embedded as-is (`format: swagger2`), not converted to OpenAPI 3.x, and the gateway rebuilds the tools from it the same way it does from `spec`, so they are identical to the tools served without `tools.file`. As when reading `spec` directly, a Swagger 2.x `$ref` is resolved only within the document (`#/definitions/...`, `#/parameters/...`). A `format: swagger2` file needs 1.26.0 or later (see [Upgrading from 1.25.x or earlier](#upgrading-from-125x-or-earlier)).
 - The generated file embeds the full resolved spec, including any internal hostnames or example values it contains. Review it before committing to a public repository.
+
+`tools.resultFilter` lets callers filter a tool's result with a JMESPath expression (see [Filtering tool results](#filtering-tool-results-toolsresultfilter)).
+
+| Field                   | Type     | Description |
+| ----------------------- | -------- | ----------- |
+| `resultFilter.enabled`  | bool     | Add the expression argument to the input schema of the filterable tools and apply the expression a caller passes to the result (default: `false`) |
+| `resultFilter.argument` | string   | Name of the argument that takes the expression (default: `_jmespath`). 1-64 characters of letters, digits, `_`, `-` or `.` |
+| `resultFilter.include`  | []string | Globs of the filterable tools, matched against the original tool name (default: all tools) |
+| `resultFilter.exclude`  | []string | Globs of tools that are not filterable; takes precedence over `include` |
 
 #### `mcpServers.<name>.oauth2`
 

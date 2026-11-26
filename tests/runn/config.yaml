@@ -1,8 +1,9 @@
 # Gateway configuration for the runn end-to-end run (see run.sh).
 #
 # Two servers share the stub Petstore API. `petstore` exposes five tools (one
-# of them renamed) to the operators group; readers only see two of them, and
-# `petstore_small` exposes a single tool.
+# of them renamed) to the operators group and filters the results of three of
+# them on request; readers only see two of them, and `petstore_small` exposes
+# a single tool.
 gateway:
   port: 19999
   # Small enough for the oversized-body case in runbooks/40_protocol_edge.yml.
@@ -17,6 +18,12 @@ mcpServers:
       overrides:
         getpetbyid:
           name: get_pet
+      # Callers may pass a JMESPath expression in _jmespath to get back only
+      # part of the result (runbooks/25_result_filter.yml). The patterns match
+      # the original tool names, like include above.
+      resultFilter:
+        enabled: true
+        include: ["getpetbyid", "find*"]
   petstore_small:
     description: Petstore with a single visible tool
     spec: http://127.0.0.1:18080/openapi.json

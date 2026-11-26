@@ -8,16 +8,21 @@ import (
 // ServerToolMiddlewares returns the tool middlewares every server gets, in
 // the order AddReceivingMiddleware expects within one call (outermost first):
 //
-//	metrics → audit → authz (from authzMiddlewares) → inner → tool filter
+//	metrics → audit → authz (from authzMiddlewares) → inner → tool filter → result filter
 //
-// Each of audit and tool filter is left out when its configuration doesn't
-// turn it on (no audit logger, no include / exclude / overrides).
-// The tool filter sits right outside the backend so every outer layer sees
-// the exposed names (on a reverse server it leaves the gateway's own
+// Each of audit, tool filter and result filter is left out when its
+// configuration doesn't turn it on (no audit logger, no include / exclude /
+// overrides, no tools.resultFilter).
+// The tool filter sits outside the backend so every outer layer sees the
+// exposed names (on a reverse server it leaves the gateway's own
 // create_pairing_code alone); inner (the service agents middleware) sits
 // outside the filter, so the <agent>__<skill> tools it adds are never
 // filtered or renamed while a backend tool that merely shares their prefix
 // still is; audit sits outside authz so denied calls are recorded too.
+// The result filter (tools.resultFilter) is innermost: it sees the backend's
+// original tool names like tools.include / exclude do, and everything
+// outside it — the guardrail and audit included — sees the filtered result
+// and the expression the caller sent.
 func ServerToolMiddlewares(
 	name string,
 	server *config.Server,
@@ -48,6 +53,11 @@ func ServerToolMiddlewares(
 	}
 	if m := newToolFilterMiddleware(tools, builtin...); m != nil {
 		out = append(out, m)
+	}
+	if tools != nil {
+		if m := newResultFilterMiddleware(name, tools.ResultFilter, builtin...); m != nil {
+			out = append(out, m)
+		}
 	}
 	return out
 }
