@@ -37,6 +37,11 @@ rules:
   # depgraph の既定の名前も並べる）。
   duplicate-symbol:
     ignore: [main, init, New, String, Error, Close, Run, Validate, default, index, setup, teardown, handler, render, App, Client, NewClient, Config, Extractor]
+  # typescript は package.json の scripts（`tsc --noEmit`）からしか使わない。node_modules が無い状態
+  # （CI の depgraph ジョブや clone 直後）では bin（tsc）を読めず「未使用かもしれない」と報告されるので、
+  # インストールの有無で結果が変わらないよう除外する。
+  unused-dependency:
+    ignore: ["javascript:typescript"]
   # 拡張の入口。background は manifest.json の service_worker、content は vite.config.ts の
   # additionalInputs から読み込まれるので、import をたどっても見つからない。
   unreachable-file:
