@@ -18,8 +18,8 @@ type Node struct {
 	// Fields は値（配列ならその要素）がオブジェクトのときの、スキーマから分かるフィールド。
 	// 名前順。
 	Fields []Field
-	// Omitted は、フィールドがあるのに読まなかったことを表す（深さや数の上限、循環する
-	// 参照）。
+	// Omitted は、Fields のほかにもフィールドがあることを表す（深さの上限や循環する参照で
+	// 読まなかった、またはオブジェクトの一部のスキーマを数の上限で読まなかった）。
 	Omitted bool
 }
 
@@ -67,7 +67,7 @@ const (
 //
 // 浅い階層から順に読む（幅優先）。上限に達しても、それより浅い階層のフィールドは名前が
 // そろっている。上限に達したあとの位置は中を読まないので、フィールドを持つオブジェクトでも
-// 名前だけになる。
+// 名前だけになる（expand）。
 func Build(root Schema) Node {
 	b := &builder{}
 	var out Node
@@ -126,41 +126,53 @@ type position struct {
 // expand は pos の形を読んで pos.node に入れ、その下の、これから読む位置を返す。
 func (b *builder) expand(pos position) []position {
 	decls := pos.decls
+	// 重ねるはずのスキーマの一部を読まなかった理由。配列の段を読み進める間も持ち越す。
+	cyclic, partial := false, false
 	for {
 		r := b.read(decls)
+		cyclic = cyclic || r.cyclic
+		partial = partial || r.partial
 		switch {
 		case len(r.props) > 0:
-			return b.fields(pos, r)
+			// オブジェクトだと分かった。読まなかったスキーマがあれば、ほかにもフィールドが
+			// あるかもしれない。
+			return b.fields(pos, r.props, cyclic || partial)
 		case len(r.items) > 0:
 			// 配列。要素を同じ位置として読み進める。
 			pos.node.Arrays++
 			decls = r.items
 			continue
 		}
-		// 循環する参照で止まったなら、この先にフィールドがある（上の階層に載っている）。
-		pos.node.Omitted = r.cyclic
+		// フィールドが 1 つも分からなかった位置。循環する参照で止まったなら、この先に
+		// フィールドがある（上の階層に載っている）ので、省いたと伝える。
+		//
+		// 上限のために読まなかっただけなら、オブジェクトかどうかも分からないので、名前だけに
+		// する。上限に達したあとの位置はどれも読まないので、ここで省いたと伝えると、値を持つ
+		// だけのフィールドまで name{...} になり、一覧がそれで埋まる。
+		pos.node.Omitted = cyclic
 		return nil
 	}
 }
 
-// fields は pos をオブジェクトとして、r のプロパティをフィールドにする。
-func (b *builder) fields(pos position, r reading) []position {
+// fields は pos をオブジェクトとして、props をフィールドにする。omitted は、props のほかにも
+// フィールドがあるかもしれないことを表す。
+func (b *builder) fields(pos position, props map[string][]member, omitted bool) []position {
 	if pos.depth >= maxDepth {
 		pos.node.Omitted = true
 		return nil
 	}
-	names := slices.Sorted(maps.Keys(r.props))
-	pos.node.Omitted = r.cyclic || r.partial
+	names := slices.Sorted(maps.Keys(props))
 	if len(names) > maxFields {
 		names = names[:maxFields]
-		pos.node.Omitted = true
+		omitted = true
 	}
+	pos.node.Omitted = omitted
 	pos.node.Fields = make([]Field, len(names))
 	next := make([]position, len(names))
 	for i, name := range names {
 		pos.node.Fields[i].Name = name
 		next[i] = position{
-			node: &pos.node.Fields[i].Node, decls: r.props[name], depth: pos.depth + 1,
+			node: &pos.node.Fields[i].Node, decls: props[name], depth: pos.depth + 1,
 		}
 	}
 	return next

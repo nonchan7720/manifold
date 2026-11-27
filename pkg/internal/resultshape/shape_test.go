@@ -130,6 +130,19 @@ func TestFromJSONSchema_Describe(t *testing.T) {
 			want: "a, b, ...",
 		},
 		{
+			name: "a branch that is not read is reported for an array like for an object",
+			schema: `{"properties": {
+				"list": {"anyOf": [{"type": "array", "items": {"properties": {"x": {}}}}, {"$ref": "#"}]},
+				"one": {"anyOf": [{"properties": {"x": {}}}, {"$ref": "#"}]}}}`,
+			want: "list[]{x, ...}, one{x, ...}",
+		},
+		{
+			name: "a recursive branch beside an array of scalars",
+			schema: `{"properties": {"name": {},
+				"list": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"$ref": "#"}]}}}`,
+			want: "list[]{...}, name",
+		},
+		{
 			name: "the same schema used twice side by side is not a cycle",
 			schema: `{"properties": {"from": {"$ref": "#/$defs/User"}, "to": {"$ref": "#/$defs/User"}},
 				"$defs": {"User": {"properties": {"id": {}}}}}`,
@@ -299,6 +312,34 @@ func TestBuild_Limits(t *testing.T) {
 				require.Len(t, g.Fields, 10, f.Name+"."+g.Name)
 			}
 		}
+	})
+	t.Run("a position that is not read stays a plain name", func(t *testing.T) {
+		// ルートの 1000 個のフィールドがそれぞれ nested{id} を持つ。読むスキーマは
+		// 1 + 1000 + 1000 個で、上限を 1 つ超える。
+		props := make([]string, 0, maxFields)
+		for i := range maxFields {
+			props = append(props, fmt.Sprintf(
+				`"f%04d": {"properties": {"nested": {"properties": {"id": {}}}}}`, i))
+		}
+		var v any
+		require.NoError(
+			t,
+			json.Unmarshal([]byte(`{"properties": {`+strings.Join(props, ",")+`}}`), &v),
+		)
+		node, ok := FromJSONSchema(v)
+		require.True(t, ok)
+		unread := 0
+		for _, f := range node.Fields {
+			require.Len(t, f.Fields, 1, f.Name)
+			nested := f.Fields[0]
+			if len(nested.Fields) == 0 {
+				// 読めなかった位置は、オブジェクトかどうかも分からない。省いたとは伝えない
+				// （伝えると、上限に達したあとの値だけのフィールドがすべて {...} になる）。
+				require.False(t, nested.Omitted, f.Name)
+				unread++
+			}
+		}
+		require.Equal(t, 1, unread)
 	})
 	t.Run("a wide schema keeps every top-level name", func(t *testing.T) {
 		// 最初のフィールドの下だけで上限を使い切る形でも、最上位の名前は落とさない。
