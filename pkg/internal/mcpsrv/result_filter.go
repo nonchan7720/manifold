@@ -56,8 +56,8 @@ const (
 //
 // fields は結果の JSON のフィールド一覧（resultshape の表記）で、分かっていれば載せる。
 // 呼び出し元（エージェント）は、どんなフィールドがあるかを知らなければ、要るものだけを
-// 選ぶ式を書けない。ツールの outputSchema は残しているが、ホストがそれをモデルに渡すとは
-// 限らないので、input schema の一部として必ず届く引数の説明に書く。
+// 選ぶ式を書けない。対象のツールの outputSchema は外すので（advertiseTool）、フィールドは
+// input schema の一部として必ず届く引数の説明で伝える。
 func resultFilterDescription(features jmespath.Features, fields string) string {
 	example := "items[].{id: id, title: title}"
 	supported := []string{"field selection"}
@@ -215,9 +215,12 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	}
 	copied := *tool
 	copied.InputSchema = schema
-	if tool.OutputSchema != nil {
-		copied.OutputSchema = permissiveOutputSchema(tool.OutputSchema)
-	}
+	// 式を渡した呼び出しの結果は式が形を決めるので、元の outputSchema には合わない。
+	// TypeScript / Python の SDK は structuredContent を outputSchema で検証し、合わない結果を
+	// 拒否するため、対象のツールでは outputSchema を外す（OpenAPI のツールがもともと持たない
+	// のと同じ形になる）。結果にどんなフィールドがあるかは、外す前の outputSchema から読んで
+	// 引数の説明に載せてある（resultFields）。structuredContent は今までどおり返す。
+	copied.OutputSchema = nil
 	return &copied
 }
 
@@ -265,70 +268,6 @@ func withoutRequired(required any, name string) any {
 		return slices.DeleteFunc(slices.Clone(names), func(n any) bool { return n == name })
 	}
 	return required
-}
-
-// permissiveOutputSchema は outputSchema を、元の内容を読めるまま、どんな結果でも検証を
-// 通る形にして返す。
-//
-// outputSchema は「結果にどんなフィールドがあるか」を呼び出し元に伝える唯一の記述なので、
-// 消さずに残す。一方で、式を渡した呼び出しの結果は式が形を決めるので、元のスキーマには
-// 合わない。TypeScript / Python の SDK は structuredContent を outputSchema で検証し、
-// 合わない結果を拒否するため、元のスキーマは anyOf の選択肢の 1 つ（もう 1 つは何でも
-// 通す {}）として載せる。
-func permissiveOutputSchema(schema any) any {
-	var original map[string]any
-	if err := remarshalJSON(schema, &original); err != nil || original == nil {
-		// true / false などオブジェクトでないスキーマは、そのまま返す。
-		return schema
-	}
-	out := map[string]any{}
-	if original["type"] == "object" {
-		// 式の結果は、オブジェクトでなければ {"result": ...} に包んで返す（structuredResult）。
-		out["type"] = "object"
-	}
-	for _, key := range []string{"title", "description"} {
-		if v, ok := original[key]; ok {
-			out[key] = v
-		}
-	}
-	nested := maps.Clone(original)
-	if _, hasID := nested["$id"]; !hasID {
-		// $id が無ければ、"#/$defs/..." の参照は文書の最上位から解決される。元のスキーマを
-		// 1 段下げても参照が切れないよう、定義は最上位へ移す。
-		if hasPointerRefOutsideDefinitions(original) {
-			// 定義以外の場所を指す参照（"#/properties/..." など）は移せない。元のスキーマは
-			// 載せずに、何でも通すスキーマだけを返す。
-			return out
-		}
-		for _, key := range []string{"$schema", "$defs", "definitions"} {
-			if v, ok := nested[key]; ok {
-				out[key] = v
-				delete(nested, key)
-			}
-		}
-	}
-	out["anyOf"] = []any{nested, map[string]any{}}
-	return out
-}
-
-// hasPointerRefOutsideDefinitions は schema のどこかに、定義（$defs / definitions）以外の
-// 場所を JSON Pointer で指す $ref があるかを返す。
-func hasPointerRefOutsideDefinitions(schema any) bool {
-	switch v := schema.(type) {
-	case map[string]any:
-		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, "#/") &&
-			!strings.HasPrefix(ref, "#/$defs/") && !strings.HasPrefix(ref, "#/definitions/") {
-			return true
-		}
-		for _, child := range v {
-			if hasPointerRefOutsideDefinitions(child) {
-				return true
-			}
-		}
-	case []any:
-		return slices.ContainsFunc(v, hasPointerRefOutsideDefinitions)
-	}
-	return false
 }
 
 func (f *resultFilter) warnShadowed(ctx context.Context, tool string) {
@@ -569,9 +508,10 @@ func (r *resultFilterRun) filterStructured(result *mcp.CallToolResult) error {
 
 // structuredResult は式の結果 out を structuredContent に載せる形で返す。
 //
-// structuredContent はオブジェクトでなければならず（古いプロトコルのクライアントは配列や
-// スカラーを受け付けない）、outputSchema を持つツールでは省略もできない（SDK が「結果に
-// structuredContent が無い」と拒否する）。そのため、オブジェクトでない結果は
+// structuredContent はオブジェクトでなければならない（古いプロトコルのクライアントは配列や
+// スカラーを受け付けない）。一方で、バックエンドが structuredContent を返すツールでは、
+// 絞り込んだ呼び出しでも structuredContent で結果を返す（structuredContent を読む呼び出し元が、
+// 式を渡したときだけ結果を見失わないように）。そのため、オブジェクトでない結果は
 // {"result": ...} に包む。hint があれば、structuredContent しか読まない呼び出し元にも
 // 届くよう、包んだ結果に添える（オブジェクトの結果は式が選んだ形のまま返す）。
 func structuredResult(out []byte, hint string) json.RawMessage {

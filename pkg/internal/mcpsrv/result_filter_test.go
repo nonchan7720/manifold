@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/jmespath"
@@ -317,12 +316,12 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 	require.Equal(t, argument(jmespath.Features{}), toolProperties(t, tools["raw_schema"])[name])
 	require.Contains(t, toolProperties(t, tools["raw_schema"]), "a")
 
-	// outputSchema は残す。元のスキーマは読めるまま、どんな結果でも検証を通る形になる。
-	require.Equal(t, map[string]any{
-		"type":        "object",
-		"description": "A page of issues",
-		"anyOf":       []any{outputSchema, map[string]any{}},
-	}, tools["list_issues"].OutputSchema)
+	// 対象のツールの outputSchema は外す。式を渡した呼び出しの結果は元のスキーマに合わず、
+	// 残すと structuredContent を検証するクライアントが結果を拒否する。フィールドは、外す前の
+	// outputSchema から読んで引数の説明に載せてある（下）。
+	for _, tool := range []string{"list_issues", "get_page", "get_registered"} {
+		require.Nil(t, tools[tool].OutputSchema, tool)
+	}
 
 	// 結果のフィールドは引数の説明に載せる。outputSchema から読むときは $ref をたどり、
 	// 名前は式に書く形にする。登録時に持たせた一覧があれば、そちらを使う。
@@ -345,7 +344,8 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 		require.Nil(t, tools[tool].Meta, tool)
 	}
 
-	// exclude したツール、UI を持つツール、ゲートウェイ自身のツールはそのまま。
+	// exclude したツール、UI を持つツール、ゲートウェイ自身のツールはそのまま（outputSchema も
+	// 残る）。
 	for _, tool := range []string{"delete_issue", "show_chart", createPairingCodeToolName} {
 		require.NotContains(t, toolProperties(t, tools[tool]), name, tool)
 	}
@@ -356,114 +356,6 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 
 	// SDK が保持する登録済みのツールは書き換えない（2 回目の一覧も同じ）。
 	require.Equal(t, tools, listedTools(t, cs))
-}
-
-// permissiveOutputSchema が返すスキーマは、元のスキーマを読める形で持ち、参照が切れず、
-// 絞り込む前の結果も、絞り込んだ結果（オブジェクト、または {"result": ...}）も通す。
-func TestPermissiveOutputSchema(t *testing.T) {
-	validate := func(t *testing.T, schema any, instances ...string) {
-		t.Helper()
-		raw, err := json.Marshal(schema)
-		require.NoError(t, err)
-		var s jsonschema.Schema
-		require.NoError(t, json.Unmarshal(raw, &s))
-		resolved, err := s.Resolve(nil)
-		require.NoError(t, err, "the schema does not resolve: %s", raw)
-		for _, instance := range instances {
-			var v any
-			require.NoError(t, json.Unmarshal([]byte(instance), &v))
-			require.NoError(t, resolved.Validate(v), "%s does not accept %s", raw, instance)
-		}
-	}
-	decode := func(t *testing.T, schema string) map[string]any {
-		t.Helper()
-		var m map[string]any
-		require.NoError(t, json.Unmarshal([]byte(schema), &m))
-		return m
-	}
-	const filtered = `{"n": "not the declared type"}`
-
-	t.Run("object schema", func(t *testing.T) {
-		const original = `{"type":"object","title":"Issue","description":"An issue",
-			"properties":{"id":{"type":"integer"},"title":{"type":"string"}},
-			"required":["id","title"],"additionalProperties":false}`
-		got := permissiveOutputSchema(json.RawMessage(original))
-		require.Equal(t, map[string]any{
-			"type": "object", "title": "Issue", "description": "An issue",
-			"anyOf": []any{decode(t, original), map[string]any{}},
-		}, got)
-		validate(t, got, `{"id":1,"title":"a"}`, filtered, `{"id":"1"}`, `{"result":[1,2]}`, `{}`)
-	})
-
-	// pydantic などが出す形。定義は最上位へ移すので、参照は切れない。
-	t.Run("$defs are hoisted", func(t *testing.T) {
-		const original = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
-			"properties":{"owner":{"$ref":"#/$defs/User"}},"required":["owner"],
-			"$defs":{"User":{"type":"object","properties":{"team":{"$ref":"#/$defs/Team"}},"required":["team"]},
-				"Team":{"type":"object"}}}`
-		got, ok := permissiveOutputSchema(json.RawMessage(original)).(map[string]any)
-		require.True(t, ok)
-		require.Equal(t, "https://json-schema.org/draft/2020-12/schema", got["$schema"])
-		require.Contains(t, got["$defs"], "User")
-		nested, ok := got["anyOf"].([]any)[0].(map[string]any)
-		require.True(t, ok)
-		require.NotContains(t, nested, "$defs")
-		require.NotContains(t, nested, "$schema")
-		require.Contains(t, nested, "properties")
-		validate(t, got, `{"owner":{"team":{}}}`, filtered, `{"owner":1}`)
-	})
-
-	t.Run("definitions are hoisted", func(t *testing.T) {
-		const original = `{"type":"object","properties":{"old":{"$ref":"#/definitions/Legacy"}},
-			"required":["old"],"definitions":{"Legacy":{"type":"string"}}}`
-		got, ok := permissiveOutputSchema(json.RawMessage(original)).(map[string]any)
-		require.True(t, ok)
-		require.Contains(t, got["definitions"], "Legacy")
-		require.NotContains(t, got["anyOf"].([]any)[0], "definitions")
-		validate(t, got, `{"old":"x"}`, filtered, `{"old":1}`)
-	})
-
-	// $id があるスキーマは、それ自体が参照の基点になるので、中身を動かさない。
-	t.Run("a schema with $id is embedded as it is", func(t *testing.T) {
-		const original = `{"$id":"https://example.com/issue.json","type":"object",
-			"properties":{"owner":{"$ref":"#/$defs/User"}},"$defs":{"User":{"type":"object"}}}`
-		got, ok := permissiveOutputSchema(json.RawMessage(original)).(map[string]any)
-		require.True(t, ok)
-		require.NotContains(t, got, "$defs")
-		require.Equal(t, []any{decode(t, original), map[string]any{}}, got["anyOf"])
-		validate(t, got, `{"owner":{}}`, filtered)
-	})
-
-	// 定義以外を指す参照は移せないので、元のスキーマは載せない。
-	t.Run("a pointer reference outside the definitions", func(t *testing.T) {
-		const original = `{"type":"object","description":"Tree",
-			"properties":{"value":{"type":"integer"},"children":{"type":"array","items":{"$ref":"#/properties/value"}}}}`
-		got := permissiveOutputSchema(json.RawMessage(original))
-		require.Equal(t, map[string]any{"type": "object", "description": "Tree"}, got)
-		validate(t, got, `{"value":1,"children":[2]}`, filtered)
-	})
-
-	// 自分自身（"#"）を指す再帰は、最上位が何でも通すスキーマになるだけで切れない。
-	t.Run("a recursive reference to the root", func(t *testing.T) {
-		const original = `{"type":"object","properties":{"children":{"type":"array","items":{"$ref":"#"}}}}`
-		got := permissiveOutputSchema(json.RawMessage(original))
-		validate(t, got, `{"children":[{"children":[]}]}`, filtered)
-	})
-
-	// オブジェクト以外を返すと宣言したスキーマには、type を付けない。
-	t.Run("a schema that is not of type object", func(t *testing.T) {
-		got, ok := permissiveOutputSchema(map[string]any{
-			"type": "array", "items": map[string]any{"type": "integer"},
-		}).(map[string]any)
-		require.True(t, ok)
-		require.NotContains(t, got, "type")
-		validate(t, got, `[1,2]`, `{"result":[1]}`, `"text"`)
-	})
-
-	t.Run("a boolean schema is returned as it is", func(t *testing.T) {
-		require.Equal(t, true, permissiveOutputSchema(true))
-		require.Equal(t, json.RawMessage(`false`), permissiveOutputSchema(json.RawMessage(`false`)))
-	})
 }
 
 // バックエンドのツールが同じ名前の引数を持つ場合はゲートウェイの引数が優先され、
@@ -586,8 +478,9 @@ func TestResultFilterMiddleware_Call(t *testing.T) {
 		require.JSONEq(t, want, structuredJSON(t, res))
 	})
 
-	// outputSchema を持つツールは structuredContent を省略できないので、オブジェクトで
-	// ない結果は包んで返す。
+	// バックエンドが structuredContent を返すツールでは、絞り込んだ結果も structuredContent で
+	// 返す。structuredContent はオブジェクトでなければならないので、オブジェクトでない結果は
+	// 包んで返す。
 	t.Run("a result that is not an object is wrapped in structuredContent", func(t *testing.T) {
 		res := callTool(t, cs, "structured", map[string]any{"_jmespath": "items[].title"})
 		require.Equal(t, []string{`["Fix login","Add docs"]`}, contentTexts(t, res))
