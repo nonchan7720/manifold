@@ -16,6 +16,10 @@ func TestResponseShape(t *testing.T) {
 	  "/employee":{"get":{"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Employee"}}}}}}},
 	  "/either":{"get":{"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{
 	    "oneOf":[{"$ref":"#/components/schemas/Category"},{"type":"object","properties":{"error":{"type":"string"}}}]}}}}}}},
+	  "/merged":{"get":{"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"allOf":[
+	    {"type":"object","properties":{"user":{"type":"object","properties":{"id":{"type":"integer"}}}}},
+	    {"type":"object","properties":{"user":{"type":"object","properties":{"email":{"type":"string"}}}}},
+	    {"$ref":"#/components/schemas/Category"},{"$ref":"#/components/schemas/Category"}]}}}}}}},
 	  "/statuses":{"post":{"responses":{
 	    "400":{"description":"bad","content":{"application/json":{"schema":{"type":"object","properties":{"error":{"type":"string"}}}}}},
 	    "202":{"description":"accepted","content":{"application/json":{"schema":{"type":"object","properties":{"job":{"type":"string"}}}}}},
@@ -73,6 +77,13 @@ func TestResponseShape(t *testing.T) {
 			"/either",
 			"GET",
 			"error, id, name",
+			"application/json",
+		},
+		{
+			"a property declared in several allOf branches is read from all of them",
+			"/merged",
+			"GET",
+			"id, name, user{email, id}",
 			"application/json",
 		},
 		{"the lowest 2xx with a JSON body", "/statuses", "POST", "id", "application/json"},

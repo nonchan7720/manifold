@@ -421,6 +421,11 @@ func (it *interp) equalObjects(a, b *object, bothObjects bool) (bool, error) {
 		return false, nil
 	}
 	for i, key := range a.keys {
+		// キーを探すにはその中身を読む（少ないキーなら読み比べ、多ければハッシュを計算する）
+		// ので、キーの長さも作業量に数える。
+		if err := it.charge(len(key) / bytesPerStep); err != nil {
+			return false, err
+		}
 		other, found := b.get(key)
 		if !found {
 			return false, nil

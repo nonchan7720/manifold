@@ -263,7 +263,12 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 	srv.AddTool(&mcp.Tool{
 		Name: "show_chart", InputSchema: objectSchema, OutputSchema: outputSchema,
 		Meta: mcp.Meta{mcpAppsMetaKey: map[string]any{"resourceUri": "ui://chart"}},
-	}, handler)
+	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: `{"total": 1}`}},
+			StructuredContent: json.RawMessage(`{"total": 1}`),
+		}, nil
+	})
 	// 結果のフィールドは、登録時に持たせた一覧か、outputSchema から分かる。
 	srv.AddTool(&mcp.Tool{
 		Name: "get_page", InputSchema: objectSchema,
@@ -322,6 +327,12 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 	for _, tool := range []string{"list_issues", "get_page", "get_registered"} {
 		require.Nil(t, tools[tool].OutputSchema, tool)
 	}
+	// 引数を足さない UI を持つツールでも同じ。tools/call は UI の有無を区別できず、式の
+	// 引数が送られてくれば絞り込むので、元のスキーマを残すと結果が合わなくなる。
+	require.Nil(t, tools["show_chart"].OutputSchema)
+	res := callTool(t, cs, "show_chart", map[string]any{name: "total"})
+	require.Equal(t, []string{"1"}, contentTexts(t, res))
+	require.JSONEq(t, `{"result": 1}`, structuredJSON(t, res))
 
 	// 結果のフィールドは引数の説明に載せる。outputSchema から読むときは $ref をたどり、
 	// 名前は式に書く形にする。登録時に持たせた一覧があれば、そちらを使う。
@@ -344,14 +355,12 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 		require.Nil(t, tools[tool].Meta, tool)
 	}
 
-	// exclude したツール、UI を持つツール、ゲートウェイ自身のツールはそのまま（outputSchema も
-	// 残る）。
+	// exclude したツール、UI を持つツール、ゲートウェイ自身のツールには引数を足さない。
+	// exclude したツールは outputSchema も残る。
 	for _, tool := range []string{"delete_issue", "show_chart", createPairingCodeToolName} {
 		require.NotContains(t, toolProperties(t, tools[tool]), name, tool)
 	}
-	for _, tool := range []string{"delete_issue", "show_chart"} {
-		require.Equal(t, outputSchema, tools[tool].OutputSchema, tool)
-	}
+	require.Equal(t, outputSchema, tools["delete_issue"].OutputSchema)
 	require.Contains(t, tools["show_chart"].Meta, mcpAppsMetaKey)
 
 	// SDK が保持する登録済みのツールは書き換えない（2 回目の一覧も同じ）。

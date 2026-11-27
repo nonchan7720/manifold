@@ -80,6 +80,15 @@ func TestFromJSONSchema_Describe(t *testing.T) {
 			want: "id, name, owner{name}, target{path, url}",
 		},
 		{
+			name: "a property declared in several branches is read from all of them",
+			schema: `{"allOf": [
+				{"properties": {"user": {"properties": {"id": {}}}, "tags": {"type": "array"}}},
+				{"properties": {"user": {"properties": {"email": {}}},
+					"tags": {"items": {"properties": {"name": {}}}}}},
+				{"properties": {"user": true, "tags": {"items": {"properties": {"color": {}}}}}}]}`,
+			want: "tags[]{color, name}, user{email, id}",
+		},
+		{
 			name: "a nullable array",
 			schema: `{"properties": {"tags": {"anyOf": [
 				{"type": "array", "items": {"properties": {"name": {}}}}, {"type": "null"}]}}}`,
@@ -263,10 +272,11 @@ func TestBuild_Limits(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(schema), &v))
 		node, ok := FromJSONSchema(v)
 		require.True(t, ok)
-		require.True(t, node.Omitted)
 		require.Empty(t, node.Fields)
+		require.LessOrEqual(t, node.Arrays, maxSchemas)
+		require.Empty(t, node.Describe(1<<20))
 	})
-	t.Run("number of schemas", func(t *testing.T) {
+	t.Run("number of schemas and names", func(t *testing.T) {
 		// 各階層で 10 個のフィールドが同じ形を持つので、上限が無ければ 10^6 個を読む。
 		schema := `{}`
 		for range maxDepth {
@@ -280,16 +290,121 @@ func TestBuild_Limits(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(schema), &v))
 		node, ok := FromJSONSchema(v)
 		require.True(t, ok)
-		require.LessOrEqual(t, countNodes(node), maxSchemas)
-		require.Contains(t, node.Describe(1<<20), "...")
+		require.LessOrEqual(t, countNodes(node), maxNames+maxFields+1)
+		// 浅い階層から読むので、上限に達しても浅い階層はそろっている。
+		require.Len(t, node.Fields, 10)
+		for _, f := range node.Fields {
+			require.Len(t, f.Fields, 10, f.Name)
+			for _, g := range f.Fields {
+				require.Len(t, g.Fields, 10, f.Name+"."+g.Name)
+			}
+		}
+	})
+	t.Run("a wide schema keeps every top-level name", func(t *testing.T) {
+		// 最初のフィールドの下だけで上限を使い切る形でも、最上位の名前は落とさない。
+		deep := `{}`
+		for range maxDepth - 1 {
+			props := make([]string, 0, 12)
+			for i := range 12 {
+				props = append(props, fmt.Sprintf(`"n%02d": %s`, i, deep))
+			}
+			deep = `{"properties": {` + strings.Join(props, ",") + `}}`
+		}
+		got := describeWithin(t, `{"properties": {"a_first": `+deep+
+			`, "title": {}, "updated_at": {}, "user": {"properties": {"login": {}}}}}`, 80)
+		require.Equal(t, "a_first{...}, title, updated_at, user{login}", got)
 	})
 	t.Run("many properties", func(t *testing.T) {
-		props := make([]string, 0, maxSchemas*2)
-		for i := range maxSchemas * 2 {
+		props := make([]string, 0, maxFields*2)
+		for i := range maxFields * 2 {
 			props = append(props, fmt.Sprintf(`"f%05d": {}`, i))
 		}
-		got := describeWithin(t, `{"properties": {`+strings.Join(props, ",")+`}}`, 64)
+		schema := `{"properties": {` + strings.Join(props, ",") + `}}`
+		got := describeWithin(t, schema, 64)
 		require.Equal(t, "f00000, f00001, f00002, f00003, f00004, f00005, f00006, ...", got)
+
+		// 1 つのオブジェクトに載せるのは、名前順で先頭の maxFields 個まで。
+		var v any
+		require.NoError(t, json.Unmarshal([]byte(schema), &v))
+		node, ok := FromJSONSchema(v)
+		require.True(t, ok)
+		require.Len(t, node.Fields, maxFields)
+		require.True(t, node.Omitted)
+		require.Equal(t, fmt.Sprintf("f%05d", maxFields-1), node.Fields[maxFields-1].Name)
+	})
+}
+
+// countingSchema は、プロパティ名を読まれた回数を数えるスキーマ。
+type countingSchema struct {
+	id    any
+	alts  []Schema
+	props []string
+	reads *int
+}
+
+func (s countingSchema) ID() any                { return s.id }
+func (s countingSchema) Alternatives() []Schema { return s.alts }
+func (s countingSchema) Properties() []string {
+	*s.reads++
+	return s.props
+}
+func (s countingSchema) Property(string) (Schema, bool) { return nil, false }
+func (s countingSchema) Items() (Schema, bool)          { return nil, false }
+
+// 同じスキーマを何度も重ねても（allOf に同じ参照を並べる）、プロパティを読むのは 1 度。
+// 別の ID で同じ内容を指されても、読むプロパティ名の数の上限で止まる。
+func TestBuild_DoesNotRereadSharedSchemas(t *testing.T) {
+	props := make([]string, 0, 100000)
+	for i := range 100000 {
+		props = append(props, fmt.Sprintf("f%06d", i))
+	}
+
+	t.Run("the same schema", func(t *testing.T) {
+		reads := 0
+		big := countingSchema{id: "big", props: props, reads: &reads}
+		root := countingSchema{id: "root", reads: &reads}
+		for range maxSchemas - 2 {
+			root.alts = append(root.alts, big)
+		}
+		node := Build(root)
+		require.Equal(t, 2, reads) // root と big を 1 度ずつ
+		require.Len(t, node.Fields, maxFields)
+		require.True(t, node.Omitted)
+	})
+
+	t.Run("the same content under different ids", func(t *testing.T) {
+		reads := 0
+		root := countingSchema{id: "root", reads: &reads}
+		for i := range maxSchemas - 2 {
+			root.alts = append(root.alts, countingSchema{id: i, props: props, reads: &reads})
+		}
+		node := Build(root)
+		require.Equal(t, 2, reads) // root と、最初の 1 つで名前の数の上限に達する
+		require.Len(t, node.Fields, maxFields)
+		require.True(t, node.Omitted)
+	})
+
+	// JSON Schema でも同じ（配列の添字は "0" と "00" が同じ要素を指す）。
+	t.Run("json schema", func(t *testing.T) {
+		var refs strings.Builder
+		for i := range maxSchemas - 2 {
+			if i > 0 {
+				refs.WriteString(",")
+			}
+			if i%2 == 0 {
+				refs.WriteString(`{"$ref": "#/$defs/Big"}`)
+			} else {
+				refs.WriteString(`{"$ref": "#/x/` + strings.Repeat("0", i) + `"}`)
+			}
+		}
+		quoted := make([]string, len(props))
+		for i, name := range props {
+			quoted[i] = `"` + name + `": {}`
+		}
+		schema := `{"allOf": [` + refs.String() + `], "x": [{"$ref": "#/$defs/Big"}],
+			"$defs": {"Big": {"properties": {` + strings.Join(quoted, ",") + `}}}}`
+		got := describeWithin(t, schema, 40)
+		require.Equal(t, "f000000, f000001, f000002, f000003, ...", got)
 	})
 }
 
@@ -326,7 +441,7 @@ func FuzzFromJSONSchema(f *testing.F) {
 		if got := node.Describe(limit); len(got) > max(limit, 0) {
 			t.Fatalf("Describe(%d) returned %d bytes: %s", limit, len(got), got)
 		}
-		if countNodes(node) > maxSchemas+1 {
+		if countNodes(node) > maxNames+maxFields+1 {
 			t.Fatalf("read %d nodes", countNodes(node))
 		}
 	})

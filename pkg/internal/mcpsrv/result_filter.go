@@ -193,6 +193,18 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	if !f.applies(tool.Name) {
 		return tool
 	}
+	copied := *tool
+	// 対象のツールは、tools/call に式の引数があれば結果を絞り込む。その結果は式が形を決める
+	// ので、元の outputSchema には合わない。TypeScript / Python の SDK は structuredContent を
+	// outputSchema で検証し、合わない結果を拒否するため、outputSchema は外す（OpenAPI の
+	// ツールがもともと持たないのと同じ形になる）。結果にどんなフィールドがあるかは、外す前の
+	// outputSchema から読んで引数の説明に載せる（resultFields）。structuredContent は今まで
+	// どおり返す。
+	//
+	// 下で引数を足さないツール（MCP Apps の UI を持つツールなど）でも外すのは、tools/call が
+	// 引数を足したかどうかを区別できず、式の引数が送られてくれば絞り込むため。
+	copied.OutputSchema = nil
+
 	ui := hasMCPAppsUI(tool)
 	fields := ""
 	if !ui {
@@ -200,7 +212,7 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	}
 	schema, shadows, ok := f.withArgument(tool.InputSchema, f.features(tool.Name), fields)
 	if !ok {
-		return tool
+		return &copied
 	}
 	if shadows {
 		f.warnShadowed(ctx, tool.Name)
@@ -211,16 +223,9 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 		// ので（MCP バックエンドの tools/list は毎回バックエンドへ転送していて、手元に
 		// 一覧が無い）、式の引数が送られてくれば絞り込む。ツール自身が同じ名前の引数を
 		// 持つ場合に上の警告を出すのは、UI を持つツールでもその引数が使えなくなるため。
-		return tool
+		return &copied
 	}
-	copied := *tool
 	copied.InputSchema = schema
-	// 式を渡した呼び出しの結果は式が形を決めるので、元の outputSchema には合わない。
-	// TypeScript / Python の SDK は structuredContent を outputSchema で検証し、合わない結果を
-	// 拒否するため、対象のツールでは outputSchema を外す（OpenAPI のツールがもともと持たない
-	// のと同じ形になる）。結果にどんなフィールドがあるかは、外す前の outputSchema から読んで
-	// 引数の説明に載せてある（resultFields）。structuredContent は今までどおり返す。
-	copied.OutputSchema = nil
 	return &copied
 }
 

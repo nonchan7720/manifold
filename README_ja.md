@@ -728,7 +728,7 @@ mcpServers:
 - **式の誤り**: 構文エラー、そのツールで有効にしていない構文、関数の呼び出しは、バックエンドを呼ぶ前に `isError: true` の結果で返します（`invalid _jmespath: functions are not supported (length()): an expression can only select and filter at offset 0. The tool was not called.`）。呼び出しの後に失敗するのは、下記の評価の上限を超えたときだけです。このときバックエンドの呼び出し自体は完了しており、メッセージにもそう書かれます。
 - **`null` になったとき**: 式が `null` を返すのは、たいてい最上位のキーの見当が外れているときです。結果の形を添えて返すので（`_jmespath returned null. The result is an object with keys: items, total.`）、エージェントは全体を取り直さずに式を直せます。識別子として書けないキーは、式に書く形（`"x-rate"`）で示します。
 - **エラーの結果**（`isError: true`）は絞り込まず、そのまま返します。
-- **`outputSchema`**: 対象のツールでは `tools/list` から外します。式を渡した呼び出しの結果は式が選んだ形になり、ツールのスキーマには合わなくなります。TypeScript / Python の SDK は、広告された `outputSchema` に合わない `structuredContent` を拒否します。スキーマが伝えていたフィールドは、代わりに引数の説明に載せます（[結果のフィールド一覧](#引数の説明に載る結果のフィールド一覧)を参照）。`structuredContent` は今までどおり返します。あるツールの `outputSchema` を残したい場合は、そのツールを `exclude` で対象から外してください。
+- **`outputSchema`**: `include` / `exclude` で対象になったツールでは、`tools/list` から外します。式を渡した呼び出しの結果は式が選んだ形になり、ツールのスキーマには合わなくなります。TypeScript / Python の SDK は、広告された `outputSchema` に合わない `structuredContent` を拒否します。スキーマが伝えていたフィールドは、代わりに引数の説明に載せます（[結果のフィールド一覧](#引数の説明に載る結果のフィールド一覧)を参照）。`structuredContent` は今までどおり返します。あるツールの `outputSchema` を残したい場合は、そのツールを `exclude` で対象から外してください。
 
 **使える JMESPath の構文**:
 
@@ -742,7 +742,7 @@ mcpServers:
 
 - バックエンドのツールが `argument` と同じ名前の引数を持つ場合は、ゲートウェイの引数が優先されます（バックエンドの引数は呼び出し元から使えなくなり、警告ログが出ます）。`argument` を別の名前にするか、そのツールを `exclude` してください。`include` / `exclude` で対象から外したツールでは、同じ名前の引数もそのままバックエンドへ渡ります。
 - 絞り込みはサーバー自身のツールだけが対象です。`mcpServers.<name>.agents` の `<agent>__<skill>` ツールと、reverse（WebMCP）サーバーの `create_pairing_code` は絞り込みません。
-- MCP Apps の UI を持つツールには、`tools/list` で引数を足しません（結果を UI が描画に使うため）。それでも呼び出し元が `_jmespath` を送ってきた場合は絞り込みます（ツール自身が同じ名前の引数を持つ場合は、上と同じくゲートウェイの引数が優先されます）。`tools/call` からは、そのツールが UI を持つかがゲートウェイには分からないためです。結果を必ずそのまま返したい場合は、そのツールを `exclude` してください。
+- MCP Apps の UI を持つツールには、`tools/list` で引数を足しません（結果を UI が描画に使うため）。それでも呼び出し元が `_jmespath` を送ってきた場合は絞り込みます（ツール自身が同じ名前の引数を持つ場合は、上と同じくゲートウェイの引数が優先されます）。`tools/call` からは、そのツールが UI を持つかがゲートウェイには分からないためです。同じ理由で、`outputSchema` も他の対象ツールと同じく外します。結果と `outputSchema` をそのまま残したい場合は、そのツールを `exclude` してください。
 - 絞り込みは authz・ガードレール・監査ログより内側で行います。authz はツール名で判定するので式には左右されません。ガードレール（`post_call`）は絞り込み後の結果を検査し、監査ログ（`includeArguments`）には呼び出し元が送った式が残ります。`manifold openapi tools` と生成物（`tools.file`）に `_jmespath` は現れません（`tools/list` を返す時点で足すため）。
 - 絞り込むのはゲートウェイです。バックエンドは今までどおり全体を返すので、減るのは呼び出し元へ返す量（エージェントのコンテキスト）で、バックエンドとの通信量ではありません。
 - 複数レプリカで使う場合は、全レプリカを対応バージョンにしてから有効にしてください。未対応のレプリカは `_jmespath` をそのままバックエンドへ渡します。

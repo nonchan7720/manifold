@@ -551,6 +551,33 @@ func TestSearch_ChargesStringComparisons(t *testing.T) {
 	}
 }
 
+// オブジェクトどうしの比較では、キーを探すためにキーの中身を読む。長いキーの比較を式に
+// 何百回も並べられるので、キーの長さも作業量に数える。
+func TestSearch_ChargesKeyLookups(t *testing.T) {
+	key := strings.Repeat("k", 8<<20)
+	d, err := Decode([]byte(`{"a": {"` + key + `": 1}, "b": {"` + key + `": 1}}`))
+	require.NoError(t, err)
+
+	// 1 回なら通る。
+	q, err := compileAll("a == b")
+	require.NoError(t, err)
+	out, err := q.Search(d)
+	require.NoError(t, err)
+	require.Equal(t, "true", string(out))
+
+	q, err = compileAll("[" + strings.TrimSuffix(strings.Repeat("a==b,", 300), ",") + "]")
+	require.NoError(t, err)
+	_, err = q.Search(d)
+	require.ErrorIs(t, err, ErrTooExpensive)
+
+	// 普通の長さのキーを持つオブジェクトの比較は、何度でも通る。
+	d, err = Decode([]byte(`{"a": {"id": 1, "name": "x"}, "b": {"name": "x", "id": 1}}`))
+	require.NoError(t, err)
+	out, err = q.Search(d)
+	require.NoError(t, err)
+	require.Equal(t, "["+strings.TrimSuffix(strings.Repeat("true,", 300), ",")+"]", string(out))
+}
+
 // 上限はドキュメントの大きさに比例するので、大きなドキュメントへの普通の式は通る。
 func TestSearch_LargeDocumentWithinBudget(t *testing.T) {
 	var doc strings.Builder
