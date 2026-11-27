@@ -3,7 +3,7 @@ module github.com/nonchan7720/manifold
 go 1.27.4
 
 require (
-	github.com/MicahParks/jwkset v0.11.5
+	github.com/MicahParks/jwkset v0.12.0
 	github.com/MicahParks/keyfunc/v3 v3.9.2
 	github.com/a2aproject/a2a-go/v2 v2.9.0
 	github.com/alicebob/miniredis/v2 v2.40.0

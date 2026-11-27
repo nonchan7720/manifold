@@ -4,8 +4,8 @@ cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdB
 cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
 github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
-github.com/MicahParks/jwkset v0.11.5 h1:ZyJdQj8fZiTHjOX1aDDw0d8Fw6qGkTle12r9LPeoCEA=
-github.com/MicahParks/jwkset v0.11.5/go.mod h1:U2oRhRaLgDCLjtpGL2GseNKGmZtLs/3O7p+OZaL5vo0=
+github.com/MicahParks/jwkset v0.12.0 h1:d/S70TKDneLrBhn9XvyKaKDp/UnDkU1kacVLHytECA4=
+github.com/MicahParks/jwkset v0.12.0/go.mod h1:U2oRhRaLgDCLjtpGL2GseNKGmZtLs/3O7p+OZaL5vo0=
 github.com/MicahParks/keyfunc/v3 v3.9.2 h1:yWvqmCIWMnyp8tJFR3VmNQRBGmNRJ3cMvN9bcG9Bfbc=
 github.com/MicahParks/keyfunc/v3 v3.9.2/go.mod h1:h8DMhdulFa3yjG1q74FqaehNDekB18HrVCXPl9Raa4I=
 github.com/TwiN/go-color v1.4.1 h1:mqG0P/KBgHKVqmtL5ye7K0/Gr4l6hTksPgTgMk3mUzc=
