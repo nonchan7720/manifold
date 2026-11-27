@@ -212,6 +212,16 @@ func TestSearch_ComparesVeryLongNumbers(t *testing.T) {
 			require.Equal(t, tt.want, search(t, tt.expression, doc))
 		})
 	}
+
+	// 値は同じで表記だけが長いリテラルでも、結果は変わらない。
+	padded := "`9007199254740992." + strings.Repeat("0", 600) + "`"
+	for expression, want := range map[string]string{
+		"id == " + padded: `false`,
+		"id > " + padded:  `true`,
+		"id <= " + padded: `false`,
+	} {
+		require.Equal(t, want, search(t, expression, `{"id": 9007199254740993}`), expression)
+	}
 }
 
 // 桁で比べる作業は表記の長さに比例するので、作業量に数える（同じ比較を式に何百回も
