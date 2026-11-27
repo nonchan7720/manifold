@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -18,7 +19,6 @@ import (
 //	number   数値
 //	[]any    配列
 //	*object  オブジェクト
-//	*expref  式への参照（&expr）。関数の引数としてだけ現れる。
 
 // number は JSON の数値。
 type number struct {
@@ -80,12 +80,7 @@ func (o *object) set(key string, v any) {
 	}
 }
 
-// expref は式への参照（&expr）。
-type expref struct {
-	node *node
-}
-
-// JSON の型名（type() の戻り値、エラーメッセージ）。
+// JSON の型名（Describe が使う）。
 const (
 	typeNull    = "null"
 	typeBoolean = "boolean"
@@ -93,7 +88,6 @@ const (
 	typeNumber  = "number"
 	typeArray   = "array"
 	typeObject  = "object"
-	typeExpref  = "expression"
 )
 
 func typeOf(v any) string {
@@ -110,8 +104,6 @@ func typeOf(v any) string {
 		return typeArray
 	case *object:
 		return typeObject
-	case *expref:
-		return typeExpref
 	}
 	return "unknown"
 }
@@ -240,20 +232,45 @@ func (d *Document) Describe() string {
 	return "a value of type " + typeOf(d.root)
 }
 
-// maxDescribedKeys は Describe が挙げるキーの数の上限。
-const maxDescribedKeys = 40
+const (
+	// maxDescribedKeys は Describe が挙げるキーの数の上限。
+	maxDescribedKeys = 40
+	// maxDescribedKeyBytes は Describe が挙げるキー 1 つの長さの上限。これより長いキーは
+	// 挙げずに数だけ伝える（手がかりのほうが結果より大きくならないようにする）。
+	maxDescribedKeyBytes = 64
+)
 
 func describeKeys(o *object) string {
 	if len(o.keys) == 0 {
 		return "no keys"
 	}
-	keys := o.keys
-	suffix := ""
-	if len(keys) > maxDescribedKeys {
-		suffix = fmt.Sprintf(", ... (%d more)", len(keys)-maxDescribedKeys)
-		keys = keys[:maxDescribedKeys]
+	shown := make([]string, 0, min(len(o.keys), maxDescribedKeys))
+	for _, key := range o.keys {
+		if len(shown) == maxDescribedKeys {
+			break
+		}
+		if len(key) <= maxDescribedKeyBytes {
+			shown = append(shown, displayKey(key))
+		}
 	}
-	return "keys: " + strings.Join(keys, ", ") + suffix
+	if len(shown) == 0 {
+		return fmt.Sprintf("%d keys", len(o.keys))
+	}
+	desc := "keys: " + strings.Join(shown, ", ")
+	if more := len(o.keys) - len(shown); more > 0 {
+		desc += fmt.Sprintf(", ... (%d more)", more)
+	}
+	return desc
+}
+
+// displayKey はキーを、式の中に書く形で返す。識別子として書けないキー（"x-rate" や
+// "a, b"）は引用符で囲むので、並べても 1 つのキーがどこまでかが分かる。
+func displayKey(key string) string {
+	if isIdentifier(key) {
+		return key
+	}
+	quoted, _ := jsontext.AppendQuote(nil, key)
+	return string(quoted)
 }
 
 // errResultTooLarge は結果の JSON が上限を超えたことを表す。
@@ -262,48 +279,25 @@ var errResultTooLarge = errors.New("the result of the expression is too large")
 // appendJSON は v を空白なしの JSON にして buf へ足す。buf が limit バイトを超えたら
 // errResultTooLarge を返す。
 func appendJSON(buf []byte, v any, limit int) ([]byte, error) {
+	var err error
 	switch v := v.(type) {
 	case nil:
 		buf = append(buf, "null"...)
 	case bool:
-		if v {
-			buf = append(buf, "true"...)
-		} else {
-			buf = append(buf, "false"...)
-		}
+		buf = strconv.AppendBool(buf, v)
 	case string:
-		buf = appendString(buf, v)
+		buf, err = appendString(buf, v, limit)
 	case number:
 		buf = appendNumber(buf, v)
 	case []any:
-		buf = append(buf, '[')
-		for i, elem := range v {
-			if i > 0 {
-				buf = append(buf, ',')
-			}
-			var err error
-			if buf, err = appendJSON(buf, elem, limit); err != nil {
-				return buf, err
-			}
-		}
-		buf = append(buf, ']')
+		buf, err = appendArray(buf, v, limit)
 	case *object:
-		buf = append(buf, '{')
-		for i, key := range v.keys {
-			if i > 0 {
-				buf = append(buf, ',')
-			}
-			buf = appendString(buf, key)
-			buf = append(buf, ':')
-			var err error
-			if buf, err = appendJSON(buf, v.vals[i], limit); err != nil {
-				return buf, err
-			}
-		}
-		buf = append(buf, '}')
+		buf, err = appendObject(buf, v, limit)
 	default:
-		// 式への参照は結果になれない。
-		return buf, fmt.Errorf("the expression returns an %s, not a value", typeOf(v))
+		return buf, fmt.Errorf("unexpected value of type %T", v)
+	}
+	if err != nil {
+		return buf, err
 	}
 	if len(buf) > limit {
 		return buf, errResultTooLarge
@@ -311,10 +305,47 @@ func appendJSON(buf []byte, v any, limit int) ([]byte, error) {
 	return buf, nil
 }
 
-func appendString(buf []byte, s string) []byte {
+func appendArray(buf []byte, arr []any, limit int) ([]byte, error) {
+	buf = append(buf, '[')
+	for i, elem := range arr {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		var err error
+		if buf, err = appendJSON(buf, elem, limit); err != nil {
+			return buf, err
+		}
+	}
+	return append(buf, ']'), nil
+}
+
+func appendObject(buf []byte, obj *object, limit int) ([]byte, error) {
+	buf = append(buf, '{')
+	for i, key := range obj.keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		var err error
+		if buf, err = appendString(buf, key, limit); err != nil {
+			return buf, err
+		}
+		buf = append(buf, ':')
+		if buf, err = appendJSON(buf, obj.vals[i], limit); err != nil {
+			return buf, err
+		}
+	}
+	return append(buf, '}'), nil
+}
+
+// appendString は s を JSON の文字列にして buf へ足す。引用すると少なくとも len(s)+2
+// バイトになるので、それだけで limit を超える文字列は引用する（バッファを伸ばす）前に断る。
+func appendString(buf []byte, s string, limit int) ([]byte, error) {
+	if len(buf)+len(s)+2 > limit {
+		return buf, errResultTooLarge
+	}
 	// 不正な UTF-8 は U+FFFD に置き換わり、その旨のエラーが返る。置き換えた結果を使う。
 	out, _ := jsontext.AppendQuote(buf, s)
-	return out
+	return out, nil
 }
 
 func appendNumber(buf []byte, n number) []byte {

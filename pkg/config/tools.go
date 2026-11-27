@@ -59,6 +59,9 @@ var argumentNameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 // 足す。呼び出し元がそこへ JMESPath の式を渡すと、ゲートウェイはその引数を取り除いて
 // バックエンドを呼び、結果の JSON に式を適用したものだけを返す。
 //
+// 式でできるのは、返すフィールドを選ぶこと。条件で絞る構文と、位置・件数で絞る構文は
+// Features でツールごとに有効にする。集計や変換などの関数は使えない。
+//
 // Include / Exclude は対象のツールを絞る glob で、ToolsConfig の Include / Exclude と
 // 同じく元のツール名に照合する。どちらも空なら、サーバー自身の全ツールが対象になる。
 type ResultFilterConfig struct {
@@ -69,6 +72,18 @@ type ResultFilterConfig struct {
 	Argument string   `mapstructure:"argument"`
 	Include  []string `mapstructure:"include"`
 	Exclude  []string `mapstructure:"exclude"`
+	// Features は、フィールドの選択に加えて使える構文を、ツールごとに有効にする。
+	Features ResultFilterFeatures `mapstructure:"features"`
+}
+
+// ResultFilterFeatures は、式で使える追加の構文ごとに、それを使えるツールを並べる。
+// 値は元のツール名に照合する glob で、空ならどのツールでも使えない（["*"] で全ツール）。
+type ResultFilterFeatures struct {
+	// Conditions は条件で絞る構文（items[?state=='open']。比較と論理の演算子を含む）を
+	// 使えるツール。
+	Conditions []string `mapstructure:"conditions"`
+	// Indexing は位置と件数で絞る構文（items[0]、items[:5]）を使えるツール。
+	Indexing []string `mapstructure:"indexing"`
 }
 
 // ArgumentName は式を渡す引数の名前を返す。
@@ -84,13 +99,29 @@ func (c *ResultFilterConfig) Applies(name string) bool {
 	return c != nil && c.Enabled && matchesPatterns(c.Include, c.Exclude, name)
 }
 
+// ConditionsEnabled は元の名前が name のツールで、条件で絞る構文を使えるかを返す。
+func (c *ResultFilterConfig) ConditionsEnabled(name string) bool {
+	return c.Applies(name) && matchAny(c.Features.Conditions, name)
+}
+
+// IndexingEnabled は元の名前が name のツールで、位置と件数で絞る構文を使えるかを返す。
+func (c *ResultFilterConfig) IndexingEnabled(name string) bool {
+	return c.Applies(name) && matchAny(c.Features.Indexing, name)
+}
+
 func (c ResultFilterConfig) ValidateWithContext(context.Context) error {
 	if c.Argument != "" && !argumentNameRegex.MatchString(c.Argument) {
 		return fmt.Errorf(
 			"argument %q must be 1-64 characters of letters, digits, '_', '-' or '.'", c.Argument,
 		)
 	}
-	return validatePatterns(c.Include, c.Exclude)
+	if err := validatePatterns(c.Include, c.Exclude); err != nil {
+		return err
+	}
+	if err := validatePatterns(c.Features.Conditions, c.Features.Indexing); err != nil {
+		return fmt.Errorf("features: %w", err)
+	}
+	return nil
 }
 
 // ToolOverride replaces the name and/or description a tool is exposed with.

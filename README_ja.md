@@ -39,7 +39,7 @@ flowchart TD
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ（ツールと prompts を中継）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **ツールの結果の絞り込み**: エージェントが呼び出しに [JMESPath](https://jmespath.org/) の式を添えると、結果のうち式が選んだ部分（必要なフィールド・行・件数・集計）だけを返し、エージェントのコンテキストを節約する（`mcpServers.<name>.tools.resultFilter`）
+- **ツールの結果の絞り込み**: エージェントが呼び出しに [JMESPath](https://jmespath.org/) の式を添えると、結果のうち選んだフィールドだけを返し、エージェントのコンテキストを節約する。条件や位置・件数での絞り込みは、ツールごとに有効にできる（`mcpServers.<name>.tools.resultFilter`）
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
@@ -664,7 +664,7 @@ mcpServers:
 
 ### ツールの結果を絞り込む（`tools.resultFilter`）
 
-ツールの結果は、エージェントが必要とする量よりずっと大きいことがよくあります（一覧 API が全フィールドを返す、など）。`tools.resultFilter` を有効にすると、エージェントは呼び出しごとに [JMESPath](https://jmespath.org/) の式を渡して、結果のうち必要な部分だけを受け取れます。JMESPath は AWS CLI や Azure CLI の `--query` と同じ言語なので、エージェント（LLM）は説明なしで書けます。
+ツールの結果は、エージェントが必要とする量よりずっと大きいことがよくあります（一覧 API が全フィールドを返す、など）。`tools.resultFilter` を有効にすると、エージェントは呼び出しごとに [JMESPath](https://jmespath.org/) の式を渡して、結果のうち必要なフィールドだけを受け取れます。JMESPath は AWS CLI や Azure CLI の `--query` と同じ言語なので、エージェント（LLM）は説明なしで書けます。
 
 ```yaml
 mcpServers:
@@ -685,35 +685,19 @@ mcpServers:
 
 ```jsonc
 // tools/call の params
-{"name": "list_issues", "arguments": {"repo": "acme/app", "_jmespath": "items[?state=='open'].{number: number, title: title}"}}
+{"name": "list_issues", "arguments": {"repo": "acme/app", "_jmespath": "items[].{number: number, title: title}"}}
 
 // 結果の content[0].text
 [{"number":12,"title":"Fix login"},{"number":15,"title":"Add docs"}]
 ```
 
-| やりたいこと | 式の例 |
-| ------------ | ------ |
-| フィールドを選ぶ | `items[].{id: id, title: title}` |
-| 入れ子の値を取り出す | `items[].{id: id, author: user.login, labels: labels[].name}` |
-| 条件で絞る | ``items[?state=='open' && comments > `10`].title`` |
-| 件数を絞る | `items[:5]` |
-| 数える・集計する | `length(items)`、`max_by(items, &comments).title` |
-| 並べ替える | `sort_by(items, &created_at)[-3:].title` |
-| 結果の形を確かめる | `keys(@)`、`items[0]` |
+式でできるのは、返すフィールドを選ぶことです。条件で絞る構文と、位置・件数で絞る構文は、`features` でツールごとに有効にします。集計・並べ替え・変換などの関数（`length()`、`sort_by()` など）は使えません。
 
-- **適用する対象**: 結果の `structuredContent` と、JSON のオブジェクトか配列であるテキスト（`content` の `text`）。それぞれに同じ式を適用します。JSON でないテキスト・画像・リソースリンクはそのまま返ります。式は `_jmespath` を付けずに呼んだときに見える JSON に対して書きます。OpenAPI のツールが配列を返す場合は `{"items": [...]}` に包まれているので、`items[...]` から始めます。
-- **返し方**: 式の結果を、空白のない JSON のテキストで返します。結果がオブジェクトなら `structuredContent` にも入ります（配列やスカラーになった場合は `structuredContent` を返しません）。キーの順序と数値の表記は元の JSON のままで、2^53 を超える整数の ID も桁を失いません。
-- **式を渡さなければ**（空文字列・`null` も同じ）、今までどおり結果の全体が返ります。
-- **式の誤り**: 構文エラー・未知の関数・引数の個数の誤りは、バックエンドを呼ぶ前に `isError: true` の結果で返します（`invalid _jmespath: unexpected '=' (use '==' to compare) at offset 13. The tool was not called.`）。関数に渡した値の型が合わないなど、評価して初めて分かる誤りは、呼び出しの後に `isError: true` で返します。このときバックエンドの呼び出し自体は完了しており、メッセージにもそう書かれます。
-- **`null` になったとき**: 式が `null` を返すのは、たいてい最上位のキーの見当が外れているときです。`null` に続けて結果の形を返すので（`_jmespath returned null. The result is an object with keys: items, total.`）、エージェントは全体を取り直さずに式を直せます。
-- **エラーの結果**（`isError: true`）は絞り込まず、そのまま返します。
-- **`outputSchema`**: 対象のツールは `tools/list` で `outputSchema` を広告しません。式を渡すと結果の形は式が決めるので、スキーマどおりの `structuredContent` を約束できないためです（TypeScript / Python の SDK は `structuredContent` を `outputSchema` で検証し、合わない結果を拒否します）。
-
-**対応している JMESPath**: [仕様](https://jmespath.org/specification.html)の全構文と、標準の組み込み関数（`abs` `avg` `ceil` `contains` `ends_with` `floor` `join` `keys` `length` `map` `max` `max_by` `merge` `min` `min_by` `not_null` `reverse` `sort` `sort_by` `starts_with` `sum` `to_array` `to_number` `to_string` `type` `values`）です。AWS CLI が使う Python 版と同じく、`<` `<=` `>` `>=` は文字列どうしも比べられます（`items[?created_at >= '2024-01-01']`）。
-
-**評価の上限**: 式は呼び出し元が書く外部入力なので、評価には上限があります。式は 4096 バイトまで。評価の作業量は結果の大きさに比例した上限で打ち切ります（`[@,@][]` を `|` でつないで結果を倍々に増やすような式は、途中でエラーになります）。式の結果が元の JSON より 64 KiB を超えて大きくなる場合と、32 MiB を超える JSON はエラーにします。
-
-対象のツールや引数の名前は変えられます。
+| できること | 式の例 | 使えるツール |
+| ---------- | ------ | ------------ |
+| フィールドを選ぶ | `items[].{id: id, title: title}`、`items[].labels[].name`、`user.login` | 対象の全ツール |
+| 条件で絞る | ``items[?state=='open' && comments > `10`].title`` | `features.conditions` に挙げたツール |
+| 位置・件数で絞る | `items[0]`、`items[:5]` | `features.indexing` に挙げたツール |
 
 ```yaml
 mcpServers:
@@ -723,11 +707,37 @@ mcpServers:
       resultFilter:
         enabled: true
         argument: _jmespath              # 式を渡す引数の名前（既定）
-        include: ["list_*", "search_*"]  # 対象のツール（既定は全ツール）
+        include: ["list_*", "search_*", "get_*"]  # 対象のツール（既定は全ツール）
         exclude: ["get_file_contents"]
+        features:
+          conditions: ["list_*", "search_*"]  # 条件で絞る構文を使えるツール
+          indexing: ["list_*"]                # 位置・件数で絞る構文を使えるツール
 ```
 
-- `include` / `exclude` は `tools.include` / `exclude` と同じ glob で、**元のツール名**に照合します（`overrides` でリネームしていても元の名前）。足した引数の説明は対象の全ツールの `tools/list` に載るので、結果が大きいツールだけを対象にすれば `tools/list` を小さく保てます。
+- `include` / `exclude` と `features` の値は `tools.include` / `exclude` と同じ glob で、**元のツール名**に照合します（`overrides` でリネームしていても元の名前）。
+- `features.conditions` / `features.indexing` は、書かなければどのツールでも無効です。`["*"]` で対象の全ツールに有効になります。
+- 足した引数の説明には、そのツールで使える構文と使えない構文が載ります。エージェントは使えない構文を試さずに済みます。説明は対象の全ツールの `tools/list` に載るので、結果が大きいツールだけを `include` すれば `tools/list` を小さく保てます。
+
+動きの詳細:
+
+- **適用する対象**: 結果の `structuredContent` と、JSON のオブジェクトか配列であるテキスト（`content` の `text`）。それぞれに同じ式を適用します。JSON でないテキスト・画像・リソースリンクはそのまま返ります。式は `_jmespath` を付けずに呼んだときに見える JSON に対して書きます。OpenAPI のツールが配列を返す場合は `{"items": [...]}` に包まれているので、`items[...]` から始めます。
+- **返し方**: 式の結果を、空白のない JSON のテキストで返します。バックエンドが `structuredContent` を返していた場合は `structuredContent` でも返します。オブジェクトはそのまま、配列やスカラーは `{"result": ...}` に包みます（`structuredContent` はオブジェクトでなければならないため）。キーの順序と数値の表記は元の JSON のままで、2^53 を超える整数の ID も桁を失いません。
+- **式を渡さなければ**（空文字列・`null` も同じ）、今までどおり結果の全体が返ります。
+- **式の誤り**: 構文エラー、そのツールで有効にしていない構文、関数の呼び出しは、バックエンドを呼ぶ前に `isError: true` の結果で返します（`invalid _jmespath: functions are not supported (length()): an expression can only select and filter at offset 0. The tool was not called.`）。呼び出しの後に失敗するのは、下記の評価の上限を超えたときだけです。このときバックエンドの呼び出し自体は完了しており、メッセージにもそう書かれます。
+- **`null` になったとき**: 式が `null` を返すのは、たいてい最上位のキーの見当が外れているときです。結果の形を添えて返すので（`_jmespath returned null. The result is an object with keys: items, total.`）、エージェントは全体を取り直さずに式を直せます。識別子として書けないキーは、式に書く形（`"x-rate"`）で示します。
+- **エラーの結果**（`isError: true`）は絞り込まず、そのまま返します。
+- **`outputSchema`**: 結果にどんなフィールドがあるかを伝える記述なので、対象のツールでも `tools/list` に残します。ただし、式を渡した呼び出しの結果は元のスキーマに合わなくなり、TypeScript / Python の SDK は合わない `structuredContent` を拒否します。そのため、元のスキーマを `anyOf` の選択肢の 1 つとして載せ（`{"type": "object", "anyOf": [<元のスキーマ>, {}]}`）、どんな結果でも検証を通る形にします。
+
+**使える JMESPath の構文**:
+
+- **フィールドの選択（常に使える）**: フィールド（`a.b`、`"x-rate"`）、射影（`items[*].id`、`by_id.*.name`）、平坦化（`items[].labels[]`）、複数選択（`{id: id, author: user.login}`、`[id, title]`）、パイプ（`|`）、リテラル（`'text'`、`` `1` ``）。
+- **条件（`features.conditions`）**: `[?条件]` と、比較（`==` `!=` `<` `<=` `>` `>=`）・論理（`&&` `||` `!`）の演算子。AWS CLI が使う Python 版と同じく、大小比較は文字列どうしでも使えます（`items[?created_at >= '2024-01-01']`）。数値は丸めずに比べるので、2^53 を超える整数の ID も正しく比較できます。
+- **位置・件数（`features.indexing`）**: 添字（`items[0]`、`items[-1]`）とスライス（`items[:5]`、`items[::2]`）。条件で絞った結果の先頭を取るには、パイプで区切ります（`items[?state=='open'] | [:5]`）。
+
+**評価の上限**: 式は呼び出し元が書く外部入力なので、評価には上限があります。式は 4096 バイトまで。評価の作業量は結果の大きさに比例した上限で打ち切ります（`[@,@][]` を `|` でつないで結果を倍々に増やすような式は、途中でエラーになります）。式の結果が元の JSON より 64 KiB を超えて大きくなる場合と、32 MiB を超える JSON はエラーにします。
+
+その他:
+
 - バックエンドのツールが `argument` と同じ名前の引数を持つ場合は、ゲートウェイの引数が優先されます（バックエンドの引数は呼び出し元から使えなくなり、警告ログが出ます）。`argument` を別の名前にするか、そのツールを `exclude` してください。対象外のツールでは、同じ名前の引数もそのままバックエンドへ渡ります。
 - 絞り込みはサーバー自身のツールだけが対象です。`mcpServers.<name>.agents` の `<agent>__<skill>` ツール、reverse（WebMCP）サーバーの `create_pairing_code`、MCP Apps の UI を持つツール（結果を UI が描画に使う）には引数を足しません。
 - 絞り込みは authz・ガードレール・監査ログより内側で行います。authz はツール名で判定するので式には左右されません。ガードレール（`post_call`）は絞り込み後の結果を検査し、監査ログ（`includeArguments`）には呼び出し元が送った式が残ります。`manifold openapi tools` と生成物（`tools.file`）に `_jmespath` は現れません（`tools/list` を返す時点で足すため）。
@@ -977,14 +987,16 @@ mcpServers:
 - OpenAPI 3.x と Swagger 2.x の spec に対応する。Swagger 2.x の spec は OpenAPI 3.x に変換せず、そのまま埋め込む（`format: swagger2`）。ゲートウェイは `spec` を読むときと同じ方法でここからツールを作り直すので、`tools.file` を使わない場合と同じツールになる。`spec` を直接読む場合と同様、Swagger 2.x の `$ref` は文書内（`#/definitions/...`、`#/parameters/...`）だけを解決する。`format: swagger2` のファイルを読むには 1.26.0 以降が必要（[1.25.x 以前からのアップグレード](#125x-以前からのアップグレード)を参照）
 - 生成物ファイルには解決済みの spec がそのまま埋め込まれるため、内部ホスト名や spec 中の例示値も含まれる。公開リポジトリへコミットする前に内容を確認すること
 
-`tools.resultFilter` は、呼び出し元が JMESPath の式でツールの結果を絞り込めるようにする（[ツールの結果を絞り込む](#ツールの結果を絞り込むtoolsresultfilter) 参照）。
+`tools.resultFilter` は、呼び出し元が JMESPath の式で、ツールの結果から返すフィールドを選べるようにする（[ツールの結果を絞り込む](#ツールの結果を絞り込むtoolsresultfilter) 参照）。
 
-| フィールド              | 型       | 説明 |
-| ----------------------- | -------- | ---- |
-| `resultFilter.enabled`  | bool     | 対象のツールの input schema に式の引数を足し、渡された式を結果に適用する（デフォルト: `false`） |
-| `resultFilter.argument` | string   | 式を渡す引数の名前（デフォルト: `_jmespath`）。英数字・`_`・`-`・`.` の 1〜64 文字 |
-| `resultFilter.include`  | []string | 対象にするツールの glob。元のツール名に照合する（デフォルト: 全ツール） |
-| `resultFilter.exclude`  | []string | 対象から外すツールの glob。`include` より優先する |
+| フィールド                         | 型       | 説明 |
+| ---------------------------------- | -------- | ---- |
+| `resultFilter.enabled`             | bool     | 対象のツールの input schema に式の引数を足し、渡された式を結果に適用する（デフォルト: `false`） |
+| `resultFilter.argument`            | string   | 式を渡す引数の名前（デフォルト: `_jmespath`）。英数字・`_`・`-`・`.` の 1〜64 文字 |
+| `resultFilter.include`             | []string | 対象にするツールの glob。元のツール名に照合する（デフォルト: 全ツール） |
+| `resultFilter.exclude`             | []string | 対象から外すツールの glob。`include` より優先する |
+| `resultFilter.features.conditions` | []string | 条件で絞る構文（`[?...]`）を使えるツールの glob（デフォルト: なし。`["*"]` で対象の全ツール） |
+| `resultFilter.features.indexing`   | []string | 位置・件数で絞る構文（`[0]`、`[:5]`）を使えるツールの glob（デフォルト: なし） |
 
 #### `mcpServers.<name>.oauth2`
 

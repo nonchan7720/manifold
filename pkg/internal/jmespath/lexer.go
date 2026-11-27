@@ -51,7 +51,7 @@ const (
 	tGT
 	tGTE
 	tCurrent // @
-	tExpref  // &
+	tExpref  // &（関数に渡す式参照。関数には対応しないので、構文解析が断る）
 )
 
 type token struct {
@@ -258,3 +258,16 @@ func isIdentifierStart(c byte) bool {
 }
 
 func isIdentifierPart(c byte) bool { return isIdentifierStart(c) || isDigit(c) }
+
+// isIdentifier は s を引用符なしの識別子として書けるかを返す。
+func isIdentifier(s string) bool {
+	if s == "" || !isIdentifierStart(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !isIdentifierPart(s[i]) {
+			return false
+		}
+	}
+	return true
+}

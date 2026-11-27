@@ -27,8 +27,10 @@ import (
 //  2. 結果に含まれる JSON（structuredContent と、JSON のテキスト）に式を適用し、
 //  3. 式の結果だけを返す。
 //
-// 式は呼び出し元が書く外部入力なので、評価は作業量に上限のある自前の評価器
-// （pkg/internal/jmespath）で行う。
+// 式でできるのは、返すフィールドを選ぶこと。条件で絞る構文（[?...]）と、位置・件数で
+// 絞る構文（[0]、[:5]）は、tools.resultFilter.features でツールごとに有効にする。
+// 集計・変換・並べ替えなどの関数は使えない。式は呼び出し元が書く外部入力なので、評価は
+// 作業量に上限のある自前の評価器（pkg/internal/jmespath）で行う。
 
 const (
 	// maxResultFilterBytes は絞り込みの対象にする JSON 1 つの長さの上限。評価のために
@@ -37,12 +39,35 @@ const (
 	// maxShadowWarnings は、同名の引数を持つツールとして覚えておく数の上限。ツール名は
 	// バックエンドが決めるので、際限なく覚えない。
 	maxShadowWarnings = 256
+	// structuredResultKey は、オブジェクトでない式の結果を structuredContent に載せる
+	// ときのキー。structuredHintKey は、そこに添える手がかりのキー。
+	structuredResultKey = "result"
+	structuredHintKey   = "hint"
 )
 
-// resultFilterDescription は足した引数の説明。全ツールの tools/list に載るので短く保つ。
-const resultFilterDescription = "Optional JMESPath expression. When set, the tool returns only " +
-	"the expression's result instead of the full JSON " +
-	`(e.g. "items[?state=='open'].{id: id, title: title}").`
+// resultFilterDescription は足した引数の説明を返す。対象の全ツールの tools/list に載る
+// ので短く保つ。使える構文と使えない構文を書くのは、呼び出し元が試して失敗する往復を
+// 減らすため。
+func resultFilterDescription(features jmespath.Features) string {
+	example := "items[].{id: id, title: title}"
+	supported := []string{"field selection"}
+	unsupported := []string{}
+	if features.Conditions {
+		example = "items[?state=='open'].{id: id, title: title}"
+		supported = append(supported, "[?conditions]")
+	} else {
+		unsupported = append(unsupported, "[?conditions]")
+	}
+	if features.Indexing {
+		supported = append(supported, "[index] and [start:stop] slices")
+	} else {
+		unsupported = append(unsupported, "[index], slices")
+	}
+	unsupported = append(unsupported, "functions")
+	return fmt.Sprintf("Optional JMESPath expression. When set, the tool returns only the "+
+		"expression's result instead of the full JSON, e.g. %q. Supported: %s. Not supported: %s.",
+		example, strings.Join(supported, ", "), strings.Join(unsupported, ", "))
+}
 
 type resultFilter struct {
 	server   string
@@ -104,6 +129,14 @@ func (f *resultFilter) applies(tool string) bool {
 	return !f.builtin[tool] && f.cfg.Applies(tool)
 }
 
+// features は tool（元のツール名）で使える追加の構文を返す。
+func (f *resultFilter) features(tool string) jmespath.Features {
+	return jmespath.Features{
+		Conditions: f.cfg.ConditionsEnabled(tool),
+		Indexing:   f.cfg.IndexingEnabled(tool),
+	}
+}
+
 // advertise は対象のツールの input schema に式の引数を足した一覧を返す。tools の要素は
 // SDK が保持する登録済みのツールそのものなので、書き換えずに複製する。
 func (f *resultFilter) advertise(ctx context.Context, tools []*mcp.Tool) []*mcp.Tool {
@@ -119,7 +152,7 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	if tool == nil || !f.applies(tool.Name) || hasMCPAppsUI(tool) {
 		return tool
 	}
-	schema, shadows, ok := f.withArgument(tool.InputSchema)
+	schema, shadows, ok := f.withArgument(tool.InputSchema, f.features(tool.Name))
 	if !ok {
 		return tool
 	}
@@ -128,17 +161,18 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	}
 	copied := *tool
 	copied.InputSchema = schema
-	// 式を渡すと結果の形は式が決めるので、outputSchema はもう約束できない。残すと、
-	// structuredContent を outputSchema で検証するクライアント（TypeScript / Python の
-	// SDK）が絞り込んだ結果を拒否する。
-	copied.OutputSchema = nil
+	if tool.OutputSchema != nil {
+		copied.OutputSchema = permissiveOutputSchema(tool.OutputSchema)
+	}
 	return &copied
 }
 
 // withArgument は schema（ツールの input schema）に式の引数を足した複製を返す。
 // 最上位が "type": "object" のスキーマとして読めなければ ok が false。shadows は、
 // 同じ名前のプロパティが既にあって置き換えたことを表す。
-func (f *resultFilter) withArgument(schema any) (out map[string]any, shadows, ok bool) {
+func (f *resultFilter) withArgument(
+	schema any, features jmespath.Features,
+) (out map[string]any, shadows, ok bool) {
 	if m, isMap := schema.(map[string]any); isMap {
 		out = maps.Clone(m)
 	} else if err := remarshalJSON(schema, &out); err != nil {
@@ -158,7 +192,7 @@ func (f *resultFilter) withArgument(schema any) (out map[string]any, shadows, ok
 	_, shadows = properties[f.argument]
 	properties[f.argument] = map[string]any{
 		"type":        "string",
-		"description": resultFilterDescription,
+		"description": resultFilterDescription(features),
 	}
 	out["properties"] = properties
 	if shadows {
@@ -177,6 +211,70 @@ func withoutRequired(required any, name string) any {
 		return slices.DeleteFunc(slices.Clone(names), func(n any) bool { return n == name })
 	}
 	return required
+}
+
+// permissiveOutputSchema は outputSchema を、元の内容を読めるまま、どんな結果でも検証を
+// 通る形にして返す。
+//
+// outputSchema は「結果にどんなフィールドがあるか」を呼び出し元に伝える唯一の記述なので、
+// 消さずに残す。一方で、式を渡した呼び出しの結果は式が形を決めるので、元のスキーマには
+// 合わない。TypeScript / Python の SDK は structuredContent を outputSchema で検証し、
+// 合わない結果を拒否するため、元のスキーマは anyOf の選択肢の 1 つ（もう 1 つは何でも
+// 通す {}）として載せる。
+func permissiveOutputSchema(schema any) any {
+	var original map[string]any
+	if err := remarshalJSON(schema, &original); err != nil || original == nil {
+		// true / false などオブジェクトでないスキーマは、そのまま返す。
+		return schema
+	}
+	out := map[string]any{}
+	if original["type"] == "object" {
+		// 式の結果は、オブジェクトでなければ {"result": ...} に包んで返す（structuredResult）。
+		out["type"] = "object"
+	}
+	for _, key := range []string{"title", "description"} {
+		if v, ok := original[key]; ok {
+			out[key] = v
+		}
+	}
+	nested := maps.Clone(original)
+	if _, hasID := nested["$id"]; !hasID {
+		// $id が無ければ、"#/$defs/..." の参照は文書の最上位から解決される。元のスキーマを
+		// 1 段下げても参照が切れないよう、定義は最上位へ移す。
+		if hasPointerRefOutsideDefinitions(original) {
+			// 定義以外の場所を指す参照（"#/properties/..." など）は移せない。元のスキーマは
+			// 載せずに、何でも通すスキーマだけを返す。
+			return out
+		}
+		for _, key := range []string{"$schema", "$defs", "definitions"} {
+			if v, ok := nested[key]; ok {
+				out[key] = v
+				delete(nested, key)
+			}
+		}
+	}
+	out["anyOf"] = []any{nested, map[string]any{}}
+	return out
+}
+
+// hasPointerRefOutsideDefinitions は schema のどこかに、定義（$defs / definitions）以外の
+// 場所を JSON Pointer で指す $ref があるかを返す。
+func hasPointerRefOutsideDefinitions(schema any) bool {
+	switch v := schema.(type) {
+	case map[string]any:
+		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, "#/") &&
+			!strings.HasPrefix(ref, "#/$defs/") && !strings.HasPrefix(ref, "#/definitions/") {
+			return true
+		}
+		for _, child := range v {
+			if hasPointerRefOutsideDefinitions(child) {
+				return true
+			}
+		}
+	case []any:
+		return slices.ContainsFunc(v, hasPointerRefOutsideDefinitions)
+	}
+	return false
 }
 
 func (f *resultFilter) warnShadowed(ctx context.Context, tool string) {
@@ -218,8 +316,9 @@ func (f *resultFilter) call(
 	if strings.TrimSpace(expression) == "" {
 		return next(ctx, authzMethodToolsCall, req)
 	}
-	// 式の誤りは、バックエンドを呼ぶ（副作用が起きる）前に返す。
-	query, err := jmespath.Compile(expression)
+	// 式の誤り（構文エラー、このツールで有効にしていない構文、関数）は、バックエンドを
+	// 呼ぶ（副作用が起きる）前に返す。
+	query, err := jmespath.Compile(expression, f.features(params.Name))
 	if err != nil {
 		return f.errorResult(req, fmt.Sprintf(
 			"invalid %s: %s. The tool was not called.", f.argument, err.Error()))
@@ -243,7 +342,9 @@ func (f *resultFilter) takeExpression(
 	args json.RawMessage,
 ) (expression string, rest json.RawMessage, present bool, err error) {
 	// ほとんどの呼び出しは式を渡さない。大きな引数を毎回デコードしないよう先に探す。
-	if !bytes.Contains(args, []byte(`"`+f.argument+`"`)) {
+	// キーは "\u005fjmespath" のようにエスケープしても書けるので、バックスラッシュを
+	// 含む引数は探さずにデコードして確かめる。
+	if !bytes.Contains(args, []byte(`"`+f.argument+`"`)) && !bytes.ContainsRune(args, '\\') {
 		return "", nil, false, nil
 	}
 	// オブジェクトでない引数は、今までどおりバックエンドに判断させる（fields は nil のまま）。
@@ -281,10 +382,15 @@ type resultFilterRun struct {
 	// documents は式を適用した JSON の数、before / after はその前後の長さの合計。
 	documents     int
 	before, after int
-	// nullOf は式の結果が null になった最初の JSON。
+	// nulls は式の結果が null になった JSON の数、nullOf はその最初のもの。
+	nulls  int
 	nullOf *jmespath.Document
 	// failedOn は評価に失敗した JSON（読めていれば）。
 	failedOn *jmespath.Document
+	// texts はテキストに適用した式の結果。structured は structuredContent に適用した
+	// 式の結果（structuredContent が無ければ nil）。
+	texts      [][]byte
+	structured []byte
 }
 
 // filter は doc に式を適用した結果を返す。doc が JSON として読めなければ ok が false。
@@ -305,8 +411,11 @@ func (r *resultFilterRun) filter(doc []byte) (out []byte, ok bool, err error) {
 	r.documents++
 	r.before += len(doc)
 	r.after += len(out)
-	if r.nullOf == nil && string(out) == "null" {
-		r.nullOf = document
+	if string(out) == "null" {
+		r.nulls++
+		if r.nullOf == nil {
+			r.nullOf = document
+		}
 	}
 	return out, true, nil
 }
@@ -325,26 +434,29 @@ func (f *resultFilter) apply(
 	copied.Content = slices.Clone(result.Content)
 	run := &resultFilterRun{query: query}
 
-	textFiltered, err := run.filterTexts(result.Content, copied.Content)
+	err := run.filterTexts(result.Content, copied.Content)
 	if err == nil && result.StructuredContent != nil {
-		err = run.filterStructured(&copied, textFiltered)
+		err = run.filterStructured(&copied)
 	}
 	if err != nil {
 		return f.evaluationError(req, run, err)
 	}
 
+	hint := ""
 	switch {
 	case run.documents == 0:
-		copied.Content = append(copied.Content, &mcp.TextContent{
-			Text: f.argument + " was not applied: the result is not JSON.",
-		})
-	case run.nullOf != nil:
-		// 式が null を返すのは、たいてい最上位のキーの見当が外れているとき。形を添えて、
-		// 全体を取り直さずに式を直せるようにする。
-		copied.Content = append(copied.Content, &mcp.TextContent{
-			Text: fmt.Sprintf("%s returned null. The result is %s.",
-				f.argument, run.nullOf.Describe()),
-		})
+		hint = f.argument + " was not applied: the result is not JSON."
+	case run.nulls == run.documents:
+		// 式が null しか返さないのは、たいてい最上位のキーの見当が外れているとき。形を
+		// 添えて、全体を取り直さずに式を直せるようにする。
+		hint = fmt.Sprintf("%s returned null. The result is %s.",
+			f.argument, run.nullOf.Describe())
+	}
+	if hint != "" {
+		copied.Content = append(copied.Content, &mcp.TextContent{Text: hint})
+	}
+	if run.structured != nil {
+		copied.StructuredContent = structuredResult(run.structured, hint)
 	}
 	slog.DebugContext(ctx, "tool result filtered",
 		slog.String("server", f.server), slog.String("tool", tool),
@@ -354,8 +466,8 @@ func (f *resultFilter) apply(
 }
 
 // filterTexts は content のうち JSON のテキストに式を適用し、結果を out の同じ位置へ
-// 入れる。1 つでも適用したら filtered が true。
-func (r *resultFilterRun) filterTexts(content, out []mcp.Content) (filtered bool, _ error) {
+// 入れる。
+func (r *resultFilterRun) filterTexts(content, out []mcp.Content) error {
 	for i, c := range content {
 		text, ok := c.(*mcp.TextContent)
 		if !ok || !startsLikeJSONContainer(text.Text) {
@@ -363,7 +475,7 @@ func (r *resultFilterRun) filterTexts(content, out []mcp.Content) (filtered bool
 		}
 		result, ok, err := r.filter([]byte(text.Text))
 		if err != nil {
-			return filtered, err
+			return err
 		}
 		if !ok {
 			continue
@@ -371,14 +483,16 @@ func (r *resultFilterRun) filterTexts(content, out []mcp.Content) (filtered bool
 		rewritten := *text
 		rewritten.Text = string(result)
 		out[i] = &rewritten
-		filtered = true
+		r.texts = append(r.texts, result)
 	}
-	return filtered, nil
+	return nil
 }
 
-// filterStructured は result の structuredContent に式を適用する。式の結果を載せた
-// テキストが無ければ（textFiltered が false）、テキストとしても足す。
-func (r *resultFilterRun) filterStructured(result *mcp.CallToolResult, textFiltered bool) error {
+// filterStructured は result の structuredContent に式を適用し、結果を r.structured に
+// 入れる。同じ値を載せたテキストが無ければ、テキストとしても足す（テキストしか読まない
+// 呼び出し元にも届くように。テキストの JSON と structuredContent が別の内容のことも
+// ある）。
+func (r *resultFilterRun) filterStructured(result *mcp.CallToolResult) error {
 	raw, err := structuredContentJSON(result.StructuredContent)
 	if err != nil {
 		return fmt.Errorf("structuredContent is not JSON: %w", err)
@@ -387,16 +501,40 @@ func (r *resultFilterRun) filterStructured(result *mcp.CallToolResult, textFilte
 	if err != nil || !ok {
 		return err
 	}
-	// structuredContent は、古いプロトコルのクライアントが受け付けるオブジェクトの
-	// ときだけ返す。配列やスカラーになった結果はテキストで返る。
-	result.StructuredContent = nil
-	if len(out) > 0 && out[0] == '{' {
-		result.StructuredContent = json.RawMessage(out)
-	}
-	if !textFiltered {
+	r.structured = out
+	// テキストと structuredContent はキーの順序や数値の表記が違うことがあるので、
+	// バイト列ではなく値で比べる。
+	inText := slices.ContainsFunc(r.texts, func(text []byte) bool {
+		return jmespath.Equal(text, out)
+	})
+	if !inText {
 		result.Content = append(result.Content, &mcp.TextContent{Text: string(out)})
 	}
 	return nil
+}
+
+// structuredResult は式の結果 out を structuredContent に載せる形で返す。
+//
+// structuredContent はオブジェクトでなければならず（古いプロトコルのクライアントは配列や
+// スカラーを受け付けない）、outputSchema を持つツールでは省略もできない（SDK が「結果に
+// structuredContent が無い」と拒否する）。そのため、オブジェクトでない結果は
+// {"result": ...} に包む。hint があれば、structuredContent しか読まない呼び出し元にも
+// 届くよう、包んだ結果に添える（オブジェクトの結果は式が選んだ形のまま返す）。
+func structuredResult(out []byte, hint string) json.RawMessage {
+	if len(out) > 0 && out[0] == '{' {
+		return out
+	}
+	wrapped := map[string]json.RawMessage{structuredResultKey: out}
+	if hint != "" {
+		// 文字列の JSON 化は失敗しない。
+		wrapped[structuredHintKey], _ = json.Marshal(hint)
+	}
+	encoded, err := json.Marshal(wrapped)
+	if err != nil {
+		// out は評価器が作った JSON なので、ここには来ない。
+		return out
+	}
+	return encoded
 }
 
 // structuredContentJSON は structuredContent を JSON にする。

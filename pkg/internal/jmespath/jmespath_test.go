@@ -3,6 +3,7 @@ package jmespath
 import (
 	"encoding/json"
 	"encoding/json/jsontext"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -11,11 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// compileAll は、条件と位置の構文も有効にして式を解釈する。
+func compileAll(expression string) (*Query, error) {
+	return Compile(expression, Features{Conditions: true, Indexing: true})
+}
+
 func search(t *testing.T, expression, doc string) string {
 	t.Helper()
 	d, err := Decode([]byte(doc))
 	require.NoError(t, err)
-	q, err := Compile(expression)
+	q, err := compileAll(expression)
 	require.NoError(t, err, expression)
 	out, err := q.Search(d)
 	require.NoError(t, err, expression)
@@ -41,7 +47,7 @@ func TestSearch_MatchesReferenceImplementation(t *testing.T) {
 	require.NoError(t, err)
 	for _, c := range suite.Cases {
 		t.Run(c.Expression, func(t *testing.T) {
-			q, err := Compile(c.Expression)
+			q, err := compileAll(c.Expression)
 			require.NoError(t, err)
 			got, err := q.Search(doc)
 			require.NoError(t, err)
@@ -80,9 +86,6 @@ func TestSearch_Semantics(t *testing.T) {
 		{"ordering in a filter drops the element", "nums[?@ > 'a']", `[]`},
 		{"ordering strings", "s >= 'abc' && s < 'abd'", `true`},
 
-		// 文字列に対する contains は、探す値が文字列でなければ false。
-		{"contains with a non-string search", "contains(s, `1`)", `false`},
-
 		// バッククォートの中が JSON でなければ文字列（参照実装と同じ、非推奨の書き方）。
 		{"a literal that is not JSON is a string", "`abc`", `"abc"`},
 		{"a raw string keeps backslashes", `'a\\b\n'`, `"a\\\\b\\n"`},
@@ -99,13 +102,18 @@ func TestSearch_Semantics(t *testing.T) {
 		// 0 は偽ではない（偽は false・null・空文字列・空配列・空オブジェクト）。
 		{"zero is truthy", "nums[0] || nums[1]", `0`},
 		{"comparison binds tighter than and", "n == `5` && s == 'abc'", `true`},
-		{"a function after a dot", "foo.keys(@)", `["a","b"]`},
 		{"flatten stops at one level", "list[]", `[{"v":1},{"v":2},{"v":3}]`},
 		{"a negative step", "nums[4:1:-1]", `[4,3,2]`},
 		{"a step larger than the array", "nums[::100]", `[0]`},
 		{"a huge negative step", "nums[::-9223372036854775808]", `[5]`},
 		{"an out of range slice", "nums[10:20]", `[]`},
 		{"quoted identifiers", `obj."k"`, `"v"`},
+		{
+			"deep equality ignores the order of keys",
+			"`{\"a\":1,\"b\":[1,2]}` == `{\"b\":[1,2],\"a\":1}`",
+			`true`,
+		},
+		{"deep equality compares every element", "`[1,[2,3]]` == `[1,[2,4]]`", `false`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,41 +128,103 @@ func TestSearch_PreservesNumbersAndKeyOrder(t *testing.T) {
 		"tiny": 0.1000000000000000055511151231257827, "neg": -0},
 		"ids": [9007199254740993, 9007199254740992]}`
 
-	require.Equal(t, `["zeta","alpha","ids"]`, search(t, "keys(@)", doc))
 	require.Equal(
 		t,
 		`{"id":12345678901234567890,"price":1.10,"exp":1E2,"tiny":0.1000000000000000055511151231257827,"neg":-0}`,
 		search(t, "alpha", doc),
 	)
-	// 複数選択は式に書いた順。
-	require.Equal(t, `{"p":1.10,"i":12345678901234567890}`,
-		search(t, "alpha.{p: price, i: id}", doc))
-	require.Equal(t, `"12345678901234567890"`, search(t, "to_string(alpha.id)", doc))
-	require.Equal(t, `9007199254740993`, search(t, "max(ids)", doc))
+	// キーは元の JSON の順、複数選択は式に書いた順。
+	require.Equal(t, `[1,{"p":1.10,"i":12345678901234567890}]`,
+		search(t, "[zeta, alpha.{p: price, i: id}]", doc))
+	require.Equal(t, `[9007199254740993,9007199254740992]`, search(t, "ids", doc))
+}
 
-	// float64 では同じ値になる整数も、桁が違えば等しくない。
-	require.Equal(t, `[9007199254740993]`, search(t, "ids[?@ == `9007199254740993`]", doc))
-	require.Equal(t, `[9007199254740992]`, search(t, "ids[?@ == `9007199254740992`]", doc))
-	require.Equal(t, `true`, search(t, "alpha.id == `12345678901234567890`", doc))
-	require.Equal(t, `false`, search(t, "alpha.id == `12345678901234567891`", doc))
-	// 表記が違っても値が同じなら等しい。
-	require.Equal(t, `true`, search(t, "alpha.exp == `100` && alpha.price == `1.1`", doc))
-	require.Equal(t, `true`, search(t, "alpha.neg == `0`", doc))
+// 数値の比較は丸める前の値で行う。float64 では同じ値になる整数（2^53 を超える ID）も
+// 区別し、表記（整数・小数・指数）を変えても結果は変わらない。
+func TestSearch_ComparesNumbersExactly(t *testing.T) {
+	const doc = `{"id": 9007199254740993, "ids": [9007199254740993, 9007199254740992],
+		"big": 12345678901234567890, "price": 1.10, "exp": 1E2, "neg": -0,
+		"tiny": 0.1000000000000000055511151231257827, "under": 1e-400, "over": 1e400}`
+	tests := []struct {
+		expression string
+		want       string
+	}{
+		// 等値
+		{"ids[?@ == `9007199254740993`]", `[9007199254740993]`},
+		{"ids[?@ == `9007199254740992`]", `[9007199254740992]`},
+		{"id == `9007199254740993`", `true`},
+		{"id == `9007199254740992`", `false`},
+		{"id != `9007199254740992`", `true`},
+		{"big == `12345678901234567890`", `true`},
+		{"big == `12345678901234567891`", `false`},
+		// 右辺を小数や指数で書いても、丸める前の値で比べる。
+		{"id == `9007199254740992.0`", `false`},
+		{"id == `9007199254740993.0`", `true`},
+		{"id == `9.007199254740993e15`", `true`},
+		{"id == `9.007199254740992e15`", `false`},
+		{"tiny == `0.1`", `false`},
+		// 表記が違っても値が同じなら等しい。
+		{"exp == `100` && exp == `100.0` && exp == `1e2`", `true`},
+		{"price == `1.1` && price == `1.100`", `true`},
+		{"neg == `0` && neg == `0.0` && neg == `-0`", `true`},
+		// 大小
+		{"id > `9007199254740992`", `true`},
+		{"id >= `9007199254740993` && id <= `9007199254740993`", `true`},
+		{"id < `9007199254740994`", `true`},
+		{"id > `9007199254740993`", `false`},
+		{"id > `9007199254740992.5`", `true`},
+		{"ids[?@ > `9007199254740992`]", `[9007199254740993]`},
+		{"ids[?@ < `9007199254740993`]", `[9007199254740992]`},
+		{"tiny > `0.1`", `true`},
+		{"big > `-12345678901234567891`", `true`},
+		{"`-12345678901234567891` < `-12345678901234567890`", `true`},
+		// float64 では 0 や無限大になる値も、桁で比べる。
+		{"under > `0` && under < `1e-399`", `true`},
+		{"over > `1e399` && over == `1e400`", `true`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expression, func(t *testing.T) {
+			require.Equal(t, tt.want, search(t, tt.expression, doc))
+		})
+	}
+}
 
-	// 計算で作った数値は最短の表記になる。
-	require.Equal(t, `[3,2.5,0.1,3,-1]`,
-		search(t, "[length(@), avg(@), `0.1`, to_number('3'), floor(`-0.5`)]", `[1, 2, 4.5]`))
-	require.Equal(t, `[12345678901234567890,1.50,null]`,
-		search(t, "[to_number(a), to_number(b), to_number(c)]",
-			`{"a": "12345678901234567890", "b": " 1.50 ", "c": "0x10"}`))
+func TestCompareDecimals(t *testing.T) {
+	tests := []struct {
+		x, y string
+		want int
+	}{
+		{"1", "1.0", 0},
+		{"100", "1e2", 0},
+		{"0.00123", "123e-5", 0},
+		{"-0", "0", 0},
+		{"0", "0.000", 0},
+		{"12", "123", -1},
+		{"0.12", "0.123", -1},
+		{"2", "10", -1},
+		{"-2", "-10", 1},
+		{"-1", "1", -1},
+		{"0", "-1", 1},
+		{"0", "1e-999", -1},
+		{"9007199254740993", "9007199254740992", 1},
+		// 桁で比べられない表記（長すぎる、指数が大きすぎる）は 0。
+		{strings.Repeat("9", maxExactNumberBytes+1), "1", 0},
+		{"1e99999999999", "1", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.x+" vs "+tt.y, func(t *testing.T) {
+			require.Equal(t, tt.want, compareDecimals(tt.x, tt.y))
+			require.Equal(t, -tt.want, compareDecimals(tt.y, tt.x))
+		})
+	}
 }
 
 // 重複キーは後の値を採り、不正な UTF-8 は置換文字になる（JSON として読めるものは通す）。
 func TestSearch_LenientInput(t *testing.T) {
 	require.Equal(t, `{"a":3,"b":2}`, search(t, "@", `{"a":1,"b":2,"a":3}`))
-	require.Equal(t, "\"\uFFFD\"", search(t, "s", "{\"s\":\"\xff\"}"))
+	require.Equal(t, `"`+string(rune(0xFFFD))+`"`, search(t, "s", "{\"s\":\"\xff\"}"))
 	// エスケープされた文字は、エスケープなしで返る。
-	require.Equal(t, `"<&>"`, search(t, "s", `{"s":"\u003c&\u003e"}`))
+	require.Equal(t, `"<&>"`, search(t, "s", `{"s":"`+`\`+`u003c&`+`\`+`u003e"}`))
 }
 
 func TestCompile_Errors(t *testing.T) {
@@ -187,67 +257,144 @@ func TestCompile_Errors(t *testing.T) {
 		{"two expressions", "a b", `unexpected "b" at offset 2`},
 		{"stray closing bracket", "a]", `unexpected "]"`},
 		{"slice with four parts", "a[1:2:3:4]", "a slice has at most three parts"},
-		{"quoted function name", `"length"(@)`, "a quoted identifier cannot be a function name"},
-		{"calling a non-function", "a.b[0](c)", "only a function name can be called"},
-		{"unknown function", "items[?foo(@)]", "unknown function foo() at offset 7"},
-		{"too few arguments", "length()", "length() takes 1 argument(s), got 0"},
-		{"too many arguments", "length(a, b)", "length() takes 1 argument(s), got 2"},
-		{"variadic needs one argument", "merge()", "merge() takes at least 1 argument(s), got 0"},
-		{"trailing comma in arguments", "not_null(a,)", `unexpected ")"`},
+		{"slice step of zero", "a[::0]", "slice step cannot be 0 at offset 4"},
 		{"number out of range", "a[99999999999999999999]", "number is out of range"},
+
+		// 関数（値を計算するもの）には対応しない。
+		{
+			"aggregate function",
+			"length(items)",
+			"functions are not supported (length()): an expression can only select and filter at offset 0",
+		},
+		{
+			"function in a filter",
+			"items[?contains(title, 'bug')]",
+			"functions are not supported (contains()): an expression can only select and filter at offset 7",
+		},
+		{"function after a dot", "items.keys(@)", "functions are not supported (keys())"},
+		{
+			"function after a pipe",
+			"items | sort_by(@, &id)",
+			"functions are not supported (sort_by())",
+		},
+		{"unknown function", "nope()", "functions are not supported (nope())"},
+		{
+			"expression reference",
+			"&id",
+			"unexpected '&' (expression references are only for functions, which are not supported; " +
+				"use '&&' for a logical and) at offset 0",
+		},
+		{"quoted function name", `"length"(@)`, "unexpected '(' at offset 8"},
+		{"calling a non-function", "a.b[0](c)", "unexpected '(' at offset 6"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Compile(tt.expression)
+			_, err := compileAll(tt.expression)
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
 
+// 条件で絞る構文と、位置・件数で絞る構文は、それぞれ有効にしたときだけ使える。値を選ぶ
+// 構文は常に使える。
+func TestCompile_Features(t *testing.T) {
+	const (
+		conditionsOff = "filtering by a condition ([?...] with comparison and logical operators) " +
+			"is not enabled"
+		indexingOff = "indexes and slices ([0], [:5]) are not enabled"
+	)
+	tests := []struct {
+		name       string
+		expression string
+		// needs は、この式に必要な構文。
+		needsConditions bool
+		needsIndexing   bool
+		// wantErr は、必要な構文を無効にしたときのエラー。
+		wantErr string
+	}{
+		{name: "field", expression: "items"},
+		{name: "nested fields", expression: "a.b.c"},
+		{name: "list projection", expression: "items[*].id"},
+		{name: "flatten", expression: "items[].labels[].name"},
+		{name: "object projection", expression: "by_id.*.name"},
+		{name: "multiselect hash", expression: "items[].{id: id, author: user.login}"},
+		{name: "multiselect list", expression: "[total, items[].id]"},
+		{name: "pipe", expression: "items[].id | @"},
+		{name: "literal", expression: "{id: id, source: 'api'}"},
+		{name: "quoted identifier", expression: `meta."x-rate"`},
+
+		{name: "filter", expression: "items[?open]", needsConditions: true,
+			wantErr: `"[?" cannot be used: ` + conditionsOff + " at offset 5"},
+		{name: "filter at the start", expression: "[?open]", needsConditions: true,
+			wantErr: `"[?" cannot be used: ` + conditionsOff + " at offset 0"},
+		{name: "comparison", expression: "a == b", needsConditions: true,
+			wantErr: `"==" cannot be used: ` + conditionsOff + " at offset 2"},
+		{name: "ordering", expression: "a >= `1`", needsConditions: true,
+			wantErr: `">=" cannot be used: ` + conditionsOff},
+		{name: "or", expression: "a || b", needsConditions: true,
+			wantErr: `"||" cannot be used: ` + conditionsOff},
+		{name: "and", expression: "a && b", needsConditions: true,
+			wantErr: `"&&" cannot be used: ` + conditionsOff},
+		{name: "not", expression: "!a", needsConditions: true,
+			wantErr: `"!" cannot be used: ` + conditionsOff + " at offset 0"},
+
+		{name: "index", expression: "items[0]", needsIndexing: true,
+			wantErr: indexingOff + " at offset 5"},
+		{name: "negative index", expression: "items[-1].id", needsIndexing: true,
+			wantErr: indexingOff},
+		{name: "index at the start", expression: "[0]", needsIndexing: true,
+			wantErr: indexingOff + " at offset 0"},
+		{name: "slice", expression: "items[:5]", needsIndexing: true, wantErr: indexingOff},
+		{name: "slice with a step", expression: "items[::2].id", needsIndexing: true,
+			wantErr: indexingOff},
+		{name: "index after a projection", expression: "items[*].tags[0]", needsIndexing: true,
+			wantErr: indexingOff + " at offset 13"},
+
+		{name: "both", expression: "items[?open][:5].id", needsConditions: true,
+			needsIndexing: true, wantErr: conditionsOff},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 必要な構文だけを有効にすれば通る。
+			_, err := Compile(tt.expression, Features{
+				Conditions: tt.needsConditions, Indexing: tt.needsIndexing,
+			})
+			require.NoError(t, err)
+
+			_, err = Compile(tt.expression, Features{})
+			if !tt.needsConditions && !tt.needsIndexing {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			var syntaxErr *SyntaxError
+			require.ErrorAs(t, err, &syntaxErr)
+		})
+	}
+
+	// 片方だけ有効な場合、もう片方の構文は使えない。
+	_, err := Compile("items[?open][:5].id", Features{Conditions: true})
+	require.ErrorContains(t, err, indexingOff+" at offset 12")
+	_, err = Compile("items[:5][?open].id", Features{Indexing: true})
+	require.ErrorContains(t, err, conditionsOff+" at offset 9")
+
+	// 関数は、どの構文を有効にしても使えない。
+	_, err = Compile("length(items)", Features{Conditions: true, Indexing: true})
+	require.ErrorContains(t, err, "functions are not supported")
+}
+
 func TestCompile_SyntaxErrorCarriesTheOffset(t *testing.T) {
-	_, err := Compile("items[?a = `1`]")
+	_, err := compileAll("items[?a = `1`]")
 	var syntaxErr *SyntaxError
 	require.ErrorAs(t, err, &syntaxErr)
 	require.Equal(t, 9, syntaxErr.Offset)
 }
 
-func TestSearch_Errors(t *testing.T) {
-	const doc = `{"nums": [1, 2], "mixed": [1, "a"], "s": "x", "objs": [{"k": 1}, {"k": "a"}, {"k": null}]}`
-	tests := []struct {
-		name       string
-		expression string
-		wantErr    string
-	}{
-		{"wrong argument type", "length(nums[0])",
-			"length(): argument 1 must be a string, an array or an object, got number"},
-		{"null argument", "keys(missing)", "keys(): argument 1 must be an object, got null"},
-		{"mixed array", "sort(mixed)",
-			"sort(): argument 1 must be an array of numbers or an array of strings, " +
-				"got an array of mixed types"},
-		{"array of the wrong type", "sum(objs)",
-			"sum(): argument 1 must be an array of numbers, got an array of objects"},
-		{"join needs strings", "join(',', nums)",
-			"join(): argument 2 must be an array of strings, got an array of numbers"},
-		{"expression reference expected", "sort_by(nums, s)",
-			"sort_by(): argument 2 must be an expression reference (&expr), got string"},
-		{"sort_by with mixed keys", "sort_by(objs, &k)",
-			"sort_by(): the expression must return a number for every element, or a string " +
-				"for every element (got number and string)"},
-		{"max_by with a null key", "max_by(objs[2:], &k)", "(got null)"},
-		{"merge needs objects", "merge(nums)", "merge(): argument 1 must be an object"},
-		{"slice step of zero", "nums[::0]", "slice step cannot be 0"},
-		{"an expression reference is not a value", "&nums", "returns an expression, not a value"},
-	}
-	d, err := Decode([]byte(doc))
-	require.NoError(t, err)
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			q, err := Compile(tt.expression)
-			require.NoError(t, err)
-			_, err = q.Search(d)
-			require.ErrorContains(t, err, tt.wantErr)
-		})
-	}
+// 構文解析が刻み 0 を弾くが、評価側でも止まる（無限ループにしない）。
+func TestInterp_SliceStepZero(t *testing.T) {
+	zero := 0
+	_, err := (&interp{limit: 100}).slice([]any{1}, [3]*int{nil, nil, &zero})
+	require.ErrorContains(t, err, "slice step cannot be 0")
 }
 
 // 短い式で結果を指数的に膨らませても、ドキュメントの大きさに比例した作業量で止まる。
@@ -260,27 +407,43 @@ func TestSearch_StopsExpensiveExpressions(t *testing.T) {
 		"@" + strings.Repeat("|[@,@][]", 40),
 		doubling,
 		doubling + "|@ == @",
-		doubling + "|to_string(@)",
-		doubling + "|contains([@], @)",
-		doubling + "|sort_by(@, &to_string(@))",
+		doubling + "|[?@ == @]",
 		"@" + strings.Repeat("|[@,@]", 30) + strings.Repeat("[]", 30),
-		"[0]" + strings.Repeat("|join('',[@,@])", 60),
-		"[0]" + strings.Repeat("|to_string([@,@])", 40),
-		"@" + strings.Repeat("|merge({a:@},{b:@})", 60),
+		"@" + strings.Repeat("|{a:@,b:@}", 60),
+		"@" + strings.Repeat("|{a:@,b:@}.*", 40),
 	} {
-		q, err := Compile(expression)
+		q, err := compileAll(expression)
 		require.NoError(t, err)
 		start := time.Now()
 		_, err = q.Search(d)
 		require.Error(t, err, expression)
-		require.True(
-			t,
-			err == ErrTooExpensive || err == errResultTooLarge, //nolint:errorlint // 番兵エラーそのもの
-			"unexpected error %v for %s",
-			err,
-			expression,
-		)
+		require.True(t, errors.Is(err, ErrTooExpensive) || errors.Is(err, errResultTooLarge),
+			"unexpected error %v for %s", err, expression)
 		require.Less(t, time.Since(start), 5*time.Second, expression)
+	}
+}
+
+// 長い文字列どうしの比較も作業量に数える（同じ比較を式に何百回も並べられるため）。
+func TestSearch_ChargesStringComparisons(t *testing.T) {
+	long := strings.Repeat("x", 8<<20)
+	d, err := Decode([]byte(`{"a":"` + long + `","b":"` + long + `"}`))
+	require.NoError(t, err)
+
+	// 1 回なら通る。
+	for _, expression := range []string{"a == b", "a <= b"} {
+		q, err := compileAll(expression)
+		require.NoError(t, err)
+		out, err := q.Search(d)
+		require.NoError(t, err)
+		require.Equal(t, "true", string(out))
+	}
+	for _, comparison := range []string{"a == b", "a <= b"} {
+		q, err := compileAll(
+			"[" + strings.TrimSuffix(strings.Repeat(comparison+",", 300), ",") + "]",
+		)
+		require.NoError(t, err)
+		_, err = q.Search(d)
+		require.ErrorIs(t, err, ErrTooExpensive, comparison)
 	}
 }
 
@@ -300,28 +463,56 @@ func TestSearch_LargeDocumentWithinBudget(t *testing.T) {
 	doc.WriteString(`]}`)
 
 	got := search(t,
-		"length(sort_by(items[?state == 'open' && contains(labels[].name, 'bug')], &id)"+
-			"[].{id: id, labels: labels[].name, n: length(body)})",
+		"items[?state == 'open' && labels[?name == 'bug']].{id: id, labels: labels[].name}"+
+			" | [[0], [-1]]",
 		doc.String())
-	require.Equal(t, "20000", got)
+	require.Equal(t, `[{"id":1,"labels":["bug","p1"]},{"id":1,"labels":["bug","p1"]}]`, got)
 }
 
-// 結果が元のドキュメントより resultSlack を超えて大きくなる式は止める。
+// 結果が元のドキュメントより resultSlack を超えて大きくなる式は止める。上限を超えると
+// 分かっている文字列は、引用する前に断る。
 func TestSearch_ResultSizeLimit(t *testing.T) {
 	big := `"` + strings.Repeat("x", 40<<10) + `"`
 	d, err := Decode([]byte(big))
 	require.NoError(t, err)
 
-	q, err := Compile("[@, @]")
+	q, err := compileAll("[@, @]")
 	require.NoError(t, err)
 	out, err := q.Search(d)
 	require.NoError(t, err)
 	require.Len(t, out, 2*len(big)+3)
 
-	q, err = Compile("[@, @, @, @]")
+	q, err = compileAll("[@, @, @, @]")
 	require.NoError(t, err)
 	_, err = q.Search(d)
 	require.ErrorIs(t, err, errResultTooLarge)
+}
+
+func TestAppendJSON_Limit(t *testing.T) {
+	obj := &object{}
+	obj.set("key", "value")
+	const encoded = `{"key":"value"}`
+
+	// 上限ちょうどは通る。
+	out, err := appendJSON(nil, obj, len(encoded))
+	require.NoError(t, err)
+	require.Equal(t, encoded, string(out))
+
+	for limit := range len(encoded) {
+		_, err := appendJSON(nil, obj, limit)
+		require.ErrorIs(t, err, errResultTooLarge, "limit %d", limit)
+	}
+
+	// 上限を超える文字列やキーは、バッファへ書く前に断る。
+	long := strings.Repeat("x", 1<<20)
+	out, err = appendJSON(make([]byte, 0, 16), long, 100)
+	require.ErrorIs(t, err, errResultTooLarge)
+	require.Empty(t, out)
+	longKey := &object{}
+	longKey.set(long, 1)
+	out, err = appendJSON(make([]byte, 0, 16), longKey, 100)
+	require.ErrorIs(t, err, errResultTooLarge)
+	require.Equal(t, "{", string(out))
 }
 
 func TestDecode_Errors(t *testing.T) {
@@ -342,6 +533,7 @@ func TestDocument_Describe(t *testing.T) {
 		manyKeys += `"k` + strings.Repeat("x", i) + `":1`
 	}
 	manyKeys += "}"
+	longKey := strings.Repeat("k", maxDescribedKeyBytes+1)
 
 	tests := []struct {
 		name string
@@ -356,23 +548,58 @@ func TestDocument_Describe(t *testing.T) {
 			"an array of 3 elements; its first element is of type string"},
 		{"empty array", `[]`, "an array of 0 elements"},
 		{"scalar", `"text"`, "a value of type string"},
+		// 識別子として書けないキーは、式に書く形（引用符つき）で示す。"a, b" は 1 つのキー。
+		{"keys that need quoting", `{"a, b":1,"x-rate":2,"ok_1":3,"1st":4,"":5,"q\"q":6}`,
+			`an object with keys: "a, b", "x-rate", ok_1, "1st", "", "q\"q"`},
+		{"more keys than the limit", manyKeys, ", ... (3 more)"},
+		// 長すぎるキーは挙げずに数える。
+		{
+			"a very long key",
+			`{"id":1,"` + longKey + `":2}`,
+			"an object with keys: id, ... (1 more)",
+		},
+		{"only very long keys", `{"` + longKey + `":1}`, "an object with 1 keys"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, err := Decode([]byte(tt.doc))
 			require.NoError(t, err)
-			require.Equal(t, tt.want, d.Describe())
+			require.Contains(t, d.Describe(), tt.want)
+			require.NotContains(t, d.Describe(), longKey)
 		})
 	}
+}
 
-	d, err := Decode([]byte(manyKeys))
-	require.NoError(t, err)
-	require.Contains(t, d.Describe(), ", ... (3 more)")
+func TestEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"same text", `{"a":1}`, `{"a":1}`, true},
+		{"key order and whitespace", `{"a":1,"b":[1,2]}`, `{ "b": [1, 2], "a": 1 }`, true},
+		{"number notation", `[1, 100, 1.10]`, `[1.0, 1e2, 1.1]`, true},
+		{"different value", `{"a":1}`, `{"a":2}`, false},
+		{"different type", `[1]`, `["1"]`, false},
+		{"different length", `[1,2]`, `[1,2,3]`, false},
+		{"missing key", `{"a":1,"b":2}`, `{"a":1,"c":2}`, false},
+		{"large integers", `[9007199254740993]`, `[9007199254740992]`, false},
+		{"scalars", `null`, `null`, true},
+		{"null and false", `null`, `false`, false},
+		{"not JSON", `{"a":1}`, `nope`, false},
+		{"neither is JSON", `nope`, `nope`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, Equal([]byte(tt.a), []byte(tt.b)))
+			require.Equal(t, tt.want, Equal([]byte(tt.b), []byte(tt.a)))
+		})
+	}
 }
 
 // Query は複数のゴルーチンから同時に使える。
 func TestQuery_ConcurrentSearch(t *testing.T) {
-	q, err := Compile("items[?id > `1`].{id: id, n: length(name)}")
+	q, err := compileAll("items[?id > `1`].{id: id, n: name}")
 	require.NoError(t, err)
 	done := make(chan string, 8)
 	for range cap(done) {
@@ -391,28 +618,27 @@ func TestQuery_ConcurrentSearch(t *testing.T) {
 		}()
 	}
 	for range cap(done) {
-		require.Equal(t, `[{"id":2,"n":2}]`, <-done)
+		require.Equal(t, `[{"id":2,"n":"bb"}]`, <-done)
 	}
 }
 
 // どんな式でも panic せず、結果は JSON になる。
 func FuzzSearch(f *testing.F) {
 	for _, seed := range []string{
-		"items[].id", "items[?id > `1`].{id: id, n: name}", "length(items)", "keys(@)",
-		"items[:1]", "sort_by(items, &name)[].name", "m.*.v", "items[*].tags[]",
-		"join(', ', items[].name)", "map(&id, items)", "to_string(@)", "items[::-1]",
-		"items[::0]", "a.b.c || `1`", "!items", "merge(m.k1, m.k2)", "@|[@,@][]|[@,@][]",
-		"`{\"a\":[1,2]}`.a[::-1]", "'\\''", "名前", "merge(A0)", "max_by(items, &owner)",
+		"items[].id", "items[?id > `1`].{id: id, n: name}", "items[0]", "items[:1]",
+		"m.*.v", "items[*].tags[]", "items[::-1]", "items[::0]", "a.b.c || `1`", "!items",
+		"@|[@,@][]|[@,@][]", "`{\"a\":[1,2]}`.a[::-1]", "'\\''", "名前", "length(items)",
+		"items[?n >= `1.5` && name != 'b']", "[items[0].big, total]", "items[?owner].owner.login",
 	} {
 		f.Add(seed)
 	}
-	const doc = `{"items":[{"id":1,"name":"a","tags":["x","y"],"owner":{"login":"alice"},"n":1.5},` +
-		`{"id":2,"name":"b","tags":[],"owner":null,"n":-3}],"total":2,"s":"str",` +
-		`"m":{"k1":{"v":1},"k2":{"v":2}},"e":[],"z":null,"b":true}`
+	const doc = `{"items":[{"id":1,"name":"a","tags":["x","y"],"owner":{"login":"alice"},"n":1.5,` +
+		`"big":12345678901234567890},{"id":2,"name":"b","tags":[],"owner":null,"n":-3}],` +
+		`"total":2,"s":"str","m":{"k1":{"v":1},"k2":{"v":2}},"e":[],"z":null,"b":true}`
 	d, err := Decode([]byte(doc))
 	require.NoError(f, err)
 	f.Fuzz(func(t *testing.T, expression string) {
-		q, err := Compile(expression)
+		q, err := compileAll(expression)
 		if err != nil {
 			require.NotContains(t, err.Error(), "internal error")
 			return

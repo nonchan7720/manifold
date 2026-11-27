@@ -322,6 +322,49 @@ func TestResultFilterConfig_Applies(t *testing.T) {
 	}
 }
 
+// 条件で絞る構文と、位置・件数で絞る構文は、features に挙げたツールでだけ使える。
+func TestResultFilterConfig_Features(t *testing.T) {
+	cfg := &ResultFilterConfig{
+		Enabled: true,
+		Exclude: []string{"*_file"},
+		Features: ResultFilterFeatures{
+			Conditions: []string{"list_*", "search_issues", "get_file"},
+			Indexing:   []string{"*"},
+		},
+	}
+	tests := []struct {
+		tool                 string
+		conditions, indexing bool
+	}{
+		{"list_issues", true, true},
+		{"search_issues", true, true},
+		{"get_issue", false, true},
+		// パターンは大文字小文字を区別する。
+		{"List_issues", false, true},
+		// 結果の絞り込みの対象外のツールでは、features に挙げても使えない。
+		{"get_file", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tool, func(t *testing.T) {
+			require.Equal(t, tt.conditions, cfg.ConditionsEnabled(tt.tool))
+			require.Equal(t, tt.indexing, cfg.IndexingEnabled(tt.tool))
+		})
+	}
+
+	// 挙げなければ、どのツールでも使えない。
+	plain := &ResultFilterConfig{Enabled: true}
+	require.True(t, plain.Applies("list_issues"))
+	require.False(t, plain.ConditionsEnabled("list_issues"))
+	require.False(t, plain.IndexingEnabled("list_issues"))
+
+	// 無効・未設定なら何も使えない。
+	disabled := &ResultFilterConfig{Features: ResultFilterFeatures{Conditions: []string{"*"}}}
+	require.False(t, disabled.ConditionsEnabled("list_issues"))
+	var unset *ResultFilterConfig
+	require.False(t, unset.ConditionsEnabled("list_issues"))
+	require.False(t, unset.IndexingEnabled("list_issues"))
+}
+
 func TestResultFilterConfig_ArgumentName(t *testing.T) {
 	var unset *ResultFilterConfig
 	require.Equal(t, "_jmespath", unset.ArgumentName())
@@ -336,9 +379,12 @@ func TestToolsConfig_Validate_ResultFilter(t *testing.T) {
 		wantErr string
 	}{
 		{name: "defaults", cfg: ResultFilterConfig{Enabled: true}},
-		{name: "custom argument and patterns", cfg: ResultFilterConfig{
+		{name: "custom argument, patterns and features", cfg: ResultFilterConfig{
 			Enabled: true, Argument: "result.query-1", Include: []string{"list_*"},
 			Exclude: []string{"*_raw"},
+			Features: ResultFilterFeatures{
+				Conditions: []string{"list_*"}, Indexing: []string{"*"},
+			},
 		}},
 		{
 			name:    "argument with a space",
@@ -359,6 +405,20 @@ func TestToolsConfig_Validate_ResultFilter(t *testing.T) {
 			name:    "bad exclude pattern",
 			cfg:     ResultFilterConfig{Enabled: true, Exclude: []string{"a[b"}},
 			wantErr: `resultFilter: invalid tool pattern "a[b"`,
+		},
+		{
+			name: "bad conditions pattern",
+			cfg: ResultFilterConfig{
+				Enabled: true, Features: ResultFilterFeatures{Conditions: []string{"["}},
+			},
+			wantErr: `resultFilter: features: invalid tool pattern "["`,
+		},
+		{
+			name: "bad indexing pattern",
+			cfg: ResultFilterConfig{
+				Enabled: true, Features: ResultFilterFeatures{Indexing: []string{"a[b"}},
+			},
+			wantErr: `resultFilter: features: invalid tool pattern "a[b"`,
 		},
 	}
 	for _, tt := range tests {
@@ -386,6 +446,9 @@ mcpServers:
         argument: _query
         include: ["list_*", "getIssue"]
         exclude: ["list_secrets"]
+        features:
+          conditions: ["list_*", "searchIssues"]
+          indexing: ["*"]
   petstore:
     description: Petstore
     spec: https://petstore3.swagger.io/api/v3/openapi.json
@@ -407,20 +470,30 @@ mcpServers:
 		// パターンは値なので、viper がキーを小文字化しても表記は変わらない。
 		Include: []string{"list_*", "getIssue"},
 		Exclude: []string{"list_secrets"},
+		Features: ResultFilterFeatures{
+			Conditions: []string{"list_*", "searchIssues"},
+			Indexing:   []string{"*"},
+		},
 	}, github)
 	require.True(t, github.Applies("getIssue"))
 	require.False(t, github.Applies("list_secrets"))
+	require.True(t, github.ConditionsEnabled("list_issues"))
+	require.False(t, github.ConditionsEnabled("getIssue"))
+	require.True(t, github.IndexingEnabled("getIssue"))
 
 	// 設定しなければ無効のまま（既存の設定の挙動は変わらない）。
 	require.Nil(t, cfg.MCPServer["petstore"].Tools.ResultFilter)
 	require.False(t, cfg.MCPServer["petstore"].Tools.ResultFilter.Applies("getpet"))
 
+	// features を書かなければ、フィールドの選択だけが使える。
 	defaults := cfg.MCPServer["defaults"].Tools.ResultFilter
 	require.Equal(t, "_jmespath", defaults.ArgumentName())
 	require.True(t, defaults.Applies("anything"))
+	require.False(t, defaults.ConditionsEnabled("anything"))
+	require.False(t, defaults.IndexingEnabled("anything"))
 }
 
-func TestLoadInternal_ResultFilter_InvalidArgument(t *testing.T) {
+func TestLoadInternal_ResultFilter_Invalid(t *testing.T) {
 	_, err := loadFromYAML(t, `
 mcpServers:
   github:
@@ -433,4 +506,18 @@ mcpServers:
         argument: "has space"
 `)
 	require.ErrorContains(t, err, `argument "has space" must be 1-64 characters`)
+
+	_, err = loadFromYAML(t, `
+mcpServers:
+  github:
+    description: GitHub
+    transport: http
+    url: https://example.com/mcp
+    tools:
+      resultFilter:
+        enabled: true
+        features:
+          conditions: ["["]
+`)
+	require.ErrorContains(t, err, `features: invalid tool pattern "["`)
 }

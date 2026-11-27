@@ -1,4 +1,4 @@
-desc: Result filtering (tools.resultFilter) - callers pass a JMESPath expression and get back only its result
+desc: Result filtering (tools.resultFilter) - callers pass a JMESPath expression and get back only the fields it selects
 runners:
   req: ${BASE_URL:-http://127.0.0.1:19999}
 vars:
@@ -18,7 +18,7 @@ vars:
     x-user-groups: readers
 steps:
   list_advertises_the_argument:
-    desc: "tools/list adds _jmespath to the tools resultFilter.include matches by their original name"
+    desc: "tools/list adds _jmespath to the tools resultFilter.include matches by their original name, and tells which syntax each tool accepts"
     req:
       /mcp/petstore:
         post:
@@ -30,13 +30,17 @@ steps:
     test: |
       let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
       let filterable = map(filter(rpc.result.tools, "_jmespath" in keys(.inputSchema.properties ?? {})), {.name});
+      let get_pet = filter(rpc.result.tools, .name == "get_pet")[0].inputSchema.properties;
+      let by_status = filter(rpc.result.tools, .name == "findpetsbystatus")[0].inputSchema.properties;
       current.res.status == 200
       && rpc.error == nil
       && sort(filterable) == ["findpetsbystatus", "findpetsbytags", "get_pet"]
-      && filter(rpc.result.tools, .name == "get_pet")[0].inputSchema.properties._jmespath.type == "string"
-      && "petId" in keys(filter(rpc.result.tools, .name == "get_pet")[0].inputSchema.properties)
+      && get_pet._jmespath.type == "string"
+      && "petId" in keys(get_pet)
+      && get_pet._jmespath.description contains "Supported: field selection. Not supported: [?conditions], [index], slices, functions."
+      && by_status._jmespath.description contains "Supported: field selection, [?conditions], [index] and [start:stop] slices. Not supported: functions."
   filter_a_list:
-    desc: "The expression selects and reshapes the items; the rest of the arguments still reach the backend"
+    desc: "On a tool with conditions enabled, the expression filters and reshapes the items; the rest of the arguments still reach the backend"
     req:
       /mcp/petstore:
         post:
@@ -51,9 +55,10 @@ steps:
       && rpc.error == nil
       && rpc.result.isError != true
       && rpc.result.content[0].text == '[{"id":1,"name":"doggie"}]'
-      && rpc.result.structuredContent == nil
+      && keys(rpc.result.structuredContent) == ["result"]
+      && rpc.result.structuredContent.result[0].name == "doggie"
   filter_an_object:
-    desc: "An object result comes back as text and as structuredContent, without the fields that were not selected"
+    desc: "Selecting fields needs no feature: an object result comes back as text and as structuredContent, without the fields that were not selected"
     req:
       /mcp/petstore:
         post:
@@ -71,8 +76,8 @@ steps:
       && sort(keys(rpc.result.structuredContent)) == ["id", "name"]
       && rpc.result.structuredContent.id == 7
       && rpc.result.structuredContent.name == "doggie"
-  aggregate:
-    desc: "A function reduces the result to a single value"
+  slice:
+    desc: "On a tool with indexing enabled, a slice limits how many items come back"
     req:
       /mcp/petstore:
         post:
@@ -80,12 +85,12 @@ steps:
             <<: [*mcp, *operators]
           body:
             application/json:
-              {jsonrpc: "2.0", id: 34, method: tools/call, params: {name: findpetsbystatus, arguments: {status: available, _jmespath: "length(items)"}}}
+              {jsonrpc: "2.0", id: 34, method: tools/call, params: {name: findpetsbystatus, arguments: {status: available, _jmespath: "items[:1].name"}}}
     test: |
       let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
       rpc.error == nil
       && rpc.result.isError != true
-      && rpc.result.content[0].text == "1"
+      && rpc.result.content[0].text == '["doggie"]'
   without_the_argument_nothing_changes:
     desc: "A call without _jmespath returns the whole result"
     req:
@@ -120,6 +125,8 @@ steps:
       && rpc.result.isError != true
       && rpc.result.content[0].text == "null"
       && rpc.result.content[1].text == "_jmespath returned null. The result is an object with keys: items."
+      && rpc.result.structuredContent.result == nil
+      && rpc.result.structuredContent.hint == "_jmespath returned null. The result is an object with keys: items."
   invalid_expression_is_a_tool_error:
     desc: "A syntax error is reported as a tool error the caller can read"
     req:
@@ -129,15 +136,15 @@ steps:
             <<: [*mcp, *operators]
           body:
             application/json:
-              {jsonrpc: "2.0", id: 37, method: tools/call, params: {name: get_pet, arguments: {petId: 7, _jmespath: "items[?id = `1`]"}}}
+              {jsonrpc: "2.0", id: 37, method: tools/call, params: {name: findpetsbystatus, arguments: {status: sold, _jmespath: "items[?id = `1`]"}}}
     test: |
       let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
       current.res.status == 200
       && rpc.error == nil
       && rpc.result.isError == true
       && rpc.result.content[0].text == "invalid _jmespath: unexpected '=' (use '==' to compare) at offset 10. The tool was not called."
-  evaluation_error_is_a_tool_error:
-    desc: "A function called with the wrong type fails after the call, without returning the result"
+  functions_are_not_supported:
+    desc: "An expression can select and filter, not compute: a function is rejected before the call"
     req:
       /mcp/petstore:
         post:
@@ -145,13 +152,42 @@ steps:
             <<: [*mcp, *operators]
           body:
             application/json:
-              {jsonrpc: "2.0", id: 38, method: tools/call, params: {name: get_pet, arguments: {petId: 7, _jmespath: "length(id)"}}}
+              {jsonrpc: "2.0", id: 38, method: tools/call, params: {name: findpetsbystatus, arguments: {status: sold, _jmespath: "length(items)"}}}
     test: |
       let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
       rpc.error == nil
       && rpc.result.isError == true
-      && rpc.result.content[0].text startsWith "_jmespath could not be evaluated: length(): argument 1 must be a string, an array or an object, got number."
-      && rpc.result.content[0].text contains "The result is an object with keys: auth, id, name."
+      && rpc.result.content[0].text == "invalid _jmespath: functions are not supported (length()): an expression can only select and filter at offset 0. The tool was not called."
+  condition_on_a_tool_without_the_feature:
+    desc: "get_pet is not listed in features.conditions: [?...] is rejected before the call"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 42, method: tools/call, params: {name: get_pet, arguments: {petId: 7, _jmespath: "tags[?name == 'a']"}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error == nil
+      && rpc.result.isError == true
+      && rpc.result.content[0].text == "invalid _jmespath: \"[?\" cannot be used: filtering by a condition ([?...] with comparison and logical operators) is not enabled at offset 4. The tool was not called."
+  index_on_a_tool_without_the_feature:
+    desc: "findpetsbytags is not listed in features.indexing: an index is rejected before the call"
+    req:
+      /mcp/petstore:
+        post:
+          headers:
+            <<: [*mcp, *operators]
+          body:
+            application/json:
+              {jsonrpc: "2.0", id: 43, method: tools/call, params: {name: findpetsbytags, arguments: {tags: [a], _jmespath: "items[0]"}}}
+    test: |
+      let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
+      rpc.error == nil
+      && rpc.result.isError == true
+      && rpc.result.content[0].text == "invalid _jmespath: indexes and slices ([0], [:5]) are not enabled at offset 5. The tool was not called."
   tool_outside_the_filter_ignores_the_argument:
     desc: "getinventory is not in resultFilter.include: _jmespath is not advertised and does not filter"
     req:
@@ -193,7 +229,7 @@ steps:
             <<: [*mcp, *readers]
           body:
             application/json:
-              {jsonrpc: "2.0", id: 41, method: tools/call, params: {name: findpetsbytags, arguments: {tags: [a], _jmespath: "length(items)"}}}
+              {jsonrpc: "2.0", id: 41, method: tools/call, params: {name: findpetsbytags, arguments: {tags: [a], _jmespath: "items[].id"}}}
     test: |
       let rpc = fromJSON(trimPrefix(filter(split(current.res.rawBody, "\n"), hasPrefix(#, "data:"))[0], "data:"));
       rpc.result == nil

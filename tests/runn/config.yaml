@@ -19,11 +19,15 @@ mcpServers:
         getpetbyid:
           name: get_pet
       # Callers may pass a JMESPath expression in _jmespath to get back only
-      # part of the result (runbooks/25_result_filter.yml). The patterns match
-      # the original tool names, like include above.
+      # the fields they select (runbooks/25_result_filter.yml). The patterns
+      # match the original tool names, like include above. Filtering by a
+      # condition and by position is switched on per tool.
       resultFilter:
         enabled: true
         include: ["getpetbyid", "find*"]
+        features:
+          conditions: ["findpetsbystatus"]
+          indexing: ["findpetsbystatus"]
   petstore_small:
     description: Petstore with a single visible tool
     spec: http://127.0.0.1:18080/openapi.json

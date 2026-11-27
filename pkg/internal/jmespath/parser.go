@@ -25,17 +25,15 @@ const (
 	nAnd
 	nNot
 	nComparator
-	nFunction
-	nExpref
 )
 
 // node は構文木の節。
 type node struct {
 	kind     nodeKind
 	children []*node
-	// name はフィールド名（nField）または関数名（nFunction）。
+	// name は nField のフィールド名。
 	name string
-	// quoted は nField が "..." で書かれたか（関数名にはなれない）。
+	// quoted は nField が "..." で書かれたか。
 	quoted bool
 	// index は nIndex の添字。
 	index int
@@ -47,8 +45,6 @@ type node struct {
 	op tokenKind
 	// keys は nMultiSelectHash のキー（children と同じ並び）。
 	keys []string
-	// fn は nFunction が呼ぶ関数。
-	fn *function
 	// pos は式の中での位置（エラーメッセージ用）。
 	pos int
 }
@@ -70,17 +66,18 @@ const projectionStop = 10
 const maxParseDepth = 200
 
 type parser struct {
-	tokens []token
-	pos    int
-	depth  int
+	tokens   []token
+	pos      int
+	depth    int
+	features Features
 }
 
-func parse(src string) (*node, error) {
+func parse(src string, features Features) (*node, error) {
 	tokens, err := tokenize(src)
 	if err != nil {
 		return nil, err
 	}
-	p := &parser{tokens: tokens}
+	p := &parser{tokens: tokens, features: features}
 	root, err := p.expression(0)
 	if err != nil {
 		return nil, err
@@ -118,6 +115,23 @@ func (p *parser) expect(kind tokenKind, what string) error {
 
 func (p *parser) errorf(tok token, format string, args ...any) error {
 	return &SyntaxError{Offset: tok.pos, Msg: fmt.Sprintf(format, args...)}
+}
+
+// needConditions は、tok が条件の構文で、それが有効でなければエラーを返す。
+func (p *parser) needConditions(tok token) error {
+	if p.features.Conditions {
+		return nil
+	}
+	return p.errorf(tok, "%s cannot be used: filtering by a condition ([?...] with "+
+		"comparison and logical operators) is not enabled", describeToken(tok))
+}
+
+// needIndexing は、bracket（'['）が添字かスライスで、それが有効でなければエラーを返す。
+func (p *parser) needIndexing(bracket token) error {
+	if p.features.Indexing {
+		return nil
+	}
+	return p.errorf(bracket, "indexes and slices ([0], [:5]) are not enabled")
 }
 
 func (p *parser) unexpected(tok token) error {
@@ -160,9 +174,6 @@ func (p *parser) nud(tok token) (*node, error) {
 		return &node{kind: nField, name: name, pos: tok.pos}, nil
 	case tQuotedIdentifier:
 		name, _ := tok.value.(string)
-		if p.current().kind == tLparen {
-			return nil, p.errorf(p.current(), "a quoted identifier cannot be a function name")
-		}
 		return &node{kind: nField, name: name, quoted: true, pos: tok.pos}, nil
 	case tStar:
 		right := identityNode
@@ -174,22 +185,22 @@ func (p *parser) nud(tok token) (*node, error) {
 		}
 		return &node{kind: nValueProjection, children: []*node{identityNode, right}}, nil
 	case tFilter:
-		return p.filter(identityNode)
+		return p.filter(tok, identityNode)
 	case tLbrace:
 		return p.multiSelectHash()
 	case tFlatten:
 		return p.flatten(identityNode)
 	case tLbracket:
-		return p.bracket(identityNode, true)
+		return p.bracket(tok, identityNode, true)
 	case tCurrent:
 		return identityNode, nil
 	case tExpref:
-		expr, err := p.expression(bindingPower[tExpref])
-		if err != nil {
+		return nil, p.errorf(tok, "unexpected '&' (expression references are only for "+
+			"functions, which are not supported; use '&&' for a logical and)")
+	case tNot:
+		if err := p.needConditions(tok); err != nil {
 			return nil, err
 		}
-		return &node{kind: nExpref, children: []*node{expr}, pos: tok.pos}, nil
-	case tNot:
 		expr, err := p.expression(bindingPower[tNot])
 		if err != nil {
 			return nil, err
@@ -220,11 +231,11 @@ func (p *parser) led(tok token, left *node) (*node, error) {
 	case tPipe:
 		return p.binary(nPipe, tok, left)
 	case tOr:
-		return p.binary(nOr, tok, left)
+		return p.condition(nOr, tok, left)
 	case tAnd:
-		return p.binary(nAnd, tok, left)
+		return p.condition(nAnd, tok, left)
 	case tEQ, tNE, tLT, tLTE, tGT, tGTE:
-		n, err := p.binary(nComparator, tok, left)
+		n, err := p.condition(nComparator, tok, left)
 		if err != nil {
 			return nil, err
 		}
@@ -233,13 +244,21 @@ func (p *parser) led(tok token, left *node) (*node, error) {
 	case tLparen:
 		return p.call(tok, left)
 	case tFilter:
-		return p.filter(left)
+		return p.filter(tok, left)
 	case tFlatten:
 		return p.flatten(left)
 	case tLbracket:
-		return p.bracket(left, false)
+		return p.bracket(tok, left, false)
 	}
 	return nil, p.unexpected(tok)
+}
+
+// condition は比較・論理の演算子の右辺を読む。条件の構文が有効なときだけ使える。
+func (p *parser) condition(kind nodeKind, tok token, left *node) (*node, error) {
+	if err := p.needConditions(tok); err != nil {
+		return nil, err
+	}
+	return p.binary(kind, tok, left)
 }
 
 func (p *parser) binary(kind nodeKind, tok token, left *node) (*node, error) {
@@ -250,37 +269,14 @@ func (p *parser) binary(kind nodeKind, tok token, left *node) (*node, error) {
 	return &node{kind: kind, children: []*node{left, right}, pos: tok.pos}, nil
 }
 
-// call は name(...) の引数を読む。関数の有無と引数の個数はここで検査する。
+// call は left の直後の '(' を断る。関数（集計・変換・並べ替えなど）には対応しない。式が
+// できるのは、結果から値を選ぶことと、条件で絞ることだけ。
 func (p *parser) call(lparen token, left *node) (*node, error) {
 	if left.kind != nField || left.quoted {
-		return nil, p.errorf(lparen, "unexpected '(' (only a function name can be called)")
+		return nil, p.errorf(lparen, "unexpected '('")
 	}
-	fn, ok := functions[left.name]
-	if !ok {
-		return nil, p.errorf(token{pos: left.pos}, "unknown function %s()", left.name)
-	}
-	var args []*node
-	for p.current().kind != tRparen {
-		arg, err := p.expression(0)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, arg)
-		if p.current().kind == tComma {
-			p.advance()
-			if p.current().kind == tRparen {
-				return nil, p.unexpected(p.current())
-			}
-		} else if p.current().kind != tRparen {
-			return nil, p.errorf(p.current(), "expected ',' or ')', got %s",
-				describeToken(p.current()))
-		}
-	}
-	p.advance()
-	if err := fn.checkArity(len(args)); err != nil {
-		return nil, p.errorf(token{pos: left.pos}, "%s", err.Error())
-	}
-	return &node{kind: nFunction, name: left.name, fn: fn, children: args, pos: left.pos}, nil
+	return nil, p.errorf(token{pos: left.pos},
+		"functions are not supported (%s()): an expression can only select and filter", left.name)
 }
 
 // flatten は left[] と、それに続く射影の右辺を読む。
@@ -293,8 +289,11 @@ func (p *parser) flatten(left *node) (*node, error) {
 	return &node{kind: nProjection, children: []*node{flattened, right}}, nil
 }
 
-// filter は left[?条件] と、それに続く射影の右辺を読む。
-func (p *parser) filter(left *node) (*node, error) {
+// filter は left[?条件] と、それに続く射影の右辺を読む。open は "[?" のトークン。
+func (p *parser) filter(open token, left *node) (*node, error) {
+	if err := p.needConditions(open); err != nil {
+		return nil, err
+	}
 	condition, err := p.expression(0)
 	if err != nil {
 		return nil, err
@@ -311,11 +310,14 @@ func (p *parser) filter(left *node) (*node, error) {
 	return &node{kind: nFilterProjection, children: []*node{left, right, condition}}, nil
 }
 
-// bracket は '[' の続きを読む。添字・スライス・[*] のいずれかで、式の先頭（atStart）
-// ではそのどれでもなければ複数選択のリストになる。
-func (p *parser) bracket(left *node, atStart bool) (*node, error) {
+// bracket は '['（open）の続きを読む。添字・スライス・[*] のいずれかで、式の先頭
+// （atStart）ではそのどれでもなければ複数選択のリストになる。
+func (p *parser) bracket(open token, left *node, atStart bool) (*node, error) {
 	switch {
 	case p.current().kind == tNumber || p.current().kind == tColon:
+		if err := p.needIndexing(open); err != nil {
+			return nil, err
+		}
 		return p.indexOrSlice(left)
 	case p.current().kind == tStar && p.lookahead(1) == tRbracket:
 		p.advance()
@@ -354,6 +356,9 @@ func (p *parser) indexOrSlice(left *node) (*node, error) {
 				return nil, p.errorf(tok, "a slice has at most three parts")
 			}
 		case tok.kind == tNumber && isNumber && parts[part] == nil:
+			if part == len(parts)-1 && n == 0 {
+				return nil, p.errorf(tok, "slice step cannot be 0")
+			}
 			parts[part] = &n
 		default:
 			return nil, p.unexpected(tok)

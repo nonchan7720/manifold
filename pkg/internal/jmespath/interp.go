@@ -1,6 +1,15 @@
+// Package jmespath は JMESPath の式で、JSON から値を選び、条件で絞り込む。
+//
+// 対応するのは、値を選ぶための構文（フィールド、射影、平坦化、複数選択、パイプ、
+// リテラル）と、Features で有効にする 2 つの構文（条件での絞り込み、添字とスライス）。
+// 関数（集計・変換・並べ替えなど、値を計算するもの）には対応しない。
+//
+// 式は呼び出し元が書く外部入力として扱う。どんな式でも panic せず、評価の作業量と
+// 結果の大きさには上限がある。結果のキーの順序と数値の表記は、元の JSON のままになる。
 package jmespath
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +25,8 @@ const (
 	// ドキュメントの値の個数 × stepsPerNode + baseSteps。
 	stepsPerNode = 50
 	baseSteps    = 200_000
+	// bytesPerStep は、文字列の中身を読む作業を作業量に数えるときの 1 手あたりのバイト数。
+	bytesPerStep = 64
 	// resultSlack は、結果の JSON が元のドキュメントより大きくなってよい余裕。キー名を
 	// 付け直すだけの小さな結果を通すためのもので、結果は「元の長さ + resultSlack」まで。
 	resultSlack = 64 << 10
@@ -29,8 +40,19 @@ type Query struct {
 	root *node
 }
 
-// Compile は式を解釈する。構文の誤り、未知の関数、引数の個数の誤りはここで報告する。
-func Compile(expression string) (q *Query, rErr error) {
+// Features は、式で使える構文のうち選んで有効にするもの。値を選ぶ構文（フィールド、
+// [*]、[]、{名前: 式}、[式, 式]、|）は常に使える。
+type Features struct {
+	// Conditions は条件で絞る構文。[?条件] と、条件を書くための比較（== != < <= > >=）・
+	// 論理（&& || !）の演算子。
+	Conditions bool
+	// Indexing は位置と件数で絞る構文。添字（[0]、[-1]）とスライス（[:5]）。
+	Indexing bool
+}
+
+// Compile は式を解釈する。式の誤り（構文エラー、有効にしていない構文、対応していない
+// 関数の呼び出し）はすべてここで報告するので、評価の前に分かる。
+func Compile(expression string, features Features) (q *Query, rErr error) {
 	defer recoverAsError(&rErr)
 	if len(expression) > MaxExpressionBytes {
 		return nil, fmt.Errorf(
@@ -40,7 +62,7 @@ func Compile(expression string) (q *Query, rErr error) {
 	if strings.TrimSpace(expression) == "" {
 		return nil, errors.New("expression is empty")
 	}
-	root, err := parse(expression)
+	root, err := parse(expression, features)
 	if err != nil {
 		return nil, err
 	}
@@ -112,10 +134,6 @@ func (it *interp) eval(n *node, v any) (any, error) {
 		return it.logical(n, v)
 	case nComparator:
 		return it.comparator(n, v)
-	case nFunction:
-		return it.call(n, v)
-	case nExpref:
-		return &expref{node: n.children[0]}, nil
 	}
 	return nil, fmt.Errorf("unknown syntax node %d", n.kind)
 }
@@ -328,6 +346,12 @@ func (it *interp) comparator(n *node, v any) (any, error) {
 	if !ok {
 		return nil, nil //nolint:nilnil // JSON の null
 	}
+	if l, isString := left.(string); isString {
+		r, _ := right.(string)
+		if err := it.charge(min(len(l), len(r)) / bytesPerStep); err != nil {
+			return nil, err
+		}
+	}
 	return (n.op == tLT && cmp < 0) || (n.op == tLTE && cmp <= 0) ||
 		(n.op == tGT && cmp > 0) || (n.op == tGTE && cmp >= 0), nil
 }
@@ -337,13 +361,7 @@ func order(a, b any) (cmp int, ok bool) {
 	switch a := a.(type) {
 	case number:
 		if b, isNumber := b.(number); isNumber {
-			switch {
-			case a.f < b.f:
-				return -1, true
-			case a.f > b.f:
-				return 1, true
-			}
-			return 0, true
+			return compareNumbers(a, b), true
 		}
 	case string:
 		if b, isString := b.(string); isString {
@@ -367,10 +385,14 @@ func (it *interp) equal(a, b any) (bool, error) {
 		return ok && a == b, nil
 	case string:
 		b, ok := b.(string)
-		return ok && a == b, nil
+		if !ok || len(a) != len(b) {
+			return false, nil
+		}
+		// 長さが同じなら中身を読み比べる。その長さも作業量に数える。
+		return a == b, it.charge(len(a) / bytesPerStep)
 	case number:
 		b, ok := b.(number)
-		return ok && numbersEqual(a, b), nil
+		return ok && compareNumbers(a, b) == 0, nil
 	case []any:
 		b, ok := b.([]any)
 		return it.equalArrays(a, b, ok)
@@ -409,30 +431,22 @@ func (it *interp) equalObjects(a, b *object, bothObjects bool) (bool, error) {
 	return true, nil
 }
 
-// numbersEqual は 2 つの数値が等しいかを返す。float64 では区別できない大きな整数
-// （2^53 を超える ID など）は、元の表記の桁で比べる。
-func numbersEqual(a, b number) bool {
-	if a.f != b.f {
-		return false
-	}
-	if a.raw == b.raw || !isIntegerLiteral(a.raw) || !isIntegerLiteral(b.raw) {
+// Equal は 2 つの JSON が同じ値を表すかを返す。オブジェクトのキーの順序と、数値の表記
+// （1 と 1.0）の違いは問わない。どちらかが JSON として読めなければ false。
+func Equal(a, b []byte) bool {
+	if bytes.Equal(a, b) {
 		return true
 	}
-	// 両方とも整数の表記で、float64 としては同じ。表記が違うのは "-0" と "0" か、
-	// 桁が float64 の精度を超えている場合。
-	return a.f == 0
-}
-
-// isIntegerLiteral は s が JSON の整数（小数点も指数も無い数値）かを返す。
-func isIntegerLiteral(s string) bool {
-	s = strings.TrimPrefix(s, "-")
-	if s == "" {
+	x, err := Decode(a)
+	if err != nil {
 		return false
 	}
-	for i := range len(s) {
-		if !isDigit(s[i]) {
-			return false
-		}
+	y, err := Decode(b)
+	if err != nil {
+		return false
 	}
-	return true
+	// 比較は値 1 組につき 1 手と、読み比べた文字列の長さ分しか数えない。
+	it := &interp{limit: x.nodes + y.nodes + (x.size+y.size)/bytesPerStep}
+	eq, err := it.equal(x.root, y.root)
+	return err == nil && eq
 }
