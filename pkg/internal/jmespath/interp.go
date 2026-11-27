@@ -342,33 +342,30 @@ func (it *interp) comparator(n *node, v any) (any, error) {
 		}
 		return eq == (n.op == tEQ), nil
 	}
-	cmp, ok := order(left, right)
-	if !ok {
-		return nil, nil //nolint:nilnil // JSON の null
-	}
-	if l, isString := left.(string); isString {
-		r, _ := right.(string)
-		if err := it.charge(min(len(l), len(r)) / bytesPerStep); err != nil {
-			return nil, err
-		}
+	cmp, ok, err := it.order(left, right)
+	if err != nil || !ok {
+		return nil, err
 	}
 	return (n.op == tLT && cmp < 0) || (n.op == tLTE && cmp <= 0) ||
 		(n.op == tGT && cmp > 0) || (n.op == tGTE && cmp >= 0), nil
 }
 
-// order は数値どうし・文字列どうしの大小を返す。それ以外の組み合わせでは ok が false。
-func order(a, b any) (cmp int, ok bool) {
+// order は数値どうし・文字列どうしの大小を返す。それ以外の組み合わせでは ok が false
+// （比較の結果は null になる）。
+func (it *interp) order(a, b any) (cmp int, ok bool, err error) {
 	switch a := a.(type) {
 	case number:
 		if b, isNumber := b.(number); isNumber {
-			return compareNumbers(a, b), true
+			cmp, err = it.compareNumbers(a, b)
+			return cmp, true, err
 		}
 	case string:
 		if b, isString := b.(string); isString {
-			return strings.Compare(a, b), true
+			// 中身を読み比べる長さも作業量に数える。
+			return strings.Compare(a, b), true, it.charge(min(len(a), len(b)) / bytesPerStep)
 		}
 	}
-	return 0, false
+	return 0, false, nil
 }
 
 // equal は 2 つの値が等しいかを返す。配列とオブジェクトは中身を比べる（オブジェクトの
@@ -392,7 +389,11 @@ func (it *interp) equal(a, b any) (bool, error) {
 		return a == b, it.charge(len(a) / bytesPerStep)
 	case number:
 		b, ok := b.(number)
-		return ok && compareNumbers(a, b) == 0, nil
+		if !ok {
+			return false, nil
+		}
+		cmp, err := it.compareNumbers(a, b)
+		return cmp == 0, err
 	case []any:
 		b, ok := b.([]any)
 		return it.equalArrays(a, b, ok)

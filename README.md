@@ -738,8 +738,9 @@ In detail:
 
 Also:
 
-- When a backend tool has an argument with the same name as `argument`, the gateway's argument takes it over (the backend's argument can no longer be used by callers, and a warning is logged). Give `argument` another name, or `exclude` that tool. On a tool that is not filterable, an argument of that name goes to the backend untouched.
-- Only the server's own tools are filterable. The `<agent>__<skill>` tools of `mcpServers.<name>.agents`, `create_pairing_code` of a reverse (WebMCP) server and tools with an MCP Apps UI (the UI renders the result) do not get the argument.
+- When a backend tool has an argument with the same name as `argument`, the gateway's argument takes it over (the backend's argument can no longer be used by callers, and a warning is logged). Give `argument` another name, or `exclude` that tool. On a tool that `include` / `exclude` leave out of filtering, an argument of that name goes to the backend untouched.
+- Only the server's own tools are filterable. The `<agent>__<skill>` tools of `mcpServers.<name>.agents` and `create_pairing_code` of a reverse (WebMCP) server are never filtered.
+- A tool with an MCP Apps UI does not get the argument in `tools/list`, because the UI renders the result. A call that sends `_jmespath` to such a tool anyway is still filtered (and an argument of the tool with that name is taken over, as above): a `tools/call` does not tell the gateway whether the tool has a UI. `exclude` those tools to keep their results whole.
 - Filtering happens inside authz, the guardrail and the audit log. Authz decides on the tool name, so the expression does not affect it. The guardrail (`post_call`) checks the filtered result, and the audit log (`includeArguments`) records the expression the caller sent. `_jmespath` does not appear in `manifold openapi tools` or in the generated `tools.file` (it is added when `tools/list` is served).
 - The gateway does the filtering. The backend still returns everything, so what shrinks is what goes back to the caller (the agent's context), not the traffic to the backend.
 - With several replicas, enable it once every replica runs a version that supports it. A replica that does not passes `_jmespath` on to the backend.

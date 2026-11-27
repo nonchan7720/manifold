@@ -148,8 +148,7 @@ func (f *resultFilter) advertise(ctx context.Context, tools []*mcp.Tool) []*mcp.
 }
 
 func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.Tool {
-	// MCP Apps の UI を持つツールの結果は UI が描画に使うので、絞り込みを勧めない。
-	if tool == nil || !f.applies(tool.Name) || hasMCPAppsUI(tool) {
+	if tool == nil || !f.applies(tool.Name) {
 		return tool
 	}
 	schema, shadows, ok := f.withArgument(tool.InputSchema, f.features(tool.Name))
@@ -158,6 +157,14 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 	}
 	if shadows {
 		f.warnShadowed(ctx, tool.Name)
+	}
+	if hasMCPAppsUI(tool) {
+		// MCP Apps の UI を持つツールの結果は UI が描画に使うので、絞り込みを勧めない
+		// （引数を足さない）。ただし tools/call の時点ではツールが UI を持つかが分からない
+		// ので（MCP バックエンドの tools/list は毎回バックエンドへ転送していて、手元に
+		// 一覧が無い）、式の引数が送られてくれば絞り込む。ツール自身が同じ名前の引数を
+		// 持つ場合に上の警告を出すのは、UI を持つツールでもその引数が使えなくなるため。
+		return tool
 	}
 	copied := *tool
 	copied.InputSchema = schema

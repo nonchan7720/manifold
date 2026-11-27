@@ -420,48 +420,65 @@ func TestResultFilterMiddleware_ToolsList_ShadowsExistingArgument(t *testing.T) 
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
+	theirs := map[string]any{"type": "integer", "description": "theirs"}
+	inputSchema := func() map[string]any {
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"_jmespath": theirs,
+				"page":      map[string]any{"type": "integer"},
+			},
+			"required": []any{"_jmespath", "page"},
+		}
+	}
 	newServer := func(cfg *config.ResultFilterConfig) *mcp.ClientSession {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+		handler := func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return textResult(`{"id": 1, "body": "long"}`)(), nil
+		}
+		srv.AddTool(&mcp.Tool{Name: "wp_posts", InputSchema: inputSchema()}, handler)
 		srv.AddTool(&mcp.Tool{
-			Name: "wp_posts",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"_jmespath": map[string]any{"type": "integer", "description": "theirs"},
-					"page":      map[string]any{"type": "integer"},
-				},
-				"required": []any{"_jmespath", "page"},
-			},
-		}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return &mcp.CallToolResult{}, nil
-		})
+			Name: "wp_chart", InputSchema: inputSchema(),
+			Meta: mcp.Meta{mcpAppsMetaKey: map[string]any{"resourceUri": "ui://chart"}},
+		}, handler)
 		srv.AddReceivingMiddleware(newResultFilterMiddleware("wordpress", cfg))
 		return connectTestClient(t, t.Context(), srv)
 	}
-	schemaOf := func(cs *mcp.ClientSession) map[string]any {
-		schema, ok := listedTools(t, cs)["wp_posts"].InputSchema.(map[string]any)
+	schemaOf := func(cs *mcp.ClientSession, tool string) map[string]any {
+		schema, ok := listedTools(t, cs)[tool].InputSchema.(map[string]any)
 		require.True(t, ok)
 		return schema
 	}
 
 	cs := newServer(&config.ResultFilterConfig{Enabled: true})
-	schema := schemaOf(cs)
+	schema := schemaOf(cs, "wp_posts")
 	props, _ := schema["properties"].(map[string]any)
 	require.Equal(t, map[string]any{
 		"type": "string", "description": resultFilterDescription(jmespath.Features{}),
 	}, props["_jmespath"])
 	require.Equal(t, []any{"page"}, schema["required"])
-	schemaOf(cs)
-	require.Equal(t, 1, strings.Count(logs.String(), "the result filter takes it over"))
-	require.Contains(t, logs.String(), "tool=wp_posts")
+
+	// UI を持つツールには引数を足さないので、一覧にはバックエンドの引数がそのまま載る。
+	// それでも tools/call では式の引数として扱うので（UI を持つかは呼び出しからは
+	// 分からない）、同じ警告を出す。
+	require.Equal(t, inputSchema(), schemaOf(cs, "wp_chart"))
+	res := callTool(t, cs, "wp_chart", map[string]any{"_jmespath": "id", "page": 1})
+	require.Equal(t, []string{"1"}, contentTexts(t, res))
+
+	for _, tool := range []string{"wp_posts", "wp_chart"} {
+		require.Equal(t, 1, strings.Count(logs.String(), "tool="+tool+" "), logs.String())
+	}
+	require.Equal(t, 2, strings.Count(logs.String(), "the result filter takes it over"))
 	require.Contains(t, logs.String(), "server=wordpress")
 
 	logs.Reset()
-	renamed := schemaOf(newServer(&config.ResultFilterConfig{Enabled: true, Argument: "_query"}))
-	props, _ = renamed["properties"].(map[string]any)
-	require.Equal(t, map[string]any{"type": "integer", "description": "theirs"}, props["_jmespath"])
+	renamed := newServer(&config.ResultFilterConfig{Enabled: true, Argument: "_query"})
+	schema = schemaOf(renamed, "wp_posts")
+	props, _ = schema["properties"].(map[string]any)
+	require.Equal(t, theirs, props["_jmespath"])
 	require.Contains(t, props, "_query")
-	require.Equal(t, []any{"_jmespath", "page"}, renamed["required"])
+	require.Equal(t, []any{"_jmespath", "page"}, schema["required"])
+	require.Equal(t, inputSchema(), schemaOf(renamed, "wp_chart"))
 	require.Empty(t, logs.String())
 }
 

@@ -189,6 +189,67 @@ func TestSearch_ComparesNumbersExactly(t *testing.T) {
 	}
 }
 
+// float64 では区別できない（どちらも無限大になる）ほど長い数値も、桁で比べる。
+func TestSearch_ComparesVeryLongNumbers(t *testing.T) {
+	big := "1" + strings.Repeat("0", 600) // 10^600
+	smaller := strings.Repeat("9", 600)   // 10^600 - 1
+	doc := `{"big": ` + big + `, "smaller": ` + smaller + `, "same": ` + big + `.0}`
+	tests := []struct {
+		expression string
+		want       string
+	}{
+		{"big == smaller", `false`},
+		{"big != smaller", `true`},
+		{"big > smaller", `true`},
+		{"smaller < big", `true`},
+		{"big <= smaller", `false`},
+		{"big == same", `true`},
+		{"big >= same && big <= same", `true`},
+		{"[big, smaller][?@ > `1e599`]", `[` + big + `,` + smaller + `]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expression, func(t *testing.T) {
+			require.Equal(t, tt.want, search(t, tt.expression, doc))
+		})
+	}
+}
+
+// 桁で比べる作業は表記の長さに比例するので、作業量に数える（同じ比較を式に何百回も
+// 並べられるため）。指数が大きすぎて桁数を数えられない数値は、比べずにエラーにする。
+func TestSearch_NumberComparisonLimits(t *testing.T) {
+	long := strings.Repeat("7", 4<<20)
+	d, err := Decode([]byte(`{"a": ` + long + `1, "b": ` + long + `2}`))
+	require.NoError(t, err)
+
+	// 1 回なら通る。
+	q, err := compileAll("a < b")
+	require.NoError(t, err)
+	out, err := q.Search(d)
+	require.NoError(t, err)
+	require.Equal(t, "true", string(out))
+
+	for _, comparison := range []string{"a < b", "a == b"} {
+		q, err := compileAll(
+			"[" + strings.TrimSuffix(strings.Repeat(comparison+",", 300), ",") + "]",
+		)
+		require.NoError(t, err)
+		_, err = q.Search(d)
+		require.ErrorIs(t, err, ErrTooExpensive, comparison)
+	}
+
+	d, err = Decode([]byte(`{"a": 1e99999999999999999999, "b": 2e99999999999999999999}`))
+	require.NoError(t, err)
+	for _, comparison := range []string{"a < b", "a == b"} {
+		q, err := compileAll(comparison)
+		require.NoError(t, err)
+		_, err = q.Search(d)
+		require.ErrorContains(t, err,
+			"the exponent of the number 1e99999999999999999999 is too large to compare")
+	}
+	// 同じ表記どうしなら、指数を読まずに等しいと分かる。
+	require.Equal(t, "true", search(t, "a == a && a <= a", `{"a": 1e99999999999999999999}`))
+}
+
 func TestCompareDecimals(t *testing.T) {
 	tests := []struct {
 		x, y string
@@ -199,6 +260,7 @@ func TestCompareDecimals(t *testing.T) {
 		{"0.00123", "123e-5", 0},
 		{"-0", "0", 0},
 		{"0", "0.000", 0},
+		{"0e5", "0", 0},
 		{"12", "123", -1},
 		{"0.12", "0.123", -1},
 		{"2", "10", -1},
@@ -206,17 +268,31 @@ func TestCompareDecimals(t *testing.T) {
 		{"-1", "1", -1},
 		{"0", "-1", 1},
 		{"0", "1e-999", -1},
+		{"1e-999", "1e-1000", 1},
 		{"9007199254740993", "9007199254740992", 1},
-		// 桁で比べられない表記（長すぎる、指数が大きすぎる）は 0。
-		{strings.Repeat("9", maxExactNumberBytes+1), "1", 0},
-		{"1e99999999999", "1", 0},
+		{"1" + strings.Repeat("0", 2000), strings.Repeat("9", 2000), 1},
+		{"1e4611686018427387904", "1e4611686018427387903", 1},
 	}
 	for _, tt := range tests {
-		t.Run(tt.x+" vs "+tt.y, func(t *testing.T) {
-			require.Equal(t, tt.want, compareDecimals(tt.x, tt.y))
-			require.Equal(t, -tt.want, compareDecimals(tt.y, tt.x))
+		t.Run(abbreviate(tt.x)+" vs "+abbreviate(tt.y), func(t *testing.T) {
+			got, err := compareDecimals(tt.x, tt.y)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+			got, err = compareDecimals(tt.y, tt.x)
+			require.NoError(t, err)
+			require.Equal(t, -tt.want, got)
 		})
 	}
+
+	// 指数が大きすぎる表記は比べない。長い表記はエラーメッセージで縮める。
+	for _, x := range []string{"1e4611686018427387905", "1e-4611686018427387905", "1e99999999999999999999"} {
+		_, err := compareDecimals(x, "1")
+		require.ErrorContains(t, err, "the exponent of the number "+x+" is too large to compare")
+		_, err = compareDecimals("1", x)
+		require.Error(t, err)
+	}
+	_, err := compareDecimals(strings.Repeat("9", 100)+"e99999999999999999999", "1")
+	require.ErrorContains(t, err, "the number "+strings.Repeat("9", 32)+"... is too large")
 }
 
 // 重複キーは後の値を採り、不正な UTF-8 は置換文字になる（JSON として読めるものは通す）。
