@@ -56,6 +56,11 @@ session_start:
   - name: depgraph
     timeout: 10
     cmd: "command -v mise >/dev/null || exit 0; mise which depgraph >/dev/null 2>&1 || exit 0; MISE_EXEC_AUTO_INSTALL=0 mise exec -- depgraph hook session-start --format text"
+# 止まる直前に、上のチェックが通ったあとで、このセッションが変更したファイルを 1 回見直させる
+# （差分を実物で読み直し、依頼を満たしているか・テストやドキュメントの更新漏れが無いかを確かめる）。
+# ファイルを変更していないターンでは何もしない。設定はすべて既定値（effort: xhigh、max_rounds: 1、
+# サブエージェントの停止時にも行う）。
+stop_review: true
 consistency_checks:
   - name: all
     run:
