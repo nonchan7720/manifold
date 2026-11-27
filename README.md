@@ -39,7 +39,7 @@ flowchart TD
 - **Breaking-change detection**: Classify upstream spec changes as breaking or not with [oasdiff](https://github.com/oasdiff/oasdiff), mapped to the affected MCP tools (`manifold openapi diff`, `manifold openapi generate --check`)
 - **MCP backend aggregation**: Transparent reverse proxy to external MCP servers, relaying their tools and prompts
 - **Tool filtering and renaming**: Expose only the tools you need, under the names and descriptions you choose (`mcpServers.<name>.tools.include` / `exclude` / `overrides`)
-- **Result filtering**: An agent adds a [JMESPath](https://jmespath.org/) expression to a call and gets back only the fields it selects, which saves the agent's context. Filtering by a condition, or by position and count, can be switched on per tool (`mcpServers.<name>.tools.resultFilter`)
+- **Result filtering**: An agent adds a [JMESPath](https://jmespath.org/) expression to a call and gets back only the fields it selects, which saves the agent's context. `tools/list` tells the agent which fields each result has, read from the OpenAPI response definition or the tool's `outputSchema`. Filtering by a condition, or by position and count, can be switched on per tool (`mcpServers.<name>.tools.resultFilter`)
 - **Audit log**: Write one JSON line per tool call (`audit`)
 - **A2A agents as MCP servers**: Expose an [A2A (Agent2Agent)](https://a2a-protocol.org/) agent's Agent Card skills as MCP tools, either served on their own (`agents`) or attached to a service (`mcpServers.<name>.agents`, skills exposed as `<agent>__<skill>` tools next to the service's own tools), with the caller's session id carried as the A2A `contextId` and the response context returned in `_meta.a2a`
 - **Built-in OAuth 2.1 server**: Authorization server with PKCE (S256) support. Downstream clients register through DCR (RFC 7591) or a client ID metadata document (CIMD), and can be mapped one-to-one onto upstream OAuth clients
@@ -716,7 +716,9 @@ mcpServers:
 
 - `include` / `exclude` and the values of `features` are globs like `tools.include` / `exclude` and match the tool's **original name** (the original name even when `overrides` renames it).
 - `features.conditions` / `features.indexing` are off for every tool unless listed. `["*"]` turns one on for every filterable tool.
-- The description of the added argument says which syntax that tool accepts and which it does not, so the agent does not have to try. The description is part of `tools/list` for every filterable tool, so `include` only the tools with large results to keep `tools/list` small.
+- The description of the added argument lists the fields of the tool's result when they are known (`Result fields: items[]{id, title, user{login}}, total.`). An agent can only ask for the fields it needs if it knows which ones exist (see [Result fields](#result-fields-in-the-argument-description) below).
+- The description also says which syntax that tool accepts and which it does not, so the agent does not have to try.
+- The description is part of `tools/list` for every filterable tool (the field list is at most 1024 bytes per tool), so `include` only the tools with large results to keep `tools/list` small.
 
 In detail:
 
@@ -726,7 +728,7 @@ In detail:
 - **Errors in the expression**: a syntax error, syntax that is not enabled for the tool, and a function call are returned as an `isError: true` result before the backend is called (`invalid _jmespath: functions are not supported (length()): an expression can only select and filter at offset 0. The tool was not called.`). The only failure after the call is exceeding the limits below. The backend call itself has completed by then, and the message says so.
 - **When the result is `null`**: an expression usually returns `null` because it guessed the top-level key wrong. The gateway adds the shape of the result (`_jmespath returned null. The result is an object with keys: items, total.`), so the agent can fix the expression without fetching everything. A key that cannot be written as an identifier is shown the way an expression writes it (`"x-rate"`).
 - **Error results** (`isError: true`) are not filtered.
-- **`outputSchema`**: it is what tells a caller which fields a result has, so `tools/list` keeps it for filterable tools too. A call with an expression no longer matches the original schema, though, and the TypeScript and Python SDKs reject a `structuredContent` that does not match. The original schema is therefore advertised as one branch of an `anyOf` (`{"type": "object", "anyOf": [<original schema>, {}]}`), which any result passes.
+- **`outputSchema`**: it describes which fields a result has, so `tools/list` keeps it for filterable tools too (a host does not necessarily show it to the model, which is why the fields are also listed in the argument's description). A call with an expression no longer matches the original schema, though, and the TypeScript and Python SDKs reject a `structuredContent` that does not match. The original schema is therefore advertised as one branch of an `anyOf` (`{"type": "object", "anyOf": [<original schema>, {}]}`), which any result passes.
 
 **Supported JMESPath syntax**:
 
@@ -744,6 +746,21 @@ Also:
 - Filtering happens inside authz, the guardrail and the audit log. Authz decides on the tool name, so the expression does not affect it. The guardrail (`post_call`) checks the filtered result, and the audit log (`includeArguments`) records the expression the caller sent. `_jmespath` does not appear in `manifold openapi tools` or in the generated `tools.file` (it is added when `tools/list` is served).
 - The gateway does the filtering. The backend still returns everything, so what shrinks is what goes back to the caller (the agent's context), not the traffic to the backend.
 - With several replicas, enable it once every replica runs a version that supports it. A replica that does not passes `_jmespath` on to the backend.
+
+#### Result fields in the argument description
+
+The list of fields tells the agent what it can select, the way a GraphQL schema does:
+
+```
+Result fields: items[]{id, labels[]{name}, title, user{id, login}}, total.
+```
+
+- **Notation**: `[]` marks an array, `{}` holds the fields of an object, and `...` stands for fields that are not listed (`user{...}`). Names are written the way an expression writes them, so one that is not an identifier is quoted (`"x-rate"`). Fields are in name order. From the list above an agent writes, for example, `items[].{id: id, author: user.login}`.
+- **Where it comes from**: for an OpenAPI server, the response definition in the spec: the lowest `2xx` status that declares a JSON body (`application/json` first). An array body is listed as `items[]{...}`, matching the `{"items": [...]}` the tool returns. For every other tool (MCP backends, WebMCP tabs), the tool's `outputSchema`. A tool with neither gets no list; the agent still gets the shape of the result when its expression returns `null`.
+- **How schemas are read**: `$ref` is followed, and the branches of `allOf` / `anyOf` / `oneOf` are listed together. A schema that refers back to itself stops there (`parent{...}`). In an `outputSchema`, only a `$ref` into the same document (`#/$defs/...`) is followed.
+- **Limit**: the list is at most 1024 bytes per tool. Shallow levels come first; a level that does not fit is abbreviated to `{...}`. At most 6 levels are read.
+- The list comes from the schema, not from an actual response. When the backend returns something else, the `null` hint above shows the actual shape.
+- The list is not written to `manifold openapi tools` or the generated `tools.file`. It is added when `tools/list` is served, and a spec refresh updates it together with the tools.
 
 ### Audit log (`audit`)
 

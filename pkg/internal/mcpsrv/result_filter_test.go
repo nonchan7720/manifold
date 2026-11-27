@@ -216,7 +216,10 @@ func TestResultFilterDescription(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, resultFilterDescription(tt.features))
+			require.Equal(t, tt.want, resultFilterDescription(tt.features, ""))
+			// 結果のフィールドが分かっていれば、最後に載せる。
+			require.Equal(t, tt.want+" Result fields: items[]{id, title}, total.",
+				resultFilterDescription(tt.features, "items[]{id, title}, total"))
 			// 説明に載せた例は、その構文の設定で解釈できる。
 			example := strings.Split(tt.want, `"`)[1]
 			_, err := jmespath.Compile(example, tt.features)
@@ -251,12 +254,34 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 	srv.AddTool(&mcp.Tool{
 		Name: "raw_schema", InputSchema: json.RawMessage(`{"type":"object","properties":{"a":{}}}`),
 	}, handler)
+	registered := func(fields string) map[string]any {
+		return map[string]any{resultFieldsMetaKey: fields}
+	}
 	srv.AddTool(&mcp.Tool{
 		Name: "delete_issue", InputSchema: objectSchema, OutputSchema: outputSchema,
+		Meta: mcp.Meta{manifoldMetaKey: registered("id")},
 	}, handler)
 	srv.AddTool(&mcp.Tool{
-		Name: "show_chart", InputSchema: objectSchema,
+		Name: "show_chart", InputSchema: objectSchema, OutputSchema: outputSchema,
 		Meta: mcp.Meta{mcpAppsMetaKey: map[string]any{"resourceUri": "ui://chart"}},
+	}, handler)
+	// 結果のフィールドは、登録時に持たせた一覧か、outputSchema から分かる。
+	srv.AddTool(&mcp.Tool{
+		Name: "get_page", InputSchema: objectSchema,
+		OutputSchema: json.RawMessage(`{"type": "object", "properties": {
+			"total": {"type": "integer"},
+			"items": {"type": "array", "items": {"$ref": "#/$defs/Issue"}}},
+			"$defs": {"Issue": {"type": "object", "properties": {
+				"id": {"type": "integer"}, "title": {"type": "string"},
+				"x-author": {"type": "object", "properties": {"login": {"type": "string"}}}}}}}`),
+	}, handler)
+	srv.AddTool(&mcp.Tool{
+		Name: "get_registered", InputSchema: objectSchema, OutputSchema: outputSchema,
+		Meta: mcp.Meta{"keep": true, manifoldMetaKey: registered("id, name")},
+	}, handler)
+	srv.AddTool(&mcp.Tool{
+		Name: "get_oversized", InputSchema: objectSchema,
+		Meta: mcp.Meta{manifoldMetaKey: registered(strings.Repeat("x", maxResultFieldsBytes+1))},
 	}, handler)
 	srv.AddTool(&mcp.Tool{Name: createPairingCodeToolName, InputSchema: objectSchema}, handler)
 	srv.AddReceivingMiddleware(newResultFilterMiddleware("test", &config.ResultFilterConfig{
@@ -272,11 +297,16 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 
 	// 対象のツールには式の引数が足され、元のプロパティと required は残る。説明は、その
 	// ツールで有効な構文に合わせる。
+	argumentWith := func(features jmespath.Features, fields string) map[string]any {
+		return map[string]any{
+			"type": "string", "description": resultFilterDescription(features, fields),
+		}
+	}
 	argument := func(features jmespath.Features) map[string]any {
-		return map[string]any{"type": "string", "description": resultFilterDescription(features)}
+		return argumentWith(features, "")
 	}
 	const name = config.DefaultResultFilterArgument
-	require.Equal(t, argument(jmespath.Features{Conditions: true, Indexing: true}),
+	require.Equal(t, argumentWith(jmespath.Features{Conditions: true, Indexing: true}, "total"),
 		toolProperties(t, tools["list_issues"])[name])
 	require.Contains(t, toolProperties(t, tools["list_issues"]), "state")
 	require.Equal(t, []any{"state"}, tools["list_issues"].InputSchema.(map[string]any)["required"])
@@ -294,11 +324,35 @@ func TestResultFilterMiddleware_ToolsList(t *testing.T) {
 		"anyOf":       []any{outputSchema, map[string]any{}},
 	}, tools["list_issues"].OutputSchema)
 
+	// 結果のフィールドは引数の説明に載せる。outputSchema から読むときは $ref をたどり、
+	// 名前は式に書く形にする。登録時に持たせた一覧があれば、そちらを使う。
+	require.Equal(
+		t,
+		argumentWith(
+			jmespath.Features{Indexing: true},
+			`items[]{id, title, "x-author"{login}}, total`,
+		),
+		toolProperties(t, tools["get_page"])[name],
+	)
+	require.Equal(t, argumentWith(jmespath.Features{Indexing: true}, "id, name"),
+		toolProperties(t, tools["get_registered"])[name])
+	// 上限を超える一覧（_meta は MCP バックエンドも書ける）は使わない。
+	require.Equal(t, argument(jmespath.Features{Indexing: true}),
+		toolProperties(t, tools["get_oversized"])[name])
+	// 登録時に持たせた一覧は、対象外のツールのものも含めて _meta から取り除く。
+	require.Equal(t, mcp.Meta{"keep": true}, tools["get_registered"].Meta)
+	for _, tool := range []string{"get_oversized", "delete_issue"} {
+		require.Nil(t, tools[tool].Meta, tool)
+	}
+
 	// exclude したツール、UI を持つツール、ゲートウェイ自身のツールはそのまま。
 	for _, tool := range []string{"delete_issue", "show_chart", createPairingCodeToolName} {
 		require.NotContains(t, toolProperties(t, tools[tool]), name, tool)
 	}
-	require.Equal(t, outputSchema, tools["delete_issue"].OutputSchema)
+	for _, tool := range []string{"delete_issue", "show_chart"} {
+		require.Equal(t, outputSchema, tools[tool].OutputSchema, tool)
+	}
+	require.Contains(t, tools["show_chart"].Meta, mcpAppsMetaKey)
 
 	// SDK が保持する登録済みのツールは書き換えない（2 回目の一覧も同じ）。
 	require.Equal(t, tools, listedTools(t, cs))
@@ -454,7 +508,7 @@ func TestResultFilterMiddleware_ToolsList_ShadowsExistingArgument(t *testing.T) 
 	schema := schemaOf(cs, "wp_posts")
 	props, _ := schema["properties"].(map[string]any)
 	require.Equal(t, map[string]any{
-		"type": "string", "description": resultFilterDescription(jmespath.Features{}),
+		"type": "string", "description": resultFilterDescription(jmespath.Features{}, ""),
 	}, props["_jmespath"])
 	require.Equal(t, []any{"page"}, schema["required"])
 

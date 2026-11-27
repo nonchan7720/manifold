@@ -39,7 +39,7 @@ flowchart TD
 - **破壊的変更の検出**: 上流 spec の変更が破壊的かどうかを [oasdiff](https://github.com/oasdiff/oasdiff) で判定し、影響を受ける MCP ツールと対応付けて表示（`manifold openapi diff`、`manifold openapi generate --check`）
 - **MCP バックエンド統合**: 外部 MCP サーバーへの透過的なリバースプロキシ（ツールと prompts を中継）
 - **ツールの絞り込みと名前変更**: 必要なツールだけを、好きな名前と説明で公開（`mcpServers.<name>.tools.include` / `exclude` / `overrides`）
-- **ツールの結果の絞り込み**: エージェントが呼び出しに [JMESPath](https://jmespath.org/) の式を添えると、結果のうち選んだフィールドだけを返し、エージェントのコンテキストを節約する。条件や位置・件数での絞り込みは、ツールごとに有効にできる（`mcpServers.<name>.tools.resultFilter`）
+- **ツールの結果の絞り込み**: エージェントが呼び出しに [JMESPath](https://jmespath.org/) の式を添えると、結果のうち選んだフィールドだけを返し、エージェントのコンテキストを節約する。結果にどんなフィールドがあるかは、OpenAPI のレスポンス定義かツールの `outputSchema` から読み取って `tools/list` で伝える。条件や位置・件数での絞り込みは、ツールごとに有効にできる（`mcpServers.<name>.tools.resultFilter`）
 - **監査ログ**: ツール呼び出しごとに JSON 1 行を記録（`audit`）
 - **A2A エージェントの MCP サーバー化**: [A2A（Agent2Agent）](https://a2a-protocol.org/)エージェントの Agent Card のスキルを MCP ツールとして公開。単独で公開（`agents`）することも、サービスにぶら下げる（`mcpServers.<name>.agents`。スキルはサービス自身のツールと並んで `<agent>__<skill>` のツールになる）こともできる。呼び出し元のセッション ID を A2A の `contextId` として渡し、レスポンスのコンテキストを `_meta.a2a` で返す
 - **OAuth 2.1 サーバー**: PKCE (S256) 対応の認証サーバーを内蔵。下流クライアントは DCR（RFC 7591）または Client ID Metadata Document（CIMD）で登録でき、上流の OAuth クライアントへ 1 対 1 にマッピングできる
@@ -716,7 +716,9 @@ mcpServers:
 
 - `include` / `exclude` と `features` の値は `tools.include` / `exclude` と同じ glob で、**元のツール名**に照合します（`overrides` でリネームしていても元の名前）。
 - `features.conditions` / `features.indexing` は、書かなければどのツールでも無効です。`["*"]` で対象の全ツールに有効になります。
-- 足した引数の説明には、そのツールで使える構文と使えない構文が載ります。エージェントは使えない構文を試さずに済みます。説明は対象の全ツールの `tools/list` に載るので、結果が大きいツールだけを `include` すれば `tools/list` を小さく保てます。
+- 足した引数の説明には、結果にどんなフィールドがあるかが分かる場合、その一覧が載ります（`Result fields: items[]{id, title, user{login}}, total.`）。エージェントは、どんなフィールドがあるかを知っていて初めて、必要なものだけを指定できます（下の[結果のフィールド一覧](#引数の説明に載る結果のフィールド一覧)を参照）。
+- 説明には、そのツールで使える構文と使えない構文も載ります。エージェントは使えない構文を試さずに済みます。
+- 説明は対象の全ツールの `tools/list` に載ります（フィールド一覧は 1 ツールあたり最大 1024 バイト）。結果が大きいツールだけを `include` すれば、`tools/list` を小さく保てます。
 
 動きの詳細:
 
@@ -726,7 +728,7 @@ mcpServers:
 - **式の誤り**: 構文エラー、そのツールで有効にしていない構文、関数の呼び出しは、バックエンドを呼ぶ前に `isError: true` の結果で返します（`invalid _jmespath: functions are not supported (length()): an expression can only select and filter at offset 0. The tool was not called.`）。呼び出しの後に失敗するのは、下記の評価の上限を超えたときだけです。このときバックエンドの呼び出し自体は完了しており、メッセージにもそう書かれます。
 - **`null` になったとき**: 式が `null` を返すのは、たいてい最上位のキーの見当が外れているときです。結果の形を添えて返すので（`_jmespath returned null. The result is an object with keys: items, total.`）、エージェントは全体を取り直さずに式を直せます。識別子として書けないキーは、式に書く形（`"x-rate"`）で示します。
 - **エラーの結果**（`isError: true`）は絞り込まず、そのまま返します。
-- **`outputSchema`**: 結果にどんなフィールドがあるかを伝える記述なので、対象のツールでも `tools/list` に残します。ただし、式を渡した呼び出しの結果は元のスキーマに合わなくなり、TypeScript / Python の SDK は合わない `structuredContent` を拒否します。そのため、元のスキーマを `anyOf` の選択肢の 1 つとして載せ（`{"type": "object", "anyOf": [<元のスキーマ>, {}]}`）、どんな結果でも検証を通る形にします。
+- **`outputSchema`**: 結果にどんなフィールドがあるかを伝える記述なので、対象のツールでも `tools/list` に残します（ホストがこれをモデルに見せるとは限らないので、フィールドは引数の説明にも載せます）。ただし、式を渡した呼び出しの結果は元のスキーマに合わなくなり、TypeScript / Python の SDK は合わない `structuredContent` を拒否します。そのため、元のスキーマを `anyOf` の選択肢の 1 つとして載せ（`{"type": "object", "anyOf": [<元のスキーマ>, {}]}`）、どんな結果でも検証を通る形にします。
 
 **使える JMESPath の構文**:
 
@@ -744,6 +746,21 @@ mcpServers:
 - 絞り込みは authz・ガードレール・監査ログより内側で行います。authz はツール名で判定するので式には左右されません。ガードレール（`post_call`）は絞り込み後の結果を検査し、監査ログ（`includeArguments`）には呼び出し元が送った式が残ります。`manifold openapi tools` と生成物（`tools.file`）に `_jmespath` は現れません（`tools/list` を返す時点で足すため）。
 - 絞り込むのはゲートウェイです。バックエンドは今までどおり全体を返すので、減るのは呼び出し元へ返す量（エージェントのコンテキスト）で、バックエンドとの通信量ではありません。
 - 複数レプリカで使う場合は、全レプリカを対応バージョンにしてから有効にしてください。未対応のレプリカは `_jmespath` をそのままバックエンドへ渡します。
+
+#### 引数の説明に載る結果のフィールド一覧
+
+フィールドの一覧は、GraphQL のスキーマのように、エージェントに何を選べるかを伝えます。
+
+```
+Result fields: items[]{id, labels[]{name}, title, user{id, login}}, total.
+```
+
+- **表記**: `[]` は配列、`{}` はオブジェクトのフィールド、`...` は載せていないフィールドがあることを表します（`user{...}`）。名前は式に書く形で載せるので、識別子として書けない名前は引用符つきになります（`"x-rate"`）。並びは名前順です。上の一覧からは、たとえば `items[].{id: id, author: user.login}` と書けます。
+- **何から作るか**: OpenAPI のサーバーでは、spec のレスポンス定義から作ります。JSON のボディを宣言している最も小さい `2xx` のステータスを読みます（`application/json` を優先）。配列のボディは、ツールが返す `{"items": [...]}` に合わせて `items[]{...}` と載せます。それ以外のツール（MCP バックエンド、WebMCP のタブ）では、ツールの `outputSchema` から作ります。どちらも無いツールには一覧を載せません。その場合も、式の結果が `null` になれば結果の形が返ります。
+- **スキーマの読み方**: `$ref` をたどり、`allOf` / `anyOf` / `oneOf` の枝はまとめて載せます。自分自身へ戻る参照は、そこで止めます（`parent{...}`）。`outputSchema` では、同じ文書の中を指す `$ref`（`#/$defs/...`）だけをたどります。
+- **上限**: 一覧は 1 ツールあたり最大 1024 バイトです。浅い階層を先に載せ、収まらない階層は `{...}` と省きます。読む深さは 6 階層までです。
+- 一覧はスキーマから作るもので、実際のレスポンスから作るものではありません。バックエンドが違う形を返した場合は、上の `null` の手がかりに実際の形が出ます。
+- 一覧は `manifold openapi tools` と生成物（`tools.file`）には出ません。`tools/list` を返す時点で足し、spec の再取得ではツールと一緒に更新されます。
 
 ### 監査ログ（`audit`）
 

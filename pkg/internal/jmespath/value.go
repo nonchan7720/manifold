@@ -250,7 +250,7 @@ func describeKeys(o *object) string {
 			break
 		}
 		if len(key) <= maxDescribedKeyBytes {
-			shown = append(shown, displayKey(key))
+			shown = append(shown, Identifier(key))
 		}
 	}
 	if len(shown) == 0 {
@@ -263,9 +263,9 @@ func describeKeys(o *object) string {
 	return desc
 }
 
-// displayKey はキーを、式の中に書く形で返す。識別子として書けないキー（"x-rate" や
+// Identifier はキーを、式の中に書く形で返す。識別子として書けないキー（"x-rate" や
 // "a, b"）は引用符で囲むので、並べても 1 つのキーがどこまでかが分かる。
-func displayKey(key string) string {
+func Identifier(key string) string {
 	if isIdentifier(key) {
 		return key
 	}

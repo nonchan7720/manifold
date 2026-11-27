@@ -290,6 +290,66 @@ func WithRegisterToolDocs(summary, description string) RegisterToolOptions {
 	}
 }
 
+const (
+	// manifoldMetaKey は、ゲートウェイ自身がツールの _meta に載せる情報のキー。
+	manifoldMetaKey = "manifold"
+	// resultFieldsMetaKey は _meta.manifold の中で、結果の JSON のフィールド一覧を持つキー。
+	resultFieldsMetaKey = "resultFields"
+)
+
+// WithRegisterToolResultFields は、結果の JSON のフィールド一覧（resultshape の表記）を
+// _meta.manifold.resultFields に記録する。空なら何もしない。
+//
+// 一覧を使うのは結果の絞り込み（newResultFilterMiddleware）で、tools/list を返すときに
+// 式の引数の説明へ載せ、_meta からは取り除く。_meta に載せて運ぶのは、tools/list で
+// ミドルウェアから見えるのが SDK に登録した mcp.Tool だけだからで、spec の再取得でツールを
+// 入れ替えても、一覧は常にそのツールと一緒に入れ替わる。
+func WithRegisterToolResultFields(fields string) RegisterToolOptions {
+	return func(tool *Tool) {
+		if fields == "" {
+			return
+		}
+		manifoldMeta, _ := tool.tool.Meta[manifoldMetaKey].(map[string]any)
+		manifoldMeta = maps.Clone(manifoldMeta)
+		if manifoldMeta == nil {
+			manifoldMeta = map[string]any{}
+		}
+		manifoldMeta[resultFieldsMetaKey] = fields
+		if tool.tool.Meta == nil {
+			tool.tool.Meta = make(mcp.Meta)
+		}
+		tool.tool.Meta[manifoldMetaKey] = manifoldMeta
+	}
+}
+
+// takeResultFields は tool の _meta.manifold.resultFields を返す。載っていれば、それを
+// 取り除いた tool の複製を、無ければ tool をそのまま返す。
+func takeResultFields(tool *mcp.Tool) (fields string, _ *mcp.Tool) {
+	manifoldMeta, ok := tool.Meta[manifoldMetaKey].(map[string]any)
+	if !ok {
+		return "", tool
+	}
+	value, ok := manifoldMeta[resultFieldsMetaKey]
+	if !ok {
+		return "", tool
+	}
+	fields, _ = value.(string)
+
+	rest := maps.Clone(manifoldMeta)
+	delete(rest, resultFieldsMetaKey)
+	copied := *tool
+	copied.Meta = maps.Clone(tool.Meta)
+	if len(rest) == 0 {
+		delete(copied.Meta, manifoldMetaKey)
+	} else {
+		copied.Meta[manifoldMetaKey] = rest
+	}
+	if len(copied.Meta) == 0 {
+		copied.Meta = nil
+	}
+	return fields, &copied
+}
+
 // WithRegisterToolBinaryFields は JSON レスポンス内のバイナリフィールドの位置を記録する。
 func WithRegisterToolBinaryFields(fields []oastomcptool.BinaryField) RegisterToolOptions {
 	return func(tool *Tool) {
@@ -422,25 +482,36 @@ func wrapToolFunc(tool ToolFunc) ToolFunc {
 		if err != nil {
 			return nil, "", err
 		}
-		mediaType, params, err := mime.ParseMediaType(contentType)
+		wrappedType, wraps := wrapsJSONArray(contentType)
+		if !wraps {
+			// JSON でないか、content type をパースできない場合はそのまま返す
+			return resp, contentType, nil
+		}
+		v, err := wrapIfArray(resp)
 		if err != nil {
-			// content type のパースに失敗した場合はそのまま返す
-			return resp, contentType, nil //nolint: nilerr
+			return nil, "", err
 		}
-		profileValue, isProfile := params["profile"]
-		if mediaType == "application/json" || (isProfile && profileValue == "application/json") {
-			if v, err := wrapIfArray(resp); err != nil {
-				return nil, "", err
-			} else {
-				// profile があれば profile 側を使用する
-				if isProfile {
-					contentType = profileValue
-				}
-				return v, contentType, nil
-			}
-		}
-		return resp, contentType, nil
+		return v, wrappedType, nil
 	}
+}
+
+// wrapsJSONArray は、contentType のレスポンスボディが JSON の配列のときに、wrapToolFunc が
+// {"items": [...]} に包むかを返す。包むのは application/json と、profile パラメータが
+// application/json のもの。application/hal+json などの +json は包まない。
+// wrappedType は包んだ結果に付ける content type（profile があれば profile 側を使用する）。
+func wrapsJSONArray(contentType string) (wrappedType string, wraps bool) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return "", false
+	}
+	profile, isProfile := params["profile"]
+	if mediaType != "application/json" && (!isProfile || profile != "application/json") {
+		return "", false
+	}
+	if isProfile {
+		return profile, true
+	}
+	return contentType, true
 }
 
 func wrapIfArray(b []byte) ([]byte, error) {

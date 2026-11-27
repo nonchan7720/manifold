@@ -334,6 +334,24 @@ func TestCompile_Errors(t *testing.T) {
 		{"unclosed filter", "items[?a == `1`", "expected ']', got end of expression"},
 		{"unclosed multiselect hash", "{a: b", "expected ',' or '}', got end of expression"},
 		{"hash without a key", "{`1`: b}", "expected a key name"},
+		// フィールドの一覧の表記（items[]{id, name}）をそのまま式に書いた場合は、書き方を示す。
+		{
+			"field list notation as an expression",
+			"items[]{id, name}",
+			`unexpected "{" (to select several fields, write .{id: id, name: name}) at offset 7`,
+		},
+		{"field list notation for an object", "owner{login}", `unexpected "{" (to select`},
+		{
+			"hash of bare names",
+			"items[].{id, name}",
+			`expected ':' after the key "id", got "," (write each field as name: expression, ` +
+				`e.g. {id: id, name: name}) at offset 11`,
+		},
+		{
+			"hash ending in a bare name",
+			"{id: id, name}",
+			`expected ':' after the key "name", got "}"`,
+		},
 		{"single equals", "items[?a = `1`]", "unexpected '=' (use '==' to compare) at offset 9"},
 		{"unterminated raw string", "items[?a == 'x]", "unterminated '...'"},
 		{"unterminated literal", "`1", "unterminated `...`"},

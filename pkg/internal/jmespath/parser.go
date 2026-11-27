@@ -135,6 +135,12 @@ func (p *parser) needIndexing(bracket token) error {
 }
 
 func (p *parser) unexpected(tok token) error {
+	if tok.kind == tLbrace {
+		// 式の続きに '{' は来られない。フィールドの一覧の表記（items[]{id, name}）をそのまま
+		// 式に書いた場合にここへ来るので、複数のフィールドを選ぶ書き方を添える。
+		return p.errorf(tok, "unexpected %s (to select several fields, write "+
+			".{id: id, name: name})", describeToken(tok))
+	}
 	return p.errorf(tok, "unexpected %s", describeToken(tok))
 }
 
@@ -434,9 +440,13 @@ func (p *parser) multiSelectHash() (*node, error) {
 		if key.kind != tUnquotedIdentifier && key.kind != tQuotedIdentifier {
 			return nil, p.errorf(key, "expected a key name, got %s", describeToken(key))
 		}
-		if err := p.expect(tColon, "':'"); err != nil {
-			return nil, err
+		if p.current().kind != tColon {
+			// {id, name} のように名前だけを並べた場合。
+			return nil, p.errorf(p.current(), "expected ':' after the key %s, got %s "+
+				"(write each field as name: expression, e.g. {id: id, name: name})",
+				describeToken(key), describeToken(p.current()))
 		}
+		p.advance()
 		expr, err := p.expression(0)
 		if err != nil {
 			return nil, err

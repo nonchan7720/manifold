@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/jmespath"
+	"github.com/nonchan7720/manifold/pkg/internal/resultshape"
 )
 
 // 結果の絞り込み（mcpServers.<name>.tools.resultFilter）。
@@ -39,6 +40,10 @@ const (
 	// maxShadowWarnings は、同名の引数を持つツールとして覚えておく数の上限。ツール名は
 	// バックエンドが決めるので、際限なく覚えない。
 	maxShadowWarnings = 256
+	// maxResultFieldsBytes は、式の引数の説明に載せる結果のフィールド一覧の長さの上限。
+	// 一覧は対象の全ツールの tools/list に載るので、大きなスキーマでも説明が膨らまない
+	// ようにする（収まらない階層は ... と書く）。
+	maxResultFieldsBytes = 1024
 	// structuredResultKey は、オブジェクトでない式の結果を structuredContent に載せる
 	// ときのキー。structuredHintKey は、そこに添える手がかりのキー。
 	structuredResultKey = "result"
@@ -48,7 +53,12 @@ const (
 // resultFilterDescription は足した引数の説明を返す。対象の全ツールの tools/list に載る
 // ので短く保つ。使える構文と使えない構文を書くのは、呼び出し元が試して失敗する往復を
 // 減らすため。
-func resultFilterDescription(features jmespath.Features) string {
+//
+// fields は結果の JSON のフィールド一覧（resultshape の表記）で、分かっていれば載せる。
+// 呼び出し元（エージェント）は、どんなフィールドがあるかを知らなければ、要るものだけを
+// 選ぶ式を書けない。ツールの outputSchema は残しているが、ホストがそれをモデルに渡すとは
+// 限らないので、input schema の一部として必ず届く引数の説明に書く。
+func resultFilterDescription(features jmespath.Features, fields string) string {
 	example := "items[].{id: id, title: title}"
 	supported := []string{"field selection"}
 	unsupported := []string{}
@@ -64,9 +74,35 @@ func resultFilterDescription(features jmespath.Features) string {
 		unsupported = append(unsupported, "[index], slices")
 	}
 	unsupported = append(unsupported, "functions")
-	return fmt.Sprintf("Optional JMESPath expression. When set, the tool returns only the "+
+	desc := fmt.Sprintf("Optional JMESPath expression. When set, the tool returns only the "+
 		"expression's result instead of the full JSON, e.g. %q. Supported: %s. Not supported: %s.",
 		example, strings.Join(supported, ", "), strings.Join(unsupported, ", "))
+	if fields != "" {
+		desc += " Result fields: " + fields + "."
+	}
+	return desc
+}
+
+// resultFields は tool の結果の JSON のフィールド一覧を返す。分からなければ空文字列。
+// registered は、ゲートウェイがツールの登録時に spec のレスポンス定義から作った一覧
+// （takeResultFields）。無ければ、ツールの outputSchema から作る。
+func resultFields(tool *mcp.Tool, registered string) string {
+	if registered != "" {
+		// _meta は MCP バックエンドも書けるので、ゲートウェイが作る一覧の上限を超えるものは
+		// 使わない。
+		if len(registered) > maxResultFieldsBytes {
+			return ""
+		}
+		return registered
+	}
+	if tool.OutputSchema == nil {
+		return ""
+	}
+	shape, ok := resultshape.FromJSONSchema(tool.OutputSchema)
+	if !ok {
+		return ""
+	}
+	return shape.Describe(maxResultFieldsBytes)
 }
 
 type resultFilter struct {
@@ -148,17 +184,28 @@ func (f *resultFilter) advertise(ctx context.Context, tools []*mcp.Tool) []*mcp.
 }
 
 func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.Tool {
-	if tool == nil || !f.applies(tool.Name) {
+	if tool == nil {
 		return tool
 	}
-	schema, shadows, ok := f.withArgument(tool.InputSchema, f.features(tool.Name))
+	// 登録時に持たせたフィールド一覧は、対象外のツールでも _meta から取り除く（呼び出し元に
+	// 見せるものではない）。
+	registered, tool := takeResultFields(tool)
+	if !f.applies(tool.Name) {
+		return tool
+	}
+	ui := hasMCPAppsUI(tool)
+	fields := ""
+	if !ui {
+		fields = resultFields(tool, registered)
+	}
+	schema, shadows, ok := f.withArgument(tool.InputSchema, f.features(tool.Name), fields)
 	if !ok {
 		return tool
 	}
 	if shadows {
 		f.warnShadowed(ctx, tool.Name)
 	}
-	if hasMCPAppsUI(tool) {
+	if ui {
 		// MCP Apps の UI を持つツールの結果は UI が描画に使うので、絞り込みを勧めない
 		// （引数を足さない）。ただし tools/call の時点ではツールが UI を持つかが分からない
 		// ので（MCP バックエンドの tools/list は毎回バックエンドへ転送していて、手元に
@@ -178,7 +225,7 @@ func (f *resultFilter) advertiseTool(ctx context.Context, tool *mcp.Tool) *mcp.T
 // 最上位が "type": "object" のスキーマとして読めなければ ok が false。shadows は、
 // 同じ名前のプロパティが既にあって置き換えたことを表す。
 func (f *resultFilter) withArgument(
-	schema any, features jmespath.Features,
+	schema any, features jmespath.Features, fields string,
 ) (out map[string]any, shadows, ok bool) {
 	if m, isMap := schema.(map[string]any); isMap {
 		out = maps.Clone(m)
@@ -199,7 +246,7 @@ func (f *resultFilter) withArgument(
 	_, shadows = properties[f.argument]
 	properties[f.argument] = map[string]any{
 		"type":        "string",
-		"description": resultFilterDescription(features),
+		"description": resultFilterDescription(features, fields),
 	}
 	out["properties"] = properties
 	if shadows {

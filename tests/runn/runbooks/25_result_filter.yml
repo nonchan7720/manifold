@@ -18,7 +18,7 @@ vars:
     x-user-groups: readers
 steps:
   list_advertises_the_argument:
-    desc: "tools/list adds _jmespath to the tools resultFilter.include matches by their original name, and tells which syntax each tool accepts"
+    desc: "tools/list adds _jmespath to the tools resultFilter.include matches by their original name, and tells which syntax each tool accepts and which fields its result has (from the spec's response definition)"
     req:
       /mcp/petstore:
         post:
@@ -32,6 +32,7 @@ steps:
       let filterable = map(filter(rpc.result.tools, "_jmespath" in keys(.inputSchema.properties ?? {})), {.name});
       let get_pet = filter(rpc.result.tools, .name == "get_pet")[0].inputSchema.properties;
       let by_status = filter(rpc.result.tools, .name == "findpetsbystatus")[0].inputSchema.properties;
+      let pet = "category{id, name}, id, name, photoUrls[], status, tags[]{id, name}";
       current.res.status == 200
       && rpc.error == nil
       && sort(filterable) == ["findpetsbystatus", "findpetsbytags", "get_pet"]
@@ -39,6 +40,9 @@ steps:
       && "petId" in keys(get_pet)
       && get_pet._jmespath.description contains "Supported: field selection. Not supported: [?conditions], [index], slices, functions."
       && by_status._jmespath.description contains "Supported: field selection, [?conditions], [index] and [start:stop] slices. Not supported: functions."
+      && get_pet._jmespath.description endsWith " Result fields: " + pet + "."
+      && by_status._jmespath.description endsWith " Result fields: items[]{" + pet + "}."
+      && all(rpc.result.tools, ._meta == nil)
   filter_a_list:
     desc: "On a tool with conditions enabled, the expression filters and reshapes the items; the rest of the arguments still reach the backend"
     req:
