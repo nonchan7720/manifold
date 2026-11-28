@@ -32,6 +32,7 @@
       "hidden": false
     }
   ],
+  "bootstrap-sha": "19e3413218c93c990e30d5bb02e12eb8ff9a38f5",
   "separate-pull-requests": true,
   "packages": {
     ".": {
