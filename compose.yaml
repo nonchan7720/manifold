@@ -18,7 +18,7 @@ services:
   # profiles により `docker compose up -d` では起動しない（`mise run neo4j` で名前を指定して起動する）。
   neo4j:
     profiles: ["depgraph"]
-    image: neo4j:5.26.33@sha256:577eb43120e8688e62e753e962c47d30044ecaa95147ee5386c29f226b878008
+    image: neo4j:5.26.33@sha256:51d0314ef86074f519003da8dd4daaa9fff72b8479672b742d7cab7f3064e3ed
     container_name: manifold-neo4j
     ports:
       - "127.0.0.1:27474:7474" # browser UI
