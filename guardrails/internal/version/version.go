@@ -3,4 +3,4 @@
 package version
 
 // Version は manifold-guardrail のバージョン。
-var Version = "1.26.2" // x-release-please-version
+var Version = "1.26.3" // x-release-please-version
