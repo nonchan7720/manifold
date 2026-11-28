@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.27.2](https://github.com/nonchan7720/manifold/compare/v1.27.1...v1.27.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies ([#462](https://github.com/nonchan7720/manifold/issues/462)) ([21e245e](https://github.com/nonchan7720/manifold/commit/21e245e0b43bfa033890c97865f2370d6a03631a))
+* **deps:** update go patch dependencies ([#466](https://github.com/nonchan7720/manifold/issues/466)) ([4be6b9e](https://github.com/nonchan7720/manifold/commit/4be6b9ee54cbc846257f463474a0123c0765d512))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/service/bedrockruntime to v1.64.0 ([#471](https://github.com/nonchan7720/manifold/issues/471)) ([31844fd](https://github.com/nonchan7720/manifold/commit/31844fd9b54e783089dbbedc7e5fc5359fa0694b))
+* **deps:** update module github.com/micahparks/jwkset to v0.12.0 ([#414](https://github.com/nonchan7720/manifold/issues/414)) ([ae6aea4](https://github.com/nonchan7720/manifold/commit/ae6aea46e4c59d45d119049dcdfca3905b07860f))
+
+
+### Miscellaneous
+
+* **deps:** update actions/create-github-app-token action to v3.4.0 ([#463](https://github.com/nonchan7720/manifold/issues/463)) ([da5f0b5](https://github.com/nonchan7720/manifold/commit/da5f0b51d1e0875b6b420979e28f147af93d59d6))
+* **deps:** update amannn/action-semantic-pull-request action to v6.1.3 ([#470](https://github.com/nonchan7720/manifold/issues/470)) ([b4f3990](https://github.com/nonchan7720/manifold/commit/b4f3990ef3740311c26230f8098c59acbf949fcd))
+* **deps:** update dependency jose to v6.2.18 ([#459](https://github.com/nonchan7720/manifold/issues/459)) ([7e1acdc](https://github.com/nonchan7720/manifold/commit/7e1acdcd925d8116383310527a12ce4ae3cec7d4))
+* **deps:** update grafana/otel-lgtm docker tag to v0.41.1 ([#468](https://github.com/nonchan7720/manifold/issues/468)) ([e653942](https://github.com/nonchan7720/manifold/commit/e653942aba9890e0a6f31971bc222f05f76175d9))
+* **deps:** update jdx/mise-action action to v5.2.10 ([#460](https://github.com/nonchan7720/manifold/issues/460)) ([ac92d5f](https://github.com/nonchan7720/manifold/commit/ac92d5fc53f6d91579183e9a27b15e5264ce6122))
+
 ## [1.27.1](https://github.com/nonchan7720/manifold/compare/v1.27.0...v1.27.1) (2026-11-25)
 
 
