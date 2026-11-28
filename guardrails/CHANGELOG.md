@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.26.3](https://github.com/nonchan7720/manifold/compare/guardrails/v1.26.2...guardrails/v1.26.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **deps:** update go patch dependencies ([#462](https://github.com/nonchan7720/manifold/issues/462)) ([21e245e](https://github.com/nonchan7720/manifold/commit/21e245e0b43bfa033890c97865f2370d6a03631a))
+* **deps:** update go patch dependencies ([#466](https://github.com/nonchan7720/manifold/issues/466)) ([4be6b9e](https://github.com/nonchan7720/manifold/commit/4be6b9ee54cbc846257f463474a0123c0765d512))
+* **deps:** update module github.com/aws/aws-sdk-go-v2/service/bedrockruntime to v1.64.0 ([#471](https://github.com/nonchan7720/manifold/issues/471)) ([31844fd](https://github.com/nonchan7720/manifold/commit/31844fd9b54e783089dbbedc7e5fc5359fa0694b))
+
 ## 1.26.2 (2026-11-25)
 
 
