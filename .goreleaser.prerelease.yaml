@@ -38,3 +38,8 @@ changelog:
 
 release:
   prerelease: true
+  # タグはローカルで作るだけで push しないので、GoReleaser がリリースを作るときに GitHub 側でタグが作られる。
+  # target_commitish を省くとそのタグはデフォルトブランチの「その時点の先頭」に付く。連続でマージされると
+  # 複数の dev タグが最新コミットに集まり、最新コミットのジョブが別のタグ（既にアセットがあるリリース）を
+  # 選んで 422 already_exists で落ちるため、ビルドしたコミットを明示する。
+  target_commitish: "{{ .Commit }}"
