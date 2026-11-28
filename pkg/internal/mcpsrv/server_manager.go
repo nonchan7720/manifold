@@ -218,6 +218,19 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 			}
 			srvOpts.Capabilities.Prompts = &mcp.PromptCapabilities{}
 		}
+		if server.A2UIForms() {
+			// 書き込み系ツールの A2UI フォーム（mcpServers.<name>.a2ui.forms）は
+			// a2ui:// リソースで配信するので、resources を広告する。prompts と同じく
+			// SDK の既定の広告（logging と tools）も明示する。
+			if srvOpts.Capabilities == nil {
+				srvOpts.Capabilities = &mcp.ServerCapabilities{
+					//nolint:staticcheck // SDK の既定の広告と揃えるため（logging は非推奨だが有効）
+					Logging: &mcp.LoggingCapabilities{},
+					Tools:   &mcp.ToolCapabilities{ListChanged: true},
+				}
+			}
+			srvOpts.Capabilities.Resources = &mcp.ResourceCapabilities{}
+		}
 		srv := mcp.NewServer(
 			&mcp.Implementation{Name: name, Version: version.MarkVersion},
 			srvOpts,
@@ -281,6 +294,17 @@ func (s *MCPServer) Init(ctx context.Context) (rErr error) {
 				name, server, authzMiddlewares, s.auditLogger, inner...,
 			)...,
 		)
+		if server.A2UIForms() {
+			// 後から足したミドルウェアほど外側になる。<tool>__submit を <tool> に
+			// 書き換えてから metrics・audit・authz に渡すため、最も外側に置く。
+			forms, err := newA2UIFormsMiddleware(name, server)
+			if err != nil {
+				// カタログを読めない・役割に部品を割り当てられないのは設定の誤り。
+				// 壊れたフォームを返すより、起動を失敗させる。
+				return fmt.Errorf("server %q: %w", name, err)
+			}
+			srv.AddReceivingMiddleware(forms)
+		}
 
 		if !passthrough {
 			// OpenAPI モード
