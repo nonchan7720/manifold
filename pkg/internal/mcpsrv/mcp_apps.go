@@ -152,9 +152,7 @@ func newMCPAppsMiddleware(server *config.Server) mcp.Middleware {
 func stripMCPAppsTools(tools []*mcp.Tool) []*mcp.Tool {
 	out := make([]*mcp.Tool, 0, len(tools))
 	for _, tool := range tools {
-		_, hasUI := tool.Meta[mcpAppsMetaKey]
-		_, hasLegacy := tool.Meta[mcpAppsLegacyResourceURIMetaKey]
-		if !hasUI && !hasLegacy {
+		if !hasMCPAppsUI(tool) {
 			out = append(out, tool)
 			continue
 		}
@@ -171,6 +169,13 @@ func stripMCPAppsTools(tools []*mcp.Tool) []*mcp.Tool {
 		out = append(out, &copied)
 	}
 	return out
+}
+
+// hasMCPAppsUI は tool が _meta で UI を指定しているかを返す。
+func hasMCPAppsUI(tool *mcp.Tool) bool {
+	_, hasUI := tool.Meta[mcpAppsMetaKey]
+	_, hasLegacy := tool.Meta[mcpAppsLegacyResourceURIMetaKey]
+	return hasUI || hasLegacy
 }
 
 // visibleToModel は _meta.ui の visibility がモデルを含むかを返す。visibility が

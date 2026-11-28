@@ -2,7 +2,7 @@
 
 # runn による結合テスト
 
-[runn](https://github.com/k1LoW/runn) のランブックを、ローカルでビルドしたゲートウェイに対して実行し、ツールの絞り込み（`tools.include` / `overrides`）・ツール認可（OPA）・Streamable HTTP プロトコルのエッジケース・カタログ API・監査ログをまとめて検証します。CI では PR ごとに実行します（`.github/workflows/runn.yaml`）。
+[runn](https://github.com/k1LoW/runn) のランブックを、ローカルでビルドしたゲートウェイに対して実行し、ツールの絞り込み（`tools.include` / `overrides`）・結果の絞り込み（`tools.resultFilter`）・ツール認可（OPA）・Streamable HTTP プロトコルのエッジケース・カタログ API・監査ログをまとめて検証します。CI では PR ごとに実行します（`.github/workflows/runn.yaml`）。
 
 ```text
 OPA (docker)  <--  manifold gateway  -->  スタブの Petstore API (Go)
@@ -13,7 +13,7 @@ OPA (docker)  <--  manifold gateway  -->  スタブの Petstore API (Go)
 | ファイル | 役割 |
 | -------- | ---- |
 | `run.sh` | ゲートウェイとスタブをビルドし、`examples/opa/policy.rego` で OPA を起動してランブックを実行し、最後に監査ログを確認する |
-| `config.yaml` | ゲートウェイ設定。Petstore を 2 サーバー（`petstore` は絞り込みとリネーム後の 5 ツール、`petstore_small` は 1 ツール）、`authz` 有効、`audit` をファイルへ出力、`maxRequestBodySize: 4096` |
+| `config.yaml` | ゲートウェイ設定。Petstore を 2 サーバー（`petstore` は絞り込みとリネーム後の 5 ツールで、うち 3 つは `tools.resultFilter` の対象、その 1 つは条件と位置の構文も有効。`petstore_small` は 1 ツール）、`authz` 有効、`audit` をファイルへ出力、`maxRequestBodySize: 4096` |
 | `opa/data.json` | グループ 2 つ。`readers`（`get_pet`・`findpetsbystatus`・`petstore_small/*`）と `operators`（全部。`catalog` 付き） |
 | `stub/main.go` | petstore のフィクスチャ spec と数個の operation を提供し、`Authorization` ヘッダーをそのまま返す |
 | `runbooks/*.yml` | ランブック。ファイル名順に実行する（下記） |
@@ -42,6 +42,7 @@ Streamable HTTP は `tools/list` や `tools/call` に `text/event-stream` で応
 | `00_health.yml` | `/healthz` と `/readyz` が認証なしで `200` |
 | `10_auth.yml` | `initialize` が通る（識別ヘッダーの有無によらず）。トークン無し・`Basic`・小文字の `bearer`・空の `Authorization`・値が空の `Authorization` は `401` で、`WWW-Authenticate: Bearer resource_metadata=...` が付く。認証は本文のパースより先に行われる |
 | `20_tool_filter.yml` | `operators` で `petstore`: `tools/list` は絞り込み後の 5 ツールを公開名で返し（`getpetbyid` ではなく `get_pet`。`addpet` は無い）元の description を保つ。`get_pet` を呼ぶと呼び出し元のトークンがスタブまで届く。`getpetbyid`・`addpet`・存在しない名前・空の名前は `unknown tool`。`find*` は `findpetsbytags` も公開する。`petstore_small`: `getinventory` だけが出て呼び出せる。include はサーバーごとに独立 |
+| `25_result_filter.yml` | `tools.resultFilter` を有効にした `petstore`: `tools/list` は `resultFilter.include` が元の名前で一致するツール（`get_pet`・`findpetsbystatus`・`findpetsbytags`）にだけ `_jmespath` を足し、説明にはそのツールで使える構文と、結果のフィールド一覧（spec のレスポンス定義から読む。配列のレスポンスは `items[]{...}`）が載る。`_jmespath` を付けた呼び出しは式が選んだものだけを返し（オブジェクトは text と `structuredContent`、配列は text と、包んだ `structuredContent`）、他の引数はスタブまで届く。付けなければ全体が返る。条件とスライスは `features` に挙げたツールで使え、それ以外では呼び出し前に断る。`null` を返す式には結果の形が添えられる。構文エラーと関数の呼び出しは、呼び出し前のツールエラー。`include` の外のツールは引数を無視する。認可には影響しない（`readers` は `get_pet` を絞り込め、拒否されるツールは拒否されたまま） |
 | `30_authz.yml` | `readers`: `tools/list` は `findpetsbystatus` と `get_pet` だけ。`get_pet` は呼べ、`findpetsbystatus` はクエリが転送される。`deletepet`・include 済みだがポリシー外の `findpetsbytags`・リネーム前の `getpetbyid`・存在しないツールはすべて `tool not allowed by policy`。`petstore_small/*` は呼べる。`operators` は `deletepet` を呼べる。識別: `x-user-id` / `x-user-groups` が無い・片方だけ・空・区切り文字だけなら拒否。未知のグループは `tools/list` が空で呼び出しは拒否。グループ名は大文字小文字を区別。複数グループは和集合（空白と空要素は無視）。ヘッダー名は大文字小文字を区別しない |
 | `35_bypass.yml` | `x-authz-bypass: true` で認可をスキップ（制限的なグループがあっても）。`TRUE`・`1` はスキップしない。`false` ならポリシーが効く |
 | `40_protocol_edge.yml` | 未知のサーバー（`400`）、余分なパス（`404`）。不正な JSON・空の本文・`Accept` 無し / JSON のみ / SSE のみ（`400`）、`Content-Type` 違い（`415`）、`GET` / `DELETE`（`405`）、未対応の `MCP-Protocol-Version`（`400`）。notification（`202`）・`ping`・未知のメソッド・`params` 欠落・文字列の id。バッチ（現行プロトコルでは拒否、旧プロトコルではメッセージごとに認可）。`tools/call` の引数の欠落・型違い・未知のキー。`maxRequestBodySize` の上限（`413`。認証より先に判定） |

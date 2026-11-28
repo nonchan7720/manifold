@@ -14,6 +14,7 @@ import (
 	"github.com/n-creativesystem/go-packages/lib/trace"
 	"github.com/nonchan7720/manifold/pkg/config"
 	"github.com/nonchan7720/manifold/pkg/internal/oastomcptool"
+	"github.com/nonchan7720/manifold/pkg/internal/resultshape"
 )
 
 // RegisterOpenAPI fetches and loads specPath, then builds an MCPToolRegistry
@@ -191,6 +192,7 @@ func BuildCatalog(
 	case oastomcptool.SpecFormatSwagger2:
 		if err := swagger(
 			ctx, client, register, source.Swagger, source.SpecPath, baseUrl, headers, exclude,
+			opt.describesResult,
 		); err != nil {
 			return nil, err
 		}
@@ -198,6 +200,7 @@ func BuildCatalog(
 		register.setOpenAPISpec(source.OpenAPI)
 		if err := openapi(
 			ctx, client, register, source.OpenAPI, source.SpecPath, baseUrl, headers, exclude,
+			opt.describesResult,
 		); err != nil {
 			return nil, err
 		}
@@ -216,6 +219,7 @@ func swagger(
 	baseUrl string,
 	headers map[string]string,
 	exclude operationExcluder,
+	describesResult func(toolName string) bool,
 ) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/swagger")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -276,6 +280,11 @@ func swagger(
 				opts = append(opts, WithRegisterToolBinaryFields(
 					oastomcptool.ResponseBinaryFieldsSwagger(operation, spec),
 				))
+				if describesResult(baseToolName) {
+					opts = append(opts, WithRegisterToolResultFields(responseResultFields(
+						oastomcptool.ResponseShapeSwagger(operation, spec),
+					)))
+				}
 			}
 			register.RegisterTool(
 				baseToolName,
@@ -298,6 +307,7 @@ func openapi(
 	baseUrl string,
 	headers map[string]string,
 	exclude operationExcluder,
+	describesResult func(toolName string) bool,
 ) (rErr error) {
 	ctx = trace.StartSpan(ctx, "mcpsrv/openapi")
 	defer func() { trace.EndSpan(ctx, rErr) }()
@@ -343,6 +353,11 @@ func openapi(
 				opts = append(opts, WithRegisterToolBinaryFields(
 					oastomcptool.ResponseBinaryFields(operation),
 				))
+				if describesResult(baseToolName) {
+					opts = append(opts, WithRegisterToolResultFields(responseResultFields(
+						oastomcptool.ResponseShape(operation),
+					)))
+				}
 			}
 			if isBinaryResponse {
 				opts = append(opts, WithRegisterToolMeta(map[string]any{
@@ -360,6 +375,19 @@ func openapi(
 		}
 	}
 	return nil
+}
+
+// responseResultFields は、spec のレスポンス定義から読んだ形（oastomcptool.ResponseShape の
+// 戻り値）を、ツールが実際に返す JSON のフィールド一覧にする。配列のボディは wrapToolFunc が
+// {"items": [...]} に包むので、形も同じように包む。形が分からなければ空文字列。
+func responseResultFields(shape resultshape.Node, mediaType string, ok bool) string {
+	if !ok {
+		return ""
+	}
+	if _, wraps := wrapsJSONArray(mediaType); wraps && shape.Arrays > 0 {
+		shape = resultshape.Node{Fields: []resultshape.Field{{Name: "items", Node: shape}}}
+	}
+	return shape.Describe(maxResultFieldsBytes)
 }
 
 // operationIDOrDerived returns the operation's operationId, or the

@@ -12,6 +12,9 @@ type registerOpenAPIOption struct {
 	// operationId or derived tool name matches one is not turned into a
 	// tool (see config.ToolsConfig).
 	excludeTools []string
+	// resultFilter は tools.resultFilter。有効なら、対象のツールに結果の JSON の
+	// フィールド一覧を持たせる（WithResultFilter）。
+	resultFilter *config.ResultFilterConfig
 }
 
 type RegisterOpenAPIOption func(opt *registerOpenAPIOption)
@@ -59,6 +62,21 @@ func WithToolsConfig(cfg *config.ToolsConfig) RegisterOpenAPIOption {
 		}
 		opt.excludeTools = cfg.Exclude
 	}
+}
+
+// WithResultFilter は、cfg（tools.resultFilter）が有効なときに、絞り込みの対象になるツールへ
+// 結果の JSON のフィールド一覧（spec のレスポンス定義から読む）を持たせる。一覧は結果の
+// 絞り込みのミドルウェアが tools/list で使い、_meta からは取り除くので、そのミドルウェアを
+// 入れるサーバー（ServerToolMiddlewares）の構築にだけ渡す。nil や無効な cfg では何もしない。
+func WithResultFilter(cfg *config.ResultFilterConfig) RegisterOpenAPIOption {
+	return func(opt *registerOpenAPIOption) {
+		opt.resultFilter = cfg
+	}
+}
+
+// describesResult は、ツール name（元のツール名）に結果のフィールド一覧を持たせるかを返す。
+func (opt *registerOpenAPIOption) describesResult(name string) bool {
+	return opt.resultFilter != nil && opt.resultFilter.Enabled && opt.resultFilter.Applies(name)
 }
 
 // WithExcludeTools keeps every operation whose operationId or derived tool

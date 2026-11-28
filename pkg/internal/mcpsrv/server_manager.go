@@ -416,6 +416,9 @@ func registerOpenAPIOptions(server *config.Server) []RegisterOpenAPIOption {
 		WithGoogleServiceAccount(server.GoogleServiceAccount),
 		WithToolsConfig(server.Tools),
 	}
+	if server.Tools != nil {
+		opts = append(opts, WithResultFilter(server.Tools.ResultFilter))
+	}
 	if file := server.GeneratedToolsFile(); file != "" {
 		opts = append(opts, WithGeneratedToolsFile(file))
 	}
